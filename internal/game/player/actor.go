@@ -12,6 +12,7 @@ import (
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
+	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -61,6 +62,7 @@ type PushMsg struct {
 
 // GrantItemsMsg 发放奖励（充值发货/邮件领取等）。
 type GrantItemsMsg struct {
+	BizID  string // 与奖励一起持久化的业务唯一键，用于重复投递。
 	Source string // 来源标记（recharge/mail/...），用于日志与幂等排查
 	Items  []GrantItem
 	Done   chan error // 可选：同步等待结果
@@ -81,10 +83,15 @@ type Actor struct {
 	onDirty   func(playerID int64)
 	sendFunc  SendFunc
 
-	sessionID   uint64
-	online      bool
-	loaded      bool
-	needsReload bool // 发奖提交结果未知时，禁止旧内存再次落库。
+	sessionID     uint64
+	online        bool
+	loaded        bool
+	needsReload   bool // 发奖提交结果未知时，禁止旧内存再次落库。
+	cacheVersion  int64
+	cacheReload   bool
+	bufferReplies bool
+	queuedReplies []cachedReply
+	cachePending  *writebehind.Record
 }
 
 // NewActor 创建玩家 Actor。
@@ -117,6 +124,16 @@ func (a *Actor) State() *State { return a.state }
 
 // Receive 实现 actor.Actor。
 func (a *Actor) Receive(ctx *actor.Context) {
+	if a.repo.CacheEnabled() {
+		if _, purePush := ctx.Message().(*PushMsg); !purePush {
+			a.receiveCached(ctx)
+			return
+		}
+	}
+	a.receive(ctx)
+}
+
+func (a *Actor) receive(ctx *actor.Context) {
 	if a.needsReload {
 		switch ctx.Message().(type) {
 		case *SaveMsg, *UnbindMsg:
@@ -205,6 +222,19 @@ func (a *Actor) setState(state *State) {
 //
 // 优先用 Preloader（5 查询并行 + 超时保护）；未注入时退回逐表串行加载。
 func (a *Actor) preload(ctx *actor.Context) error {
+	if a.repo.CacheEnabled() {
+		loadCtx, cancel := context.WithTimeout(context.Background(), DefaultPreloadTimeout)
+		defer cancel()
+		state, version, err := a.repo.LoadCached(loadCtx, a.playerID)
+		if err != nil {
+			return err
+		}
+		a.setState(state)
+		a.cacheVersion = version
+		a.loaded = true
+		a.prefetch = nil
+		return nil
+	}
 	if a.preloader != nil {
 		state, pf, err := a.preloader.Load(context.Background(), a.playerID)
 		if err != nil {
@@ -270,6 +300,20 @@ func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 
 // onGrantItems 发放奖励（Actor 内单线程执行，无需加锁）。
 func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
+	if msg.BizID != "" {
+		key := msg.Source + ":" + msg.BizID
+		if a.state.appliedGrants[key] {
+			if msg.Done != nil && !a.bufferReplies {
+				msg.Done <- nil
+			}
+			return
+		}
+		if a.state.appliedGrants == nil {
+			a.state.appliedGrants = make(map[string]bool)
+		}
+		a.state.appliedGrants[key] = true
+	}
+
 	for _, it := range msg.Items {
 		if it.Count <= 0 {
 			continue
@@ -281,12 +325,15 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 		a.onDirty(a.playerID)
 	}
 	a.logger.Info("grant items", "source", msg.Source, "count", len(msg.Items))
-	if msg.Done != nil {
+	if msg.Done != nil && !a.bufferReplies {
 		msg.Done <- nil
 	}
 }
 
 func (a *Actor) onSave(ctx *actor.Context) {
+	if a.repo.CacheEnabled() {
+		return
+	} // 独立进程从 Redis 队列落库。
 	mctx := a.moduleCtx(ctx)
 	for _, m := range a.registry.All() {
 		if err := m.OnSave(mctx.Actor.Context()); err != nil {
@@ -310,7 +357,8 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 		mctx.Prefetch = a.prefetch
 	}
 	mctx.AddExp = a.addExp
-	if a.repo != nil {
+	mctx.CacheEnabled = a.repo.CacheEnabled()
+	if a.repo != nil && !a.repo.CacheEnabled() {
 		mctx.CommitItems = func(ctx context.Context, grants []module.ItemGrant, business func(*sql.Tx) error) error {
 			// 先保存已有玩法变更，提交结果未知后重载也不会丢掉此前的背包进度。
 			if err := a.repo.Save(ctx, a.state); err != nil {
@@ -357,6 +405,10 @@ func (a *Actor) addExp(n int64) (bool, int32) {
 
 // send 包装为模块可用的下行发送（携带当前 sessionID）。
 func (a *Actor) send(msgID uint32, body []byte) error {
+	if a.bufferReplies {
+		a.queuedReplies = append(a.queuedReplies, cachedReply{id: msgID, body: append([]byte(nil), body...)})
+		return nil
+	}
 	if a.sendFunc == nil || a.sessionID == 0 {
 		return nil
 	}

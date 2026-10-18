@@ -31,7 +31,7 @@ db-init: ## DDL → MySQL 建表（首次部署）
 db-seed: ## sql/seed → 初始数据（道具/等级等安全表 + 测试账号）
 	./scripts/db-seed.sh
 
-build: ## 交叉编译五服务 → bin/
+build: ## 交叉编译五服务及独立 flusher → bin/
 	./scripts/build.sh
 
 test: ## 单测 + 集成（test/integration，testcontainers 起真实中间件）
@@ -49,7 +49,7 @@ vet: ## go vet 全量
 dev: ## 仅起中间件（etcd/redis/mysql/kafka）
 	docker compose -f deploy/docker-compose.yaml up -d etcd redis mysql kafka
 
-run-all: ## 本地跑五进程（需先 make dev && make db-init && make db-seed）
+run-all: ## 本地跑五服务及 flusher（需先 make dev && make db-init && make db-seed）
 	@./scripts/run-all.sh
 
 test-integration: ## 集成测试（testcontainers 起真实中间件）

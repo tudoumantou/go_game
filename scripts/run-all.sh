@@ -34,6 +34,7 @@ start() { # $1=服务名 $2=配置文件
 
 # 顺序即依赖顺序（19.5 表）；网关/登录最后起
 start center "$CONFIG_ROOT/center/center-dev.yaml"
+start flusher "$CONFIG_ROOT/game/game-dev.yaml"
 sleep 1
 start game    "$CONFIG_ROOT/game/game-dev.yaml"
 start cross   "$CONFIG_ROOT/cross/cross-dev.yaml"

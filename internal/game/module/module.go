@@ -7,16 +7,11 @@ import (
 	"fmt"
 
 	"game_study/pkg/actor"
+	"game_study/pkg/writebehind"
 )
 
 // Profile 角色基础信息。
-type Profile struct {
-	Name    string
-	Level   int32
-	Exp     int64
-	Coin    int64
-	SceneID int32
-}
+type Profile = writebehind.Profile
 
 // PlayerState 玩家内存状态接口（由 player.State 实现，模块通过它读写数据）。
 type PlayerState interface {
@@ -38,9 +33,12 @@ type PlayerState interface {
 type Sender func(msgID uint32, body []byte) error
 
 // ItemGrant 一次原子发奖中的道具增量。
-type ItemGrant struct {
-	ItemID int32
-	Count  int64
+type ItemGrant = writebehind.ItemGrant
+
+// SigninState 是可选的玩家业务状态能力；查询/领取只访问所属 Actor。
+type SigninState interface {
+	SigninData() *writebehind.SigninData
+	SetSigninData(*writebehind.SigninData)
 }
 
 // AddExpFunc 增加经验并按配置连续升级，返回是否升级与当前等级。
@@ -80,13 +78,14 @@ type PrefetchSource interface {
 
 // Context 模块上下文：Actor 上下文 + 玩家状态 + 下行发送。
 type Context struct {
-	Actor    *actor.Context
-	State    PlayerState
-	Prefetch PrefetchSource // 登录预加载结果（可能为 nil）
-	TraceID  string
-	Send     Sender
-	Emit     func(evt Event)
-	AddExp   AddExpFunc
+	Actor        *actor.Context
+	State        PlayerState
+	Prefetch     PrefetchSource // 登录预加载结果（可能为 nil）
+	TraceID      string
+	Send         Sender
+	Emit         func(evt Event)
+	AddExp       AddExpFunc
+	CacheEnabled bool // Redis 权威状态已接入，成功响应在缓存提交后发送。
 	// CommitItems 在玩家 Actor 内将业务操作与背包奖励放入同一事务。
 	// 只有事务提交成功后才修改内存；业务操作必须仅通过传入的 tx 写库。
 	CommitItems func(context.Context, []ItemGrant, func(*sql.Tx) error) error

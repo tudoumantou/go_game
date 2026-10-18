@@ -16,6 +16,9 @@ var ErrCommitUnknown = errors.New("transaction commit outcome unknown")
 // CommitItems 由玩家 Actor 同步调用，业务事实与背包同事务持久化。
 // 调用期间不会有该 Actor 的其他消息或 Write-Behind 保存交错执行。
 func (r *Repository) CommitItems(ctx context.Context, state *State, grants []module.ItemGrant, business func(*sql.Tx) error) error {
+	if r.CacheEnabled() {
+		return fmt.Errorf("direct SQL grant disabled for cached player")
+	}
 	dirty := state.DirtyItems()
 	counts := make(map[int32]int64)
 	for _, grant := range grants {
@@ -57,6 +60,9 @@ func (r *Repository) CommitItems(ctx context.Context, state *State, grants []mod
 // ReloadItems 在未知提交后获取相同角色行锁，等待旧发奖事务结束再读取背包。
 // 只替换背包，保留装备派生属性和其他模块的在线内存状态。
 func (r *Repository) ReloadItems(ctx context.Context, state *State) error {
+	if r.CacheEnabled() {
+		return fmt.Errorf("use Redis recovery for cached player")
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

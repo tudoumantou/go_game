@@ -5,8 +5,13 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,6 +34,7 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// ① 中间件
 	mysqlC, err := mysql.Run(ctx, "mysql:8.0",
+		testcontainers.WithWaitStrategyAndDeadline(3*time.Minute, wait.ForLog("port: 3306  MySQL Community Server").WithStartupTimeout(3*time.Minute)),
 		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
 			ContainerRequest: testcontainers.ContainerRequest{
 				Env: map[string]string{
@@ -60,7 +66,7 @@ func TestP6GameplayFlow(t *testing.T) {
 				"--advertise-client-urls=http://0.0.0.0:2379",
 				"--listen-client-urls=http://0.0.0.0:2379",
 			},
-			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(60 * time.Second),
+			WaitingFor: wait.ForLog("ready to serve client requests").WithStartupTimeout(3 * time.Minute),
 		},
 		Started: true,
 	})
@@ -120,6 +126,24 @@ func TestP6GameplayFlow(t *testing.T) {
 	gwCfg.Server.Name = "gateway-p6"
 	gwCfg.Server.TCPAddr = fmt.Sprintf("127.0.0.1:%d", gwPort)
 	gwCfg.Server.HTTPAddr = fmt.Sprintf("127.0.0.1:%d", gwHTTPPort)
+	// 使用独立临时密钥，不依赖开发机的 keys/ 或已有部署私钥。
+	keyDir := t.TempDir()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePath := filepath.Join(keyDir, "gateway_rsa.pem")
+	if err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keyDir, "gateway_rsa_pub.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gwCfg.Crypto.RSAPrivateKey = privatePath
 
 	gameCfg := *baseCfg
 	gameCfg.Server.Name = "game-p6"

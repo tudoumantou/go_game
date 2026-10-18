@@ -4,7 +4,7 @@
 
 - **设计文档**：[`docs/game_study-服务器框架设计文档.md`](docs/game_study-服务器框架设计文档.md)（架构目标与协议规划；当前行为结合源码、测试及学习文档核对）
 - **七日签到**：角色独立、北京时间零点切换、七个自然日循环、漏签不可补签、奖励直接入背包；规则、协议和数据库迁移见 [`docs/signin.md`](docs/signin.md)。
-- **当前阶段**：**P1–P6 已完成**。机器人可完成「登录 → 网关 RSA/AES 握手 → 账号鉴权 → 创角 → 进游戏 → 拉取角色信息 → 收邮件 → 领取附件 → 查看背包 → 使用道具」完整玩法闭环；数据经 Write-Behind 分片落库 MySQL，Kafka 异步链路（充值发货、邮件投递、跨服私聊）按 `biz_id` 幂等消费。详见下文「已实现能力」。
+- **当前阶段**：**P1–P6 已完成**。机器人可完成「登录 → 网关 RSA/AES 握手 → 账号鉴权 → 创角 → 进游戏 → 拉取角色信息 → 收邮件 → 领取附件 → 查看背包 → 使用道具」完整玩法闭环；玩家基础状态、背包和签到经 Redis 权威快照与独立 flusher 定时合批落库 MySQL，其他旧模块的数据路径仍待逐步迁移；Kafka 异步链路（充值发货、邮件投递、跨服私聊）按 `biz_id` 幂等消费。详见下文「已实现能力」。
 
 ## 学习文档
 
@@ -37,6 +37,7 @@
 | 登录服 LoginServer | `internal/login` | 账号认证、Token 签发、网关/游戏服列表、充值下单 | 8080(HTTP)/8081(metrics) |
 | 网关服 GatewayServer | `internal/gateway` | 客户端加密长连接、会话管理、消息路由 | 9001(TCP)/9101(metrics) |
 | 游戏服 GameServer | `internal/game` | Actor 玩家逻辑、业务模块、Write-Behind 落库 | 9100(gRPC)/9102(metrics) |
+| 落库进程 Flusher | `cmd/flusher`、`pkg/writebehind` | 从 Redis 持久脏队列定时合批写 MySQL | 无对外端口 |
 | 中心服 CenterServer | `internal/center` | 节点注册/中转/排行榜/统计/跨服分组 | 9200(gRPC)/9201(metrics) |
 | 跨服节点 CrossServer | `internal/cross` | 跨服房间/战场（不注册 etcd、不连网关） | 9300(gRPC)/9301(metrics) |
 

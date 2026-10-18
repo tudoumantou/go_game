@@ -41,6 +41,7 @@ import (
 	pkgmq "game_study/pkg/mq"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
+	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -140,6 +141,9 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("redis: %w", err)
 		}
 		s.redis = redisClient
+		if s.repo != nil {
+			s.repo.SetCache(writebehind.NewStore(redisClient.GetClient()))
+		}
 		s.presence = cache.NewPresence(redisClient.GetClient())
 		deduper = cache.NewRedisDeduper(redisClient.GetClient())
 	}
@@ -206,7 +210,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(copy.New(copy.NewRepo(s.database), s.logger))
 		s.modules.Register(shop.New(shop.NewRepo(s.database), s.logger))
 		s.modules.Register(activity.New(activity.NewRepo(s.database), s.logger))
-		s.modules.Register(signin.New(signin.NewRepo(s.database), s.logger))
+		s.modules.Register(signin.New(signin.NewRepo(), s.logger))
 	}
 
 	// ④ Write-Behind flusher
@@ -226,7 +230,11 @@ func (s *Server) Start(ctx context.Context) error {
 	}, s.persistPlayer, s.logger)
 	s.flusher.Start(ctx)
 
-	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, s.flusher.MarkDirty, s.sendToClient)
+	var onDirty func(int64) = s.flusher.MarkDirty
+	if s.repo.CacheEnabled() {
+		onDirty = nil
+	} // Redis 内的持久队列由独立 flusher 消费。
+	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, onDirty, s.sendToClient)
 	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
 	if s.database != nil {
 		preloadTimeout := player.DefaultPreloadTimeout
@@ -452,6 +460,9 @@ func (s *Server) sendToClient(sessionID uint64, msgID uint32, body []byte) error
 
 // persistPlayer 由 flusher 回调，把单个玩家落库。
 func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
+	if s.repo.CacheEnabled() {
+		return nil
+	}
 	pid, ok := s.players.Get(playerID)
 	if !ok {
 		return nil

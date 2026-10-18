@@ -10,12 +10,17 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
 	"game_study/pkg/model"
+	"game_study/pkg/writebehind"
 )
 
 // Repository 玩家数据仓储。
 type Repository struct {
-	db *db.DB
+	db    *db.DB
+	cache *writebehind.Store
 }
+
+func (r *Repository) SetCache(store *writebehind.Store) { r.cache = store }
+func (r *Repository) CacheEnabled() bool                { return r != nil && r.cache != nil }
 
 // NewRepository 创建仓储。
 func NewRepository(database *db.DB) *Repository {
@@ -96,6 +101,9 @@ func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]i
 //
 // SQL 语句数从「1 + N（道具数）」降到「1 + 批次 + 批次」。
 func (r *Repository) Save(ctx context.Context, state *State) error {
+	if r.CacheEnabled() {
+		return fmt.Errorf("direct player SQL save disabled: use cache and independent flusher")
+	}
 	dirty := state.DirtyItems()
 
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {

@@ -71,7 +71,7 @@ func (c *RechargeConsumer) handle(ctx context.Context, env *pkgmq.Envelope) erro
 		pkgmq.Forget(ctx, c.deps.Deduper, pkgmq.TopicRechargeOrder, msg.OrderID)
 		return err
 	}
-	if err := c.grant(ctx, msg.PlayerID, items); err != nil {
+	if err := c.grant(ctx, msg.PlayerID, msg.OrderID, items); err != nil {
 		pkgmq.Forget(ctx, c.deps.Deduper, pkgmq.TopicRechargeOrder, msg.OrderID)
 		return err
 	}
@@ -96,13 +96,13 @@ func (c *RechargeConsumer) handle(ctx context.Context, env *pkgmq.Envelope) erro
 }
 
 // grant 给玩家 Actor 发奖励并等待结果。
-func (c *RechargeConsumer) grant(ctx context.Context, playerID int64, items []player.GrantItem) error {
+func (c *RechargeConsumer) grant(ctx context.Context, playerID int64, orderID string, items []player.GrantItem) error {
 	pid, ok := c.deps.Players.Get(playerID)
 	if !ok {
 		return fmt.Errorf("player %d actor not found", playerID)
 	}
 	done := make(chan error, 1)
-	msg := &player.GrantItemsMsg{Source: "recharge", Items: items, Done: done}
+	msg := &player.GrantItemsMsg{Source: "recharge", BizID: orderID, Items: items, Done: done}
 	if err := c.deps.Sys.Send(pid, msg); err != nil {
 		return err
 	}

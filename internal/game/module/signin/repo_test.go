@@ -1,55 +1,36 @@
 package signin
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"testing"
-
 	"game_study/internal/game/module"
-	"game_study/pkg/db"
-	"github.com/DATA-DOG/go-sqlmock"
+	"game_study/pkg/writebehind"
+	"testing"
 )
 
-func TestClaimDuplicateUsesStoredRewards(t *testing.T) {
-	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sqlDB.Close()
-	r := NewRepo(&db.DB{DB: sqlDB})
-	mock.ExpectBegin()
-	mock.ExpectExec("INSERT INTO player_signin").WithArgs(int64(7), int64(20000)).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT anchor_day.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"anchor_day"}).AddRow(20000))
-	mock.ExpectQuery("SELECT rewards FROM signin_claim").WithArgs(int64(7), int64(20000)).WillReturnRows(sqlmock.NewRows([]string{"rewards"}).AddRow(`[{"item_id":1001,"count":100}]`))
-	mock.ExpectRollback()
-	tx, err := sqlDB.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored, err := r.Claim(context.Background(), tx, 7, 20000, 20000, 1, []module.ItemGrant{{ItemID: 1001, Count: 999}})
-	if !errors.Is(err, errAlready) || len(stored) != 1 || stored[0].Count != 100 {
-		t.Fatalf("stored=%v err=%v", stored, err)
-	}
-	_ = tx.Rollback()
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
+type memorySignin struct{ data *writebehind.SigninData }
+
+func (s *memorySignin) SigninData() *writebehind.SigninData        { return s.data }
+func (s *memorySignin) SetSigninData(data *writebehind.SigninData) { s.data = data }
 
 func TestLoadNeverStartsCycle(t *testing.T) {
-	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
+	state := &memorySignin{}
+	v, err := NewRepo().Load(state, 20000)
+	if err != nil || v.Day != 1 || v.Start != 20000 || state.data != nil {
+		t.Fatalf("view=%+v err=%v", v, err)
 	}
-	defer sqlDB.Close()
-	r := NewRepo(&db.DB{DB: sqlDB})
-	mock.ExpectQuery("SELECT anchor_day FROM player_signin").WithArgs(int64(7)).WillReturnError(sql.ErrNoRows)
-	view, err := r.Load(context.Background(), 7, 20000)
-	if err != nil || view.Start != 20000 || view.Day != 1 || len(view.Claims) != 0 {
-		t.Fatalf("view=%+v err=%v", view, err)
+}
+func TestClaimUsesActorStateAndStoredRewards(t *testing.T) {
+	state := &memorySignin{}
+	repo := NewRepo()
+	first, already, err := repo.Claim(state, 20000, []module.ItemGrant{{ItemID: 1001, Count: 100}})
+	if err != nil || already || first[0].Count != 100 {
+		t.Fatal(first, already, err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
+	stored, already, err := repo.Claim(state, 20000, []module.ItemGrant{{ItemID: 1001, Count: 999}})
+	if err != nil || !already || stored[0].Count != 100 {
+		t.Fatal(stored, already, err)
+	}
+	v, err := repo.Load(state, 20007)
+	if err != nil || v.Day != 1 || v.Start != 20007 || len(v.Claims) != 0 {
+		t.Fatal(v, err)
 	}
 }

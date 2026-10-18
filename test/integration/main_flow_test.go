@@ -24,17 +24,19 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql" // 注册 mysql driver
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
-	_ "github.com/go-sql-driver/mysql" // 注册 mysql driver
+	"github.com/testcontainers/testcontainers-go/wait"
 
 	"game_study/pkg/model"
 )
 
 var (
-	testDB  *sql.DB
-	testDSN string
+	testDB        *sql.DB
+	testDSN       string
+	testRedisAddr string
 )
 
 const (
@@ -49,6 +51,7 @@ func TestMain(m *testing.M) {
 
 	// --- MySQL ---
 	mysqlC, err := mysql.Run(ctx, "mysql:8.0",
+		testcontainers.WithWaitStrategyAndDeadline(3*time.Minute, wait.ForLog("port: 3306  MySQL Community Server").WithStartupTimeout(3*time.Minute)),
 		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
 			ContainerRequest: testcontainers.ContainerRequest{
 				Env: map[string]string{
@@ -71,6 +74,15 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	defer func() { _ = redisC.Terminate(context.Background()) }()
+	host, err := redisC.Host(ctx)
+	if err != nil {
+		panic(err)
+	}
+	port, err := redisC.MappedPort(ctx, "6379/tcp")
+	if err != nil {
+		panic(err)
+	}
+	testRedisAddr = fmt.Sprintf("%s:%s", host, port.Port())
 
 	// 连接串（multiStatements 支持整文件执行 DDL；parseTime 支持时间列扫描）
 	dsn, err := mysqlC.ConnectionString(ctx, "multiStatements=true", "parseTime=true", "loc=Local")

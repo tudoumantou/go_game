@@ -27,6 +27,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
     ports: ["127.0.0.1:6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -103,6 +106,20 @@ services:
       game: { condition: service_started }
       etcd: { condition: service_healthy }
 
+  flusher:
+    stop_grace_period: 40s
+    build:
+      context: ..
+      dockerfile: ./deploy/docker/game.Dockerfile
+      args:
+        SERVICE: flusher
+    volumes:
+      - configs:/app/configs:ro
+    command: ["-config", "/app/configs/game/game-docker.yaml"]
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
   game:
     stop_grace_period: 70s
     build:
@@ -169,6 +186,7 @@ services:
 
 volumes:
   mysql:
+  redis-data:
   configs:
   keys:
   schema:

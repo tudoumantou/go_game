@@ -3,8 +3,6 @@ package signin
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -69,13 +67,12 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 	if err := proto.Unmarshal(body, req); err != nil {
 		return m.failure(ctx, msgID, err)
 	}
-	if m.repo == nil {
+	state, ok := ctx.State.(module.SigninState)
+	if m.repo == nil || !ok || !ctx.CacheEnabled {
 		return m.failure(ctx, msgID, fmt.Errorf("signin repository unavailable"))
 	}
-	dbctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	today := businessDay(m.now()) // 每个请求只采样一次，防止处理途中跨零点。
-	v, err := m.repo.Load(dbctx, ctx.State.PlayerID(), today)
+	v, err := m.repo.Load(state, today)
 	if err != nil {
 		return m.failure(ctx, msgID, err)
 	}
@@ -97,21 +94,15 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 			return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, State: render(v, today)})
 		}
 	}
-	if ctx.CommitItems == nil {
-		return m.failure(ctx, msgID, fmt.Errorf("atomic item persistence unavailable"))
-	}
-	var stored []module.ItemGrant
-	err = ctx.CommitItems(dbctx, grants, func(tx *sql.Tx) error {
-		var err error
-		stored, err = m.repo.Claim(dbctx, tx, ctx.State.PlayerID(), today, v.Start, v.Day, grants)
-		return err
-	})
-	already := errors.Is(err, errAlready)
-	if err != nil && !already {
+	grants, already, err := m.repo.Claim(state, today, grants)
+	if err != nil {
 		return m.failure(ctx, msgID, err)
 	}
-	if already {
-		grants = stored
+	if !already {
+		for _, g := range grants {
+			ctx.State.AddItem(g.ItemID, g.Count)
+		}
+		ctx.State.MarkDirty("bag")
 	}
 	v.Claims[today] = grants
 	if err := reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Already: already, Rewards: protoRewards(grants), State: render(v, today)}); err != nil {

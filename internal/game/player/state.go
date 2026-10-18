@@ -6,25 +6,21 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
+	"game_study/pkg/writebehind"
 )
 
 // Attr 玩家属性。
-type Attr struct {
-	Career int32
-	Hp     int32
-	Mp     int32
-	Atk    int32
-	Def    int32
-	Spd    int32
-}
+type Attr = writebehind.Attr
 
 // State 玩家内存状态（Actor 内单线程访问，外部只读时加锁）。
 type State struct {
-	playerID int64
-	profile  module.Profile
-	attr     Attr // 基础属性（落库）
-	bonus    Attr // 装备等加成（登录时按已穿装备重算，不落库）
-	items    map[int32]int64 // item_id -> count
+	playerID      int64
+	profile       module.Profile
+	attr          Attr            // 基础属性（落库）
+	bonus         Attr            // 装备等加成（登录时按已穿装备重算，不落库）
+	items         map[int32]int64 // item_id -> count
+	signin        *writebehind.SigninData
+	appliedGrants map[string]bool
 
 	dirty      map[string]bool // module -> dirty 标记
 	dirtyItems map[int32]bool  // 变更过的道具（落库只写这些，见 persist.Save）
@@ -41,7 +37,7 @@ type State struct {
 // NewState 创建玩家状态。
 func NewState(playerID int64) *State {
 	return &State{
-		playerID: playerID,
+		playerID:   playerID,
 		items:      make(map[int32]int64),
 		dirty:      make(map[string]bool),
 		dirtyItems: make(map[int32]bool),
