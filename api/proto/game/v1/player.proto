@@ -37,6 +37,8 @@ message PlayerInfoResp { // MsgID: 2002
   int32  level  = 4;
   int64  exp    = 5;
   repeated AttrPair attrs = 6; // 属性全量（attr_id → value）
+  int64 exp_max = 7;           // 升到下一级所需经验（满级 0）
+  int64 coin    = 8;           // 金币
 }
 
 message AttrPair {

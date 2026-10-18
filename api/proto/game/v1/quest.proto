@@ -1,7 +1,42 @@
-// 游戏业务协议：任务模块（quest.xml 链 quest_chain.xml；player_quest 表，消费 gs.player.event）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+// 游戏业务协议：任务（号段 7100-7199，与邮件 7000-7099 分段）
 syntax = "proto3";
 
 package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+// 任务列表
+message QuestListReq {} // MsgID: 7101
+
+message QuestListResp { // MsgID: 7102
+  int32 code = 1;
+  repeated QuestEntry quests = 2;
+}
+
+message QuestEntry {
+  int32  quest_id = 1;
+  string name     = 2;
+  int32  status   = 3; // 0 未接 1 进行中 2 可领奖 3 已领奖
+  int32  progress = 4; // 当前进度
+  int32  target   = 5; // 目标进度
+}
+
+// 接取任务
+message QuestAcceptReq { // MsgID: 7103
+  int32 quest_id = 1;
+}
+
+message QuestAcceptResp { // MsgID: 7104
+  int32 code = 1; // 7101 任务不存在 / 7102 已接取
+}
+
+// 领奖
+message QuestClaimReq { // MsgID: 7105
+  int32 quest_id = 1;
+}
+
+message QuestClaimResp { // MsgID: 7106
+  int32 code = 1; // 7101 不存在 / 7103 未完成 / 7104 已领奖
+  int64 exp_gain = 2;
+  bytes rewards  = 3; // BagChangeNotify 序列化
+}

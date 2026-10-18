@@ -21,8 +21,11 @@ type Profile struct {
 type PlayerState interface {
 	PlayerID() int64
 	Profile() Profile
+	ExpMax() int64
 	GetAttr(key string) int64
 	SetAttr(key string, val int64)
+	AddBonus(key string, delta int64)
+	ClearBonus()
 	GetItemCount(itemID int32) int64
 	Items() map[int32]int64
 	AddItem(itemID int32, count int64)
@@ -33,12 +36,24 @@ type PlayerState interface {
 // Sender 下行发送能力（由游戏服组装层实现，写回网关）。
 type Sender func(msgID uint32, body []byte) error
 
+// AddExpFunc 增加经验并按配置连续升级，返回是否升级与当前等级。
+type AddExpFunc func(n int64) (levelUp bool, level int32)
+
+// Event 玩家行为事件（模块间解耦：产生方 Emit，消费方 OnEvent）。
+type Event struct {
+	Type  string // use_item / kill / login / ...
+	Key   string // 事件主体（道具 ID / 怪物 ID）
+	Delta int64  // 增量（数量）
+}
+
 // Context 模块上下文：Actor 上下文 + 玩家状态 + 下行发送。
 type Context struct {
 	Actor   *actor.Context
 	State   PlayerState
 	TraceID string
 	Send    Sender
+	Emit    func(evt Event)
+	AddExp  AddExpFunc
 }
 
 // Reply 向客户端回包（Send 未注入时静默忽略，便于单测）。
@@ -65,6 +80,11 @@ type Module interface {
 	OnLogin(ctx *Context) error
 	// OnLogout 玩家下线（清理定时器、释放跨模块引用）
 	OnLogout(ctx *Context) error
+}
+
+// EventAware 可选接口：关心玩家行为事件的模块实现它。
+type EventAware interface {
+	OnEvent(ctx *Context, evt Event)
 }
 
 // Registry 模块注册表（含 msgID 路由索引）。
@@ -103,6 +123,15 @@ func (r *Registry) Dispatch(ctx *Context, msgID uint32, body []byte) error {
 		return fmt.Errorf("%w: %d", ErrNoRoute, msgID)
 	}
 	return m.OnMessage(ctx, msgID, body)
+}
+
+// DispatchEvent 把事件分发给所有 EventAware 模块。
+func (r *Registry) DispatchEvent(ctx *Context, evt Event) {
+	for _, m := range r.modules {
+		if ea, ok := m.(EventAware); ok {
+			ea.OnEvent(ctx, evt)
+		}
+	}
 }
 
 // InitAll 初始化全部模块。

@@ -1,7 +1,45 @@
-// 游戏业务协议：组队模块（team_limit.xml；team/team_member 表，匹配在 service/team_service）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+// 游戏业务协议：组队（号段 6200-6299）
 syntax = "proto3";
 
 package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message TeamMemberInfo {
+  int64 player_id = 1;
+  string name     = 2;
+  bool   ready    = 3;
+  bool   is_leader = 4;
+}
+
+message TeamInfoReq {} // MsgID: 6201
+
+message TeamInfoResp { // MsgID: 6202
+  int32 code    = 1; // 6201 未组队
+  int64 team_id = 2;
+  int32 copy_id = 3;
+  repeated TeamMemberInfo members = 4;
+}
+
+message TeamCreateReq { // MsgID: 6203
+  int32 copy_id = 1;
+}
+
+message TeamCreateResp { // MsgID: 6204
+  int32 code    = 1; // 6202 已在队伍中
+  int64 team_id = 2;
+}
+
+message TeamJoinReq { // MsgID: 6205
+  int64 team_id = 1;
+}
+
+message TeamJoinResp { // MsgID: 6206
+  int32 code = 1; // 6203 队伍不存在 / 6204 队伍已满
+}
+
+message TeamLeaveReq {} // MsgID: 6207
+
+message TeamLeaveResp { // MsgID: 6208
+  int32 code = 1;
+}

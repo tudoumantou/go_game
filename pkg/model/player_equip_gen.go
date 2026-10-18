@@ -16,6 +16,7 @@ type PlayerEquip struct {
 	EquipId int32 `db:"equip_id"`
 	EnhanceLevel int32 `db:"enhance_level"`
 	Quality int32 `db:"quality"`
+	Equipped int32 `db:"equipped"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -27,6 +28,7 @@ const (
 	ColPlayerEquipEquipId = "equip_id"
 	ColPlayerEquipEnhanceLevel = "enhance_level"
 	ColPlayerEquipQuality = "quality"
+	ColPlayerEquipEquipped = "equipped"
 	ColPlayerEquipCreatedAt = "created_at"
 	ColPlayerEquipUpdatedAt = "updated_at"
 )
@@ -41,19 +43,20 @@ var PlayerEquipColumns = []string{
 	ColPlayerEquipEquipId,
 	ColPlayerEquipEnhanceLevel,
 	ColPlayerEquipQuality,
+	ColPlayerEquipEquipped,
 	ColPlayerEquipCreatedAt,
 	ColPlayerEquipUpdatedAt,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerEquip(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality) VALUES (?,?,?,?,?)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality)
+	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality,equipped) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped)
 }
 
 // FindPlayerEquipByPK 按主键查询
 func FindPlayerEquipByPK(ctx context.Context, db *sql.DB, Id int64) (*PlayerEquip, error) {
 	var m PlayerEquip
-	query := "SELECT id,player_id,equip_id,enhance_level,quality,created_at,updated_at FROM player_equip WHERE id = ?"
+	query := "SELECT id,player_id,equip_id,enhance_level,quality,equipped,created_at,updated_at FROM player_equip WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
 	if err := scanPlayerEquip(&m, row); err != nil {
 		return nil, err
@@ -62,17 +65,17 @@ func FindPlayerEquipByPK(ctx context.Context, db *sql.DB, Id int64) (*PlayerEqui
 }
 
 func scanPlayerEquip(m *PlayerEquip, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.PlayerId, &m.EquipId, &m.EnhanceLevel, &m.Quality, &m.CreatedAt, &m.UpdatedAt)
+	return sc.Scan(&m.Id, &m.PlayerId, &m.EquipId, &m.EnhanceLevel, &m.Quality, &m.Equipped, &m.CreatedAt, &m.UpdatedAt)
 }
 
 // UpdatePlayerEquipByPK 按主键更新（幂等）
 func UpdatePlayerEquipByPK(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_equip SET player_id = ?, equip_id = ?, enhance_level = ?, quality = ? WHERE id = ?", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_equip SET player_id = ?, equip_id = ?, enhance_level = ?, quality = ?, equipped = ? WHERE id = ?", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped, m.Id)
 }
 
 // UpsertPlayerEquipByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerEquipByPK(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), equip_id = VALUES(equip_id), enhance_level = VALUES(enhance_level), quality = VALUES(quality)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality)
+	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality,equipped) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), equip_id = VALUES(equip_id), enhance_level = VALUES(enhance_level), quality = VALUES(quality), equipped = VALUES(equipped)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped)
 }
 
 // DeletePlayerEquipByPK 按主键删除

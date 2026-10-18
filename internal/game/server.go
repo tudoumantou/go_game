@@ -9,12 +9,20 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/internal/game/module/activity"
 	"game_study/internal/game/module/attr"
 	"game_study/internal/game/module/bag"
 	"game_study/internal/game/module/chat"
+	"game_study/internal/game/module/copy"
+	"game_study/internal/game/module/equip"
+	"game_study/internal/game/module/guild"
 	"game_study/internal/game/module/item"
 	"game_study/internal/game/module/mail"
 	"game_study/internal/game/module/profile"
+	"game_study/internal/game/module/quest"
+	"game_study/internal/game/module/shop"
+	"game_study/internal/game/module/skill"
+	"game_study/internal/game/module/team"
 	gamemq "game_study/internal/game/mq"
 	"game_study/internal/game/player"
 	"game_study/internal/game/rpc"
@@ -127,9 +135,17 @@ func (s *Server) Start(ctx context.Context) error {
 	var chatMod *chat.Module
 	if s.database != nil {
 		mailMod = mail.New(mail.NewRepo(s.database), s.logger)
-		chatMod = chat.New(chat.NewRepo(s.database), s.logger)
+		chatMod = chat.New(chat.NewRepo(s.database), chatMessenger{srv: s}, s.logger)
 		s.modules.Register(mailMod)
 		s.modules.Register(chatMod)
+		s.modules.Register(quest.New(quest.NewRepo(s.database), s.logger))
+		s.modules.Register(equip.New(equip.NewRepo(s.database), s.logger))
+		s.modules.Register(skill.New(skill.NewRepo(s.database), s.logger))
+		s.modules.Register(guild.New(guild.NewRepo(s.database), s.logger))
+		s.modules.Register(team.New(team.NewRepo(s.database), s.logger))
+		s.modules.Register(copy.New(copy.NewRepo(s.database), s.logger))
+		s.modules.Register(shop.New(shop.NewRepo(s.database), s.logger))
+		s.modules.Register(activity.New(activity.NewRepo(s.database), s.logger))
 	}
 
 	// ④ Write-Behind flusher
@@ -248,6 +264,61 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.logger.Info("game stopped")
 	return nil
+}
+
+// chatMessenger 实现 chat.Messenger（在线判定/本服推送/跨服生产/离线暂存）。
+type chatMessenger struct {
+	srv *Server
+}
+
+// SelfNode 实现 chat.Messenger。
+func (m chatMessenger) SelfNode() string { return m.srv.cfg.Server.Name }
+
+// OnlineNode 实现 chat.Messenger。
+func (m chatMessenger) OnlineNode(ctx context.Context, playerID int64) (string, bool) {
+	if m.srv.presence == nil {
+		// 无 Redis：退化为本地在线判断
+		_, ok := m.srv.players.Get(playerID)
+		return m.srv.cfg.Server.Name, ok
+	}
+	return m.srv.presence.IsOnline(ctx, playerID)
+}
+
+// Push 实现 chat.Messenger。
+func (m chatMessenger) Push(ctx context.Context, playerID int64, msgID uint32, body []byte) bool {
+	pid, ok := m.srv.players.Get(playerID)
+	if !ok {
+		return false
+	}
+	return m.srv.actorSys.Send(pid, &player.PushMsg{MsgID: msgID, Body: body}) == nil
+}
+
+// ProduceCross 实现 chat.Messenger。
+func (m chatMessenger) ProduceCross(ctx context.Context, msg *pkgmq.ChatCrossMsg) error {
+	if m.srv.producer == nil {
+		return fmt.Errorf("kafka producer not available")
+	}
+	env, err := pkgmq.NewEnvelope(fmt.Sprintf("%d", msg.MsgID), pkgmq.TopicChatCross, fmt.Sprintf("%d", msg.ToID), msg)
+	if err != nil {
+		return err
+	}
+	return m.srv.producer.ProduceEnvelope(ctx, env)
+}
+
+// PendOffline 实现 chat.Messenger。
+func (m chatMessenger) PendOffline(ctx context.Context, playerID int64, msg *pkgmq.ChatCrossMsg) error {
+	if m.srv.presence == nil {
+		return nil
+	}
+	env, err := pkgmq.NewEnvelope(fmt.Sprintf("%d", msg.MsgID), pkgmq.TopicChatCross, fmt.Sprintf("%d", playerID), msg)
+	if err != nil {
+		return err
+	}
+	raw, err := env.Marshal()
+	if err != nil {
+		return err
+	}
+	return m.srv.presence.PendPush(ctx, "chat", playerID, raw, 200, 0)
 }
 
 // sendToClient 下行发送：把模块响应经 GameService.Channel 写回网关（18.2 同流保证有序）。

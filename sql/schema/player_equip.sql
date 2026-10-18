@@ -6,6 +6,7 @@ CREATE TABLE `player_equip` (
   `equip_id`       INT     NOT NULL COMMENT '装备配置ID(见 equip.xml)',
   `enhance_level`  TINYINT NOT NULL DEFAULT 0 COMMENT '强化等级',
   `quality`        TINYINT NOT NULL DEFAULT 0 COMMENT '品质',
+  `equipped`       TINYINT NOT NULL DEFAULT 0 COMMENT '0未穿 1已穿',
   `created_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

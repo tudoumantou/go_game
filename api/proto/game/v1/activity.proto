@@ -1,7 +1,31 @@
-// 游戏业务协议：活动模块（activity.xml；activity_record 表，调度在 scheduler/）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+// 游戏业务协议：活动（号段 6500-6599）
 syntax = "proto3";
 
 package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message ActivityEntry {
+  int32  activity_id = 1;
+  string name        = 2;
+  string type        = 3;
+  int32  target      = 4;
+  int32  progress    = 5;
+  bool   claimed     = 6;
+}
+
+message ActivityListReq {} // MsgID: 6501
+
+message ActivityListResp { // MsgID: 6502
+  int32 code = 1;
+  repeated ActivityEntry activities = 2;
+}
+
+message ActivityClaimReq { // MsgID: 6503
+  int32 activity_id = 1;
+}
+
+message ActivityClaimResp { // MsgID: 6504
+  int32 code = 1; // 6501 不存在 / 6502 未完成 / 6503 已领
+  bytes rewards = 2;
+}

@@ -76,6 +76,8 @@ func (m *Module) onPlayerInfo(ctx *module.Context) error {
 		Name:   p.Name,
 		Level:  p.Level,
 		Exp:    p.Exp,
+		ExpMax: ctx.State.ExpMax(),
+		Coin:   p.Coin,
 		Attrs: []*gamev1.AttrPair{
 			{AttrId: attrHP, Value: ctx.State.GetAttr("hp")},
 			{AttrId: attrMP, Value: ctx.State.GetAttr("mp")},

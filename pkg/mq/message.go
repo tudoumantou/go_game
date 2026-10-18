@@ -101,6 +101,7 @@ type Item struct {
 type ChatCrossMsg struct {
 	MsgID    int64  `json:"msg_id"`
 	FromID   int64  `json:"from_id"`
+	FromName string `json:"from_name"`
 	ToID     int64  `json:"to_id"`
 	Channel  int32  `json:"channel"`
 	Content  string `json:"content"`

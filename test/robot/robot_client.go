@@ -342,3 +342,262 @@ func (c *Client) TakeMail(mailID int64) (*gamev1.MailTakeAttachmentResp, error) 
 	}
 	return resp, nil
 }
+
+// ---------------- B1 等级 / 任务 ----------------
+
+// QuestList 任务列表（7101/7102）。
+func (c *Client) QuestList() (*gamev1.QuestListResp, error) {
+	resp := &gamev1.QuestListResp{}
+	if err := c.call(7101, &gamev1.QuestListReq{}, 7102, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// QuestAccept 接取任务（7103/7104）。
+func (c *Client) QuestAccept(questID int32) (*gamev1.QuestAcceptResp, error) {
+	resp := &gamev1.QuestAcceptResp{}
+	if err := c.call(7103, &gamev1.QuestAcceptReq{QuestId: questID}, 7104, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// QuestClaim 领取任务奖励（7105/7106）。
+func (c *Client) QuestClaim(questID int32) (*gamev1.QuestClaimResp, error) {
+	resp := &gamev1.QuestClaimResp{}
+	if err := c.call(7105, &gamev1.QuestClaimReq{QuestId: questID}, 7106, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ---------------- B2 装备 / 技能 ----------------
+
+// EquipList 装备列表（3101/3102）。
+func (c *Client) EquipList() (*gamev1.EquipListResp, error) {
+	resp := &gamev1.EquipListResp{}
+	if err := c.call(3101, &gamev1.EquipListReq{}, 3102, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// EquipWear 穿戴装备（3103/3104）。
+func (c *Client) EquipWear(uid int64) (*gamev1.EquipWearResp, error) {
+	resp := &gamev1.EquipWearResp{}
+	if err := c.call(3103, &gamev1.EquipWearReq{Uid: uid}, 3104, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// EquipTakeOff 脱下装备（3105/3106）。
+func (c *Client) EquipTakeOff(uid int64) (*gamev1.EquipTakeOffResp, error) {
+	resp := &gamev1.EquipTakeOffResp{}
+	if err := c.call(3105, &gamev1.EquipTakeOffReq{Uid: uid}, 3106, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SkillList 技能列表（3201/3202）。
+func (c *Client) SkillList() (*gamev1.SkillListResp, error) {
+	resp := &gamev1.SkillListResp{}
+	if err := c.call(3201, &gamev1.SkillListReq{}, 3202, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SkillLearn 学习技能（3203/3204）。
+func (c *Client) SkillLearn(skillID int32) (*gamev1.SkillLearnResp, error) {
+	resp := &gamev1.SkillLearnResp{}
+	if err := c.call(3203, &gamev1.SkillLearnReq{SkillId: skillID}, 3204, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SkillUpgrade 升级技能（3205/3206）。
+func (c *Client) SkillUpgrade(skillID int32) (*gamev1.SkillUpgradeResp, error) {
+	resp := &gamev1.SkillUpgradeResp{}
+	if err := c.call(3205, &gamev1.SkillUpgradeReq{SkillId: skillID}, 3206, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ---------------- B3 聊天 ----------------
+
+// ChatSend 发送聊天（6001/6002）。
+func (c *Client) ChatSend(channel int32, peerID int64, content string) (*gamev1.ChatSendResp, error) {
+	resp := &gamev1.ChatSendResp{}
+	req := &gamev1.ChatSendReq{Channel: channel, PeerId: peerID, Content: content}
+	if err := c.call(6001, req, 6002, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ChatHistory 拉取聊天历史（6020/6021）。
+func (c *Client) ChatHistory(peerID int64, limit int32) (*gamev1.ChatHistoryResp, error) {
+	resp := &gamev1.ChatHistoryResp{}
+	req := &gamev1.ChatHistoryReq{PeerId: peerID, Limit: limit}
+	if err := c.call(6020, req, 6021, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// WaitChatNotify 等待一条聊天推送（6010），用于验证跨服投递。
+func (c *Client) WaitChatNotify(timeout time.Duration) (*gamev1.ChatMessageNotify, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pkt, err := c.readPacket(time.Until(deadline))
+		if err != nil {
+			return nil, err
+		}
+		if uint32(pkt.MsgID) != 6010 {
+			continue
+		}
+		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+		if err != nil {
+			return nil, err
+		}
+		msg := &gamev1.ChatMessageNotify{}
+		if err := proto.Unmarshal(plain, msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	}
+	return nil, fmt.Errorf("no chat notify within %s", timeout)
+}
+
+// ---------------- B4 公会 / 组队 / 副本 / 商店 / 活动 ----------------
+
+// GuildInfo 公会信息（6101/6102）。
+func (c *Client) GuildInfo() (*gamev1.GuildInfoResp, error) {
+	resp := &gamev1.GuildInfoResp{}
+	if err := c.call(6101, &gamev1.GuildInfoReq{}, 6102, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// GuildCreate 创建公会（6103/6104）。
+func (c *Client) GuildCreate(name string) (*gamev1.GuildCreateResp, error) {
+	resp := &gamev1.GuildCreateResp{}
+	if err := c.call(6103, &gamev1.GuildCreateReq{Name: name}, 6104, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// GuildJoin 加入公会（6105/6106）。
+func (c *Client) GuildJoin(guildID int64) (*gamev1.GuildJoinResp, error) {
+	resp := &gamev1.GuildJoinResp{}
+	if err := c.call(6105, &gamev1.GuildJoinReq{GuildId: guildID}, 6106, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// GuildQuit 退出公会（6107/6108）。
+func (c *Client) GuildQuit() (*gamev1.GuildQuitResp, error) {
+	resp := &gamev1.GuildQuitResp{}
+	if err := c.call(6107, &gamev1.GuildQuitReq{}, 6108, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// TeamInfo 队伍信息（6201/6202）。
+func (c *Client) TeamInfo() (*gamev1.TeamInfoResp, error) {
+	resp := &gamev1.TeamInfoResp{}
+	if err := c.call(6201, &gamev1.TeamInfoReq{}, 6202, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// TeamCreate 创建队伍（6203/6204）。
+func (c *Client) TeamCreate(copyID int32) (*gamev1.TeamCreateResp, error) {
+	resp := &gamev1.TeamCreateResp{}
+	if err := c.call(6203, &gamev1.TeamCreateReq{CopyId: copyID}, 6204, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// TeamJoin 加入队伍（6205/6206）。
+func (c *Client) TeamJoin(teamID int64) (*gamev1.TeamJoinResp, error) {
+	resp := &gamev1.TeamJoinResp{}
+	if err := c.call(6205, &gamev1.TeamJoinReq{TeamId: teamID}, 6206, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// TeamLeave 退出队伍（6207/6208）。
+func (c *Client) TeamLeave() (*gamev1.TeamLeaveResp, error) {
+	resp := &gamev1.TeamLeaveResp{}
+	if err := c.call(6207, &gamev1.TeamLeaveReq{}, 6208, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// CopyList 副本列表（6301/6302）。
+func (c *Client) CopyList() (*gamev1.CopyListResp, error) {
+	resp := &gamev1.CopyListResp{}
+	if err := c.call(6301, &gamev1.CopyListReq{}, 6302, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// CopySettle 副本结算（6303/6304）。
+func (c *Client) CopySettle(copyID, star int32) (*gamev1.CopySettleResp, error) {
+	resp := &gamev1.CopySettleResp{}
+	if err := c.call(6303, &gamev1.CopySettleReq{CopyId: copyID, Star: star}, 6304, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ShopList 商店列表（6401/6402）。
+func (c *Client) ShopList() (*gamev1.ShopListResp, error) {
+	resp := &gamev1.ShopListResp{}
+	if err := c.call(6401, &gamev1.ShopListReq{}, 6402, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ShopBuy 购买商品（6403/6404）。
+func (c *Client) ShopBuy(goodsID, count int32) (*gamev1.ShopBuyResp, error) {
+	resp := &gamev1.ShopBuyResp{}
+	if err := c.call(6403, &gamev1.ShopBuyReq{GoodsId: goodsID, Count: count}, 6404, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ActivityList 活动列表（6501/6502）。
+func (c *Client) ActivityList() (*gamev1.ActivityListResp, error) {
+	resp := &gamev1.ActivityListResp{}
+	if err := c.call(6501, &gamev1.ActivityListReq{}, 6502, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// ActivityClaim 活动领奖（6503/6504）。
+func (c *Client) ActivityClaim(activityID int32) (*gamev1.ActivityClaimResp, error) {
+	resp := &gamev1.ActivityClaimResp{}
+	if err := c.call(6503, &gamev1.ActivityClaimReq{ActivityId: activityID}, 6504, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}

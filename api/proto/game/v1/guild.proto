@@ -1,7 +1,40 @@
-// 游戏业务协议：公会模块（guild_level.xml；guild/guild_member 表，聚合根在 service/guild_service）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+// 游戏业务协议：公会（号段 6100-6199）
 syntax = "proto3";
 
 package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message GuildInfoReq {} // MsgID: 6101
+
+message GuildInfoResp { // MsgID: 6102
+  int32  code         = 1; // 6101 未加入公会
+  int64  guild_id     = 2;
+  string name         = 3;
+  int32  level        = 4;
+  int32  member_count = 5;
+  bool   is_leader    = 6;
+}
+
+message GuildCreateReq { // MsgID: 6103
+  string name = 1;
+}
+
+message GuildCreateResp { // MsgID: 6104
+  int32 code     = 1; // 6102 名字非法 / 6103 重名 / 6104 已加入公会
+  int64 guild_id = 2;
+}
+
+message GuildJoinReq { // MsgID: 6105
+  int64 guild_id = 1;
+}
+
+message GuildJoinResp { // MsgID: 6106
+  int32 code = 1; // 6101 公会不存在 / 6105 人数已满
+}
+
+message GuildQuitReq {} // MsgID: 6107
+
+message GuildQuitResp { // MsgID: 6108
+  int32 code = 1;
+}

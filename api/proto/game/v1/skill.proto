@@ -1,7 +1,36 @@
-// 游戏业务协议：技能模块（skill.xml 升级 skill_upgrade.xml；player_skill 表）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+// 游戏业务协议：技能（号段 3200-3299）
 syntax = "proto3";
 
 package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message SkillEntry {
+  int32  skill_id = 1;
+  string name     = 2;
+  int32  level    = 3;
+}
+
+message SkillListReq {} // MsgID: 3201
+
+message SkillListResp { // MsgID: 3202
+  int32 code = 1;
+  repeated SkillEntry skills = 2;
+}
+
+message SkillLearnReq { // MsgID: 3203
+  int32 skill_id = 1;
+}
+
+message SkillLearnResp { // MsgID: 3204
+  int32 code = 1; // 3201 不存在 / 3202 等级不足 / 3203 已学习
+}
+
+message SkillUpgradeReq { // MsgID: 3205
+  int32 skill_id = 1;
+}
+
+message SkillUpgradeResp { // MsgID: 3206
+  int32 code  = 1; // 3201 不存在 / 3204 未学习 / 3205 资源不足
+  int32 level = 2;
+}

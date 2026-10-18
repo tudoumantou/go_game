@@ -115,10 +115,13 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 		resp.Code = codeItemNotExist
 		return m.replyUse(ctx, resp)
 	}
-	// 配置约定：Col3=1 可使用，其余不可使用（P7 接 item_type.xml）
-	if cfg.Col3 != 1 {
+	// 配置约定：Col3 = 单次可使用数量上限，<=0 表示不可主动使用（P7 接 item_type.xml）
+	if cfg.Col3 <= 0 {
 		resp.Code = codeItemNotUsable
 		return m.replyUse(ctx, resp)
+	}
+	if int64(count) > cfg.Col3 {
+		count = int32(cfg.Col3)
 	}
 
 	have := ctx.State.GetItemCount(itemID)
@@ -131,6 +134,10 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 		return m.replyUse(ctx, resp)
 	}
 	ctx.State.MarkDirty(m.Name())
+	// 事件：驱动任务/成就（use_item，Key=道具 ID）
+	if ctx.Emit != nil {
+		ctx.Emit(module.Event{Type: "use_item", Key: fmt.Sprintf("%d", itemID), Delta: int64(count)})
+	}
 
 	resp.Code = codeOK
 	resp.RemainCount = int32(ctx.State.GetItemCount(itemID))

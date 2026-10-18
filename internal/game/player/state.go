@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/gamedata"
 )
 
 // Attr 玩家属性。
@@ -21,7 +22,8 @@ type Attr struct {
 type State struct {
 	playerID int64
 	profile  module.Profile
-	attr     Attr
+	attr     Attr // 基础属性（落库）
+	bonus    Attr // 装备等加成（登录时按已穿装备重算，不落库）
 	items    map[int32]int64 // item_id -> count
 
 	dirty   map[string]bool // module -> dirty 标记
@@ -47,6 +49,41 @@ func (s *State) Profile() module.Profile {
 	return s.profile
 }
 
+// AddExp 增加经验并按 level.xml 连续升级（满级停止）。
+func (s *State) AddExp(n int64) (levelUp bool, level int32) {
+	if n <= 0 {
+		return false, s.Profile().Level
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profile.Exp += n
+	for {
+		cfg, ok := gamedata.GetLevelCfg(int64(s.profile.Level) + 1)
+		if !ok {
+			break // 满级
+		}
+		need := cfg.Col1
+		if need <= 0 || s.profile.Exp < need {
+			break
+		}
+		s.profile.Exp -= need
+		s.profile.Level++
+		levelUp = true
+	}
+	return levelUp, s.profile.Level
+}
+
+// ExpMax 返回升到下一级所需经验（满级 0）。
+func (s *State) ExpMax() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cfg, ok := gamedata.GetLevelCfg(int64(s.profile.Level) + 1)
+	if !ok {
+		return 0
+	}
+	return cfg.Col1
+}
+
 // SetProfile 设置角色基础信息。
 func (s *State) SetProfile(p module.Profile) {
 	s.mu.Lock()
@@ -54,23 +91,57 @@ func (s *State) SetProfile(p module.Profile) {
 	s.profile = p
 }
 
-// GetAttr 读取属性。
+// GetAttr 读取属性（基础值 + 装备加成）。
 func (s *State) GetAttr(key string) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	base := attrValue(s.attr, key)
+	bonus := attrValue(s.bonus, key)
+	if key == "career" {
+		return base // 职业不受加成影响
+	}
+	return base + bonus
+}
+
+// AddBonus 增加/减少装备加成（delta 可为负）。
+func (s *State) AddBonus(key string, delta int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	switch key {
 	case "hp":
-		return int64(s.attr.Hp)
+		s.bonus.Hp += int32(delta)
 	case "mp":
-		return int64(s.attr.Mp)
+		s.bonus.Mp += int32(delta)
 	case "atk":
-		return int64(s.attr.Atk)
+		s.bonus.Atk += int32(delta)
 	case "def":
-		return int64(s.attr.Def)
+		s.bonus.Def += int32(delta)
 	case "spd":
-		return int64(s.attr.Spd)
+		s.bonus.Spd += int32(delta)
+	}
+}
+
+// ClearBonus 清空全部加成（重算前调用）。
+func (s *State) ClearBonus() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bonus = Attr{}
+}
+
+func attrValue(a Attr, key string) int64 {
+	switch key {
+	case "hp":
+		return int64(a.Hp)
+	case "mp":
+		return int64(a.Mp)
+	case "atk":
+		return int64(a.Atk)
+	case "def":
+		return int64(a.Def)
+	case "spd":
+		return int64(a.Spd)
 	case "career":
-		return int64(s.attr.Career)
+		return int64(a.Career)
 	}
 	return 0
 }

@@ -260,12 +260,12 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("expect 50 diamonds from mail, got %d (%+v)", diamond, bag.Items)
 	}
 
-	// ⑩ 使用道具（1001 配置 Col3=1 可使用）
+	// ⑩ 使用道具（1001 配置 Col3=1 → 单次上限 1 个）
 	use, err := r.UseItem(1001, 10)
 	if err != nil {
 		t.Fatalf("use item: %v", err)
 	}
-	if use.Code != 0 || use.RemainCount != 40 {
+	if use.Code != 0 || use.RemainCount != 49 {
 		t.Fatalf("use item code=%d remain=%d", use.Code, use.RemainCount)
 	}
 

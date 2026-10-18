@@ -8,7 +8,13 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
+
+	gamev1 "game_study/pkg/pb/game/v1"
+	"google.golang.org/protobuf/proto"
 )
+
+// 下行推送协议号（4.9：2011 等级变化）。
+const msgIDLevelInfoNotify uint32 = 2011
 
 // Message 类型常量。
 const (
@@ -41,6 +47,12 @@ type PacketMsg struct {
 type GrantItem struct {
 	ItemID int32
 	Count  int64
+}
+
+// PushMsg 向该玩家客户端推送一条消息（跨模块统一出口）。
+type PushMsg struct {
+	MsgID uint32
+	Body  []byte
 }
 
 // GrantItemsMsg 发放奖励（充值发货/邮件领取等）。
@@ -97,6 +109,8 @@ func (a *Actor) Receive(ctx *actor.Context) {
 		a.onSave(ctx)
 	case *GrantItemsMsg:
 		a.onGrantItems(ctx, msg)
+	case *PushMsg:
+		_ = a.send(msg.MsgID, msg.Body)
 	default:
 		a.logger.Debug("unknown message", "type", fmt.Sprintf("%T", msg))
 	}
@@ -188,11 +202,42 @@ func (a *Actor) onSave(ctx *actor.Context) {
 }
 
 func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
-	return &module.Context{
+	mctx := &module.Context{
 		Actor: actx,
 		State: a.state,
 		Send:  a.send,
 	}
+	mctx.AddExp = a.addExp
+	mctx.Emit = func(evt module.Event) {
+		a.registry.DispatchEvent(mctx, evt)
+	}
+	return mctx
+}
+
+// addExp 增加经验并推送等级变化（任何模块发经验都走这里，保证通知一致）。
+func (a *Actor) addExp(n int64) (bool, int32) {
+	up, level := a.state.AddExp(n)
+	if n > 0 {
+		a.state.MarkDirty("profile")
+		if a.onDirty != nil {
+			a.onDirty(a.playerID)
+		}
+	}
+	if a.sendFunc != nil && a.sessionID != 0 {
+		p := a.state.Profile()
+		notify := &gamev1.LevelInfoNotify{
+			Level:  p.Level,
+			Exp:    p.Exp,
+			ExpMax: a.state.ExpMax(),
+		}
+		if raw, err := proto.Marshal(notify); err == nil {
+			_ = a.send(msgIDLevelInfoNotify, raw)
+		}
+	}
+	if up {
+		a.logger.Info("level up", "player_id", a.playerID, "level", level)
+	}
+	return up, level
 }
 
 // send 包装为模块可用的下行发送（携带当前 sessionID）。
