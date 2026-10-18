@@ -17,19 +17,21 @@ type Manager struct {
 	logger   *log.Logger
 	repo     *Repository
 	onDirty  func(playerID int64)
+	sendFunc SendFunc
 
 	mu    sync.RWMutex
 	index map[int64]*actor.PID // player_id -> PID
 }
 
 // NewManager 创建 Manager。
-func NewManager(sys *actor.System, registry *module.Registry, logger *log.Logger, repo *Repository, onDirty func(int64)) *Manager {
+func NewManager(sys *actor.System, registry *module.Registry, logger *log.Logger, repo *Repository, onDirty func(int64), sendFunc SendFunc) *Manager {
 	return &Manager{
 		sys:      sys,
 		registry: registry,
 		logger:   logger,
 		repo:     repo,
 		onDirty:  onDirty,
+		sendFunc: sendFunc,
 		index:    make(map[int64]*actor.PID),
 	}
 }
@@ -50,7 +52,7 @@ func (m *Manager) GetOrSpawn(playerID int64) (*actor.PID, error) {
 	}
 
 	id := fmt.Sprintf("player:%d", playerID)
-	pid, err := m.sys.Spawn(id, NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty))
+	pid, err := m.sys.Spawn(id, NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty, m.sendFunc))
 	if err != nil {
 		return nil, err
 	}

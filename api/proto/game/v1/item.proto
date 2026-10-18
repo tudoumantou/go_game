@@ -16,6 +16,20 @@ message UseItemResp { // MsgID: 3002
   int32 remain_count = 2; // 使用后剩余数量
 }
 
+// 背包列表（P6：堆叠模式，item_uid 暂等于 item_id；P7 改实例 UID）
+message BagListReq {} // MsgID: 3003
+
+message BagListResp { // MsgID: 3004
+  int32 code = 1;
+  repeated ItemEntry items = 2;
+}
+
+message ItemEntry {
+  int64 item_uid = 1;
+  int32 item_id  = 2;
+  int32 count    = 3;
+}
+
 // 背包变动推送（任何增删改后推送，客户端增量刷新）
 message BagChangeNotify { // MsgID: 3010 [Push]
   repeated ItemChange changes = 1;

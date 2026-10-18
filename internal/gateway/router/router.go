@@ -26,7 +26,18 @@ type Handler struct {
 	logger      *log.Logger
 	validator   TokenValidator
 	onAuthed    func(sess *session.Session)
+	forward     PacketForwarder
+	onClosed    func(sess *session.Session)
 }
+
+// PacketForwarder 业务消息透传（网关不解析，直接转发游戏服）。
+type PacketForwarder func(sess *session.Session, msgID uint32, body []byte) error
+
+// SetForward 注入透传能力（组装期调用）。
+func (h *Handler) SetForward(f PacketForwarder) { h.forward = f }
+
+// SetOnClosed 注入会话关闭回调（清理转发路由）。
+func (h *Handler) SetOnClosed(f func(sess *session.Session)) { h.onClosed = f }
 
 // TokenValidator 校验 token 并返回 player_id。
 type TokenValidator func(token string) (int64, error)
@@ -110,6 +121,18 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 		return
 	}
 
+	// 业务消息：网关不解析，透传给游戏服（4.5 客户端上行透传）
+	if !h.msgRegistry.Has(msgID) {
+		if h.forward == nil {
+			h.logger.Warn("no forwarder for business msg", "msg_id", msgID)
+			return
+		}
+		if err := h.forward(sess, uint32(msgID), plaintext); err != nil {
+			h.logger.Warn("forward failed", "msg_id", msgID, "err", err)
+		}
+		return
+	}
+
 	msg, err := h.msgRegistry.Unmarshal(msgID, plaintext)
 	if err != nil {
 		h.logger.Warn("unmarshal failed", "msg_id", msgID, "err", err)
@@ -179,6 +202,9 @@ func (h *Handler) OnClose(c *conn.Conn, err error) {
 		return
 	}
 	h.logger.Info("conn closed", "conn_id", c.ID(), "sid", sess.ID(), "err", err)
+	if h.onClosed != nil {
+		h.onClosed(sess)
+	}
 	h.sessMgr.Remove(sess)
 }
 
@@ -230,21 +256,21 @@ func (h *Handler) handleHandshakeReq(ctx context.Context, msg proto.Message) err
 		return fmt.Errorf("session not found")
 	}
 
-	// 校验 token
-	var playerID int64
+	// 校验 token（token 绑定 account_id）
+	var accountID int64
 	code := int32(0)
 	if h.validator != nil {
-		pid, err := h.validator(req.Token)
+		aid, err := h.validator(req.Token)
 		if err != nil {
 			h.logger.Warn("token invalid", "conn_id", connID, "err", err)
 			// 1001 参数错误 / 1002 token 过期，见 4.10
 			code = 1002
 		} else {
-			playerID = pid
+			accountID = aid
 		}
 	}
 	if code == 0 {
-		sess.SetAuth(req.Token, playerID)
+		sess.SetAuth(req.Token, accountID)
 		if h.onAuthed != nil {
 			h.onAuthed(sess)
 		}
@@ -252,7 +278,8 @@ func (h *Handler) handleHandshakeReq(ctx context.Context, msg proto.Message) err
 
 	resp := &gatev1.HandshakeResp{
 		Code:              code,
-		PlayerId:          playerID,
+		AccountId:         accountID,
+		PlayerId:          0, // 角色在进游戏/创角后确定
 		ServerTime:        timeNowMs(),
 		HeartbeatInterval: int32(constant.DefaultHeartbeatInterval.Seconds()),
 	}

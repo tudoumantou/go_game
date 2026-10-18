@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"game_study/internal/gateway/backend"
@@ -47,6 +48,9 @@ type Server struct {
 	etcdCancel context.CancelFunc
 	backend    *backend.Pool
 	redis      *cache.Client
+
+	sessMu   sync.RWMutex
+	sessGame map[uint64]string // session_id -> game target
 }
 
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
@@ -56,10 +60,11 @@ func New(cfg *config.Config) *Server {
 	sessMgr := session.NewManager(logger)
 
 	return &Server{
-		cfg:     cfg,
-		logger:  logger,
-		connMgr: connMgr,
-		sessMgr: sessMgr,
+		cfg:      cfg,
+		logger:   logger,
+		connMgr:  connMgr,
+		sessMgr:  sessMgr,
+		sessGame: make(map[uint64]string),
 	}
 }
 
@@ -107,6 +112,15 @@ func (s *Server) Start(ctx context.Context) error {
 		return s.redis.GetClient().Get(ctx, "token:"+token).Int64()
 	}
 	s.router = router.NewHandler(s.sessMgr, s.connMgr, s.logger, validator, s.bindToGame)
+	s.router.SetForward(s.forwardPacket)
+	s.router.SetOnClosed(func(sess *session.Session) {
+		s.sessMu.Lock()
+		delete(s.sessGame, sess.NumID())
+		s.sessMu.Unlock()
+		if s.backend != nil {
+			s.backend.CloseSession(sess.NumID())
+		}
+	})
 
 	// etcd
 	if len(s.cfg.Etcd.Endpoints) > 0 {
@@ -133,7 +147,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// backend pool with etcd resolver
 		resolverBuilder := grpc.WithResolvers(resolver.NewBuilder(cli))
 		clientPool := rpcpkg.NewClientPool(resolverBuilder)
-		s.backend = backend.NewPool(clientPool, s.logger)
+		s.backend = backend.NewPool(clientPool, s.logger, s.deliverToClient)
 	}
 
 	// HTTP 健康检查 / 网关状态
@@ -178,21 +192,53 @@ func (s *Server) bindToGame(sess *session.Session) {
 			Ctrl: &internalv2.CtrlMsg{
 				Type:      internalv2.CtrlMsg_BIND,
 				SessionId: sess.NumID(),
-				PlayerId:  sess.PlayerID(),
+				AccountId: sess.PlayerID(), // 鉴权后此处为 account_id
 			},
 		},
 	}
-	// 建立（或复用）stream 后发送 BIND
-	if _, err := s.backend.GetOrConnect(ctx, target, nil); err != nil {
+	// 每会话独立 stream，首帧即 BIND（4.5）
+	if _, err := s.backend.GetOrConnect(ctx, target, sess.NumID(), frame); err != nil {
 		s.logger.Warn("bind to game failed", "game", node.ID, "err", err)
 		s.sessMgr.Remove(sess)
 		sess.Close(err)
 		return
 	}
-	if err := s.backend.Send(target, frame); err != nil {
-		s.logger.Warn("send bind frame failed", "game", node.ID, "err", err)
-	}
+	s.sessMu.Lock()
+	s.sessGame[sess.NumID()] = target
+	s.sessMu.Unlock()
 	s.logger.Info("bound to game", "session_id", sess.NumID(), "game", node.ID)
+}
+
+// deliverToClient 下行：游戏服回包 → 加密写回客户端。
+func (s *Server) deliverToClient(sessionID uint64, msgID uint32, body []byte) {
+	sess := s.sessMgr.GetByNumID(sessionID)
+	if sess == nil {
+		s.logger.Warn("downlink session not found", "session_id", sessionID, "msg_id", msgID)
+		return
+	}
+	if err := sess.Send(uint16(msgID), body); err != nil {
+		s.logger.Warn("downlink send failed", "session_id", sessionID, "msg_id", msgID, "err", err)
+	}
+}
+
+// forwardPacket 业务消息透传：按会话绑定的 game target 走同一 stream（4.5）。
+func (s *Server) forwardPacket(sess *session.Session, msgID uint32, body []byte) error {
+	s.sessMu.RLock()
+	target := s.sessGame[sess.NumID()]
+	s.sessMu.RUnlock()
+	if target == "" {
+		return fmt.Errorf("session %d not bound to any game", sess.NumID())
+	}
+	frame := &internalv2.StreamFrame{
+		Data: &internalv2.StreamFrame_ClientPacket{
+			ClientPacket: &internalv2.ClientPacket{
+				SessionId: sess.NumID(),
+				MsgId:     msgID,
+				Body:      body,
+			},
+		},
+	}
+	return s.backend.Send(sess.NumID(), frame)
 }
 
 func (s *Server) onAccept(raw net.Conn) {

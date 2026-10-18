@@ -3,6 +3,7 @@ package game
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,9 +14,11 @@ import (
 	"game_study/internal/game/module/chat"
 	"game_study/internal/game/module/item"
 	"game_study/internal/game/module/mail"
+	"game_study/internal/game/module/profile"
 	gamemq "game_study/internal/game/mq"
 	"game_study/internal/game/player"
 	"game_study/internal/game/rpc"
+	"game_study/internal/game/service"
 	"game_study/pkg/actor"
 	"game_study/pkg/cache"
 	"game_study/pkg/config"
@@ -26,7 +29,10 @@ import (
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 
+	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // onlineTTL 在线状态 TTL（客户端 15s 心跳，3 倍冗余）。
@@ -52,9 +58,11 @@ type Server struct {
 	presence  *cache.Presence
 	producer  *pkgmq.Producer
 	consumers *gamemq.Group
+	roleSvc   *service.RoleService
 
 	mu       sync.RWMutex
-	sessions map[uint64]int64 // session_id -> player_id
+	sessions map[uint64]int64 // session_id -> player_id（0 = 未选角）
+	accounts map[uint64]int64 // session_id -> account_id
 }
 
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
@@ -63,6 +71,7 @@ func New(cfg *config.Config) *Server {
 		cfg:      cfg,
 		logger:   log.New("game", log.WithLevel(cfg.Log.Level)),
 		sessions: make(map[uint64]int64),
+		accounts: make(map[uint64]int64),
 	}
 }
 
@@ -80,6 +89,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.database = database
 		s.repo = player.NewRepository(database)
+		s.roleSvc = service.NewRoleService(database, s.logger)
 	}
 
 	// ② Redis（在线状态 / 幂等 / 离线暂存）
@@ -108,6 +118,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.actorSys.Start(ctx)
 
 	s.modules = module.NewRegistry()
+	s.modules.Register(profile.New(s.logger))
 	s.modules.Register(attr.New(s.logger))
 	s.modules.Register(bag.New(s.logger))
 	s.modules.Register(item.New(s.logger))
@@ -132,7 +143,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}, s.persistPlayer, s.logger)
 	s.flusher.Start(ctx)
 
-	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, s.flusher.MarkDirty)
+	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, s.flusher.MarkDirty, s.sendToClient)
 
 	// ⑤ Kafka 消费者（充值/邮件/跨服私聊）
 	if len(s.cfg.Kafka.Brokers) > 0 {
@@ -239,6 +250,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// sendToClient 下行发送：把模块响应经 GameService.Channel 写回网关（18.2 同流保证有序）。
+func (s *Server) sendToClient(sessionID uint64, msgID uint32, body []byte) error {
+	if s.gameRPC == nil {
+		return fmt.Errorf("game rpc not ready")
+	}
+	frame := &internalv2.StreamFrame{
+		Data: &internalv2.StreamFrame_ClientPacket{
+			ClientPacket: &internalv2.ClientPacket{
+				SessionId: sessionID,
+				MsgId:     msgID,
+				Body:      body,
+			},
+		},
+	}
+	return s.gameRPC.SendToSession(sessionID, frame)
+}
+
 // persistPlayer 由 flusher 回调，把单个玩家落库。
 func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 	pid, ok := s.players.Get(playerID)
@@ -249,45 +277,70 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 	return nil
 }
 
-// OnBind 实现 rpc.StreamHandler。
-func (s *Server) OnBind(ctx context.Context, sessionID uint64, playerID int64) error {
-	if playerID == 0 {
-		return fmt.Errorf("player_id is required for bind")
+// 会话级协议号（未选角时由组装层直接处理，不进 Actor）。
+const (
+	msgIDEnterGame  uint32 = 1010
+	msgIDCreateRole uint32 = 1020
+)
+
+// OnBind 实现 rpc.StreamHandler：按 account_id 查角色，有角色才拉起 Actor。
+func (s *Server) OnBind(ctx context.Context, sessionID uint64, accountID, playerID int64) error {
+	s.mu.Lock()
+	s.accounts[sessionID] = accountID
+	s.sessions[sessionID] = 0
+	s.mu.Unlock()
+
+	if playerID > 0 {
+		return s.bindPlayer(ctx, sessionID, playerID)
 	}
+	if accountID <= 0 || s.roleSvc == nil {
+		return nil
+	}
+	role, err := s.roleSvc.FindByAccount(ctx, accountID)
+	if err != nil {
+		// 无角色属于正常情况：等客户端发 CreateRoleReq / EnterGameReq
+		s.logger.Info("session bind without role", "session_id", sessionID, "account_id", accountID)
+		return nil
+	}
+	return s.bindPlayer(ctx, sessionID, role.Id)
+}
+
+// bindPlayer 拉起玩家 Actor 并绑定会话。
+func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int64) error {
 	pid, err := s.players.GetOrSpawn(playerID)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.sessions[sessionID] = playerID
+	accountID := s.accounts[sessionID]
 	s.mu.Unlock()
 
 	if err := s.actorSys.SendWithSender(pid, &player.BindMsg{SessionID: sessionID, PlayerID: playerID}, nil); err != nil {
 		return err
 	}
-	// 写在线状态（Kafka 消费者据此做本地性判定）
 	if s.presence != nil {
 		if err := s.presence.SetOnline(ctx, playerID, s.cfg.Server.Name, onlineTTL); err != nil {
 			s.logger.Warn("set online failed", "player_id", playerID, "err", err)
 		}
 	}
-	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID)
+	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID, "account_id", accountID)
 	return nil
 }
 
 // OnUnbind 实现 rpc.StreamHandler。
 func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	s.mu.Lock()
-	playerID, ok := s.sessions[sessionID]
+	playerID := s.sessions[sessionID]
 	delete(s.sessions, sessionID)
+	delete(s.accounts, sessionID)
 	s.mu.Unlock()
-	if !ok {
+	if playerID == 0 {
 		return nil
 	}
 	if pid, ok := s.players.Get(playerID); ok {
 		_ = s.actorSys.Send(pid, &player.UnbindMsg{SessionID: sessionID})
 	}
-	// 摘在线状态（玩家可能已迁移到其它服，仅在归属本服时删除）
 	if s.presence != nil {
 		if node, online := s.presence.IsOnline(ctx, playerID); online && node == s.cfg.Server.Name {
 			_ = s.presence.SetOffline(ctx, playerID)
@@ -299,14 +352,98 @@ func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 // OnClientPacket 实现 rpc.StreamHandler。
 func (s *Server) OnClientPacket(ctx context.Context, sessionID uint64, msgID uint32, seq uint32, body []byte) error {
 	s.mu.RLock()
-	playerID, ok := s.sessions[sessionID]
+	playerID := s.sessions[sessionID]
+	accountID := s.accounts[sessionID]
 	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("session %d not bound", sessionID)
+
+	// 未选角：仅放行进游戏/创角两条会话级协议
+	if playerID == 0 {
+		switch msgID {
+		case msgIDEnterGame:
+			return s.handleEnterGame(ctx, sessionID, accountID, body)
+		case msgIDCreateRole:
+			return s.handleCreateRole(ctx, sessionID, accountID, body)
+		default:
+			return fmt.Errorf("session %d has no role, drop msg %d", sessionID, msgID)
+		}
 	}
+
 	pid, ok := s.players.Get(playerID)
 	if !ok {
 		return fmt.Errorf("player %d not online", playerID)
 	}
 	return s.actorSys.Send(pid, &player.PacketMsg{MsgID: msgID, Seq: seq, Body: body})
+}
+
+// handleEnterGame 进游戏：返回已有角色，无角色回 2003 引导创角。
+func (s *Server) handleEnterGame(ctx context.Context, sessionID uint64, accountID int64, body []byte) error {
+	var req gamev1.EnterGameReq
+	if err := proto.Unmarshal(body, &req); err != nil {
+		return fmt.Errorf("decode EnterGameReq: %w", err)
+	}
+	resp := &gamev1.EnterGameResp{Code: 0, ServerTime: time.Now().Format(time.RFC3339)}
+
+	if s.roleSvc == nil {
+		resp.Code = 2003
+		return s.reply(sessionID, 1011, resp)
+	}
+	role, err := s.roleSvc.FindByAccount(ctx, accountID)
+	if err != nil {
+		resp.Code = 2003 // 无角色
+		return s.reply(sessionID, 1011, resp)
+	}
+	resp.RoleId = role.Id
+	if err := s.bindPlayer(ctx, sessionID, role.Id); err != nil {
+		return err
+	}
+	return s.reply(sessionID, 1011, resp)
+}
+
+// handleCreateRole 创角：校验 → 落库 → 拉起 Actor → 回包。
+func (s *Server) handleCreateRole(ctx context.Context, sessionID uint64, accountID int64, body []byte) error {
+	var req gamev1.CreateRoleReq
+	if err := proto.Unmarshal(body, &req); err != nil {
+		return fmt.Errorf("decode CreateRoleReq: %w", err)
+	}
+
+	resp := &gamev1.CreateRoleResp{}
+	if s.roleSvc == nil {
+		resp.Code = 5000
+		return s.reply(sessionID, 1021, resp)
+	}
+	roleID, err := s.roleSvc.Create(ctx, accountID, req.Name, req.Career)
+	if err != nil {
+		resp.Code = mapCreateRoleErr(err)
+		s.logger.Info("create role failed", "account_id", accountID, "err", err)
+		return s.reply(sessionID, 1021, resp)
+	}
+	resp.Code = 0
+	resp.RoleId = roleID
+	if err := s.bindPlayer(ctx, sessionID, roleID); err != nil {
+		return err
+	}
+	return s.reply(sessionID, 1021, resp)
+}
+
+// reply 序列化并下行。
+func (s *Server) reply(sessionID uint64, msgID uint32, msg proto.Message) error {
+	body, err := proto.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return s.sendToClient(sessionID, msgID, body)
+}
+
+// mapCreateRoleErr 错误 → 业务码（4.10）。
+func mapCreateRoleErr(err error) int32 {
+	switch {
+	case errors.Is(err, service.ErrNameUsed):
+		return 2004
+	case errors.Is(err, service.ErrNameIllegal):
+		return 2005
+	case errors.Is(err, service.ErrCareerBad):
+		return 2001
+	default:
+		return 5000
+	}
 }

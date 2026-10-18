@@ -50,6 +50,9 @@ type GrantItemsMsg struct {
 	Done   chan error // 可选：同步等待结果
 }
 
+// SendFunc 下行发送（sessionID + 协议号 + 包体），由组装层注入。
+type SendFunc func(sessionID uint64, msgID uint32, body []byte) error
+
 // Actor 玩家 Actor。
 type Actor struct {
 	playerID int64
@@ -58,6 +61,7 @@ type Actor struct {
 	logger   *log.Logger
 	repo     *Repository
 	onDirty  func(playerID int64)
+	sendFunc SendFunc
 
 	sessionID uint64
 	online    bool
@@ -65,7 +69,7 @@ type Actor struct {
 }
 
 // NewActor 创建玩家 Actor。
-func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, repo *Repository, onDirty func(int64)) *Actor {
+func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, repo *Repository, onDirty func(int64), sendFunc SendFunc) *Actor {
 	return &Actor{
 		playerID: playerID,
 		state:    NewState(playerID),
@@ -73,6 +77,7 @@ func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, rep
 		logger:   logger.With("player_id", playerID),
 		repo:     repo,
 		onDirty:  onDirty,
+		sendFunc: sendFunc,
 	}
 }
 
@@ -145,15 +150,8 @@ func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 
 func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 	mctx := a.moduleCtx(ctx)
-	var lastErr error
-	for _, m := range a.registry.All() {
-		if err := m.OnMessage(mctx, msg.MsgID, msg.Body); err != nil {
-			lastErr = err
-			break
-		}
-	}
-	if lastErr != nil {
-		a.logger.Warn("packet handle failed", "msg_id", msg.MsgID, "err", lastErr)
+	if err := a.registry.Dispatch(mctx, msg.MsgID, msg.Body); err != nil {
+		a.logger.Warn("packet handle failed", "msg_id", msg.MsgID, "err", err)
 	}
 }
 
@@ -190,7 +188,19 @@ func (a *Actor) onSave(ctx *actor.Context) {
 }
 
 func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
-	return &module.Context{Actor: actx, State: a.state}
+	return &module.Context{
+		Actor: actx,
+		State: a.state,
+		Send:  a.send,
+	}
+}
+
+// send 包装为模块可用的下行发送（携带当前 sessionID）。
+func (a *Actor) send(msgID uint32, body []byte) error {
+	if a.sendFunc == nil || a.sessionID == 0 {
+		return nil
+	}
+	return a.sendFunc(a.sessionID, msgID, body)
 }
 
 // BindResult 绑定结果。

@@ -3,6 +3,8 @@ package player
 
 import (
 	"sync"
+
+	"game_study/internal/game/module"
 )
 
 // Attr 玩家属性。
@@ -18,6 +20,7 @@ type Attr struct {
 // State 玩家内存状态（Actor 内单线程访问，外部只读时加锁）。
 type State struct {
 	playerID int64
+	profile  module.Profile
 	attr     Attr
 	items    map[int32]int64 // item_id -> count
 
@@ -36,6 +39,20 @@ func NewState(playerID int64) *State {
 
 // PlayerID 返回玩家 ID。
 func (s *State) PlayerID() int64 { return s.playerID }
+
+// Profile 返回角色基础信息副本。
+func (s *State) Profile() module.Profile {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.profile
+}
+
+// SetProfile 设置角色基础信息。
+func (s *State) SetProfile(p module.Profile) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profile = p
+}
 
 // GetAttr 读取属性。
 func (s *State) GetAttr(key string) int64 {

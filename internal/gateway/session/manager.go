@@ -15,6 +15,7 @@ import (
 type Manager struct {
 	mu       sync.RWMutex
 	bySID    map[string]*Session
+	byNum    map[uint64]*Session
 	byConn   map[int64]*Session
 	byPlayer map[int64]*Session
 
@@ -26,6 +27,7 @@ type Manager struct {
 func NewManager(logger *log.Logger) *Manager {
 	return &Manager{
 		bySID:    make(map[string]*Session),
+		byNum:    make(map[uint64]*Session),
 		byConn:   make(map[int64]*Session),
 		byPlayer: make(map[int64]*Session),
 		logger:   logger,
@@ -41,6 +43,7 @@ func (m *Manager) NewSession(c *conn.Conn) *Session {
 	s := New(id, c, m.logger)
 	s.SetNumID(uint64(c.ID()))
 	m.bySID[id] = s
+	m.byNum[uint64(c.ID())] = s
 	m.byConn[c.ID()] = s
 	return s
 }
@@ -50,6 +53,13 @@ func (m *Manager) GetBySID(sid string) *Session {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.bySID[sid]
+}
+
+// GetByNumID 按数值会话 ID 查（下行路由用）。
+func (m *Manager) GetByNumID(numID uint64) *Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.byNum[numID]
 }
 
 // GetByConn 按连接 ID 查。
@@ -83,6 +93,7 @@ func (m *Manager) Remove(s *Session) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.bySID, s.ID())
+	delete(m.byNum, s.NumID())
 	if s.Conn() != nil {
 		delete(m.byConn, s.Conn().ID())
 	}
@@ -106,6 +117,7 @@ func (m *Manager) CloseAll() {
 		sessions = append(sessions, s)
 	}
 	m.bySID = make(map[string]*Session)
+	m.byNum = make(map[uint64]*Session)
 	m.byConn = make(map[int64]*Session)
 	m.byPlayer = make(map[int64]*Session)
 	m.mu.Unlock()
@@ -122,6 +134,7 @@ func (m *Manager) GC(now time.Time) {
 	for sid, s := range m.bySID {
 		if s.State() == StateClosed {
 			delete(m.bySID, sid)
+			delete(m.byNum, s.NumID())
 			if s.Conn() != nil {
 				delete(m.byConn, s.Conn().ID())
 			}
@@ -133,6 +146,7 @@ func (m *Manager) GC(now time.Time) {
 		if s.State() < StateAuthed && now.Sub(s.LastAlive()) > constant.DefaultSessionReconnectTTL {
 			m.logger.Warn("session timeout", "sid", sid)
 			delete(m.bySID, sid)
+			delete(m.byNum, s.NumID())
 			if s.Conn() != nil {
 				delete(m.byConn, s.Conn().ID())
 			}

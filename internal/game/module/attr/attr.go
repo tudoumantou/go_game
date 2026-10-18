@@ -21,6 +21,9 @@ func New(logger *log.Logger) *Module {
 // Name 实现 module.Module。
 func (m *Module) Name() string { return "attr" }
 
+// MsgIDs 实现 module.Module（属性查询随 PlayerInfo 下发，暂无独立协议）。
+func (m *Module) MsgIDs() []uint32 { return nil }
+
 // Init 实现 module.Module。
 func (m *Module) Init(ctx *module.Context) error { return nil }
 

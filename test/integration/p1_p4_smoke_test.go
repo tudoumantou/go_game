@@ -220,9 +220,13 @@ func initSchema(t *testing.T, dsn string) {
 	}
 	defer func() { _ = database.Close() }()
 
-	files, err := filepath.Glob("../../sql/schema/*.sql")
+	root := projectRoot(t)
+	files, err := filepath.Glob(filepath.Join(root, "sql/schema/*.sql"))
 	if err != nil {
 		t.Fatalf("glob schema: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no schema files found under %s", root)
 	}
 	for _, f := range files {
 		content, err := os.ReadFile(f)
@@ -234,7 +238,7 @@ func initSchema(t *testing.T, dsn string) {
 		}
 	}
 	// 种子
-	seed, err := os.ReadFile("../../sql/seed/seed_dev.sql")
+	seed, err := os.ReadFile(filepath.Join(root, "sql/seed/seed_dev.sql"))
 	if err == nil {
 		_, _ = database.Exec(string(seed))
 	}

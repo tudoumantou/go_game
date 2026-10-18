@@ -22,9 +22,10 @@ message HandshakeReq { // MsgID: 1001
 
 message HandshakeResp { // MsgID: 1002
   int32  code               = 1; // 0 成功，非 0 见错误码表
-  int64  player_id          = 2; // 鉴权通过后返回玩家 ID
+  int64  account_id         = 2; // 鉴权通过后返回账号 ID（一个账号可有多角色）
   int64  server_time        = 3; // 服务器时间（客户端校准时钟）
   int32  heartbeat_interval = 4; // 心跳间隔（秒）
+  int64  player_id          = 5; // 已选角色 ID，0 表示尚未创建/选择角色
 }
 
 // 踢下线推送：顶号/封禁/GM（4.9.2）

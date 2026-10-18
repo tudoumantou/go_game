@@ -86,6 +86,9 @@ func New(repo *Repo, logger *log.Logger) *Module {
 // Name 实现 module.Module。
 func (m *Module) Name() string { return "chat" }
 
+// MsgIDs 实现 module.Module（6001 聊天发送，P6 后续批次启用）。
+func (m *Module) MsgIDs() []uint32 { return nil }
+
 // Init 实现 module.Module。
 func (m *Module) Init(ctx *module.Context) error { return nil }
 

@@ -14,7 +14,7 @@ import (
 
 // StreamHandler 处理 stream 上的数据。
 type StreamHandler interface {
-	OnBind(ctx context.Context, sessionID uint64, playerID int64) error
+	OnBind(ctx context.Context, sessionID uint64, accountID, playerID int64) error
 	OnUnbind(ctx context.Context, sessionID uint64) error
 	OnClientPacket(ctx context.Context, sessionID uint64, msgID uint32, seq uint32, body []byte) error
 }
@@ -54,7 +54,7 @@ func (s *GameServer) Channel(stream internalv2.GameService_ChannelServer) error 
 	s.bindStream(sessionID, stream)
 	defer s.unbindStream(sessionID)
 
-	if err := s.handler.OnBind(ctx, sessionID, ctrl.PlayerId); err != nil {
+	if err := s.handler.OnBind(ctx, sessionID, ctrl.AccountId, ctrl.PlayerId); err != nil {
 		return err
 	}
 

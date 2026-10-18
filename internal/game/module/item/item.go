@@ -21,6 +21,9 @@ func New(logger *log.Logger) *Module {
 // Name 实现 module.Module。
 func (m *Module) Name() string { return "item" }
 
+// MsgIDs 实现 module.Module（道具使用走 bag 模块，见 17.1 #20）。
+func (m *Module) MsgIDs() []uint32 { return nil }
+
 // Init 实现 module.Module。
 func (m *Module) Init(ctx *module.Context) error { return nil }
 

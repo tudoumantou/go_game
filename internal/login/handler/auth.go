@@ -24,9 +24,11 @@ type GuestLoginReq struct {
 }
 
 // GuestLoginResp 游客登录响应。
+// account_id 为账号 ID（一个账号可有多角色）；player_id 保留兼容旧客户端（同值）。
 type GuestLoginResp struct {
-	Token    string `json:"token"`
-	PlayerID int64  `json:"player_id"`
+	Token     string `json:"token"`
+	AccountID int64  `json:"account_id"`
+	PlayerID  int64  `json:"player_id"`
 }
 
 // GuestLogin POST /v1/auth/guest
@@ -43,12 +45,12 @@ func (h *AuthHandler) GuestLogin(w http.ResponseWriter, r *http.Request) {
 	if req.DeviceID == "" {
 		req.DeviceID = "anonymous"
 	}
-	token, playerID, err := h.auth.GuestLogin(r.Context(), req.DeviceID)
+	token, accountID, err := h.auth.GuestLogin(r.Context(), req.DeviceID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, GuestLoginResp{Token: token, PlayerID: playerID})
+	writeJSON(w, GuestLoginResp{Token: token, AccountID: accountID, PlayerID: accountID})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

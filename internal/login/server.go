@@ -92,7 +92,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// ④ 服务与 handler
 	tokenRepo := repo.NewTokenRepo(redisClient.GetClient())
-	authSvc := service.NewAuthService(tokenRepo, parseTTL(s.cfg.Token.TTL))
+	var accountRepo *repo.AccountRepo
+	if s.database != nil {
+		accountRepo = repo.NewAccountRepo(s.database)
+	}
+	authSvc := service.NewAuthService(tokenRepo, accountRepo, parseTTL(s.cfg.Token.TTL))
 	dispatchSvc := service.NewDispatchService(s.cfg)
 
 	s.authHandler = handler.NewAuthHandler(authSvc)

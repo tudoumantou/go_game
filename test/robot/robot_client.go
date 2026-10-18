@@ -15,6 +15,7 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/crypto"
 
+	gamev1 "game_study/pkg/pb/game/v1"
 	gatev1 "game_study/pkg/pb/gate/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -24,7 +25,8 @@ type Client struct {
 	LoginURL   string
 	GatewayURL string
 	Token      string
-	PlayerID   int64
+	AccountID  int64
+	PlayerID   int64 // 兼容旧字段：游客登录时等于 AccountID
 
 	conn   net.Conn
 	cipher *crypto.SessionCipher
@@ -44,8 +46,9 @@ func (c *Client) GuestLogin(deviceID string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	var out struct {
-		Token    string `json:"token"`
-		PlayerID int64  `json:"player_id"`
+		Token     string `json:"token"`
+		AccountID int64  `json:"account_id"`
+		PlayerID  int64  `json:"player_id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return fmt.Errorf("decode login: %w", err)
@@ -54,7 +57,11 @@ func (c *Client) GuestLogin(deviceID string) error {
 		return fmt.Errorf("empty token")
 	}
 	c.Token = out.Token
-	c.PlayerID = out.PlayerID
+	c.AccountID = out.AccountID
+	if c.AccountID == 0 {
+		c.AccountID = out.PlayerID
+	}
+	c.PlayerID = c.AccountID
 	return nil
 }
 
@@ -232,4 +239,106 @@ func splitPEMAndSalt(body []byte) (pem, salt []byte) {
 		pemEnd++
 	}
 	return body[:pemEnd], body[pemEnd:]
+}
+
+// call 发送请求并等待指定响应（跳过中间推送）。
+func (c *Client) call(msgID uint32, req proto.Message, respID uint32, resp proto.Message) error {
+	body, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+	enc, seq, err := c.cipher.Encrypt(uint16(msgID), body)
+	if err != nil {
+		return err
+	}
+	if err := c.writePacket(codec.Packet{MsgID: uint16(msgID), Seq: seq, Body: enc}); err != nil {
+		return err
+	}
+
+	for i := 0; i < 8; i++ {
+		pkt, err := c.readPacket(5 * time.Second)
+		if err != nil {
+			return fmt.Errorf("wait resp %d: %w", respID, err)
+		}
+		if uint32(pkt.MsgID) != respID {
+			continue // 推送或其它消息，跳过
+		}
+		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+		if err != nil {
+			return err
+		}
+		return proto.Unmarshal(plain, resp)
+	}
+	return fmt.Errorf("no response for msgID %d (expect %d)", msgID, respID)
+}
+
+// EnterGame 进游戏（1010/1011）。
+func (c *Client) EnterGame() (*gamev1.EnterGameResp, error) {
+	resp := &gamev1.EnterGameResp{}
+	if err := c.call(1010, &gamev1.EnterGameReq{}, 1011, resp); err != nil {
+		return nil, err
+	}
+	if resp.RoleId > 0 {
+		c.PlayerID = resp.RoleId
+	}
+	return resp, nil
+}
+
+// CreateRole 创角（1020/1021）。
+func (c *Client) CreateRole(name string, career int32) (*gamev1.CreateRoleResp, error) {
+	resp := &gamev1.CreateRoleResp{}
+	req := &gamev1.CreateRoleReq{Name: name, Career: career}
+	if err := c.call(1020, req, 1021, resp); err != nil {
+		return nil, err
+	}
+	if resp.RoleId > 0 {
+		c.PlayerID = resp.RoleId
+	}
+	return resp, nil
+}
+
+// PlayerInfo 拉取玩家信息（2001/2002）。
+func (c *Client) PlayerInfo() (*gamev1.PlayerInfoResp, error) {
+	resp := &gamev1.PlayerInfoResp{}
+	if err := c.call(2001, &gamev1.PlayerInfoReq{}, 2002, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// BagList 背包列表（3003/3004）。
+func (c *Client) BagList() (*gamev1.BagListResp, error) {
+	resp := &gamev1.BagListResp{}
+	if err := c.call(3003, &gamev1.BagListReq{}, 3004, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// UseItem 使用道具（3001/3002）。
+func (c *Client) UseItem(itemID, count int32) (*gamev1.UseItemResp, error) {
+	resp := &gamev1.UseItemResp{}
+	req := &gamev1.UseItemReq{ItemUid: int64(itemID), Count: count}
+	if err := c.call(3001, req, 3002, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// MailList 邮件列表（7001/7002）。
+func (c *Client) MailList() (*gamev1.MailListResp, error) {
+	resp := &gamev1.MailListResp{}
+	if err := c.call(7001, &gamev1.MailListReq{}, 7002, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// TakeMail 领取邮件附件（7020/7021）。
+func (c *Client) TakeMail(mailID int64) (*gamev1.MailTakeAttachmentResp, error) {
+	resp := &gamev1.MailTakeAttachmentResp{}
+	if err := c.call(7020, &gamev1.MailTakeAttachmentReq{MailId: mailID}, 7021, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
 }

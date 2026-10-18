@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
 )
@@ -20,9 +21,23 @@ func NewRepository(database *db.DB) *Repository {
 	return &Repository{db: database}
 }
 
-// Load 从 MySQL 加载玩家状态（属性 + 道具）。
+// Load 从 MySQL 加载玩家状态（角色信息 + 属性 + 道具）。
 func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 	state := NewState(playerID)
+
+	// 角色基础信息
+	row, err := model.FindPlayerByPK(ctx, r.db.DB, playerID)
+	if err == nil {
+		state.SetProfile(module.Profile{
+			Name:    row.Name,
+			Level:   row.Level,
+			Exp:     row.Exp,
+			Coin:    row.Coin,
+			SceneID: row.SceneId,
+		})
+	} else if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("load player: %w", err)
+	}
 
 	// 属性
 	attrRow, err := model.FindPlayerAttrByPK(ctx, r.db.DB, playerID)
@@ -75,6 +90,14 @@ func (r *Repository) Save(ctx context.Context, state *State) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		playerID := state.PlayerID()
 		a := state.Attr()
+
+		// 角色基础信息（name 不在此更新，改名走独立流程）
+		p := state.Profile()
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE player SET level = ?, exp = ?, coin = ?, scene_id = ? WHERE id = ?`,
+			p.Level, p.Exp, p.Coin, p.SceneID, playerID); err != nil {
+			return fmt.Errorf("update player: %w", err)
+		}
 
 		// 属性 upsert（事务内执行，保证与道具同事务）
 		_, err := tx.ExecContext(ctx,

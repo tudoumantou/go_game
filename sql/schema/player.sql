@@ -11,5 +11,6 @@ CREATE TABLE `player` (
   `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_name` (`name`),            -- 角色名全局唯一（重名校验兜底）
   KEY `idx_account_id` (`account_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='玩家表';

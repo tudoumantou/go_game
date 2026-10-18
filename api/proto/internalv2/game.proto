@@ -30,8 +30,9 @@ message CtrlMsg {
   }
   Type   type       = 1;
   uint64 session_id = 2;
-  int64  player_id  = 3;
+  int64  player_id  = 3; // 角色 ID（BIND 时可为 0：账号尚无角色）
   bytes  payload    = 4;
+  int64  account_id = 5; // 账号 ID（进游戏前按账号查角色）
 }
 
 message StreamFrame {

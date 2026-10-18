@@ -54,6 +54,12 @@ func (r *MessageRegistry) Unmarshal(msgID uint16, body []byte) (proto.Message, e
 	return m, nil
 }
 
+// Has 返回是否注册了该 MsgID。
+func (r *MessageRegistry) Has(msgID uint16) bool {
+	_, ok := r.factories[msgID]
+	return ok
+}
+
 // Marshal proto 消息序列化。
 func Marshal(m proto.Message) ([]byte, error) {
 	return proto.Marshal(m)
