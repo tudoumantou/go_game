@@ -124,7 +124,7 @@ func (c *Client) Handshake() error {
 	}
 
 	// body = pubKeyPEM || salt
-	pubPEM, salt := splitPEMAndSalt(pkt.Body)
+	pubPEM, salt := splitSaltAndPEM(pkt.Body)
 	if len(salt) == 0 {
 		return fmt.Errorf("invalid server hello body")
 	}
@@ -230,20 +230,18 @@ func (c *Client) Heartbeat() (*gatev1.HeartbeatResp, error) {
 	return resp, nil
 }
 
-// splitPEMAndSalt 从 ServerHello body 中拆出 PEM 与 salt。
-func splitPEMAndSalt(body []byte) (pem, salt []byte) {
-	// PEM 以 "-----END RSA PUBLIC KEY-----" 结尾
-	end := []byte("-----END RSA PUBLIC KEY-----")
-	idx := bytes.Index(body, end)
-	if idx < 0 {
+// splitSaltAndPEM 按「salt 定长前缀 + PEM」切分 ServerHello。
+//
+// 历史坑：早期实现是 PEM 在前、salt 在后，靠「跳过 PEM 尾随换行」定位 salt ——
+// salt 是随机二进制，有 2/256 的概率以 0x0a/0x0d 开头，会被当成换行吃掉一个字节，
+// 导致会话密钥不一致（表现为偶发的 finished 解密失败，实测失败率 ~1.3%）。
+// 现在 salt 前置且长度固定，切分无歧义。
+func splitSaltAndPEM(body []byte) (pem, salt []byte) {
+	const saltSize = crypto.SaltSize
+	if len(body) <= saltSize {
 		return nil, nil
 	}
-	pemEnd := idx + len(end)
-	// 跳过尾随换行
-	for pemEnd < len(body) && (body[pemEnd] == '\n' || body[pemEnd] == '\r') {
-		pemEnd++
-	}
-	return body[:pemEnd], body[pemEnd:]
+	return body[saltSize:], body[:saltSize]
 }
 
 // call 发送请求并等待指定响应（跳过中间推送）。

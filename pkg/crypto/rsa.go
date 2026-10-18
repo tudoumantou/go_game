@@ -38,6 +38,11 @@ func LoadRSAKeyPair(publicPath, privatePath string) (*RSAKeyPair, error) {
 		return nil, fmt.Errorf("parse private key: %w", err)
 	}
 
+	// 提前完成 CRT 预计算：rsa.PrivateKey.Precompute() 是惰性的，若留到并发
+	// 解密时首次触发，多个 goroutine 会同时写 Precomputed 字段（data race），
+	// 结果是**偶发地返回错误明文而不是报错** —— 表现为握手阶段 GCM 校验失败。
+	priv.Precompute()
+
 	return &RSAKeyPair{Public: pub, Private: priv}, nil
 }
 
@@ -77,6 +82,8 @@ func ParsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 			return nil, fmt.Errorf("not RSA private key")
 		}
 	}
+	// 同上：避免并发首解密时的写竞争
+	priv.Precompute()
 	return priv, nil
 }
 

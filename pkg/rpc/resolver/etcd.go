@@ -20,13 +20,24 @@ const (
 )
 
 // etcdResolverBuilder 实现 resolver.Builder。
+// DefaultPrefix 服务注册的默认根前缀（与 registry/etcd 保持一致）。
+const DefaultPrefix = "/services"
+
 type etcdResolverBuilder struct {
 	client *clientv3.Client
+	prefix string
 }
 
 // NewBuilder 创建 etcd resolver builder。
-func NewBuilder(client *clientv3.Client) resolver.Builder {
-	return &etcdResolverBuilder{client: client}
+//
+// prefix 是 etcd key 的根前缀（如 "/services"），实际 key 为 {prefix}/{service}/。
+// 传空则用 DefaultPrefix —— 注册侧（registry/etcd）硬编码同一约定，
+// 两边不一致会表现为「节点注册了但网关找不到」，排查成本很高。
+func NewBuilder(client *clientv3.Client, prefix string) resolver.Builder {
+	if prefix == "" {
+		prefix = DefaultPrefix
+	}
+	return &etcdResolverBuilder{client: client, prefix: prefix}
 }
 
 // Build 实现 resolver.Builder。
@@ -39,6 +50,7 @@ func (b *etcdResolverBuilder) Build(target resolver.Target, cc resolver.ClientCo
 	r := &etcdResolver{
 		client:  b.client,
 		service: service,
+		prefix:  b.prefix,
 		cc:      cc,
 	}
 	if err := r.start(); err != nil {
@@ -54,6 +66,7 @@ func (b *etcdResolverBuilder) Scheme() string { return Scheme }
 type etcdResolver struct {
 	client  *clientv3.Client
 	service string
+	prefix  string
 	cc      resolver.ClientConn
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -76,7 +89,7 @@ func (r *etcdResolver) start() error {
 }
 
 func (r *etcdResolver) refresh(ctx context.Context) error {
-	key := fmt.Sprintf("/services/%s/", r.service)
+	key := fmt.Sprintf("%s/%s/", r.prefix, r.service)
 	resp, err := r.client.Get(ctx, key, clientv3.WithPrefix())
 	if err != nil {
 		return err
@@ -99,7 +112,7 @@ func (r *etcdResolver) refresh(ctx context.Context) error {
 
 func (r *etcdResolver) watch(ctx context.Context) {
 	defer r.wg.Done()
-	key := fmt.Sprintf("/services/%s/", r.service)
+	key := fmt.Sprintf("%s/%s/", r.prefix, r.service)
 	ch := r.client.Watch(ctx, key, clientv3.WithPrefix())
 	for {
 		select {

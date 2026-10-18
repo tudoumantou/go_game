@@ -1,13 +1,17 @@
 // tools/loadtest/main.go —— 网关连接压测与冒烟（设计文档 23.4 / 19.5）
 //
-// 两个子命令：
-//   -conn   连接保持压测：批量建立 TCP 连接并保持心跳，验证网关 10W 连接承载
-//   -smoke  E2E 冒烟：登录 → 握手 → 创角/进游戏 → 拉角色信息（19.5 节第 6 条）
+// 四个子命令：
+//   -mode conn   连接保持压测：批量建立 TCP 连接并保持，验证网关 10W 连接承载
+//   -mode login  登录吞吐压测：HTTP 游客登录 + RSA 握手 + 加密登录请求
+//   -mode biz    业务消息压测：进游戏后混合发「背包/角色信息/聊天」，测 Actor 全链路延迟
+//   -mode smoke  E2E 冒烟：登录 → 握手 → 创角/进游戏 → 拉角色信息（19.5 节第 6 条）
 //
 // 用法：
 //
-//	go run ./tools/loadtest -conn -n 100000 -gateway 127.0.0.1:9001 -hold 5m
-//	go run ./tools/loadtest -smoke -login http://127.0.0.1:8080 -gateway 127.0.0.1:9001
+//	go run ./tools/loadtest -mode conn  -n 100000 -gateway 127.0.0.1:9001 -hold 5m
+//	go run ./tools/loadtest -mode login -n 2000 -c 50 -json /tmp/login.json
+//	go run ./tools/loadtest -mode biz   -n 200 -c 50 -rounds 20 -kind bag -json /tmp/biz.json
+//	go run ./tools/loadtest -mode smoke -login http://127.0.0.1:8080 -gateway 127.0.0.1:9001
 //
 // 说明：
 //   - 压测只建立 TCP 连接 + 完成握手，不进入游戏（不进 Actor，避免压到玩家逻辑）；
@@ -32,25 +36,48 @@ import (
 
 func main() {
 	var (
-		mode       = flag.String("mode", "smoke", "运行模式：conn | smoke")
-		conns      = flag.Int("n", 1000, "并发连接数（conn 模式）")
-		batch      = flag.Int("batch", 500, "每批建连数，批间 sleep 让网关喘口气")
-		batchDelay = flag.Duration("batch-delay", 200*time.Millisecond, "批间间隔")
-		hold       = flag.Duration("hold", 30*time.Second, "连接保持时长")
-		gateway    = flag.String("gateway", "127.0.0.1:9001", "网关 TCP 地址")
-		loginURL   = flag.String("login", "http://127.0.0.1:8080", "登录服 HTTP 地址")
-		devices    = flag.Int("devices", 1, "smoke 模式的角色数")
+		mode        = flag.String("mode", "smoke", "运行模式：conn | login | biz | smoke")
+		conns       = flag.Int("n", 1000, "连接数 / 登录次数 / 玩家数（视模式而定）")
+		concurrency = flag.Int("c", 50, "并发数（login/biz 模式）")
+		rounds      = flag.Int("rounds", 20, "每个玩家的消息轮数（biz 模式）")
+		kind        = flag.String("kind", "all", "消息类型：all | bag | profile | chat（biz 模式）")
+		batch       = flag.Int("batch", 500, "每批建连数，批间 sleep 让网关喘口气")
+		batchDelay  = flag.Duration("batch-delay", 200*time.Millisecond, "批间间隔")
+		hold        = flag.Duration("hold", 30*time.Second, "连接保持时长")
+		gateway     = flag.String("gateway", "127.0.0.1:9001", "网关 TCP 地址")
+		loginURL    = flag.String("login", "http://127.0.0.1:8080", "登录服 HTTP 地址")
+		devices     = flag.Int("devices", 1, "smoke 模式的角色数")
+		jsonOut     = flag.String("json", "", "结果写入 JSON（供 bench.sh 汇总）")
 	)
 	flag.Parse()
 
 	var err error
 	switch *mode {
 	case "conn":
-		err = runConn(*conns, *batch, *batchDelay, *hold, *gateway)
+		err = runConn(*conns, *batch, *batchDelay, *hold, *gateway, *jsonOut)
+	case "login":
+		s := runLogin(*loginURL, *gateway, *conns, *concurrency)
+		s.Print()
+		if werr := s.WriteJSON(*jsonOut); werr != nil {
+			err = werr
+		}
+		if s.Errors > 0 {
+			err = fmt.Errorf("%d 次登录失败（成功率 %.1f%%）",
+				s.Errors, 100*float64(s.Count)/float64(s.Count+int(s.Errors)))
+		}
+	case "biz":
+		s := runBiz(*loginURL, *gateway, *conns, *rounds, *kind)
+		s.Print()
+		if werr := s.WriteJSON(*jsonOut); werr != nil {
+			err = werr
+		}
+		if s.Errors > 0 {
+			err = fmt.Errorf("%d 次业务请求失败", s.Errors)
+		}
 	case "smoke":
 		err = runSmoke(*loginURL, *gateway, *devices)
 	default:
-		err = fmt.Errorf("unknown mode %q (want conn|smoke)", *mode)
+		err = fmt.Errorf("unknown mode %q (want conn|login|biz|smoke)", *mode)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL: %v\n", err)
@@ -59,7 +86,7 @@ func main() {
 }
 
 // runConn 批量建立并保持 TCP 连接（23.4 表第 1 行：单网关 10W 连接保持）。
-func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string) error {
+func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string, jsonOut string) error {
 	if total <= 0 {
 		return fmt.Errorf("-n must be > 0")
 	}
@@ -78,6 +105,7 @@ func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string) 
 		mu          sync.Mutex
 		conns       []net.Conn
 	)
+	rec := NewRecorder()
 
 	start := time.Now()
 	for i := 0; i < total; i += batchSize {
@@ -95,11 +123,14 @@ func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string) 
 			go func(idx int) {
 				defer wg.Done()
 				d := net.Dialer{Timeout: 5 * time.Second}
+				t0 := time.Now()
 				c, err := d.DialContext(ctx, "tcp", addr)
 				if err != nil {
 					failed.Add(1)
+					rec.AddError()
 					return
 				}
+				rec.Add(time.Since(t0))
 				chunk[idx] = c
 				established.Add(1)
 			}(j)
@@ -124,6 +155,7 @@ func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string) 
 		}
 	}
 
+	rec.Stop() // 建连阶段结束：后面的 hold 不算吞吐
 	fmt.Printf("\n建连完成：成功 %d，失败 %d，耗时 %s\n",
 		established.Load(), failed.Load(), time.Since(start).Round(time.Millisecond))
 
@@ -166,6 +198,12 @@ loop:
 	}
 	mu.Unlock()
 	fmt.Printf("压测结束：峰值连接 %d，最终存活 %d\n", established.Load(), alive)
+
+	s := rec.Summarize(fmt.Sprintf("建连（目标 %d，批次 %d）", total, batchSize))
+	s.Print()
+	if err := s.WriteJSON(jsonOut); err != nil {
+		return err
+	}
 	if failed.Load() > 0 {
 		return fmt.Errorf("%d 个连接建立失败", failed.Load())
 	}

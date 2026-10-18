@@ -136,13 +136,21 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 
 	// etcd
-	if len(s.cfg.Etcd.Endpoints) > 0 {
-		cli, err := clientv3.New(clientv3.Config{Endpoints: s.cfg.Etcd.Endpoints, DialTimeout: s.cfg.GetDialTimeout()})
+	//
+	// 端点来自 rpc.etcd_endpoints（网关配置里没有顶层 etcd 段）。
+	// 之前误读 s.cfg.Etcd.Endpoints，导致整个分支被跳过 —— backend 为 nil，
+	// 会话永远绑不到游戏服，客户端进游戏只能等超时。
+	etcdEndpoints := s.cfg.RPC.EtcdEndpoints
+	if len(etcdEndpoints) == 0 {
+		etcdEndpoints = s.cfg.Etcd.Endpoints // 兼容顶层写法
+	}
+	if len(etcdEndpoints) > 0 {
+		cli, err := clientv3.New(clientv3.Config{Endpoints: etcdEndpoints, DialTimeout: s.cfg.GetDialTimeout()})
 		if err != nil {
 			return fmt.Errorf("etcd: %w", err)
 		}
 		s.etcdClient = cli
-		s.etcdReg, _ = gameetcd.New(s.cfg.Etcd.Endpoints)
+		s.etcdReg, _ = gameetcd.New(etcdEndpoints)
 
 		// 注册自己到 etcd
 		node := gameetcd.Node{
@@ -158,7 +166,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.etcdCancel = cancel
 
 		// backend pool with etcd resolver
-		resolverBuilder := grpc.WithResolvers(resolver.NewBuilder(cli))
+		resolverBuilder := grpc.WithResolvers(resolver.NewBuilder(cli, s.cfg.RPC.ServicePrefix))
 		clientPool := rpcpkg.NewClientPool(resolverBuilder)
 		s.backend = backend.NewPool(clientPool, s.logger, s.deliverToClient)
 	}

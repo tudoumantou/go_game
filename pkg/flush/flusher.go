@@ -78,7 +78,7 @@ func (f *Flusher) runShard(ctx context.Context, sh *shard, offset time.Duration)
 
 	lastSuccess := time.Now()
 	for {
-		next := nextTick(offset)
+		next := nextTick(f.interval, offset)
 		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
@@ -111,12 +111,19 @@ func (f *Flusher) runShard(ctx context.Context, sh *shard, offset time.Duration)
 	}
 }
 
-// nextTick 下一分钟边界 + 本分片偏移（第 0 片 :00，第 1 片 :06 … 第 9 片 :54）。
-func nextTick(offset time.Duration) time.Time {
+// nextTick 下一个「interval 边界 + 分片偏移」。
+//
+// 生产 interval=60s 时这就是分钟边界（第 0 片 :00，第 1 片 :06 … 第 9 片 :54）。
+// **必须按 interval 而不是硬编码 1 分钟**：测试/压测环境把 interval 调成 2s，
+// 写死一分钟会让落库等 60s，直接导致「改了数据但库里迟迟不变」。
+func nextTick(interval, offset time.Duration) time.Time {
+	if interval <= 0 {
+		interval = time.Minute
+	}
 	now := time.Now()
-	next := now.Truncate(time.Minute).Add(time.Minute).Add(offset)
+	next := now.Truncate(interval).Add(interval).Add(offset)
 	if !next.After(now) {
-		next = next.Add(time.Minute)
+		next = next.Add(interval)
 	}
 	return next
 }

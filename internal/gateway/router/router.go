@@ -298,9 +298,14 @@ var timeNow = func() time.Time { return time.Now() }
 
 // SendServerHello 向新连接发送 ServerHello（未加密）。
 func (h *Handler) SendServerHello(c *conn.Conn, pubKeyPEM, salt []byte) error {
-	// 外层包：MsgID=1001, Seq=0, Body=pubKeyPEM|salt
-	body := make([]byte, len(pubKeyPEM)+len(salt))
-	copy(body, pubKeyPEM)
-	copy(body[len(pubKeyPEM):], salt)
+	// 外层包：MsgID=1001, Seq=0, Body=salt|pubKeyPEM
+	//
+	// **salt 必须在前**：salt 是 32 字节随机二进制，可能以 0x0a/0x0d 开头。
+	// 若把 salt 放在 PEM 之后，接收方用「跳过 PEM 尾随换行」来切分时会把
+	// salt 的首字节当成换行吃掉（概率 2/256），导致会话密钥不一致、
+	// Finished 帧 GCM 校验失败。实测登录成功率 ~98.7%，且与并发无关。
+	body := make([]byte, len(salt)+len(pubKeyPEM))
+	copy(body, salt)
+	copy(body[len(salt):], pubKeyPEM)
 	return c.Send(codec.Packet{MsgID: constant.MsgIDServerHello, Seq: 0, Body: body})
 }

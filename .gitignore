@@ -1,6 +1,8 @@
 # 构建产物
 /bin/
 /loadtest
+/reports/
+/deploy/volumes/
 /volumes/
 *.out
 coverage.txt

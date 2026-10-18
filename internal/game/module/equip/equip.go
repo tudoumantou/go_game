@@ -89,18 +89,12 @@ func (r *Repo) ListByPlayer(ctx context.Context, playerID int64) ([]Entry, error
 }
 
 // Find 按实例 ID 查询（校验归属）。
+//
+// 这里**不能**用 idtab 做前置存在性判断：登录重算属性、GM 修复数据等路径会读到
+// idtab 尚未登记的行（集合靠启动构建 + 增量登记维护，直接写库的记录要等 10 分钟对账），
+// 一旦误判「不存在」，玩家会看到属性少算——比多打一次库严重得多。
+// 需要对客户端上报的 uid 做廉价校验时用 Exists()。
 func (r *Repo) Find(ctx context.Context, playerID, uid int64) (*Entry, error) {
-	// 先判存在性：uid 是客户端上报值，伪造/过期的情况下不必打库
-	if r.idTable != nil {
-		exists, err := r.idTable.Exists(ctx, "player_equip", uid)
-		if err != nil {
-			return nil, fmt.Errorf("check equip exists: %w", err)
-		}
-		if !exists {
-			return nil, ErrNotExist
-		}
-	}
-
 	const q = `SELECT id, equip_id, enhance_level, quality, equipped
 	           FROM player_equip WHERE id = ? AND player_id = ?`
 	var e Entry
@@ -146,7 +140,16 @@ func (r *Repo) Insert(ctx context.Context, playerID int64, equipID int32) (int64
 	if err != nil {
 		return 0, fmt.Errorf("insert player_equip: %w", err)
 	}
-	return res.LastInsertId()
+	uid, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	// 登记 idtab：否则到下轮对账（10 分钟）之前，集合里都没有这个实例。
+	// 失败只影响存在性判断的加速效果，不影响业务，忽略。
+	if r.idTable != nil {
+		_ = r.idTable.Add(ctx, "player_equip", uid)
+	}
+	return uid, nil
 }
 
 // MarkEquipped 设置实例的穿戴状态。
@@ -280,6 +283,10 @@ func (m *Module) onWear(ctx *module.Context, body []byte) error {
 	}
 
 	// 按实例 UID 穿戴（与 EquipList 下发的 uid 一致）
+	//
+	// 这里刻意**不**用 idtab 前置判断：装备行由 GM 工具/补偿脚本直接写库时，
+	// idtab 要等 10 分钟对账才包含新 uid，拿它判存在会让玩家穿不上装备。
+	// 穿戴是低频操作，多打一次库的代价可以忽略。
 	e, err := m.repo.Find(context.Background(), ctx.State.PlayerID(), req.Uid)
 	if err != nil {
 		resp.Code = codeNotExist

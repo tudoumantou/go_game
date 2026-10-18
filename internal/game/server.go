@@ -391,12 +391,16 @@ func (m chatMessenger) OnlineNode(ctx context.Context, playerID int64) (string, 
 }
 
 // Push 实现 chat.Messenger。
+//
+// 优先走 Actor（保证与玩家自身消息的处理顺序一致）；Actor 尚未创建时
+// （玩家只登录、还没发过业务包）直接走会话下行 —— 推送是纯下行，不需要业务状态。
 func (m chatMessenger) Push(ctx context.Context, playerID int64, msgID uint32, body []byte) bool {
-	pid, ok := m.srv.players.Get(playerID)
-	if !ok {
-		return false
+	if pid, ok := m.srv.players.Get(playerID); ok {
+		if err := m.srv.actorSys.Send(pid, &player.PushMsg{MsgID: msgID, Body: body}); err == nil {
+			return true
+		}
 	}
-	return m.srv.actorSys.Send(pid, &player.PushMsg{MsgID: msgID, Body: body}) == nil
+	return m.srv.sendToPlayer(playerID, msgID, body)
 }
 
 // ProduceCross 实现 chat.Messenger。
@@ -484,26 +488,70 @@ func (s *Server) OnBind(ctx context.Context, sessionID uint64, accountID, player
 
 // bindPlayer 拉起玩家 Actor 并绑定会话。
 func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int64) error {
-	pid, err := s.players.GetOrSpawn(playerID)
-	if err != nil {
-		return err
-	}
 	s.mu.Lock()
 	s.sessions[sessionID] = playerID
 	s.players2sess[playerID] = sessionID
 	accountID := s.accounts[sessionID]
 	s.mu.Unlock()
 
-	if err := s.actorSys.SendWithSender(pid, &player.BindMsg{SessionID: sessionID, PlayerID: playerID}, nil); err != nil {
+	s.markOnline(ctx, playerID)
+	if err := s.bindActor(ctx, sessionID, playerID); err != nil {
 		return err
-	}
-	if s.presence != nil {
-		if err := s.presence.SetOnline(ctx, playerID, s.cfg.Server.Name, onlineTTL); err != nil {
-			s.logger.Warn("set online failed", "player_id", playerID, "err", err)
-		}
 	}
 	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID, "account_id", accountID)
 	return nil
+}
+
+// ensureActor 确保玩家 Actor 已创建并与当前会话绑定。
+//
+// 只在「Actor 不存在」或「会话变了（重连）」时才发 BindMsg —— 不能每个业务包都发：
+// onBind 会跑一遍全部模块的 OnLogin（活动进度要写库），重复 Bind 等于每条消息
+// 多两次落库，直接把延迟打到超时。
+//
+// 反过来，重连时必须补 Bind：Actor 离线后不销毁（Tier-2 保留 90s），
+// 里面的 sessionID 还是旧的/0，不刷新的话回包发不出去，客户端只看到超时。
+//
+// presence 不在这里设置 —— 在线状态属于「会话」，不属于「业务状态」。
+func (s *Server) ensureActor(ctx context.Context, sessionID uint64, playerID int64) error {
+	if _, ok := s.players.Get(playerID); ok {
+		s.mu.RLock()
+		bound := s.players2sess[playerID]
+		s.mu.RUnlock()
+		if bound == sessionID {
+			return nil // 已绑定到本会话
+		}
+	}
+	return s.bindActor(ctx, sessionID, playerID)
+}
+
+// bindActor 无条件把会话绑定到 Actor（Actor 不存在则创建）。
+func (s *Server) bindActor(ctx context.Context, sessionID uint64, playerID int64) error {
+	pid, ok := s.players.Get(playerID)
+	if !ok {
+		spawned, err := s.players.GetOrSpawn(playerID)
+		if err != nil {
+			return err
+		}
+		pid = spawned
+	}
+	if err := s.actorSys.SendWithSender(pid,
+		&player.BindMsg{SessionID: sessionID, PlayerID: playerID}, nil); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.players2sess[playerID] = sessionID
+	s.mu.Unlock()
+	return nil
+}
+
+// markOnline 标记玩家在线（会话绑定/创角时调用，与 Actor 是否加载无关）。
+func (s *Server) markOnline(ctx context.Context, playerID int64) {
+	if s.presence == nil {
+		return
+	}
+	if err := s.presence.SetOnline(ctx, playerID, s.cfg.Server.Name, onlineTTL); err != nil {
+		s.logger.Warn("set online failed", "player_id", playerID, "err", err)
+	}
 }
 
 // OnUnbind 实现 rpc.StreamHandler。
@@ -553,10 +601,18 @@ func (s *Server) OnClientPacket(ctx context.Context, sessionID uint64, msgID uin
 		return fmt.Errorf("session %d has no role, drop msg %d", sessionID, msgID)
 	}
 
+	// 懒加载：创角/进游戏只记 sessions，Actor 在首个业务包时创建。
+	//
+	// 好处有两个：① 创角后立刻加载会读到「刚建的空角色」，若随后有数据写入
+	// （补偿道具、GM 改库）内存与库就不一致；② 只登录不操作的账号不占 Actor 资源。
+	if err := s.ensureActor(ctx, sessionID, playerID); err != nil {
+		return fmt.Errorf("bind player %d: %w", playerID, err)
+	}
 	pid, ok := s.players.Get(playerID)
 	if !ok {
-		return fmt.Errorf("player %d not online", playerID)
+		return fmt.Errorf("player %d actor missing after bind", playerID)
 	}
+	// 同一 Actor 信箱 FIFO：Bind 先于业务包被处理，预加载完成后再处理业务
 	return s.actorSys.Send(pid, &player.PacketMsg{MsgID: msgID, Seq: seq, Body: body})
 }
 
@@ -610,9 +666,14 @@ func (s *Server) handleCreateRole(ctx context.Context, sessionID uint64, account
 	}
 	resp.Code = 0
 	resp.RoleId = roleID
-	if err := s.bindPlayer(ctx, sessionID, roleID); err != nil {
-		return err
-	}
+	// 只记录会话 → 角色映射，不立即创建 Actor（见 OnClientPacket 的懒加载说明）。
+	// 否则随后的补偿道具/改库写入会被「创角时加载的空快照」覆盖。
+	s.mu.Lock()
+	s.sessions[sessionID] = roleID
+	s.players2sess[roleID] = sessionID
+	s.mu.Unlock()
+	// 创角即有会话 → 在线；Actor 留到首个业务包再创建
+	s.markOnline(ctx, roleID)
 	return s.reply(sessionID, 1021, resp)
 }
 
@@ -880,4 +941,18 @@ func (s *Server) maintainIDTables(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// sendToPlayer 按 playerID 直接下发（不经过 Actor）。
+//
+// 用于「接收方还没加载业务状态」的推送场景（如私聊到达），
+// Actor 只是业务状态载体，纯下行不该依赖它。
+func (s *Server) sendToPlayer(playerID int64, msgID uint32, body []byte) bool {
+	s.mu.RLock()
+	sessionID, ok := s.players2sess[playerID]
+	s.mu.RUnlock()
+	if !ok || sessionID == 0 {
+		return false
+	}
+	return s.sendToClient(sessionID, msgID, body) == nil
 }

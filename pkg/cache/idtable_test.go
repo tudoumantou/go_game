@@ -73,6 +73,39 @@ func TestBuildOneKeysetPaging(t *testing.T) {
 	}
 }
 
+// TestBuildOneEmptyTable 空表也要成功置 ready。
+//
+// 回归：原先无条件 RENAME，空表时 building key 不存在 → "ERR no such key"，
+// ready 永远置不上，每张空表启动时刷一条失败日志。
+func TestBuildOneEmptyTable(t *testing.T) {
+	it, mr, mock, cleanup := newTestIDTable(t)
+	defer cleanup()
+
+	meta := TableMeta{Name: "friend", PK: "id"}
+	mock.ExpectQuery(`SELECT id FROM friend`).
+		WithArgs(int64(0), int64(5000)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"})) // 0 行
+
+	n, err := it.BuildOne(context.Background(), meta)
+	if err != nil {
+		t.Fatalf("build empty table: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("count = %d, want 0", n)
+	}
+	if !it.Ready(context.Background(), "friend") {
+		t.Fatal("empty table should still be marked ready")
+	}
+	// 空集合：Exists 应返回 false 而不是报错
+	if ok, err := it.Exists(context.Background(), "friend", 1); err != nil || ok {
+		t.Fatalf("exists = %v, %v", ok, err)
+	}
+	_ = mr
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestBuildOneIdempotent 已 ready 的表重复构建应跳过（每次启动都会调用）。
 func TestBuildOneIdempotent(t *testing.T) {
 	it, mr, mock, cleanup := newTestIDTable(t)

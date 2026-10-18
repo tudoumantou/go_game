@@ -114,6 +114,11 @@ func NewHandshakeClient() (*HandshakeClient, error) {
 
 // OnServerHello 收到 ServerHello 后保存公钥和盐。
 func (c *HandshakeClient) OnServerHello(pubKeyPEM, salt []byte) error {
+	if len(salt) != SaltSize {
+		// 长度不对说明切分错了，继续下去只会得到「密钥不一致 → finished 认证失败」，
+		// 早失败比晚失败好排查
+		return fmt.Errorf("invalid salt size %d, want %d", len(salt), SaltSize)
+	}
 	pub, err := ParsePublicKey(pubKeyPEM)
 	if err != nil {
 		return err

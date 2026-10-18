@@ -17,6 +17,7 @@
 # 用法：
 #   ./scripts/drill-crash.sh
 #   MYSQL_USER=game MYSQL_PASS=secret ./scripts/drill-crash.sh
+#   MYSQL_DOCKER=deploy-mysql-1 ./scripts/drill-crash.sh    # 无本机 mysql 客户端时
 set -uo pipefail
 
 CONFIG="${CONFIG:-configs/game/game-dev.yaml}"
@@ -29,13 +30,23 @@ cd "$(dirname "$0")/.."
 log() { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 fail() { printf '\033[1;31mFAIL: %s\033[0m\n' "$*" >&2; exit 1; }
 
-mysql_q() { mysql -h"${MYSQL_HOST:-127.0.0.1}" -P"${MYSQL_PORT:-3306}" \
-  -u"${MYSQL_USER:-game_study}" -p"${MYSQL_PASS:-game_study}" "${MYSQL_DB:-game_study}" \
-  -N -B -e "$1" 2>/dev/null; }
+# mysql_q 执行查询：优先本机客户端；没有客户端时用 MYSQL_DOCKER 指定的容器（CI/容器环境常见）
+mysql_q() {
+  if [ -n "${MYSQL_DOCKER:-}" ]; then
+    docker exec -i "$MYSQL_DOCKER" mysql -uroot -p"${MYSQL_ROOT_PASS:-game_study}" \
+      "${MYSQL_DB:-game_study}" -N -B -e "$1" 2>/dev/null
+    return
+  fi
+  mysql -h"${MYSQL_HOST:-127.0.0.1}" -P"${MYSQL_PORT:-3306}" \
+    -u"${MYSQL_USER:-game_study}" -p"${MYSQL_PASS:-game_study}" "${MYSQL_DB:-game_study}" \
+    -N -B -e "$1" 2>/dev/null
+}
 
 # ---------- 0. 前置检查 ----------
 log "0/6 前置检查"
-command -v mysql >/dev/null || fail "需要 mysql 客户端"
+if [ -z "${MYSQL_DOCKER:-}" ]; then
+  command -v mysql >/dev/null || fail "需要 mysql 客户端（或设置 MYSQL_DOCKER=<容器名> 用 docker exec）"
+fi
 [ -x "$GAME_BIN" ] || fail "找不到游戏服可执行文件 $GAME_BIN（先 make build）"
 curl -sf "${LOGIN}/healthz" >/dev/null || fail "登录服未就绪：$LOGIN"
 
@@ -58,7 +69,8 @@ trap 'rm -rf "$SNAP_DIR"' EXIT
 
 mysql_q "SELECT id, name, level, exp, coin FROM player WHERE id=$PLAYER_ID" > "$SNAP_DIR/player.before"
 mysql_q "SELECT item_id, count FROM player_item WHERE player_id=$PLAYER_ID ORDER BY item_id" > "$SNAP_DIR/item.before"
-mysql_q "SELECT attr_id, value FROM player_attr WHERE player_id=$PLAYER_ID ORDER BY attr_id" > "$SNAP_DIR/attr.before"
+# player_attr 是单行实体（PK=player_id），不存在 attr_id/value 列 —— 原脚本这里写错了
+mysql_q "SELECT career, hp, mp, atk, def, spd FROM player_attr WHERE player_id=$PLAYER_ID" > "$SNAP_DIR/attr.before"
 
 cat "$SNAP_DIR/player.before"
 [ -s "$SNAP_DIR/player.before" ] || fail "快照为空"
@@ -93,7 +105,7 @@ go run ./tools/loadtest -mode smoke -login "$LOGIN" -gateway "$GW" -devices 1 ||
 
 mysql_q "SELECT id, name, level, exp, coin FROM player WHERE id=$PLAYER_ID" > "$SNAP_DIR/player.after"
 mysql_q "SELECT item_id, count FROM player_item WHERE player_id=$PLAYER_ID ORDER BY item_id" > "$SNAP_DIR/item.after"
-mysql_q "SELECT attr_id, value FROM player_attr WHERE player_id=$PLAYER_ID ORDER BY attr_id" > "$SNAP_DIR/attr.after"
+mysql_q "SELECT career, hp, mp, atk, def, spd FROM player_attr WHERE player_id=$PLAYER_ID" > "$SNAP_DIR/attr.after"
 
 # ---------- 6. 比对 ----------
 log "6/6 比对前后快照"

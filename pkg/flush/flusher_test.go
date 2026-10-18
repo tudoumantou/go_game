@@ -10,12 +10,12 @@ import (
 	"game_study/pkg/log"
 )
 
-// TestNextTickAligned 唤醒时刻必须落在「分钟边界 + 分片偏移」，不能是「启动后 + interval」。
+// TestNextTickAligned 唤醒时刻必须落在「interval 边界 + 分片偏移」，不能是「启动后 + interval」。
 func TestNextTickAligned(t *testing.T) {
 	now := time.Now()
 
 	for _, offset := range []time.Duration{0, 6 * time.Second, 54 * time.Second} {
-		next := nextTick(offset)
+		next := nextTick(time.Minute, offset)
 		if !next.After(now) {
 			t.Fatalf("offset %s: next tick %s is not in the future", offset, next)
 		}
@@ -29,6 +29,21 @@ func TestNextTickAligned(t *testing.T) {
 		if next.Nanosecond() != 0 {
 			t.Fatalf("offset %s: next tick has sub-second component: %s", offset, next)
 		}
+	}
+}
+
+// TestNextTickFollowsInterval 短周期下必须按 interval 对齐，不能写死 1 分钟。
+//
+// 回归：曾硬编码 time.Minute，测试环境 interval=2s 时落库要等 60s，
+// 表现为「改了数据但库里迟迟不变」。
+func TestNextTickFollowsInterval(t *testing.T) {
+	now := time.Now()
+	next := nextTick(2*time.Second, 0)
+	if d := next.Sub(now); d > 2*time.Second+100*time.Millisecond {
+		t.Fatalf("next tick with 2s interval should be within 2s, got %s", d)
+	}
+	if next.Nanosecond() != 0 {
+		t.Fatalf("next tick should align to interval boundary, got %s", next)
 	}
 }
 

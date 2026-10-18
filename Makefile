@@ -6,7 +6,7 @@ VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test test-integration lint fmt vet dev run-all \
-        monitoring smoke loadtest drill-crash clean
+        monitoring smoke loadtest bench drill-crash drill-suite clean
 
 help: ## 查看全部命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[32m%-12s\033[0m %s\n", $$1, $$2}'
@@ -66,8 +66,14 @@ smoke: ## E2E 五步冒烟（需要五服务已启动）
 loadtest: ## 网关连接压测（默认 1000 连接；10W 需 ulimit -n 200000）
 	$(GO) run ./tools/loadtest -mode conn -n $(or $(N),1000) -hold $(or $(HOLD),30s)
 
+bench: ## 压测并生成报告（login/biz/conn，产物在 reports/）
+	@./scripts/bench.sh
+
 drill-crash: ## 故障演练：kill -9 游戏服后校验数据零丢失
 	@./scripts/drill-crash.sh
+
+drill-suite: ## 故障演练套件：MySQL/Redis/Kafka/etcd 注入与恢复
+	@./scripts/drill-suite.sh
 
 clean: ## 清理构建产物
 	rm -rf $(BIN)

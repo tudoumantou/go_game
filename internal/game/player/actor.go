@@ -158,6 +158,18 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	_ = ctx.Respond(&BindResult{Code: 0})
 }
 
+// setState 替换玩家状态并重新挂上 dirty 回调。
+//
+// **必须走这里而不是直接 `a.state = state`**：预加载返回的是全新的 State 实例，
+// 构造时挂的 dirtyHook 在它身上不存在。直接赋值会让「加载完成后的所有修改都不再
+// 通知 flusher」——数据永远不落库，且不会有任何报错（线上表现为玩家进度丢失）。
+func (a *Actor) setState(state *State) {
+	a.state = state
+	if a.onDirty != nil {
+		state.SetDirtyHook(func() { a.onDirty(a.playerID) })
+	}
+}
+
 // preload 登录数据加载（12.6）。
 //
 // 优先用 Preloader（5 查询并行 + 超时保护）；未注入时退回逐表串行加载。
@@ -167,7 +179,7 @@ func (a *Actor) preload(ctx *actor.Context) error {
 		if err != nil {
 			return err
 		}
-		a.state = state
+		a.setState(state)
 		a.prefetch = pf
 		a.loaded = true
 		return nil
@@ -177,7 +189,7 @@ func (a *Actor) preload(ctx *actor.Context) error {
 		if err != nil {
 			return err
 		}
-		a.state = state
+		a.setState(state)
 		a.loaded = true
 		return nil
 	}
@@ -204,6 +216,11 @@ func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 }
 
 func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
+	if !a.loaded {
+		// 预加载失败或尚未完成：拒绝业务包，避免用空状态处理（会写坏数据）
+		a.logger.Warn("packet before loaded, drop", "msg_id", msg.MsgID)
+		return
+	}
 	mctx := a.moduleCtx(ctx)
 	start := time.Now()
 	err := a.registry.Dispatch(mctx, msg.MsgID, msg.Body)

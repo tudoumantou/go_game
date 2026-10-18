@@ -139,12 +139,24 @@ type shard struct {
 	mu    sync.RWMutex
 	sys   *System
 
+	// wake 唤醒信号（容量 1，非阻塞写）。
+	//
+	// 分片空闲时如果只靠 100ms ticker 轮询，消息到达后最坏要等 100ms 才被处理 ——
+	// 实测业务 P99 因此被钉在 ~150ms，直接违反「P99 < 50ms」的验收目标。
+	// 改为「有消息立即唤醒 + ticker 兜底」，延迟降到微秒级。
+	wake chan struct{}
+
 	// lastDropped 上次上报时的累计丢弃数（只由分片循环 goroutine 读写，无需加锁）
 	lastDropped int64
 }
 
 func newShard(index int, sys *System) *shard {
-	return &shard{index: index, cells: make(map[string]*actorCell), sys: sys}
+	return &shard{
+		wake:  make(chan struct{}, 1),
+		index: index,
+		cells: make(map[string]*actorCell),
+		sys:   sys,
+	}
 }
 
 func (sh *shard) add(cell *actorCell) error {
@@ -164,7 +176,19 @@ func (sh *shard) deliver(id string, env envelope) error {
 	if !ok {
 		return fmt.Errorf("actor %s not found", id)
 	}
-	return cell.mbox.push(env)
+	if err := cell.mbox.push(env); err != nil {
+		return err
+	}
+	sh.notify()
+	return nil
+}
+
+// notify 唤醒分片循环（非阻塞：已有待处理信号时直接返回）。
+func (sh *shard) notify() {
+	select {
+	case sh.wake <- struct{}{}:
+	default:
+	}
 }
 
 func (sh *shard) remove(id string) {
@@ -211,7 +235,8 @@ func (sh *shard) run(ctx context.Context, wg *sync.WaitGroup) {
 				return
 			case <-sh.sys.stopCh:
 				return
-			case <-ticker.C:
+			case <-sh.wake: // 新消息到达，立即处理
+			case <-ticker.C: // 兜底（定时器到期等不经过 deliver 的场景）
 			}
 		}
 	}

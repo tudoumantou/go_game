@@ -143,8 +143,13 @@ func (t *IDTable) BuildOne(ctx context.Context, meta TableMeta) (int64, error) {
 		}
 	}
 
-	// 原子切换：RENAME 覆盖旧集合，避免构建期间「集合半空 → 存在性判断误判为不存在」
-	if err := t.rdb.Rename(ctx, building, IDTabKey(meta.Name)).Err(); err != nil {
+	// 原子切换：RENAME 覆盖旧集合，避免构建期间「集合半空 → 存在性判断误判为不存在」。
+	//
+	// 空表要特判：一行都没有时 building 从未被创建，RENAME 会返回
+	// "ERR no such key"，导致空表的 ready 永远置不上（启动日志刷一屏构建失败）。
+	if total == 0 {
+		_ = t.rdb.Del(ctx, IDTabKey(meta.Name)).Err()
+	} else if err := t.rdb.Rename(ctx, building, IDTabKey(meta.Name)).Err(); err != nil {
 		return total, fmt.Errorf("rename %s: %w", meta.Name, err)
 	}
 	if err := t.rdb.Set(ctx, IDTabReadyKey(meta.Name), "1", 0).Err(); err != nil {
