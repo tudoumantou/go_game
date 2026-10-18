@@ -1,16 +1,25 @@
 # deploy/docker-compose.yaml —— 本地全栈（设计文档 19.4）
 # 用法:
 #   make dev        # 只起中间件（etcd/redis/mysql/kafka）
-#   make db-init && make db-seed
-#   make run-all    # 或 docker compose up 五服务（需先构建镜像）
-# volumes/ 持久化 MySQL 数据；配置与密钥只读挂载，不进镜像。
+#   make docker-up  # 自动生成缺失密钥、构建并启动五服务
+#   make docker-down # 停止，保留数据库卷
+# 命名卷持久化 MySQL 数据；scripts/docker-up.sh 同步配置/密钥/SQL 到卷。
+# 应用只读挂载配置与密钥，密钥不进镜像。
 services:
+  assets:
+    image: alpine:latest
+    profiles: [tools]
+    command: ["true"]
+    volumes:
+      - configs:/configs
+      - keys:/keys
+      - schema:/schema
+      - monitoring:/monitoring
+
   etcd:
-    image: bitnami/etcd:3.5
-    ports: ["2379:2379"]
-    environment:
-      ALLOW_NONE_AUTHENTICATION: "yes"
-      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+    image: quay.io/coreos/etcd:v3.5.16
+    command: ["etcd", "--listen-client-urls=http://0.0.0.0:2379", "--advertise-client-urls=http://etcd:2379", "--data-dir=/etcd-data"]
+    ports: ["127.0.0.1:2379:2379"]
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 5s
@@ -18,7 +27,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -26,12 +35,15 @@ services:
 
   mysql:
     image: mysql:8.0
-    ports: ["3306:3306"]
+    ports: ["127.0.0.1:3306:3306"]
     environment:
       MYSQL_ROOT_PASSWORD: game_study
       MYSQL_DATABASE: game_study
+      MYSQL_USER: game
+      MYSQL_PASSWORD: game_study
     volumes:
-      - ./volumes/mysql:/var/lib/mysql
+      - mysql:/var/lib/mysql
+      - schema:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
       interval: 5s
@@ -39,109 +51,125 @@ services:
       retries: 20
 
   kafka:
-    image: bitnami/kafka:3.7
-    ports: ["9092:9092", "9093:9093"]
+    image: apache/kafka:3.7.2
+    ports: ["127.0.0.1:9092:9092", "127.0.0.1:9093:9093"]
     environment:
-      KAFKA_CFG_NODE_ID: "1"
-      KAFKA_CFG_PROCESS_ROLES: "controller,broker"
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9094"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "controller,broker"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9094"
       # 双 listener：INTERNAL 供 compose 内服务（kafka:9092），EXTERNAL 供宿主机/本地测试（localhost:9093）
-      KAFKA_CFG_LISTENERS: "INTERNAL://:9092,EXTERNAL://:9093,CONTROLLER://:9094"
-      KAFKA_CFG_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092,EXTERNAL://localhost:9093"
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
-      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "INTERNAL"
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LISTENERS: "INTERNAL://:9092,EXTERNAL://:9093,CONTROLLER://:9094"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092,EXTERNAL://localhost:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "INTERNAL"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
     healthcheck:
-      test: ["CMD", "kafka-topics.sh", "--list", "--bootstrap-server", "localhost:9092"]
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--list", "--bootstrap-server", "localhost:9092"]
       interval: 10s
       retries: 12
 
   login:
     build:
-      context: .
+      context: ..
       dockerfile: ./deploy/docker/login.Dockerfile
-    ports: ["8080:8080", "8081:8081"]
+    ports: ["127.0.0.1:8080:8080", "127.0.0.1:8081:8081"]
     environment:
       KAFKA_BROKERS: "kafka:9092"
     volumes:
-      - ./configs:/app/configs:ro
-      - ./deploy/keys:/app/keys:ro
-    command: ["-config", "/app/configs/login/login-dev.yaml"]
+      - configs:/app/configs:ro
+      - keys:/app/keys:ro
+    command: ["-config", "/app/configs/login/login-docker.yaml"]
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       kafka: { condition: service_healthy }
+      etcd: { condition: service_healthy }
 
   gateway:
+    stop_grace_period: 70s
+    # 与宿主机密钥所有者一致，私钥保持 0600；启动脚本注入 UID/GID。
+    user: "${LOCAL_UID:-501}:${LOCAL_GID:-20}"
     build:
-      context: .
+      context: ..
       dockerfile: ./deploy/docker/gateway.Dockerfile
-    ports: ["9001:9001", "9101:9101"]
+    ports: ["127.0.0.1:9001:9001", "127.0.0.1:9101:9101"]
     volumes:
-      - ./configs:/app/configs:ro
-      - ./deploy/keys:/app/keys:ro
-    command: ["-config", "/app/configs/gateway/gateway-dev.yaml"]
-    depends_on: [login]
+      - configs:/app/configs:ro
+      - keys:/app/keys:ro
+    command: ["-config", "/app/configs/gateway/gateway-docker.yaml"]
+    depends_on:
+      login: { condition: service_started }
+      game: { condition: service_started }
+      etcd: { condition: service_healthy }
 
   game:
+    stop_grace_period: 70s
     build:
-      context: .
+      context: ..
       dockerfile: ./deploy/docker/game.Dockerfile
-    ports: ["9100:9100", "9102:9102"]
+    ports: ["127.0.0.1:9100:9100", "127.0.0.1:9102:9102"]
     environment:
       KAFKA_BROKERS: "kafka:9092"
     volumes:
-      - ./configs:/app/configs:ro
-      - ./deploy/keys:/app/keys:ro
-    command: ["-config", "/app/configs/game/game-dev.yaml"]
+      - configs:/app/configs:ro
+      - keys:/app/keys:ro
+    command: ["-config", "/app/configs/game/game-docker.yaml"]
     depends_on:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
       kafka: { condition: service_healthy }
+      etcd: { condition: service_healthy }
 
   center:
     build:
-      context: .
+      context: ..
       dockerfile: ./deploy/docker/center.Dockerfile
-    ports: ["9200:9200", "9201:9201"]
+    ports: ["127.0.0.1:9200:9200", "127.0.0.1:9201:9201"]
     volumes:
-      - ./configs:/app/configs:ro
-    command: ["-config", "/app/configs/center/center-dev.yaml"]
-    depends_on: [etcd]
+      - configs:/app/configs:ro
+    command: ["-config", "/app/configs/center/center-docker.yaml"]
+    depends_on:
+      etcd: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mysql: { condition: service_healthy }
 
   cross:
+    stop_grace_period: 370s
     build:
-      context: .
+      context: ..
       dockerfile: ./deploy/docker/cross.Dockerfile
-    ports: ["9300:9300", "9301:9301"]
+    ports: ["127.0.0.1:9300:9300", "127.0.0.1:9301:9301"]
     volumes:
-      - ./configs:/app/configs:ro
-    command: ["-config", "/app/configs/cross/cross-dev.yaml"]
+      - configs:/app/configs:ro
+    command: ["-config", "/app/configs/cross/cross-docker.yaml"]
     depends_on: [center]
 
   # ---------- 可观测（P7，设计文档 20.3）----------
   prometheus:
     image: prom/prometheus:v2.53.0
-    ports: ["9090:9090"]
+    ports: ["127.0.0.1:9090:9090"]
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - monitoring:/monitoring:ro
     command:
-      - --config.file=/etc/prometheus/prometheus.yml
+      - --config.file=/monitoring/prometheus.yml
       - --storage.tsdb.retention.time=7d
     depends_on: [login, gateway, game]
 
   grafana:
     image: grafana/grafana:11.1.0
-    ports: ["3000:3000"]
+    ports: ["127.0.0.1:3000:3000"]
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: /monitoring/grafana/provisioning
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - monitoring:/monitoring:ro
     depends_on: [prometheus]
 
 volumes:
   mysql:
+  configs:
+  keys:
+  schema:
+  monitoring:

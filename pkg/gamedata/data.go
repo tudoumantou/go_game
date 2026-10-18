@@ -13,7 +13,7 @@ import (
 var rawXML embed.FS
 
 // Version 全部 XML 内容哈希（启动打印，GM 核对线上配置版本）
-const Version = "fd11407a77bdefe7"
+const Version = "797821d0b2127b13"
 
 // RawXML 读取原始 XML 内容（不存在返回 nil）
 func RawXML(name string) []byte {
@@ -55,6 +55,7 @@ func LoadedTables() []string {
 		"shop.xml",
 		"shop_goods.xml",
 		"shop_refresh.xml",
+		"signin_reward.xml",
 		"skill.xml",
 		"skill_upgrade.xml",
 		"team.xml",
@@ -64,5 +65,5 @@ func LoadedTables() []string {
 
 // Summary 配置规模摘要
 func Summary() string {
-	return fmt.Sprintf("gamedata: %d tables", 32)
+	return fmt.Sprintf("gamedata: %d tables", 33)
 }

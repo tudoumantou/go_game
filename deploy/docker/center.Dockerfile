@@ -5,9 +5,11 @@ FROM golang:1.22-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+COPY cmd ./cmd
+COPY internal ./internal
+COPY pkg ./pkg
 ARG SERVICE=center
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked CGO_ENABLED=0 GOOS=linux go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION:-dev}" \
       -o /out/server ./cmd/${SERVICE}
 

@@ -12,9 +12,9 @@ import (
 	gamecross "game_study/internal/game/cross"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/activity"
-	"game_study/internal/game/module/battle"
 	"game_study/internal/game/module/attr"
 	"game_study/internal/game/module/bag"
+	"game_study/internal/game/module/battle"
 	"game_study/internal/game/module/chat"
 	"game_study/internal/game/module/copy"
 	"game_study/internal/game/module/equip"
@@ -24,6 +24,7 @@ import (
 	"game_study/internal/game/module/profile"
 	"game_study/internal/game/module/quest"
 	"game_study/internal/game/module/shop"
+	"game_study/internal/game/module/signin"
 	"game_study/internal/game/module/skill"
 	"game_study/internal/game/module/team"
 	gamemq "game_study/internal/game/mq"
@@ -66,17 +67,17 @@ type Server struct {
 	repo     *player.Repository
 	flusher  *flush.Flusher
 
-	redis     *cache.Client
-	presence  *cache.Presence
-	producer  *pkgmq.Producer
-	consumers *gamemq.Group
-	roleSvc   *service.RoleService
+	redis      *cache.Client
+	presence   *cache.Presence
+	producer   *pkgmq.Producer
+	consumers  *gamemq.Group
+	roleSvc    *service.RoleService
 	metricsSrv *metrics.Server
-	idTable   *cache.IDTable // ID 表：存在性判断从 MySQL 挪到 Redis（12.5）
+	idTable    *cache.IDTable // ID 表：存在性判断从 MySQL 挪到 Redis（12.5）
 
-	crossPool *gamecross.Pool   // 到跨服节点的连接池
+	crossPool *gamecross.Pool    // 到跨服节点的连接池
 	centerCli *gamecenter.Client // 到中心服的 Report 流
-	battleMod *battle.Module    // 战斗模块（匹配/透传/结算）
+	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
 
 	mu       sync.RWMutex
 	sessions map[uint64]int64 // session_id -> player_id（0 = 未选角）
@@ -88,8 +89,8 @@ type Server struct {
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
 func New(cfg *config.Config) *Server {
 	return &Server{
-		cfg:      cfg,
-		logger:   log.New("game", log.WithLevel(cfg.Log.Level)),
+		cfg:          cfg,
+		logger:       log.New("game", log.WithLevel(cfg.Log.Level)),
 		sessions:     make(map[uint64]int64),
 		accounts:     make(map[uint64]int64),
 		players2sess: make(map[int64]uint64),
@@ -205,6 +206,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(copy.New(copy.NewRepo(s.database), s.logger))
 		s.modules.Register(shop.New(shop.NewRepo(s.database), s.logger))
 		s.modules.Register(activity.New(activity.NewRepo(s.database), s.logger))
+		s.modules.Register(signin.New(signin.NewRepo(s.database), s.logger))
 	}
 
 	// ④ Write-Behind flusher

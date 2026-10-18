@@ -3,6 +3,8 @@ package player
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,11 +22,11 @@ const msgIDLevelInfoNotify uint32 = 2011
 
 // Message 类型常量。
 const (
-	MsgBind     = "player.bind"
-	MsgUnbind   = "player.unbind"
-	MsgPacket   = "player.packet"
-	MsgSave     = "player.save"
-	MsgKick     = "player.kick"
+	MsgBind   = "player.bind"
+	MsgUnbind = "player.unbind"
+	MsgPacket = "player.packet"
+	MsgSave   = "player.save"
+	MsgKick   = "player.kick"
 )
 
 // BindMsg 绑定消息。
@@ -69,19 +71,20 @@ type SendFunc func(sessionID uint64, msgID uint32, body []byte) error
 
 // Actor 玩家 Actor。
 type Actor struct {
-	playerID int64
-	state    *State
+	playerID  int64
+	state     *State
 	registry  *module.Registry
 	logger    *log.Logger
 	repo      *Repository
 	preloader *Preloader
 	prefetch  *Prefetch
-	onDirty  func(playerID int64)
-	sendFunc SendFunc
+	onDirty   func(playerID int64)
+	sendFunc  SendFunc
 
-	sessionID uint64
-	online    bool
-	loaded    bool
+	sessionID   uint64
+	online      bool
+	loaded      bool
+	needsReload bool // 发奖提交结果未知时，禁止旧内存再次落库。
 }
 
 // NewActor 创建玩家 Actor。
@@ -114,6 +117,34 @@ func (a *Actor) State() *State { return a.state }
 
 // Receive 实现 actor.Actor。
 func (a *Actor) Receive(ctx *actor.Context) {
+	if a.needsReload {
+		switch ctx.Message().(type) {
+		case *SaveMsg, *UnbindMsg:
+			// 不能将可能过期的背包写回。解绑仍需清除会话。
+			if _, ok := ctx.Message().(*UnbindMsg); ok {
+				a.online = false
+				a.sessionID = 0
+			}
+			return
+		default:
+			reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := a.repo.ReloadItems(reloadCtx, a.state)
+			cancel()
+			if err != nil {
+				a.logger.Error("reload after uncertain commit failed", "err", err)
+				switch msg := ctx.Message().(type) {
+				case *BindMsg:
+					_ = ctx.Respond(&BindResult{Code: 1, Err: err.Error()})
+				case *GrantItemsMsg:
+					if msg.Done != nil {
+						msg.Done <- err
+					}
+				}
+				return
+			}
+			a.needsReload = false
+		}
+	}
 	switch msg := ctx.Message().(type) {
 	case *BindMsg:
 		a.onBind(ctx, msg)
@@ -279,6 +310,19 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 		mctx.Prefetch = a.prefetch
 	}
 	mctx.AddExp = a.addExp
+	if a.repo != nil {
+		mctx.CommitItems = func(ctx context.Context, grants []module.ItemGrant, business func(*sql.Tx) error) error {
+			// 先保存已有玩法变更，提交结果未知后重载也不会丢掉此前的背包进度。
+			if err := a.repo.Save(ctx, a.state); err != nil {
+				return err
+			}
+			err := a.repo.CommitItems(ctx, a.state, grants, business)
+			if errors.Is(err, ErrCommitUnknown) {
+				a.needsReload = true
+			}
+			return err
+		}
+	}
 	mctx.Emit = func(evt module.Event) {
 		a.registry.DispatchEvent(mctx, evt)
 	}

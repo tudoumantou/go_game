@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 示例奖励，正式数值由策划调整。day=周期日，重复 day 可配置多种奖励。 -->
+<root>
+  <row id="1" day="1" item_id="1001" count="100" />
+  <row id="2" day="2" item_id="1001" count="200" />
+  <row id="3" day="3" item_id="1001" count="300" />
+  <row id="4" day="4" item_id="1001" count="400" />
+  <row id="5" day="5" item_id="1001" count="500" />
+  <row id="6" day="6" item_id="1001" count="600" />
+  <row id="7" day="7" item_id="1001" count="700" />
+  <row id="8" day="7" item_id="1002" count="1" />
+</root>

@@ -56,7 +56,7 @@ test-integration: ## 集成测试（testcontainers 起真实中间件）
 	$(GO) test -tags=integration -timeout 20m ./test/integration/
 
 monitoring: ## 起 Prometheus + Grafana（http://localhost:3000，admin/admin）
-	docker compose -f deploy/docker-compose.yaml up -d prometheus grafana
+	LOCAL_UID=$$(id -u) LOCAL_GID=$$(id -g) docker compose -f deploy/docker-compose.yaml up -d prometheus grafana
 	@echo "Grafana: http://localhost:3000 (admin/admin)"
 	@echo "Prometheus: http://localhost:9090"
 
@@ -77,3 +77,14 @@ drill-suite: ## 故障演练套件：MySQL/Redis/Kafka/etcd 注入与恢复
 
 clean: ## 清理构建产物
 	rm -rf $(BIN)
+
+.PHONY: docker-up docker-down docker-logs
+
+docker-up: ## Docker 构建并启动完整游戏后端（自动生成缺失密钥、首次建表）
+	./scripts/docker-up.sh
+
+docker-down: ## 停止 Docker 服务，保留数据库与密钥
+	docker compose -f deploy/docker-compose.yaml down
+
+docker-logs: ## 查看 Docker 服务日志
+	docker compose -f deploy/docker-compose.yaml logs -f --tail=100

@@ -607,6 +607,24 @@ func (c *Client) ShopBuy(goodsID, count int32) (*gamev1.ShopBuyResp, error) {
 	return resp, nil
 }
 
+// SigninInfo 查询当前角色七日签到状态（6601/6602）。
+func (c *Client) SigninInfo() (*gamev1.SigninInfoResp, error) {
+	resp := &gamev1.SigninInfoResp{}
+	if err := c.call(6601, &gamev1.SigninInfoReq{}, 6602, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SigninClaim 领取今日签到奖励（6603/6604），重复请求不会再次发奖。
+func (c *Client) SigninClaim() (*gamev1.SigninClaimResp, error) {
+	resp := &gamev1.SigninClaimResp{}
+	if err := c.call(6603, &gamev1.SigninClaimReq{}, 6604, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // ActivityList 活动列表（6501/6502）。
 func (c *Client) ActivityList() (*gamev1.ActivityListResp, error) {
 	resp := &gamev1.ActivityListResp{}

@@ -12,7 +12,7 @@ global:
     cluster: game-study-dev
 
 rule_files:
-  - /etc/prometheus/rules/*.yml
+  - /monitoring/rules/*.yml
 
 scrape_configs:
   - job_name: prometheus

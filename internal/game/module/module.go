@@ -3,6 +3,7 @@ package module
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"game_study/pkg/actor"
@@ -35,6 +36,12 @@ type PlayerState interface {
 
 // Sender 下行发送能力（由游戏服组装层实现，写回网关）。
 type Sender func(msgID uint32, body []byte) error
+
+// ItemGrant 一次原子发奖中的道具增量。
+type ItemGrant struct {
+	ItemID int32
+	Count  int64
+}
 
 // AddExpFunc 增加经验并按配置连续升级，返回是否升级与当前等级。
 type AddExpFunc func(n int64) (levelUp bool, level int32)
@@ -80,6 +87,9 @@ type Context struct {
 	Send     Sender
 	Emit     func(evt Event)
 	AddExp   AddExpFunc
+	// CommitItems 在玩家 Actor 内将业务操作与背包奖励放入同一事务。
+	// 只有事务提交成功后才修改内存；业务操作必须仅通过传入的 tx 写库。
+	CommitItems func(context.Context, []ItemGrant, func(*sql.Tx) error) error
 }
 
 // Reply 向客户端回包（Send 未注入时静默忽略，便于单测）。

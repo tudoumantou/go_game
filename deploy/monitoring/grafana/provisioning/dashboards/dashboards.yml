@@ -1,5 +1,5 @@
 # deploy/monitoring/grafana/provisioning/dashboards/dashboards.yml
-# 从 /var/lib/grafana/dashboards 目录自动加载看板 JSON
+# 从 /monitoring/grafana/dashboards 目录自动加载看板 JSON
 apiVersion: 1
 
 providers:
@@ -11,5 +11,5 @@ providers:
     updateIntervalSeconds: 30
     allowUiUpdates: true
     options:
-      path: /var/lib/grafana/dashboards
+      path: /monitoring/grafana/dashboards
       foldersFromFilesStructure: false

@@ -1,0 +1,41 @@
+// 七日循环签到（6600-6699）。业务日期固定使用北京时间，客户端不提交日期或角色 ID。
+syntax = "proto3";
+
+package game_study.game.v1;
+
+option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message SigninReward {
+  int32 item_id = 1;
+  int64 count = 2;
+}
+
+message SigninDay {
+  int32 day = 1;
+  repeated SigninReward rewards = 2;
+  bool claimed = 3;
+  bool missed = 4;
+}
+
+message SigninState {
+  int32 today = 1; // 周期内第几天，1-7。
+  bool signed_today = 2;
+  int64 cycle_start = 3; // Unix 秒。
+  int64 cycle_end = 4; // 下周期开始时间，Unix 秒。
+  int64 next_reset_at = 5; // 下次零点，Unix 秒。
+  repeated SigninDay days = 6;
+}
+
+message SigninInfoReq {} // MsgID: 6601
+message SigninInfoResp { // MsgID: 6602
+  int32 code = 1;
+  SigninState state = 2;
+}
+
+message SigninClaimReq {} // MsgID: 6603
+message SigninClaimResp { // MsgID: 6604
+  int32 code = 1; // 0 成功（重复请求也成功）；6601 配置错误；6602 背包数量超限；1 系统错误。
+  bool already = 2; // 当天重复领取，不再发奖。
+  repeated SigninReward rewards = 3; // 当日持久化的实际奖励。
+  SigninState state = 4;
+}

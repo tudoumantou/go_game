@@ -1,0 +1,57 @@
+# 网关服配置（dev 环境）
+# 设计文档 19.1；敏感信息（MySQL DSN 等）用 ${VAR} 环境变量注入，不入库。
+# 端口规划：见 19.1 端口表（登录 8080/8081，网关 9001/9101，游戏 9100/9102，
+# 中心 9200/9201，跨服 9300/9301）。
+server:
+  name: gateway-01
+  env: dev
+  tcp_addr: "0.0.0.0:9001"
+  max_conns: 100000            # 单网关最大连接（超限拒绝新连接）
+  max_packet_size: 65536       # 单包上限 64KB
+  read_timeout: 45s
+  write_queue_size: 1024       # 单连接写队列深度
+  session_reconnect_ttl: 90s   # 断线会话保留期
+
+crypto:                        # RSA+AES 配置
+  enabled: true
+  rsa_private_key: "/app/keys/gateway_rsa.pem"
+  rsa_key_id: "k1"
+  prev_rsa_public_key: ""      # 轮换期上一把公钥
+
+rpc:                           # gRPC 客户端（连游戏服）
+  etcd_endpoints: ["etcd:2379"]
+  service_prefix: "/game_study/game"
+  channel_per_target: 16       # 每目标 Channel 数
+  max_streams_per_channel: 2000
+  dial_timeout: 3s
+  keepalive: 10s
+
+redis:
+  addrs: ["redis:6379"]
+  pool_size: 100               # Token/在线状态查询为主
+  min_idle_conns: 20           # 必须 ≤ pool_size
+  password: ""
+  db: 0
+
+kafka:
+  brokers: ["${KAFKA_BROKERS}"]
+  producer_required_acks: all
+  consumer_group: "gateway-broadcast"
+
+log:
+  level: info
+  format: json
+  sample_first: 100
+
+metrics:
+  enable: true
+  addr: "0.0.0.0:9101"
+
+shutdown:
+  total_timeout: 60s
+  drain_timeout: 30s
+  flush_timeout: 30s
+
+etcd:
+  endpoints: ["etcd:2379"]
+  lease_ttl: 10
