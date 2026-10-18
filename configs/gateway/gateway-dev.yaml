@@ -34,7 +34,7 @@ redis:
   db: 0
 
 kafka:
-  brokers: ["127.0.0.1:9092"]
+  brokers: ["${KAFKA_BROKERS}"]
   producer_required_acks: all
   consumer_group: "gateway-broadcast"
 

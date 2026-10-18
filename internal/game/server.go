@@ -5,23 +5,32 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/attr"
 	"game_study/internal/game/module/bag"
+	"game_study/internal/game/module/chat"
 	"game_study/internal/game/module/item"
+	"game_study/internal/game/module/mail"
+	gamemq "game_study/internal/game/mq"
 	"game_study/internal/game/player"
 	"game_study/internal/game/rpc"
 	"game_study/pkg/actor"
+	"game_study/pkg/cache"
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
 	"game_study/pkg/log"
+	pkgmq "game_study/pkg/mq"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 )
+
+// onlineTTL 在线状态 TTL（客户端 15s 心跳，3 倍冗余）。
+const onlineTTL = 45 * time.Second
 
 // Server 游戏服（组装层入口，职责见设计文档 3.1 目录树）
 type Server struct {
@@ -38,6 +47,11 @@ type Server struct {
 	database *db.DB
 	repo     *player.Repository
 	flusher  *flush.Flusher
+
+	redis     *cache.Client
+	presence  *cache.Presence
+	producer  *pkgmq.Producer
+	consumers *gamemq.Group
 
 	mu       sync.RWMutex
 	sessions map[uint64]int64 // session_id -> player_id
@@ -68,7 +82,25 @@ func (s *Server) Start(ctx context.Context) error {
 		s.repo = player.NewRepository(database)
 	}
 
-	// ② Actor 系统 + 模块
+	// ② Redis（在线状态 / 幂等 / 离线暂存）
+	var deduper pkgmq.Deduper = pkgmq.NoopDeduper{}
+	if len(s.cfg.Redis.Addrs) > 0 {
+		redisClient, err := cache.New(cache.RedisConfig{
+			Addrs:    s.cfg.Redis.Addrs,
+			Password: s.cfg.Redis.Password,
+			DB:       s.cfg.Redis.DB,
+			PoolSize: s.cfg.Redis.PoolSize,
+			MinIdle:  s.cfg.Redis.MinIdleConn,
+		})
+		if err != nil {
+			return fmt.Errorf("redis: %w", err)
+		}
+		s.redis = redisClient
+		s.presence = cache.NewPresence(redisClient.GetClient())
+		deduper = cache.NewRedisDeduper(redisClient.GetClient())
+	}
+
+	// ③ Actor 系统 + 模块
 	s.actorSys = actor.NewSystem(actor.Config{
 		ShardCount:  s.cfg.Actor.ShardCount,
 		MailboxSize: s.cfg.Actor.MailboxSize,
@@ -80,7 +112,16 @@ func (s *Server) Start(ctx context.Context) error {
 	s.modules.Register(bag.New(s.logger))
 	s.modules.Register(item.New(s.logger))
 
-	// ③ Write-Behind flusher
+	var mailMod *mail.Module
+	var chatMod *chat.Module
+	if s.database != nil {
+		mailMod = mail.New(mail.NewRepo(s.database), s.logger)
+		chatMod = chat.New(chat.NewRepo(s.database), s.logger)
+		s.modules.Register(mailMod)
+		s.modules.Register(chatMod)
+	}
+
+	// ④ Write-Behind flusher
 	flushInterval, _ := config.ParseDuration(s.cfg.Flush.Interval)
 	stagger, _ := config.ParseDuration(s.cfg.Flush.Stagger)
 	s.flusher = flush.New(flush.Config{
@@ -93,7 +134,32 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, s.flusher.MarkDirty)
 
-	// ④ etcd 注册
+	// ⑤ Kafka 消费者（充值/邮件/跨服私聊）
+	if len(s.cfg.Kafka.Brokers) > 0 {
+		s.producer = pkgmq.NewProducer(pkgmq.Config{
+			Brokers:      s.cfg.Kafka.Brokers,
+			RequiredAcks: s.cfg.Kafka.ProducerRequiredAcks,
+		})
+		group, err := gamemq.NewGroup(s.cfg, gamemq.Deps{
+			Deduper:  deduper,
+			Presence: s.presence,
+			Players:  s.players,
+			Sys:      s.actorSys,
+			Producer: s.producer,
+			Mail:     mailMod,
+			Chat:     chatMod,
+			Logger:   s.logger,
+			NodeID:   s.cfg.Server.Name,
+		})
+		if err != nil {
+			return fmt.Errorf("kafka consumers: %w", err)
+		}
+		s.consumers = group
+		group.Run(ctx)
+		s.logger.Info("kafka consumers started", "count", group.Len())
+	}
+
+	// ⑥ etcd 注册
 	etcdReg, err := gameetcd.New(s.cfg.Etcd.Endpoints)
 	if err != nil {
 		return fmt.Errorf("etcd: %w", err)
@@ -112,7 +178,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.etcdCancel = cancel
 
-	// ③ gRPC server
+	// ⑦ gRPC server
 	s.gameRPC = rpc.NewGameServer(s, s.logger)
 	s.rpcServer = rpcpkg.NewServer(s.cfg.Server.GRPCAddr, s.logger)
 	internalv2.RegisterGameServiceServer(s.rpcServer.GRPCServer(), s.gameRPC)
@@ -142,18 +208,32 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.flusher.Stop()
 	}
-	// STOP：停 gRPC 与 Actor
+	// STOP：停消费者 → 停 gRPC → 停 Actor → Flush 生产者
+	if s.consumers != nil {
+		if err := s.consumers.Close(); err != nil {
+			s.logger.Warn("consumer close", "err", err)
+		}
+	}
 	if s.rpcServer != nil {
 		s.rpcServer.Stop()
 	}
 	if s.actorSys != nil {
 		s.actorSys.Stop()
 	}
+	if s.producer != nil {
+		_ = s.producer.Flush(ctx)
+		if err := s.producer.Close(); err != nil {
+			s.logger.Warn("producer close", "err", err)
+		}
+	}
 	if s.etcdReg != nil {
 		_ = s.etcdReg.Close()
 	}
 	if s.database != nil {
 		_ = s.database.Close()
+	}
+	if s.redis != nil {
+		_ = s.redis.Close()
 	}
 	s.logger.Info("game stopped")
 	return nil
@@ -165,7 +245,6 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 	if !ok {
 		return nil
 	}
-	_ = pid
 	_ = s.actorSys.Send(pid, &player.SaveMsg{})
 	return nil
 }
@@ -173,7 +252,6 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 // OnBind 实现 rpc.StreamHandler。
 func (s *Server) OnBind(ctx context.Context, sessionID uint64, playerID int64) error {
 	if playerID == 0 {
-		// P3 占位：网关只传 token，player_id 解析在 P4 接 Redis/DB
 		return fmt.Errorf("player_id is required for bind")
 	}
 	pid, err := s.players.GetOrSpawn(playerID)
@@ -184,10 +262,14 @@ func (s *Server) OnBind(ctx context.Context, sessionID uint64, playerID int64) e
 	s.sessions[sessionID] = playerID
 	s.mu.Unlock()
 
-	resCh := make(chan *player.BindResult, 1)
-	_ = resCh // TODO(P4): 用 Ask 模式等待 BindResult
 	if err := s.actorSys.SendWithSender(pid, &player.BindMsg{SessionID: sessionID, PlayerID: playerID}, nil); err != nil {
 		return err
+	}
+	// 写在线状态（Kafka 消费者据此做本地性判定）
+	if s.presence != nil {
+		if err := s.presence.SetOnline(ctx, playerID, s.cfg.Server.Name, onlineTTL); err != nil {
+			s.logger.Warn("set online failed", "player_id", playerID, "err", err)
+		}
 	}
 	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID)
 	return nil
@@ -204,6 +286,12 @@ func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	}
 	if pid, ok := s.players.Get(playerID); ok {
 		_ = s.actorSys.Send(pid, &player.UnbindMsg{SessionID: sessionID})
+	}
+	// 摘在线状态（玩家可能已迁移到其它服，仅在归属本服时删除）
+	if s.presence != nil {
+		if node, online := s.presence.IsOnline(ctx, playerID); online && node == s.cfg.Server.Name {
+			_ = s.presence.SetOffline(ctx, playerID)
+		}
 	}
 	return nil
 }

@@ -26,7 +26,7 @@ mysql:                          # 账号/角色元信息（Tier-1 直连）
   max_idle_conns: 5
 
 kafka:                          # 充值订单生产
-  brokers: ["127.0.0.1:9092"]
+  brokers: ["${KAFKA_BROKERS}"]
   producer_required_acks: all
   consumer_group: "login-server"
 

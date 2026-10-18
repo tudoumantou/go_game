@@ -9,6 +9,10 @@ CONFIG_ROOT="configs"
 LOG_DIR="${LOG_DIR:-bin/logs}"
 mkdir -p "$LOG_DIR"
 
+# 本地 Kafka EXTERNAL listener 默认地址（docker-compose 暴露 9093）；
+# 未设置时不启用 Kafka（配置里 ${KAFKA_BROKERS} 展开为空会被过滤，服务自动降级）
+export KAFKA_BROKERS="${KAFKA_BROKERS:-127.0.0.1:9093}"
+
 PIDS=()
 cleanup() {
   echo ""

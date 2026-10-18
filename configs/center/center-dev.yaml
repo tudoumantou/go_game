@@ -28,7 +28,7 @@ stats:
   mysql_shard: 10              # 统计落库分片
 
 relay_kafka:                   # 中心服集群间中转
-  brokers: ["127.0.0.1:9092"]
+  brokers: ["${KAFKA_BROKERS}"]
   topic: "center.relay"
 
 redis:

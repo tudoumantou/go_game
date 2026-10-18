@@ -191,10 +191,31 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	cfg.normalize()
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate config %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// normalize 清理空值：
+//   - 环境变量未设置时 ${KAFKA_BROKERS} 会展开为空串，过滤后 broker 列表为空 → Kafka 自动降级禁用
+//   - 其余列表字段同理
+func (c *Config) normalize() {
+	c.Kafka.Brokers = filterNonEmpty(c.Kafka.Brokers)
+	c.Redis.Addrs = filterNonEmpty(c.Redis.Addrs)
+	c.Etcd.Endpoints = filterNonEmpty(c.Etcd.Endpoints)
+	c.RPC.EtcdEndpoints = filterNonEmpty(c.RPC.EtcdEndpoints)
+}
+
+func filterNonEmpty(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // Validate 必填字段校验（与 19.1 端口规划/字段对齐）

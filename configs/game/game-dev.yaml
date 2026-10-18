@@ -24,7 +24,7 @@ redis:
   db: 0
 
 kafka:
-  brokers: ["127.0.0.1:9092"]
+  brokers: ["${KAFKA_BROKERS}"]
   producer_required_acks: all
   consumer_group: "game-server-01"   # 每实例独立组，分区按 playerID 有序
 

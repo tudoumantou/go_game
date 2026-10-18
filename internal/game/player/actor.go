@@ -37,6 +37,19 @@ type PacketMsg struct {
 	Body  []byte
 }
 
+// GrantItem 奖励道具。
+type GrantItem struct {
+	ItemID int32
+	Count  int64
+}
+
+// GrantItemsMsg 发放奖励（充值发货/邮件领取等）。
+type GrantItemsMsg struct {
+	Source string // 来源标记（recharge/mail/...），用于日志与幂等排查
+	Items  []GrantItem
+	Done   chan error // 可选：同步等待结果
+}
+
 // Actor 玩家 Actor。
 type Actor struct {
 	playerID int64
@@ -77,6 +90,8 @@ func (a *Actor) Receive(ctx *actor.Context) {
 		a.onPacket(ctx, msg)
 	case *SaveMsg:
 		a.onSave(ctx)
+	case *GrantItemsMsg:
+		a.onGrantItems(ctx, msg)
 	default:
 		a.logger.Debug("unknown message", "type", fmt.Sprintf("%T", msg))
 	}
@@ -139,6 +154,24 @@ func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 	}
 	if lastErr != nil {
 		a.logger.Warn("packet handle failed", "msg_id", msg.MsgID, "err", lastErr)
+	}
+}
+
+// onGrantItems 发放奖励（Actor 内单线程执行，无需加锁）。
+func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
+	for _, it := range msg.Items {
+		if it.Count <= 0 {
+			continue
+		}
+		a.state.AddItem(it.ItemID, it.Count)
+	}
+	a.state.MarkDirty("bag")
+	if a.onDirty != nil {
+		a.onDirty(a.playerID)
+	}
+	a.logger.Info("grant items", "source", msg.Source, "count", len(msg.Items))
+	if msg.Done != nil {
+		msg.Done <- nil
 	}
 }
 
