@@ -188,20 +188,32 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 func (m *Module) OnSave(ctx context.Context) error { return nil }
 
 // OnLogin 实现 module.Module：按已穿装备重算属性加成。
+//
+// P12：优先用登录预加载的装备快照（省一次查询）；未预取时才回源 DB。
 func (m *Module) OnLogin(ctx *module.Context) error {
-	if m.repo == nil {
-		return nil
-	}
-	list, err := m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID())
-	if err != nil {
-		return err
-	}
-	ctx.State.ClearBonus()
-	for _, e := range list {
-		if !e.Equipped {
-			continue
+	var equippedIDs []int32
+
+	if ctx.Prefetch != nil {
+		for _, e := range ctx.Prefetch.Equips() {
+			if e.Equipped {
+				equippedIDs = append(equippedIDs, e.EquipID)
+			}
 		}
-		cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
+	} else if m.repo != nil {
+		list, err := m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID())
+		if err != nil {
+			return err
+		}
+		for _, e := range list {
+			if e.Equipped {
+				equippedIDs = append(equippedIDs, e.EquipID)
+			}
+		}
+	}
+
+	ctx.State.ClearBonus()
+	for _, equipID := range equippedIDs {
+		cfg, ok := gamedata.GetEquipCfg(int64(equipID))
 		if !ok {
 			continue
 		}

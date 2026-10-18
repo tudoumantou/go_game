@@ -46,14 +46,40 @@ type Event struct {
 	Delta int64  // 增量（数量）
 }
 
+// EquipSnapshot 预加载的装备行（避免模块 OnLogin 再查一次库）。
+type EquipSnapshot struct {
+	UID          int64
+	EquipID      int32
+	EnhanceLevel int32
+	Quality      int32
+	Equipped     bool
+}
+
+// ActivitySnapshot 预加载的活动进度行。
+type ActivitySnapshot struct {
+	ActivityID int32
+	Progress   int32
+	RewardMask int64
+}
+
+// PrefetchSource 登录预加载结果（12.6：全部并行拉取，模块 OnLogin 直接读）。
+//
+// 实现方是 player.Repository。返回 nil 表示未预取（降级为模块自行查库），
+// 模块必须同时支持两条路径。
+type PrefetchSource interface {
+	Equips() []EquipSnapshot
+	Activities() []ActivitySnapshot
+}
+
 // Context 模块上下文：Actor 上下文 + 玩家状态 + 下行发送。
 type Context struct {
-	Actor   *actor.Context
-	State   PlayerState
-	TraceID string
-	Send    Sender
-	Emit    func(evt Event)
-	AddExp  AddExpFunc
+	Actor    *actor.Context
+	State    PlayerState
+	Prefetch PrefetchSource // 登录预加载结果（可能为 nil）
+	TraceID  string
+	Send     Sender
+	Emit     func(evt Event)
+	AddExp   AddExpFunc
 }
 
 // Reply 向客户端回包（Send 未注入时静默忽略，便于单测）。

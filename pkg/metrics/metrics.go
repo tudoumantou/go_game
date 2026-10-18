@@ -60,6 +60,7 @@ func Init(service string) {
 		registerFlush()
 		registerChannel()
 		registerCross()
+		registerLogin()
 		registerCenter()
 		registerKafka()
 		enabled.Store(true)
@@ -441,6 +442,31 @@ func CrossSettled(reason string) {
 		return
 	}
 	crossSettled.WithLabelValues(Service(), reason).Inc()
+}
+
+// ============================ 登录 ============================
+
+var loginPreload *prometheus.HistogramVec
+
+func registerLogin() {
+	loginPreload = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: Namespace, Subsystem: "login", Name: "preload_duration_seconds",
+		Help:    "登录预加载耗时（20.1 目标 P99 < 2s）",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+	}, []string{"service", "result"})
+	registry.MustRegister(loginPreload)
+}
+
+// LoginPreloadObserve 记录一次预加载耗时。
+func LoginPreloadObserve(d time.Duration, ok bool) {
+	if !enabled.Load() {
+		return
+	}
+	result := "ok"
+	if !ok {
+		result = "error"
+	}
+	loginPreload.WithLabelValues(Service(), result).Observe(d.Seconds())
 }
 
 // ============================ 中心服 ============================

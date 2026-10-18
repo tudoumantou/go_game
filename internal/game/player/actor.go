@@ -71,9 +71,11 @@ type SendFunc func(sessionID uint64, msgID uint32, body []byte) error
 type Actor struct {
 	playerID int64
 	state    *State
-	registry *module.Registry
-	logger   *log.Logger
-	repo     *Repository
+	registry  *module.Registry
+	logger    *log.Logger
+	repo      *Repository
+	preloader *Preloader
+	prefetch  *Prefetch
 	onDirty  func(playerID int64)
 	sendFunc SendFunc
 
@@ -93,6 +95,12 @@ func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, rep
 		onDirty:  onDirty,
 		sendFunc: sendFunc,
 	}
+}
+
+// WithPreloader 注入预加载器（12.6：一次往返拿完全部登录数据）。
+func (a *Actor) WithPreloader(p *Preloader) *Actor {
+	a.preloader = p
+	return a
 }
 
 // State 返回玩家状态。
@@ -125,16 +133,13 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	a.sessionID = msg.SessionID
 	a.online = true
 
-	// 首次上线：从 MySQL 预加载
-	if !a.loaded && a.repo != nil {
-		state, err := a.repo.Load(context.Background(), a.playerID)
-		if err != nil {
-			a.logger.Error("load player failed", "err", err)
+	// 首次上线：并行预加载全部数据（12.6）；重连时 Actor 未销毁，跳过
+	if !a.loaded {
+		if err := a.preload(ctx); err != nil {
+			a.logger.Error("preload player failed", "err", err)
 			_ = ctx.Respond(&BindResult{Code: 1, Err: err.Error()})
 			return
 		}
-		a.state = state
-		a.loaded = true
 	}
 
 	mctx := a.moduleCtx(ctx)
@@ -145,6 +150,34 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	}
 	a.logger.Info("player online", "session_id", msg.SessionID)
 	_ = ctx.Respond(&BindResult{Code: 0})
+}
+
+// preload 登录数据加载（12.6）。
+//
+// 优先用 Preloader（5 查询并行 + 超时保护）；未注入时退回逐表串行加载。
+func (a *Actor) preload(ctx *actor.Context) error {
+	if a.preloader != nil {
+		state, pf, err := a.preloader.Load(context.Background(), a.playerID)
+		if err != nil {
+			return err
+		}
+		a.state = state
+		a.prefetch = pf
+		a.loaded = true
+		return nil
+	}
+	if a.repo != nil {
+		state, err := a.repo.Load(context.Background(), a.playerID)
+		if err != nil {
+			return err
+		}
+		a.state = state
+		a.loaded = true
+		return nil
+	}
+	// 无 DB 环境（单测）：用空状态
+	a.loaded = true
+	return nil
 }
 
 func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
@@ -218,6 +251,9 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 		Actor: actx,
 		State: a.state,
 		Send:  a.send,
+	}
+	if a.prefetch != nil {
+		mctx.Prefetch = a.prefetch
 	}
 	mctx.AddExp = a.addExp
 	mctx.Emit = func(evt module.Event) {

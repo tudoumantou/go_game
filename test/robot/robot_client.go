@@ -30,6 +30,11 @@ type Client struct {
 
 	conn   net.Conn
 	cipher *crypto.SessionCipher
+
+	// pendingPush 收到的非目标响应消息（推送），供后续 Wait* 消费。
+	// 不加这个缓存的话，call() 等响应时读到的推送会被直接丢弃 ——
+	// 曾导致「登录后的离线补投消息永远收不到」的假阴性。
+	pendingPush []codec.Packet
 }
 
 // New 创建机器人。
@@ -255,13 +260,15 @@ func (c *Client) call(msgID uint32, req proto.Message, respID uint32, resp proto
 		return err
 	}
 
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 16; i++ {
 		pkt, err := c.readPacket(5 * time.Second)
 		if err != nil {
 			return fmt.Errorf("wait resp %d: %w", respID, err)
 		}
 		if uint32(pkt.MsgID) != respID {
-			continue // 推送或其它消息，跳过
+			// 推送/其它消息：缓存起来给后续 Wait* 用，不能丢
+			c.pendingPush = append(c.pendingPush, pkt)
+			continue
 		}
 		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
 		if err != nil {
@@ -450,28 +457,46 @@ func (c *Client) ChatHistory(peerID int64, limit int32) (*gamev1.ChatHistoryResp
 	return resp, nil
 }
 
-// WaitChatNotify 等待一条聊天推送（6010），用于验证跨服投递。
-func (c *Client) WaitChatNotify(timeout time.Duration) (*gamev1.ChatMessageNotify, error) {
+// nextPush 取一条指定协议号的推送：优先消费缓存，没有再读连接。
+func (c *Client) nextPush(msgID uint32, timeout time.Duration) (codec.Packet, bool, error) {
+	for i, p := range c.pendingPush {
+		if uint32(p.MsgID) == msgID {
+			c.pendingPush = append(c.pendingPush[:i], c.pendingPush[i+1:]...)
+			return p, true, nil
+		}
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		pkt, err := c.readPacket(time.Until(deadline))
 		if err != nil {
-			return nil, err
+			return codec.Packet{}, false, err
 		}
-		if uint32(pkt.MsgID) != 6010 {
-			continue
+		if uint32(pkt.MsgID) == msgID {
+			return pkt, true, nil
 		}
-		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
-		if err != nil {
-			return nil, err
-		}
-		msg := &gamev1.ChatMessageNotify{}
-		if err := proto.Unmarshal(plain, msg); err != nil {
-			return nil, err
-		}
-		return msg, nil
+		c.pendingPush = append(c.pendingPush, pkt)
 	}
-	return nil, fmt.Errorf("no chat notify within %s", timeout)
+	return codec.Packet{}, false, nil
+}
+
+// WaitChatNotify 等待一条聊天推送（6010），用于验证跨服投递。
+func (c *Client) WaitChatNotify(timeout time.Duration) (*gamev1.ChatMessageNotify, error) {
+	pkt, ok, err := c.nextPush(6010, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("no chat notify within %s", timeout)
+	}
+	_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+	if err != nil {
+		return nil, err
+	}
+	msg := &gamev1.ChatMessageNotify{}
+	if err := proto.Unmarshal(plain, msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
 }
 
 // ---------------- B4 公会 / 组队 / 副本 / 商店 / 活动 ----------------
@@ -615,26 +640,22 @@ func (c *Client) Match(mode string) (*gamev1.MatchResp, error) {
 
 // WaitBattleStart 等待开战通知（5001 推送）。
 func (c *Client) WaitBattleStart(timeout time.Duration) (*gamev1.BattleStartNotify, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		pkt, err := c.readPacket(time.Until(deadline))
-		if err != nil {
-			return nil, err
-		}
-		if uint32(pkt.MsgID) != 5001 {
-			continue
-		}
-		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
-		if err != nil {
-			return nil, err
-		}
-		msg := &gamev1.BattleStartNotify{}
-		if err := proto.Unmarshal(plain, msg); err != nil {
-			return nil, err
-		}
-		return msg, nil
+	pkt, ok, err := c.nextPush(5001, timeout)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("no battle start within %s", timeout)
+	if !ok {
+		return nil, fmt.Errorf("no battle start within %s", timeout)
+	}
+	_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+	if err != nil {
+		return nil, err
+	}
+	msg := &gamev1.BattleStartNotify{}
+	if err := proto.Unmarshal(plain, msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
 }
 
 // BattleOp 上报战斗操作（5021，无响应）。
@@ -653,26 +674,22 @@ func (c *Client) BattleOp(roomID uint64, msgID uint32, body []byte) error {
 
 // WaitBattleSync 等待对手战斗事件（5020 推送）。
 func (c *Client) WaitBattleSync(timeout time.Duration) (*gamev1.BattleSyncNotify, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		pkt, err := c.readPacket(time.Until(deadline))
-		if err != nil {
-			return nil, err
-		}
-		if uint32(pkt.MsgID) != 5020 {
-			continue
-		}
-		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
-		if err != nil {
-			return nil, err
-		}
-		msg := &gamev1.BattleSyncNotify{}
-		if err := proto.Unmarshal(plain, msg); err != nil {
-			return nil, err
-		}
-		return msg, nil
+	pkt, ok, err := c.nextPush(5020, timeout)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("no battle sync within %s", timeout)
+	if !ok {
+		return nil, fmt.Errorf("no battle sync within %s", timeout)
+	}
+	_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+	if err != nil {
+		return nil, err
+	}
+	msg := &gamev1.BattleSyncNotify{}
+	if err := proto.Unmarshal(plain, msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
 }
 
 // BattleResult 上报战斗结论（5010/5011）。
@@ -692,24 +709,20 @@ func (c *Client) BattleResult(roomID uint64, token string, result int32) (*gamev
 
 // WaitBattleSettle 等待结算推送（5011 推送，兜底路径）。
 func (c *Client) WaitBattleSettle(timeout time.Duration) (*gamev1.BattleSettleNotify, error) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		pkt, err := c.readPacket(time.Until(deadline))
-		if err != nil {
-			return nil, err
-		}
-		if uint32(pkt.MsgID) != 5011 {
-			continue
-		}
-		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
-		if err != nil {
-			return nil, err
-		}
-		msg := &gamev1.BattleSettleNotify{}
-		if err := proto.Unmarshal(plain, msg); err != nil {
-			return nil, err
-		}
-		return msg, nil
+	pkt, ok, err := c.nextPush(5011, timeout)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("no battle settle within %s", timeout)
+	if !ok {
+		return nil, fmt.Errorf("no battle settle within %s", timeout)
+	}
+	_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+	if err != nil {
+		return nil, err
+	}
+	msg := &gamev1.BattleSettleNotify{}
+	if err := proto.Unmarshal(plain, msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
 }

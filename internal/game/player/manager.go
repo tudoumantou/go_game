@@ -15,9 +15,10 @@ type Manager struct {
 	sys      *actor.System
 	registry *module.Registry
 	logger   *log.Logger
-	repo     *Repository
-	onDirty  func(playerID int64)
-	sendFunc SendFunc
+	repo      *Repository
+	preloader *Preloader
+	onDirty   func(playerID int64)
+	sendFunc  SendFunc
 
 	mu    sync.RWMutex
 	index map[int64]*actor.PID // player_id -> PID
@@ -36,6 +37,9 @@ func NewManager(sys *actor.System, registry *module.Registry, logger *log.Logger
 	}
 }
 
+// SetPreloader 注入预加载器（12.6）。
+func (m *Manager) SetPreloader(p *Preloader) { m.preloader = p }
+
 // GetOrSpawn 获取或创建玩家 Actor。
 func (m *Manager) GetOrSpawn(playerID int64) (*actor.PID, error) {
 	m.mu.RLock()
@@ -52,7 +56,11 @@ func (m *Manager) GetOrSpawn(playerID int64) (*actor.PID, error) {
 	}
 
 	id := fmt.Sprintf("player:%d", playerID)
-	pid, err := m.sys.Spawn(id, NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty, m.sendFunc))
+	actor := NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty, m.sendFunc)
+	if m.preloader != nil {
+		actor.WithPreloader(m.preloader)
+	}
+	pid, err := m.sys.Spawn(id, actor)
 	if err != nil {
 		return nil, err
 	}

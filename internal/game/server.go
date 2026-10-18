@@ -199,6 +199,11 @@ func (s *Server) Start(ctx context.Context) error {
 	s.flusher.Start(ctx)
 
 	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, s.flusher.MarkDirty, s.sendToClient)
+	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
+	if s.database != nil {
+		preloadTimeout := player.DefaultPreloadTimeout
+		s.players.SetPreloader(player.NewPreloader(s.database, s.logger, preloadTimeout))
+	}
 
 	// ⑤ Kafka 消费者（充值/邮件/跨服私聊）
 	if len(s.cfg.Kafka.Brokers) > 0 {
@@ -506,16 +511,20 @@ func (s *Server) OnClientPacket(ctx context.Context, sessionID uint64, msgID uin
 	accountID := s.accounts[sessionID]
 	s.mu.RUnlock()
 
-	// 未选角：仅放行进游戏/创角两条会话级协议
+	// 会话级协议始终在此处理。
+	//
+	// 注意：不能只在 playerID==0 时才放行 —— 已有角色的账号在 OnBind 阶段就被
+	// 自动绑定（省一次往返），此时客户端仍会发 EnterGame(1010)。若走 Actor 路由，
+	// 会因「无模块处理 1010」而静默丢包，客户端只能等超时（重连场景必现）。
+	switch msgID {
+	case msgIDEnterGame:
+		return s.handleEnterGame(ctx, sessionID, accountID, body)
+	case msgIDCreateRole:
+		return s.handleCreateRole(ctx, sessionID, accountID, body)
+	}
+
 	if playerID == 0 {
-		switch msgID {
-		case msgIDEnterGame:
-			return s.handleEnterGame(ctx, sessionID, accountID, body)
-		case msgIDCreateRole:
-			return s.handleCreateRole(ctx, sessionID, accountID, body)
-		default:
-			return fmt.Errorf("session %d has no role, drop msg %d", sessionID, msgID)
-		}
+		return fmt.Errorf("session %d has no role, drop msg %d", sessionID, msgID)
 	}
 
 	pid, ok := s.players.Get(playerID)
@@ -546,7 +555,13 @@ func (s *Server) handleEnterGame(ctx context.Context, sessionID uint64, accountI
 	if err := s.bindPlayer(ctx, sessionID, role.Id); err != nil {
 		return err
 	}
-	return s.reply(sessionID, 1011, resp)
+	if err := s.reply(sessionID, 1011, resp); err != nil {
+		return err
+	}
+	// 离线暂存补投（12.6.2）：必须放在 1011 之后 ——
+	// 客户端收到进游戏回执才开始处理推送，过早补投会被当成「未知消息」丢掉。
+	go s.drainOffline(role.Id, sessionID)
+	return nil
 }
 
 // handleCreateRole 创角：校验 → 落库 → 拉起 Actor → 回包。

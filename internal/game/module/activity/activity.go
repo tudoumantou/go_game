@@ -148,24 +148,38 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 func (m *Module) OnSave(ctx context.Context) error { return nil }
 
 // OnLogin 实现 module.Module：登录活动（activity.xml type=login）进度 +1。
+//
+// P12：优先用登录预加载的进度（省一次查询）。
+// 修复：原实现在 cfg 循环内反复调 repo.ListByPlayer（每个活动查一次库），改为只查一次。
 func (m *Module) OnLogin(ctx *module.Context) error {
 	if m.repo == nil {
 		return nil
 	}
+
+	progress := map[int32]int32{}
+	if ctx.Prefetch != nil {
+		for _, a := range ctx.Prefetch.Activities() {
+			progress[a.ActivityID] = a.Progress
+		}
+	} else {
+		recs, err := m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID())
+		if err != nil {
+			return nil // 预加载失败不阻断登录，下一轮再补
+		}
+		for id, rec := range recs {
+			progress[id] = rec.Progress
+		}
+	}
+
 	for _, cfg := range gamedata.ActivityCfgList {
 		if cfg.Col2 != "login" {
 			continue
 		}
-		var progress int32
-		if recs, err := m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID()); err == nil {
-			if rec, ok := recs[int32(cfg.Id)]; ok {
-				progress = rec.Progress
-			}
-		}
-		if progress >= int32(cfg.Col3) {
+		cur := progress[int32(cfg.Id)]
+		if cur >= int32(cfg.Col3) {
 			continue
 		}
-		if err := m.repo.UpsertProgress(context.Background(), ctx.State.PlayerID(), int32(cfg.Id), progress+1); err != nil {
+		if err := m.repo.UpsertProgress(context.Background(), ctx.State.PlayerID(), int32(cfg.Id), cur+1); err != nil {
 			m.logger.Warn("activity login progress failed", "activity_id", cfg.Id, "err", err)
 		}
 	}
