@@ -1,0 +1,55 @@
+# game_study 工程入口（与设计文档 19.3 对齐）
+#   生成体系：make gen = gen-proto + gen-data + gen-db（CI 强制一致性卡点，见 16.4）
+GO      ?= go
+BIN     := bin
+VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
+.PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test lint fmt vet dev run-all clean
+
+help: ## 查看全部命令
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[32m%-12s\033[0m %s\n", $$1, $$2}'
+
+gen: gen-proto gen-data gen-db ## 一键生成全部代码
+
+gen-proto: ## proto → pkg/pb（buf，需先安装 buf）
+	cd api/proto && buf generate
+
+gen-data: ## XML 游戏数据 → pkg/gamedata（全量覆盖 *_gen.go）
+	$(GO) run ./tools/gendata -in configs/gamedata/xml -out pkg/gamedata
+
+gen-db: ## DDL → pkg/model（覆盖 *_gen.go，仅新建 *_model.go）
+	$(GO) run ./tools/gendb -in sql/schema -out pkg/model
+
+keygen: ## 生成网关握手 RSA 密钥对（输出 deploy/keys，私钥不入库）
+	$(GO) run ./tools/keygen -out deploy/keys
+
+db-init: ## DDL → MySQL 建表（首次部署）
+	./scripts/db-init.sh
+
+db-seed: ## sql/seed → 初始数据（道具/等级等安全表 + 测试账号）
+	./scripts/db-seed.sh
+
+build: ## 交叉编译五服务 → bin/
+	./scripts/build.sh
+
+test: ## 单测 + 集成（test/integration，testcontainers 起真实中间件）
+	$(GO) test ./...
+
+lint: ## golangci-lint + buf lint + gen 一致性检查
+	./scripts/lint.sh
+
+fmt: ## go fmt 全量
+	$(GO) fmt ./...
+
+vet: ## go vet 全量
+	$(GO) vet ./...
+
+dev: ## 仅起中间件（etcd/redis/mysql/kafka）
+	docker compose -f deploy/docker-compose.yaml up -d etcd redis mysql kafka
+
+run-all: ## 本地跑五进程（需先 make dev && make db-init && make db-seed）
+	@./scripts/run-all.sh
+
+clean: ## 清理构建产物
+	rm -rf $(BIN)

@@ -1,0 +1,64 @@
+# game_study
+
+通用游戏服务器框架（Go 1.22+）——面向中小型实时/半实时游戏（MMO、MOBA、卡牌、ARPG）。
+
+- **设计文档**：[`docs/game_study-服务器框架设计文档.md`](docs/game_study-服务器框架设计文档.md)（唯一事实源，架构/协议/数据/部署全部以它为准）
+- **当前阶段**：**P0 工程骨架已完成**（目录结构 / Makefile / buf / gendata / gendb / CI 五步卡点 / docker-compose / k8s manifests / 集成测试骨架），全量验证通过：`go build` `go vet` `golangci-lint` `go test` `buf lint` `scripts/build.sh` 交叉编译、game 服启动 + SIGINT 优雅退出冒烟均绿。业务模块（登录/网关/游戏逻辑）按路线图 P1 起填充。
+
+## 服务组成
+
+| 服务 | 目录 | 职责 | 端口 |
+| --- | --- | --- | --- |
+| 登录服 LoginServer | `internal/login` | 账号认证、Token 签发、网关/游戏服列表、充值下单 | 8080(HTTP)/8081(metrics) |
+| 网关服 GatewayServer | `internal/gateway` | 客户端加密长连接、会话管理、消息路由 | 9001(TCP)/9101(metrics) |
+| 游戏服 GameServer | `internal/game` | Actor 玩家逻辑、业务模块、Write-Behind 落库 | 9100(gRPC)/9102(metrics) |
+| 中心服 CenterServer | `internal/center` | 节点注册/中转/排行榜/统计/跨服分组 | 9200(gRPC)/9201(metrics) |
+| 跨服节点 CrossServer | `internal/cross` | 跨服房间/战场（不注册 etcd、不连网关） | 9300(gRPC)/9301(metrics) |
+
+## 快速开始
+
+```bash
+make gen          # proto/data/db 三大生成（需 buf：https://github.com/bufbuild/buf#installation）
+make keygen       # 生成网关握手 RSA 密钥对 → deploy/keys
+make dev          # 起中间件 etcd/redis/mysql/kafka
+make db-init      # 建表
+make db-seed      # 灌初始数据（含测试账号）
+make run-all      # 按 19.5 启动顺序起五进程
+make test         # 单测（go test ./...；集成测试需 -tags=integration，见 test/integration）
+make lint         # golangci-lint + buf lint + 生成一致性
+```
+
+> 集成测试（23.3）需本机 Docker：`go test -tags=integration ./test/integration/ -v -count=1`（testcontainers 起 MySQL 8.0 + Redis 7）。
+
+## P0 生成物规模
+
+| 产物 | 数量 | 生成器 | CI 卡点 |
+| --- | --- | --- | --- |
+| `pkg/pb/**/*.pb.go` | 26 个 proto | buf generate | ① ② |
+| `pkg/gamedata/*_gen.go` | 32 张配置表 | gendata | ① |
+| `pkg/model/*_gen.go` | 25 张表 CRUD | gendb（sql/schema 19 个 DDL） | ① |
+| `bin/{login,gateway,game,center,cross}` | 5 个静态二进制 | scripts/build.sh | ⑤ |
+
+## 目录铁律（设计文档 3.2）
+
+| 目录 | 规则 |
+| --- | --- |
+| `api/` | 协议单一事实源，只放 `.proto` 与 buf 配置 |
+| `pkg/pb` `pkg/model` `pkg/gamedata` | **生成代码，禁止手改**（`make gen` 产出，CI 卡点守护） |
+| `pkg/` | 可复用基础库，禁止 import `internal/` |
+| `internal/` | 服务私有实现，禁止跨服务 import |
+| `cmd/` | 只做组装（配置 → 组件 → 服务 → 注册中心 → 优雅退出），不含业务 |
+| `sql/schema` | 手写 DDL（gendb 输入）；`sql/seed` 初始数据 |
+
+## 分层规范
+
+```
+cmd/main.go            组装层
+internal/<svc>/server.go
+  ├── handler/router   接入层（协议解析/校验/中间件）
+  ├── service          领域层（流程编排/事务边界）
+  └── repo             数据层（SQL/Redis）
+游戏服特殊分层：rpc.server → actor → player/scene → module → flusher
+```
+
+依赖方向铁律：`handler/router → service → repo`，`module → actor context → pkg/*`，任何一层不得反向依赖。

@@ -1,0 +1,13 @@
+# golangci-lint 配置（CI 第 ③ 步；规则随 P1 补齐收紧）
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck      # 错误必须处理（落库/Kafka 等关键路径强制）
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  # disable 留空：errcheck 的显式忽略（_ = f()）由默认配置覆盖，无需禁用

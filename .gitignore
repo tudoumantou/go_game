@@ -1,0 +1,15 @@
+# 构建产物
+/bin/
+/volumes/
+*.out
+coverage.txt
+
+# 密钥（make keygen 生成，严禁入库）
+/deploy/keys/*.pem
+!/deploy/keys/.gitkeep
+
+# 本地环境
+.env
+.idea/
+.vscode/
+*.log

@@ -1,0 +1,7 @@
+// 游戏业务协议：组队模块（team_limit.xml；team/team_member 表，匹配在 service/team_service）
+// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+syntax = "proto3";
+
+package game_study.game.v1;
+
+option go_package = "game_study/pkg/pb/game/v1;gamev1";

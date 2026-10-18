@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 任务表 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<quest>
+    <row id="1" col1="击杀 10 只野怪" col2="kill" col3="10" />
+    <row id="2" col1="使用 1 次经验药水" col2="use_item" col3="1" />
+</quest>

@@ -1,0 +1,42 @@
+# 跨服节点配置（复用 game 的 actor/flush 配置）（dev 环境）
+# 设计文档 19.1；敏感信息（MySQL DSN 等）用 ${VAR} 环境变量注入，不入库。
+# 端口规划：见 19.1 端口表（登录 8080/8081，网关 9001/9101，游戏 9100/9102，
+# 中心 9200/9201，跨服 9300/9301）。
+server:
+  name: cross-01
+  env: dev
+  grpc_addr: "0.0.0.0:9300"
+  # 注意：无 etcd 段（不注册，无需被网关发现）、无 tcp_addr（不连网关）
+
+actor:
+  shard_count: 256
+  mailbox_size: 4096
+
+center:                        # 只连中心服（上报 + 收 MatchAssign）
+  addr: "127.0.0.1:9200"
+  report_buffer: 2048
+
+battle:
+  room_max_idle: 300s          # 房间最大空闲（超时销毁）
+  result_retry: 5              # BattleResult 推送重试（经 CrossService 流直推参战游戏服）
+
+xservice:                      # CrossServer 侧被游戏服连接，无需主动拨号
+  max_streams_per_game: 1      # 每个游戏服维持一条 CrossService 流
+
+redis:
+  addrs: ["127.0.0.1:6379"]
+  pool_size: 50
+  min_idle_conns: 10
+
+log:
+  level: info
+  format: json
+  sample_first: 100
+
+metrics:
+  enable: true
+  addr: "0.0.0.0:9301"
+
+shutdown:
+  total_timeout: 30s
+  drain_timeout: 10s

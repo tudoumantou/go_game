@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 属性公式（等级→属性映射系数） -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<attr_formula>
+    <row id="1" col1="hp" col2="100" col3="20" />
+    <row id="2" col1="atk" col2="10" col3="3" />
+</attr_formula>

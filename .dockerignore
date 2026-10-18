@@ -1,0 +1,8 @@
+.git
+.github
+bin
+volumes
+deploy/keys
+docs
+*.md
+!README.md

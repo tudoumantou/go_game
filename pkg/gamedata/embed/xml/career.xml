@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 职业表（create_name/career.xml） -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<career>
+    <row id="1" col1="战士" col2="1001" />
+    <row id="2" col1="法师" col2="2001" />
+</career>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 充值商品档位 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<recharge_product>
+    <row id="1" col1="60" col2="600" col3="6" />
+    <row id="2" col1="300" col2="3000" col3="30" />
+    <row id="3" col1="980" col2="9800" col3="98" />
+</recharge_product>

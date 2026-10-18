@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cross
+  labels: { app: cross }
+spec:
+  # 19.6：跨服节点房间纯内存可弃，按跨服负载手动扩缩
+  replicas: 2
+  selector:
+    matchLabels: { app: cross }
+  template:
+    metadata:
+      labels: { app: cross }
+    spec:
+      containers:
+        - name: cross
+          image: game-study/cross:dev
+          args: ["-config", "/app/configs/cross/cross-dev.yaml"]
+          ports:
+            - { name: grpc,    containerPort: 9300 }
+            - { name: metrics, containerPort: 9301 }
+          volumeMounts:
+            - { name: config, mountPath: /app/configs/cross, readOnly: true }
+          startupProbe:   { tcpSocket: { port: grpc }, periodSeconds: 10, failureThreshold: 30 }
+          readinessProbe: { tcpSocket: { port: grpc }, periodSeconds: 15 }
+          livenessProbe:  { tcpSocket: { port: grpc }, periodSeconds: 30 }
+          resources:
+            requests: { cpu: "1",   memory: "2Gi" }
+            limits:   { cpu: "2",   memory: "4Gi" }
+      volumes:
+        - name: config
+          configMap: { name: cross-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cross
+spec:
+  selector: { app: cross }
+  ports:
+    - { name: grpc,    port: 9300, targetPort: grpc }
+    - { name: metrics, port: 9301, targetPort: metrics }

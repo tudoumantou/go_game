@@ -1,0 +1,23 @@
+version: v1
+
+lint:
+  use:
+    - STANDARD
+  except:
+    # 设计文档 3.1 目录树固定为 api/proto/<域>/v<N>，
+    # 与「package 名必须映射目录」规则冲突，按文档目录结构豁免
+    - PACKAGE_DIRECTORY_MATCH
+    # 设计文档 4.6 约定：流式 RPC 使用领域消息名（Report(stream NodeReport)），
+    # 不强制 <Method><Request/Response> 后缀命名
+    - RPC_REQUEST_STANDARD_NAME
+    - RPC_RESPONSE_STANDARD_NAME
+    # 设计文档 4.10 约定：0 号错误码即 OK，不用 _UNSPECIFIED 后缀
+    - ENUM_ZERO_VALUE_SUFFIX
+    # 设计文档 4.5 约定：双向流 RPC 请求/响应同型（Channel(stream StreamFrame) returns (stream StreamFrame)）
+    - RPC_REQUEST_RESPONSE_UNIQUE
+    # 设计文档 4.5 固定枚举值命名（BIND/UNBIND/KICK/BROADCAST/HEALTH、ROOM_READY/ROOM_CLOSED/HEALTH）
+    - ENUM_VALUE_PREFIX
+
+breaking:
+  use:
+    - FILE

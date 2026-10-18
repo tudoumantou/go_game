@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: center
+  labels: { app: center }
+spec:
+  # 19.6：中心服选主需要稳定网络标识，固定 2~3 副本
+  replicas: 3
+  serviceName: center-headless
+  selector:
+    matchLabels: { app: center }
+  template:
+    metadata:
+      labels: { app: center }
+    spec:
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: center
+          image: game-study/center:dev
+          args: ["-config", "/app/configs/center/center-dev.yaml"]
+          ports:
+            - { name: grpc,    containerPort: 9200 }
+            - { name: metrics, containerPort: 9201 }
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: mysql-secret, key: MYSQL_PASSWORD } }
+          volumeMounts:
+            - { name: config, mountPath: /app/configs/center, readOnly: true }
+          # 19.6 探针表：中心服 readiness = etcd 注册 + 选主完成（P2 exec 探针替换 TCP）
+          startupProbe:   { tcpSocket: { port: grpc }, periodSeconds: 10, failureThreshold: 30 }
+          readinessProbe: { tcpSocket: { port: grpc }, periodSeconds: 15 }
+          livenessProbe:  { tcpSocket: { port: grpc }, periodSeconds: 30 }
+          resources:
+            requests: { cpu: "2",   memory: "4Gi" }
+            limits:   { cpu: "4",   memory: "8Gi" }
+      volumes:
+        - name: config
+          configMap: { name: center-config }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: center-pdb
+spec:
+  minAvailable: 2          # 19.6：选主集群任一时点至少 2 副本存活
+  selector:
+    matchLabels: { app: center }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: center-headless
+spec:
+  clusterIP: None
+  selector: { app: center }
+  ports:
+    - { name: grpc,    port: 9200, targetPort: grpc }
+    - { name: metrics, port: 9201, targetPort: metrics }

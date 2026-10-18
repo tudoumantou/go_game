@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# scripts/db-init.sh —— DDL → MySQL 建表（19.5 首次部署清单第 4 步）
+# 依赖环境变量: MYSQL_HOST/PORT/USER/PASSWORD/DATABASE（默认本地开发值）
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+MYSQL_HOST="${MYSQL_HOST:-127.0.0.1}"
+MYSQL_PORT="${MYSQL_PORT:-3306}"
+MYSQL_USER="${MYSQL_USER:-root}"
+MYSQL_PASSWORD="${MYSQL_PASSWORD:-game_study}"
+MYSQL_DATABASE="${MYSQL_DATABASE:-game_study}"
+
+export MYSQL_PWD="$MYSQL_PASSWORD"
+MYSQL=(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE")
+
+echo "==> 建库（如不存在）"
+mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" \
+  -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+
+# 按月分表：建当前月 + 下个月的 login_log（12.3 表清单注释）
+CUR_MONTH="$(date +%Y%m)"
+NEXT_MONTH="$(date -d '+1 month' +%Y%m 2>/dev/null || date +%Y%m)"
+
+echo "==> 执行 sql/schema/*.sql（account 先行，其余无外键依赖顺序无关）"
+for f in sql/schema/*.sql; do
+  echo "  -> $f"
+  "${MYSQL[@]}" < "$f"
+done
+
+echo "==> login_log 按月分表: login_log_$CUR_MONTH / login_log_$NEXT_MONTH"
+for m in "$CUR_MONTH" "$NEXT_MONTH"; do
+  "${MYSQL[@]}" -e "CREATE TABLE IF NOT EXISTS \`login_log_$m\` LIKE \`login_log\`;"
+done
+
+echo "db-init done（$MYSQL_DATABASE @ $MYSQL_HOST:$MYSQL_PORT）"

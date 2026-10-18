@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 活动表 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<activity>
+    <row id="1" col1="登录有礼" col2="login" col3="7" />
+    <row id="2" col1="全服打造" col2="server_progress" col3="14" />
+</activity>

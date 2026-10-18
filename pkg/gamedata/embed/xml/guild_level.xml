@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 公会等级表 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<guild_level>
+    <row id="1" col1="20" col2="1" />
+    <row id="2" col1="40" col2="2" />
+</guild_level>

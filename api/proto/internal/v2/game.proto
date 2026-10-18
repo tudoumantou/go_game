@@ -1,0 +1,42 @@
+// 内部 gRPC：网关 <-> 游戏服（设计文档 4.5）
+// 双向流：每个客户端会话 = 一条 stream；SessID = session_id，响应沿同流回写保证有序。
+syntax = "proto3";
+
+package game_study.internal.v2;
+
+option go_package = "game_study/pkg/pb/internal/v2;internalv2";
+
+// 游戏服对外服务（网关接入）
+service GameService {
+  rpc Channel(stream StreamFrame) returns (stream StreamFrame);
+}
+
+// 客户端上行/下行数据单元（网关透传，不解析业务）
+message ClientPacket {
+  uint64 session_id = 1; // 网关会话 ID（内部路由用，即 SessID）
+  uint32 msg_id     = 2;
+  bytes  body       = 3; // 业务 protobuf 序列化结果
+  uint32 seq        = 4; // 客户端序号（限流/去重）
+}
+
+// 连接级控制消息
+message CtrlMsg {
+  enum Type {
+    BIND      = 0; // 网关通知游戏服：会话绑定到玩家
+    UNBIND    = 1; // 会话断开（进入重连保留期）
+    KICK      = 2; // 踢下线（顶号/封禁/GM）
+    BROADCAST = 3; // 广播
+    HEALTH    = 4; // 健康检查
+  }
+  Type   type       = 1;
+  uint64 session_id = 2;
+  int64  player_id  = 3;
+  bytes  payload    = 4;
+}
+
+message StreamFrame {
+  oneof data {
+    ClientPacket client_packet = 1;
+    CtrlMsg      ctrl          = 2;
+  }
+}

@@ -1,0 +1,52 @@
+// 内部 gRPC：游戏服 <-> 跨服节点（设计文档 4.5，v3.1 起不连网关）
+// 一条流 = 一个游戏服节点，由游戏服主动建立（地址来自中心服 GroupUpdate）。
+syntax = "proto3";
+
+package game_study.internal.v2;
+
+option go_package = "game_study/pkg/pb/internal/v2;internalv2";
+
+service CrossService {
+  rpc Channel(stream CrossFrame) returns (stream CrossFrame);
+}
+
+message CrossFrame {
+  oneof data {
+    PlayerSnapshot snapshot = 1; // GS→X：玩家进入跨服（token + 战斗快照）
+    BattleMsg      battle   = 2; // 双向：战斗消息（GS 代收客户端消息 / X 同步）
+    BattleResult   result   = 3; // X→GS：战斗结算（兜底路径；demo 主路径为客户端上报，见 4.9.3）
+    CrossCtrl      ctrl     = 4; // 控制消息（房间就绪/关闭、心跳）
+  }
+}
+
+message PlayerSnapshot {
+  uint64 room_id      = 1; // 中心服分配的房间
+  string battle_token = 2; // 中心服签发的准入令牌
+  int64  player_id    = 3;
+  bytes  snapshot     = 4; // 战斗所需数据（战力/阵容/段位），不含完整状态
+}
+
+message BattleMsg {
+  uint64 room_id   = 1;
+  int64  player_id = 2;
+  uint32 msg_id    = 3;
+  bytes  body      = 4; // 业务 protobuf（与客户端协议一致，GS 原样透传）
+}
+
+message BattleResult {
+  uint64 room_id     = 1;
+  int64  player_id   = 2;
+  int32  result      = 3; // 0 胜 1 负 2 平
+  bytes  rewards     = 4; // 奖励明细
+  int64  finished_at = 5;
+}
+
+message CrossCtrl {
+  enum Type {
+    ROOM_READY  = 0; // X→GS：房间就绪，可推送快照
+    ROOM_CLOSED = 1; // 双向：房间关闭
+    HEALTH      = 2; // 心跳
+  }
+  Type   type    = 1;
+  uint64 room_id = 2;
+}

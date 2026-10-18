@@ -1,0 +1,47 @@
+// 游戏业务协议：战斗（设计文档 4.9.3 战斗职责划分，号段 5000-5999）
+// Demo 约定：演算在客户端；服务端只做「通知发起 / 消息透传 / 接收结果」三件事，
+// 防作弊验证（伤害合法性/时序/频率）后置到战斗 2.0。
+syntax = "proto3";
+
+package game_study.game.v1;
+
+option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+// 战斗发起通知（匹配完成后由服务端下发）
+message BattleStartNotify { // MsgID: 5001 [Push]
+  uint64 room_id      = 1; // 房间号
+  string battle_token = 2; // 准入令牌（结果上报须回带）
+  bytes  opponent     = 3; // 对手快照（战力/阵容/段位，非完整状态）
+  int64  timeout_sec  = 4; // 战斗时限，超时服务端按平局兜底结算
+}
+
+// 客户端战斗操作上报（服务端原样透传给对手，不解析 body）
+message BattleOpReport { // MsgID: 5021
+  uint64 room_id = 1;
+  uint32 msg_id  = 2; // 客户端自定义战斗消息号
+  bytes  body    = 3;
+}
+
+// 战斗事件透传推送（对手操作/房间事件，服务端不解析）
+message BattleSyncNotify { // MsgID: 5020 [Push]
+  uint64 room_id   = 1;
+  int64  player_id = 2; // 事件来源玩家
+  uint32 msg_id    = 3;
+  bytes  body      = 4;
+}
+
+// 客户端上报战斗结论（服务端：令牌校验 + 幂等 + 奖励存在性复核）
+message BattleResultReport { // MsgID: 5010
+  uint64 room_id      = 1;
+  string battle_token = 2;
+  int32  result       = 3; // 0 胜 1 负 2 平
+  bytes  rewards      = 4; // 客户端计算的奖励明细（服务端复核后应用）
+  int64  finished_at  = 5;
+}
+
+// 战斗结算回执（服务端实际下发奖励，权威）
+message BattleSettleNotify { // MsgID: 5011 [Push]
+  uint64 room_id = 1;
+  int32  code    = 2; // 0 成功；6002 令牌无效；6003 已上报
+  bytes  rewards = 3;
+}

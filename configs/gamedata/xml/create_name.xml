@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 随机名库 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<create_name>
+    <row id="1" col1="风云" />
+    <row id="2" col1="逐月" />
+    <row id="3" col1="听雷" />
+</create_name>

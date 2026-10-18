@@ -1,0 +1,29 @@
+// 游戏业务协议：背包道具（设计文档 4.9，号段 3000-3999）
+syntax = "proto3";
+
+package game_study.game.v1;
+
+option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+// 使用道具（消耗/装备/礼包，走 bag 模块）
+message UseItemReq { // MsgID: 3001
+  int64 item_uid = 1; // 背包实例 UID（非模板 ID）
+  int32 count    = 2;
+}
+
+message UseItemResp { // MsgID: 3002
+  int32 code         = 1; // 3001 不存在 / 3002 不足 / 3004 不可用
+  int32 remain_count = 2; // 使用后剩余数量
+}
+
+// 背包变动推送（任何增删改后推送，客户端增量刷新）
+message BagChangeNotify { // MsgID: 3010 [Push]
+  repeated ItemChange changes = 1;
+}
+
+message ItemChange {
+  int64  item_uid = 1;
+  int32  item_id  = 2; // 模板 ID
+  int32  count    = 3; // 变动后数量
+  int32  change   = 4; // 1 新增 2 修改 3 删除
+}

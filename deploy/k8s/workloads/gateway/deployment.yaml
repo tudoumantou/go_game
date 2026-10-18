@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels: { app: gateway }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: gateway }
+  template:
+    metadata:
+      labels: { app: gateway }
+    spec:
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: gateway
+          image: game-study/gateway:dev
+          args: ["-config", "/app/configs/gateway/gateway-dev.yaml"]
+          ports:
+            - { name: tcp,    containerPort: 9001 }
+            - { name: metrics, containerPort: 9101 }
+          volumeMounts:
+            - { name: config, mountPath: /app/configs/gateway, readOnly: true }
+            - { name: keys,   mountPath: /app/keys, readOnly: true }
+          # 19.6 探针表：网关应为 HTTP /healthz（P1 网关 HTTP 服务落地后启用，P0 用 TCP 占位）
+          startupProbe:    { tcpSocket: { port: tcp }, periodSeconds: 5, failureThreshold: 12 }
+          readinessProbe:  { tcpSocket: { port: tcp }, periodSeconds: 10 }
+          livenessProbe:   { tcpSocket: { port: tcp }, periodSeconds: 15 }
+          lifecycle:
+            preStop:       # 18.4 排水 30s：摘流 → 存量连接处理完再退出
+              exec: { command: ["sleep", "30"] }
+          resources:
+            requests: { cpu: "500m", memory: "512Mi" }
+            limits:   { cpu: "2",    memory: "2Gi" }
+      volumes:
+        - name: config
+          configMap: { name: gateway-config }
+        - name: keys
+          secret:    { secretName: rsa-secret }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway-hpa
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: gateway }
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+spec:
+  selector: { app: gateway }
+  ports:
+    - { name: tcp,     port: 9001, targetPort: tcp }
+    - { name: metrics, port: 9101, targetPort: metrics }
+  type: LoadBalancer

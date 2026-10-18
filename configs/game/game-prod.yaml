@@ -1,0 +1,63 @@
+# 游戏服配置（prod 环境）
+# 设计文档 19.1；敏感信息（MySQL DSN 等）用 ${VAR} 环境变量注入，不入库。
+# 端口规划：见 19.1 端口表（登录 8080/8081，网关 9001/9101，游戏 9100/9102，
+# 中心 9200/9201，跨服 9300/9301）。
+server:
+  name: game-01
+  env: prod
+  grpc_addr: "0.0.0.0:9100"
+
+actor:
+  shard_count: 1024            # 2 的幂
+  mailbox_size: 4096
+
+mysql:
+  dsn: "game:${MYSQL_PASSWORD}@tcp(192.0.2.54:3306)/game_study?parseTime=true"
+  max_open_conns: 30           # 业务池 30（第 14 章推导）；flush 10 worker 错峰共享借还
+  max_idle_conns: 10
+
+redis:
+  addrs: ["192.0.2.51:6379", "192.0.2.52:6379", "192.0.2.53:6379"]
+  pool_size: 100
+  min_idle_conns: 20
+
+kafka:
+  brokers: ["192.0.2.55:9092", "192.0.2.56:9092", "192.0.2.57:9092"]
+  producer_required_acks: all
+  consumer_group: "game-server-01"   # 每实例独立组，分区按 playerID 有序
+
+etcd:
+  endpoints: ["192.0.2.32:2379", "192.0.2.33:2379", "192.0.2.34:2379"]
+  lease_ttl: 10
+  keepalive_interval: 3
+
+center:                        # 中心服上报（控制面）
+  addr: "center:9200"
+  reconnect_max_wait: 30s
+  report_buffer: 4096          # 积压时降频丢弃统计类消息
+
+flush:                         # 10 分片分时落库（worker 共享连接池）
+  shard_count: 10
+  interval: 60s
+  stagger: 6s
+  batch_rows: 500
+  dirty_ttl: 10m
+
+idtab:
+  build_on_start: true         # 启动构建 Redis ID 表
+  build_page_size: 5000
+  reconcile_interval: 10m      # 数量对账
+
+log:
+  level: info
+  format: json
+  sample_first: 100
+
+metrics:
+  enable: true
+  addr: "0.0.0.0:9102"
+
+shutdown:
+  total_timeout: 60s
+  drain_timeout: 30s
+  flush_timeout: 30s

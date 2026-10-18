@@ -1,0 +1,34 @@
+// 客户端 <-> 网关：握手/鉴权/心跳/踢下线（设计文档 4.4 + 4.9）
+// 号段：1/2 心跳、10 踢下线、1001/1002 握手（见 4.3 消息号分配规范）
+syntax = "proto3";
+
+package game_study.gate.v1;
+
+option go_package = "game_study/pkg/pb/gate/v1;gatev1";
+
+// 心跳：客户端 15s 周期（4.7 节）
+message HeartbeatReq {} // MsgID: 1
+
+message HeartbeatResp { // MsgID: 2
+  int64 server_time = 1; // 服务器时间（客户端校准时钟）
+}
+
+// 握手请求：加密握手完成后客户端发送的第一条业务消息，携带 Token
+message HandshakeReq { // MsgID: 1001
+  string token         = 1; // 登录服签发的 Token
+  string client_version = 2; // 客户端版本号（网关可做版本校验）
+  string platform      = 3; // 平台：ios/android/pc
+}
+
+message HandshakeResp { // MsgID: 1002
+  int32  code               = 1; // 0 成功，非 0 见错误码表
+  int64  player_id          = 2; // 鉴权通过后返回玩家 ID
+  int64  server_time        = 3; // 服务器时间（客户端校准时钟）
+  int32  heartbeat_interval = 4; // 心跳间隔（秒）
+}
+
+// 踢下线推送：顶号/封禁/GM（4.9.2）
+message KickNotify { // MsgID: 10 [Push]
+  string reason     = 1; // 原因文案
+  int64  ban_until  = 2; // 封禁截止（unix 秒，0 表示不封禁）
+}

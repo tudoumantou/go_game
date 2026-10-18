@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 等级表（基础属性/升级经验） -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<level>
+    <row id="1" col1="100" />
+    <row id="2" col1="300" />
+    <row id="3" col1="800" />
+    <row id="4" col1="2000" />
+    <row id="5" col1="5000" />
+</level>

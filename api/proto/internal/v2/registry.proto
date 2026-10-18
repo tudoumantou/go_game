@@ -1,0 +1,17 @@
+// 内部 gRPC：注册中心数据模型（设计文档 3.1 目录树登记项）
+// etcd 中存储的节点元数据（JSON 序列化后的 NodeInfo），供网关/游戏服/中心服共享。
+syntax = "proto3";
+
+package game_study.internal.v2;
+
+option go_package = "game_study/pkg/pb/internal/v2;internalv2";
+
+// 节点元数据（etcd value 的 protobuf JSON 编码）
+message NodeInfo {
+  string node_id   = 1; // 如 "game-01"
+  string node_type = 2; // login / gateway / game / center / cross
+  string addr      = 3; // gRPC/TCP 地址
+  string group_id  = 4; // 跨服分组（center 分配）
+  int64  start_at  = 5;
+  int32  weight    = 6; // 负载权重（分配用）
+}

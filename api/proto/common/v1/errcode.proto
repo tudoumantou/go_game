@@ -1,0 +1,51 @@
+// 全服统一错误码（设计文档 4.10，首批 27 个）
+// - 协议侧枚举：随生成体系进 pkg/pb，客户端同源生成
+// - Go 侧常量与中文文案：internal/common/errcode/errcode.go（文案可热更新，不进 wire）
+// - 下发双通道：Resp.code 字段 + ErrorNotify(20) 推送
+syntax = "proto3";
+
+package game_study.common.v1;
+
+option go_package = "game_study/pkg/pb/common/v1;commonv1";
+
+enum ErrCode {
+  ERR_CODE_OK = 0; // 成功
+
+  // ===== 1xxx 通用/系统 =====
+  ERR_CODE_PARAM           = 1001; // 参数错误
+  ERR_CODE_TOKEN_EXPIRED   = 1002; // 登录已过期，请重新登录
+  ERR_CODE_MAINTENANCE     = 1003; // 服务器维护中
+  ERR_CODE_RATE_LIMITED    = 1004; // 操作过于频繁，请稍后再试
+  ERR_CODE_SERVER_BUSY     = 1005; // 服务器繁忙（Actor 信箱满/过载保护）
+
+  // ===== 2xxx 登录账号 =====
+  ERR_CODE_ACCOUNT_BANNED  = 2001; // 账号已被封禁
+  ERR_CODE_KICKED          = 2002; // 账号在其他设备登录
+  ERR_CODE_NO_ROLE         = 2003; // 尚未创建角色
+  ERR_CODE_NAME_USED       = 2004; // 角色名已被占用
+  ERR_CODE_NAME_ILLEGAL    = 2005; // 角色名含非法字符
+
+  // ===== 3xxx 背包道具 =====
+  ERR_CODE_ITEM_NOT_EXIST  = 3001; // 道具不存在
+  ERR_CODE_ITEM_NOT_ENOUGH = 3002; // 道具数量不足
+  ERR_CODE_BAG_FULL        = 3003; // 背包已满
+  ERR_CODE_ITEM_NOT_USABLE = 3004; // 道具当前不可使用
+
+  // ===== 4xxx 社交聊天 =====
+  ERR_CODE_CHANNEL_CLOSED  = 4001; // 频道未开放
+  ERR_CODE_PEER_NOT_FOUND  = 4002; // 对方不在线或不存在
+  ERR_CODE_CHAT_TOO_FAST   = 4003; // 发言过于频繁
+  ERR_CODE_CHAT_MUTED      = 4004; // 你已被禁言
+
+  // ===== 5xxx 邮件 =====
+  ERR_CODE_MAIL_NOT_FOUND  = 5001; // 邮件不存在
+  ERR_CODE_MAIL_TAKEN      = 5002; // 附件已领取（幂等保护）
+  ERR_CODE_NO_ATTACHMENT   = 5003; // 邮件没有附件
+
+  // ===== 6xxx 战斗 =====
+  ERR_CODE_BATTLE_NOT_FOUND       = 6001; // 战斗不存在或已结束
+  ERR_CODE_BATTLE_TOKEN_INVALID   = 6002; // 战斗令牌无效
+  ERR_CODE_RESULT_REPORTED        = 6003; // 战斗结果已上报（幂等保护）
+  ERR_CODE_BATTLE_FULL            = 6004; // 战斗房间已满
+  ERR_CODE_RESULT_REWARD_INVALID  = 6005; // 上报的奖励不存在
+}

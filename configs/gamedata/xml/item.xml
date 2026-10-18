@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 道具表 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<item>
+    <row id="1001" col1="金币" col2="999999" col3="1" />
+    <row id="1002" col1="经验药水" col2="99" col3="10" />
+    <row id="2001" col1="新手剑" col2="1" col3="1" />
+</item>

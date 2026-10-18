@@ -1,0 +1,20 @@
+// 客户端 <-> 网关：系统级通知（设计文档 4.9，号段 20/30）
+syntax = "proto3";
+
+package game_study.gate.v1;
+
+option go_package = "game_study/pkg/pb/gate/v1;gatev1";
+
+// 错误码推送：异步失败与全局事件的第二下发通道（Resp.code 之外）
+message ErrorNotify { // MsgID: 20 [Push]
+  int32  code    = 1; // 错误码（common/v1/errcode.proto）
+  string msg     = 2; // 中文文案（服务端可热更新）
+  string context = 3; // 上下文（如 related_msg_id，便于客户端定位）
+}
+
+// 全服维护倒计时
+message MaintenanceNotify { // MsgID: 30 [Push]
+  int64 start_at       = 1; // 维护开始（unix 秒）
+  int64 end_at         = 2; // 预计结束
+  int32 countdown_sec  = 3; // 倒计时（秒）
+}

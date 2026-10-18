@@ -1,0 +1,55 @@
+# 中心服配置（dev 环境）
+# 设计文档 19.1；敏感信息（MySQL DSN 等）用 ${VAR} 环境变量注入，不入库。
+# 端口规划：见 19.1 端口表（登录 8080/8081，网关 9001/9101，游戏 9100/9102，
+# 中心 9200/9201，跨服 9300/9301）。
+server:
+  name: center-01
+  env: dev
+  grpc_addr: "0.0.0.0:9200"
+
+etcd:
+  endpoints: ["127.0.0.1:2379"]
+  lease_ttl: 10
+  keepalive_interval: 3
+  leader_key: "/game_study/leader/center"   # 选主
+
+report:
+  heartbeat_interval: 5s       # 期望节点心跳间隔
+  heartbeat_timeout: 15s       # 超时判定不可用
+  relay_retry: 5               # 中转重投次数
+
+rank:
+  snapshot_interval: 5m        # 排行榜快照间隔
+  archive_cron: "0 0 * * *"    # 赛季归档（leader 执行）
+
+stats:
+  aggregate_windows: [1m, 5m, 1h, 1d]
+  snapshot_interval: 5m
+  mysql_shard: 10              # 统计落库分片
+
+relay_kafka:                   # 中心服集群间中转
+  brokers: ["127.0.0.1:9092"]
+  topic: "center.relay"
+
+redis:
+  addrs: ["127.0.0.1:6379"]
+  pool_size: 50
+  min_idle_conns: 10
+
+mysql:
+  dsn: "game:game_study@tcp(127.0.0.1:3306)/game_study?parseTime=true"
+  max_open_conns: 20
+  max_idle_conns: 5
+
+log:
+  level: info
+  format: json
+  sample_first: 100
+
+metrics:
+  enable: true
+  addr: "0.0.0.0:9201"
+
+shutdown:
+  total_timeout: 30s
+  drain_timeout: 10s

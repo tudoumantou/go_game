@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 聊天频道配置表 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<chat_channel>
+    <row id="1" col1="世界" col2="0" col3="5" />
+    <row id="2" col1="私聊" col2="0" col3="10" />
+    <row id="3" col1="公会" col2="1" col3="5" />
+</chat_channel>

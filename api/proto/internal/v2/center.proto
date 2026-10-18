@@ -1,0 +1,163 @@
+// 内部 gRPC：节点 <-> 中心服（设计文档 4.6 / 第 9 章）
+// 长连接：节点上报 + 中心服下发指令（bidi stream，一个节点一条流）。
+syntax = "proto3";
+
+package game_study.internal.v2;
+
+option go_package = "game_study/pkg/pb/internal/v2;internalv2";
+
+service CenterService {
+  // 长连接：节点上报 + 中心服下发指令
+  rpc Report(stream NodeReport) returns (stream CenterCommand);
+
+  // GM/运营查询（Unary）
+  rpc QueryGlobalRank(QueryRankReq) returns (stream RankEntry);
+  rpc QueryFeatureStats(QueryStatsReq) returns (QueryStatsResp);
+}
+
+message NodeReport {
+  oneof body {
+    NodeRegister   register  = 1; // 启动上报（连接后第一条，必发）
+    NodeHeartbeat  heartbeat = 2; // 心跳（在线数、负载、版本）
+    RankReport     rank      = 3; // 排行榜分数上报（增量）
+    FeatureReport  feature   = 4; // 功能上报（分组统计）
+    RelayRequest   relay     = 5; // 中转请求（发给指定节点/广播）
+    MatchRequest   match     = 6; // 跨服匹配请求（游戏服发）
+  }
+}
+
+message CenterCommand {
+  oneof body {
+    RelayPush    relay_push   = 1; // 中转投递（来自其它节点）
+    RankNotify   rank_notify  = 2; // 排行榜变更/结算通知
+    GroupUpdate  group        = 3; // 跨服分组变更
+    MatchResult  match_result = 4; // 匹配结果（分配跨服节点 + battle_token）
+    ConfigPush   config       = 5; // 配置热更新推送
+    KickNode     kick         = 6; // 摘除指令（配合优雅关闭）
+    MatchAssign  match_assign = 7; // 中心服→CrossServer：分配房间（建房+令牌）
+  }
+}
+
+message NodeRegister {
+  string node_id   = 1; // 如 "game-01" / "cross-01"
+  string node_type = 2; // "game" | "cross"
+  string addr      = 3; // gRPC 地址
+  string group_id  = 4; // 所属跨服分组（中心服分配/确认）
+  int64  start_at  = 5;
+}
+
+message NodeHeartbeat {
+  string node_id      = 1;
+  int32  player_count = 2;
+  int32  cpu_load     = 3; // 0-100
+  int32  mem_load     = 4;
+  int64  msg_qps      = 5;
+  string version      = 6;
+}
+
+message RankReport {
+  string node_id   = 1;
+  string rank_type = 2; // 榜单类型（如 arena_score / guild_power）
+  int64  player_id = 3;
+  int64  score     = 4; // 增量或绝对值（由 rank_type 约定）
+  string season    = 5;
+}
+
+message RankNotify {
+  string rank_type = 1;
+  int64  player_id = 2;
+  int64  rank      = 3; // 新排名（0 表示掉榜）
+  string season   = 4;
+  string reason   = 5; // rank_up / rank_down / season_settle
+}
+
+message FeatureReport {
+  string node_id               = 1;
+  string group_id              = 2;
+  string feature               = 3; // 如 "arena_match" / "guild_war" / "economy_gold_out"
+  map<string, int64> metrics   = 4; // 计数/求和指标，如 {"matches":120,"players":86}
+  int64  ts                    = 5;
+}
+
+message RelayRequest {
+  string relay_id      = 1; // 幂等/ACK 键
+  string from_node     = 2; // 发起方节点
+  string to_node       = 3; // 目标节点（空 + broadcast=true 表示组播/广播）
+  bool   broadcast     = 4;
+  string group_id      = 5; // 广播目标分组（broadcast=true 时生效）
+  bytes  payload       = 6; // 业务 protobuf（网关广播/活动开启通知等）
+}
+
+message RelayPush {
+  string relay_id  = 1;
+  string from_node = 2;
+  bytes  payload   = 3;
+}
+
+message ConfigPush {
+  string config_key = 1; // 配置表标识（活动等安全表）
+  string checksum   = 2; // 内容校验（接收方比对版本）
+  bytes  payload    = 3;
+}
+
+message KickNode {
+  string node_id = 1;
+  string reason  = 2; // rolling_restart / overload / manual
+}
+
+message MatchRequest {
+  string node_id   = 1; // 发起方游戏服
+  int64  player_id = 2;
+  string mode      = 3; // 玩法模式（arena/guild_war/copy）
+  bytes  snapshot  = 4; // 玩家战斗快照
+  int32  elo       = 5; // 匹配分值
+}
+
+message MatchAssign {
+  string node_id       = 1; // 目标 CrossServer
+  uint64 room_id       = 2;
+  string battle_token  = 3; // 准入令牌（CrossServer 校验快照时比对）
+  string mode          = 4;
+  int32  expect_players = 5;
+}
+
+message MatchResult {
+  uint64 room_id      = 1;
+  string battle_token = 2;
+  string mode         = 3;
+  // cross 地址由接收方本地分组信息补全（GroupUpdate 已下发组内地址）
+}
+
+message GroupUpdate {
+  string group_id             = 1;
+  repeated string game_nodes  = 2; // 组内游戏服
+  repeated string cross_addrs = 3; // 组内跨服节点 gRPC 地址（游戏服据此建 CrossService 流）
+  string action               = 4; // create / dissolve / expand
+}
+
+// ===== GM/运营查询 =====
+message QueryRankReq {
+  string rank_type = 1;
+  string season    = 2;
+  int32  top_n     = 3; // 取前 N
+  int64  around_player_id = 4; // 非 0 时返回该玩家周边排名
+}
+
+message RankEntry {
+  int64  player_id = 1;
+  string name      = 2;
+  int64  score     = 3;
+  int64  rank      = 4;
+}
+
+message QueryStatsReq {
+  string group_id = 1;
+  string feature  = 2; // 空 = 全部
+  int64  from_ts  = 3;
+  int64  to_ts    = 4;
+}
+
+message QueryStatsResp {
+  int32 code = 1;
+  repeated FeatureReport reports = 2;
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 登录礼包表 -->
+<!-- gendata 约定：单层结构，数据全部用属性表达，行元素必带 id（见 tools/gendata） -->
+<login_reward>
+    <row id="1" col1="1" col2="1001,100" />
+    <row id="2" col1="2" col2="1002,5" />
+</login_reward>

@@ -1,0 +1,50 @@
+# .github/workflows/ci.yaml —— CI 五步卡点（设计文档 16.4）
+# 任一步失败即阻断合并：生成体系的可信度靠 CI 强制保证。
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Set up buf
+        uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      # ① 生成物一致性：make gen 后 git diff 必须干净（杜绝手改生成代码）
+      - name: "① gen + diff"
+        run: |
+          make gen
+          git diff --exit-code -- pkg/pb pkg/gamedata pkg/model
+
+      # ② buf lint + proto 兼容性检查
+      - name: "② buf lint"
+        run: |
+          cd api/proto
+          buf lint
+
+      # ③ golangci-lint run
+      - name: "③ golangci-lint"
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      # ④ go test（含 test/integration，testcontainers 起真实中间件，23.3）
+      - name: "④ go test (unit + integration)"
+        run: go test -tags=integration ./... -count=1
+
+      # ⑤ 交叉编译五服务
+      - name: "⑤ build.sh"
+        run: ./scripts/build.sh linux amd64

@@ -1,0 +1,23 @@
+# overlays/prod/kustomization.yaml —— 生产环境差异（19.6：副本数、资源规格按环境调整）
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: game-study
+resources:
+  - ../../base
+# prod环境差异示例（按需取消注释调整）：
+# replicas:
+#   - name: gateway
+#     count: 5
+#   - name: game
+#     count: 16
+images:
+  - name: game-study/gateway
+    newTag: prod
+  - name: game-study/login
+    newTag: prod
+  - name: game-study/game
+    newTag: prod
+  - name: game-study/center
+    newTag: prod
+  - name: game-study/cross
+    newTag: prod

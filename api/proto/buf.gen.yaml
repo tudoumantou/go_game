@@ -1,0 +1,18 @@
+version: v1
+
+plugins:
+  # Go 消息代码 → pkg/pb/<proto 相对路径>（与设计文档 16.3 对齐）
+  - plugin: buf.build/protocolbuffers/go:v1.34.2
+    out: ../../pkg/pb
+    opt: paths=source_relative
+  # gRPC service 代码（GameService.Channel / CrossService.Channel / CenterService.Report）
+  - plugin: buf.build/grpc/go:v1.5.1
+    out: ../../pkg/pb
+    opt: paths=source_relative
+
+  # TODO(P0): MsgID ↔ MessageType 注册表生成器（pkg/codec/registry.go 由 proto 自动产出，
+  #           见设计文档 16.3）。落地方式：tools/protoc-gen-gomsgid 本地插件，
+  #           从消息 option (game_study.msg_id) 或命名约定取号，此处追加：
+  # - plugin: gomsgid
+  #   out: pkg/codec
+  #   opt: paths=source_relative

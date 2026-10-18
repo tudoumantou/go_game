@@ -1,0 +1,65 @@
+// 登录服对外 HTTP 协议契约（设计文档第 6 章）
+// HTTP 路由在 internal/login/handler 层映射（POST /api/v1/auth/login 等），
+// 消息体使用本文件 protobuf（JSON 序列化）；Token 签发与网关握手密钥分离（19.1）。
+syntax = "proto3";
+
+package game_study.login.v1;
+
+option go_package = "game_study/pkg/pb/login/v1;loginv1";
+
+// 账号登录：渠道账号 + 密码/渠道 Token
+message AuthLoginReq {
+  string channel        = 1; // 渠道：dev/guest/appstore/...
+  string account        = 2; // 渠道账号
+  string credential     = 3; // 密码或渠道 Token
+  string device_id      = 4;
+  string client_version = 5;
+}
+
+message AuthLoginResp {
+  int32  code      = 1; // 0 成功；2001 封禁等见 common/v1/errcode.proto
+  string token     = 2; // 登录服签发，Redis TTL 24h
+  int64  expire_at = 3; // 过期时间（unix 秒）
+}
+
+// Token 刷新（过期前续期）
+message RefreshTokenReq {
+  string token = 1;
+}
+
+message RefreshTokenResp {
+  int32  code      = 1;
+  string token     = 2;
+  int64  expire_at = 3;
+}
+
+// 服务器列表/分配（客户端拿网关与游戏服信息）
+message ServerListReq {
+  string token = 1;
+}
+
+message ServerListResp {
+  int32               code  = 1;
+  repeated ServerNode nodes = 2;
+}
+
+message ServerNode {
+  string node_id   = 1; // 如 "gateway-01"
+  string gate_addr = 2; // 网关 TCP 地址（ip:port）
+  string game_addr = 3; // 游戏服 gRPC 地址（展示用）
+  int32  online    = 4; // 当前在线人数
+  int32  status    = 5; // 0 正常 1 拥挤 2 维护
+  bool   recommend = 6; // 是否推荐
+}
+
+// 支付回调（渠道 → 登录服，Tier-1 严格一致）
+message PayCallbackReq {
+  string channel   = 1; // 渠道
+  string order_id  = 2; // 订单号（幂等键）
+  string payload   = 3; // 渠道原始报文（验签后解析）
+  string sign      = 4; // 渠道签名
+}
+
+message PayCallbackResp {
+  int32  code = 1; // 0 成功；重复回调同样返回 0（幂等）
+}

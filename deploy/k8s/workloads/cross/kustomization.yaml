@@ -1,0 +1,5 @@
+# workloads/cross/kustomization.yaml —— cross 服工作负载清单入口（19.6）
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - deployment.yaml

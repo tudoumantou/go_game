@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: game
+  labels: { app: game }
+spec:
+  # 19.6：游戏服有状态（Actor 绑定玩家，不做热迁移），固定 10~20，手动/脚本扩缩
+  replicas: 10
+  serviceName: game-headless
+  selector:
+    matchLabels: { app: game }
+  template:
+    metadata:
+      labels: { app: game }
+    spec:
+      # 18 章优雅关闭全流程：DRAIN→DRAINING→FLUSH→STOP 需要时间，>=120s
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: game
+          image: game-study/game:dev
+          args: ["-config", "/app/configs/game/game-dev.yaml"]
+          ports:
+            - { name: grpc,    containerPort: 9100 }
+            - { name: metrics, containerPort: 9102 }
+          env:
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: mysql-secret, key: MYSQL_PASSWORD } }
+          volumeMounts:
+            - { name: config, mountPath: /app/configs/game, readOnly: true }
+          # 19.6 探针表：游戏服 readiness = etcd 注册完成 + idtab ready（12.5 启动构建）
+          # P2 实现 exec 探针（/healthz 检查 idtab:ready）后替换 TCP 占位
+          startupProbe:   { tcpSocket: { port: grpc }, periodSeconds: 10, failureThreshold: 30 }
+          readinessProbe: { tcpSocket: { port: grpc }, periodSeconds: 15 }
+          livenessProbe:  { tcpSocket: { port: grpc }, periodSeconds: 30 }
+          resources:
+            requests: { cpu: "2",   memory: "4Gi" }
+            limits:   { cpu: "4",   memory: "8Gi" }
+      volumes:
+        - name: config
+          configMap: { name: game-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-headless
+spec:
+  clusterIP: None
+  selector: { app: game }
+  ports:
+    - { name: grpc,    port: 9100, targetPort: grpc }
+    - { name: metrics, port: 9102, targetPort: metrics }
