@@ -86,9 +86,15 @@ type Actor struct {
 
 // NewActor 创建玩家 Actor。
 func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, repo *Repository, onDirty func(int64), sendFunc SendFunc) *Actor {
+	state := NewState(playerID)
+	// 任何变更立刻标记落库（12.4.1 ①）：不这样的话在线玩家数据只在离线时才写，
+	// 进程崩溃会丢掉全部在线会话的进度。
+	if onDirty != nil {
+		state.SetDirtyHook(func() { onDirty(playerID) })
+	}
 	return &Actor{
 		playerID: playerID,
-		state:    NewState(playerID),
+		state:    state,
 		registry: registry,
 		logger:   logger.With("player_id", playerID),
 		repo:     repo,

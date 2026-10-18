@@ -24,12 +24,17 @@ type Flusher struct {
 	stopOnce sync.Once
 }
 
+// DeleteFunc 批量物理删除（12.4.5 墓碑）。ids 已是同一张表的主键集合。
+type DeleteFunc func(ctx context.Context, table string, ids []int64) error
+
 // Config 配置。
 type Config struct {
 	ShardCount int
 	Interval   time.Duration
 	Stagger    time.Duration
 	BatchRows  int
+	// DeleteFn 墓碑执行器；为空时删除标记会被忽略（仅告警），不影响正常落库
+	DeleteFn DeleteFunc
 }
 
 // New 创建 Flusher。
@@ -50,7 +55,7 @@ func New(cfg Config, fn PersistFunc, logger *log.Logger) *Flusher {
 		stopCh:   make(chan struct{}),
 	}
 	for i := range f.shards {
-		f.shards[i] = newShard(i, fn, cfg.BatchRows)
+		f.shards[i] = newShard(i, fn, cfg.DeleteFn, cfg.BatchRows)
 	}
 	return f
 }
@@ -63,47 +68,57 @@ func (f *Flusher) Start(ctx context.Context) {
 	}
 }
 
+// runShard 分片落库循环（12.4.3 分散轮询）。
+//
+// 唤醒时刻对齐到「每分钟的第 i×stagger 秒」而不是「启动后每 interval 一次」：
+// 后者在滚动发布时所有 Pod 的相位会被打乱，形成随机尖峰；对齐分钟边界后，
+// 无论何时重启，10 个分片始终均匀铺满一分钟。
 func (f *Flusher) runShard(ctx context.Context, sh *shard, offset time.Duration) {
 	defer f.wg.Done()
-	// 错峰启动，避免同时打库
-	select {
-	case <-ctx.Done():
-		return
-	case <-f.stopCh:
-		return
-	case <-time.After(offset):
-	}
 
-	ticker := time.NewTicker(f.interval)
-	defer ticker.Stop()
 	lastSuccess := time.Now()
 	for {
+		next := nextTick(offset)
+		timer := time.NewTimer(time.Until(next))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
 		case <-f.stopCh:
+			timer.Stop()
 			return
-		case <-ticker.C:
-			start := time.Now()
-			err := sh.flush(ctx)
-			elapsed := time.Since(start)
-			if metrics.Enabled() {
-				metrics.FlushObserve(elapsed)
-				if err != nil {
-					metrics.FlushFail(sh.index)
-				} else {
-					lastSuccess = time.Now()
-					metrics.FlushRows(true, sh.dirtyCount())
-				}
-				// 落库延迟：距上次成功落库的秒数（20.3 告警项：超 2 个周期告警）
-				metrics.FlushLag(sh.index, time.Since(lastSuccess).Seconds())
-				metrics.FlushDirty(sh.index, sh.dirtyCount())
-			}
+		case <-timer.C:
+		}
+
+		start := time.Now()
+		err := sh.flush(ctx)
+		elapsed := time.Since(start)
+		if metrics.Enabled() {
+			metrics.FlushObserve(elapsed)
 			if err != nil {
-				f.logger.Warn("flush shard failed", "shard", sh.index, "err", err)
+				metrics.FlushFail(sh.index)
+			} else {
+				lastSuccess = time.Now()
+				metrics.FlushRows(true, sh.dirtyCount())
 			}
+			// 落库延迟：距上次成功落库的秒数（20.3 告警项：超 2 个周期告警）
+			metrics.FlushLag(sh.index, time.Since(lastSuccess).Seconds())
+			metrics.FlushDirty(sh.index, sh.dirtyCount())
+		}
+		if err != nil {
+			f.logger.Warn("flush shard failed", "shard", sh.index, "err", err)
 		}
 	}
+}
+
+// nextTick 下一分钟边界 + 本分片偏移（第 0 片 :00，第 1 片 :06 … 第 9 片 :54）。
+func nextTick(offset time.Duration) time.Time {
+	now := time.Now()
+	next := now.Truncate(time.Minute).Add(time.Minute).Add(offset)
+	if !next.After(now) {
+		next = next.Add(time.Minute)
+	}
+	return next
 }
 
 // MarkDirty 标记玩家需要落库。
@@ -145,24 +160,68 @@ func (f *Flusher) Stop() {
 }
 
 type shard struct {
-	index int
-	fn    PersistFunc
-	batch int
+	index  int
+	fn     PersistFunc
+	delete DeleteFunc
+	batch  int
 
 	mu    sync.Mutex
 	dirty map[int64]struct{}
+	// pendingDel 待物理删除的墓碑（table -> 主键集合，12.4.5）
+	pendingDel map[string][]int64
 }
 
-func newShard(index int, fn PersistFunc, batch int) *shard {
+func newShard(index int, fn PersistFunc, del DeleteFunc, batch int) *shard {
 	if batch <= 0 {
 		batch = 100
 	}
 	return &shard{
-		index: index,
-		fn:    fn,
-		batch: batch,
-		dirty: make(map[int64]struct{}),
+		index:      index,
+		fn:         fn,
+		delete:     del,
+		batch:      batch,
+		dirty:      make(map[int64]struct{}),
+		pendingDel: make(map[string][]int64),
 	}
+}
+
+// markDelete 登记墓碑。
+func (s *shard) markDelete(table string, id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingDel[table] = append(s.pendingDel[table], id)
+}
+
+// takeDeletes 取走全部待删记录（处理期新标记留到下轮）。
+func (s *shard) takeDeletes() map[string][]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingDel) == 0 {
+		return nil
+	}
+	out := s.pendingDel
+	s.pendingDel = make(map[string][]int64)
+	return out
+}
+
+// putBackDeletes 删除失败时回填（下轮重试）。
+func (s *shard) putBackDeletes(failed map[string][]int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for table, ids := range failed {
+		s.pendingDel[table] = append(s.pendingDel[table], ids...)
+	}
+}
+
+// deleteCount 待删记录总数（监控用）。
+func (s *shard) deleteCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, ids := range s.pendingDel {
+		n += len(ids)
+	}
+	return n
 }
 
 func (s *shard) mark(playerID int64) {
@@ -179,6 +238,11 @@ func (s *shard) dirtyCount() int {
 }
 
 func (s *shard) flush(ctx context.Context) error {
+	// 墓碑优先：先删再写，避免「删了又写回」的中间态
+	if err := s.flushDeletes(ctx); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	if len(s.dirty) == 0 {
 		s.mu.Unlock()
@@ -210,6 +274,76 @@ func (s *shard) flush(ctx context.Context) error {
 	return firstErr
 }
 
+// flushDeletes 执行墓碑删除（合批：同一张表的 id 一次删完）。
+func (s *shard) flushDeletes(ctx context.Context) error {
+	pending := s.takeDeletes()
+	if len(pending) == 0 {
+		return nil
+	}
+	if s.delete == nil {
+		// 未注入删除器：丢弃并告警（不能无限堆积）
+		total := 0
+		for _, ids := range pending {
+			total += len(ids)
+		}
+		if total > 0 {
+			if metrics.Enabled() {
+				metrics.FlushTombstone(s.index, "dropped", total)
+			}
+		}
+		return nil
+	}
+
+	var firstErr error
+	failed := make(map[string][]int64, len(pending))
+	for table, ids := range pending {
+		for _, batch := range chunkIDs(ids, s.batch) {
+			if err := s.delete(ctx, table, batch); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				failed[table] = append(failed[table], batch...)
+				if metrics.Enabled() {
+					metrics.FlushTombstone(s.index, "fail", len(batch))
+				}
+				continue
+			}
+			if metrics.Enabled() {
+				metrics.FlushTombstone(s.index, "ok", len(batch))
+			}
+		}
+	}
+	if len(failed) > 0 {
+		s.putBackDeletes(failed)
+	}
+	return firstErr
+}
+
+// MarkDelete 登记一条待物理删除的记录（12.4.5）。
+//
+// 语义：业务侧从内存/Redis 已删除，这里只负责把 MySQL 行删掉。
+// 与 upsert 走同一分片（按 id 哈希），保证「先删后写」的顺序。
+func (f *Flusher) MarkDelete(table string, id int64) {
+	idx := ShardIndex(id, len(f.shards))
+	f.shards[idx].markDelete(table, id)
+}
+
+// chunkIDs 按大小切分 id 列表。
+func chunkIDs(ids []int64, size int) [][]int64 {
+	if size <= 0 {
+		size = DefaultBatchRows
+	}
+	var out [][]int64
+	for start := 0; start < len(ids); start += size {
+		end := start + size
+		if end > len(ids) {
+			end = len(ids)
+		}
+		out = append(out, ids[start:end])
+	}
+	return out
+}
+
 // Pending 返回待落库数量（监控用）。
 func (f *Flusher) Pending() int64 {
 	var total int64
@@ -217,6 +351,15 @@ func (f *Flusher) Pending() int64 {
 		sh.mu.Lock()
 		total += int64(len(sh.dirty))
 		sh.mu.Unlock()
+	}
+	return total
+}
+
+// PendingDeletes 返回待物理删除的记录数（监控用）。
+func (f *Flusher) PendingDeletes() int {
+	total := 0
+	for _, sh := range f.shards {
+		total += sh.deleteCount()
 	}
 	return total
 }

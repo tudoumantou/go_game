@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
@@ -31,14 +32,18 @@ var namePattern = regexp.MustCompile(`^[\p{Han}A-Za-z0-9]{2,16}$`)
 
 // RoleService 角色服务。
 type RoleService struct {
-	db     *db.DB
-	logger *log.Logger
+	db      *db.DB
+	logger  *log.Logger
+	idTable *cache.IDTable // 可选：创角后登记 ID 表（12.5）
 }
 
 // NewRoleService 创建服务。
 func NewRoleService(database *db.DB, logger *log.Logger) *RoleService {
 	return &RoleService{db: database, logger: logger}
 }
+
+// SetIDTable 注入 ID 表（12.5：创建记录后同步登记，避免对账窗口内判断为「不存在」）。
+func (s *RoleService) SetIDTable(t *cache.IDTable) { s.idTable = t }
 
 // FindByAccount 查账号下角色；无角色返回 ErrNoRole。
 func (s *RoleService) FindByAccount(ctx context.Context, accountID int64) (*model.Player, error) {
@@ -100,6 +105,13 @@ func (s *RoleService) Create(ctx context.Context, accountID int64, name string, 
 	if err != nil {
 		return 0, err
 	}
+	// 登记 ID 表：不阻塞创角返回，失败也只是等下次对账补上
+	if s.idTable != nil {
+		if err := s.idTable.Add(ctx, "player", roleID); err != nil {
+			s.logger.Warn("idtab add player failed", "player_id", roleID, "err", err)
+		}
+	}
+
 	s.logger.Info("role created", "role_id", roleID, "account_id", accountID, "career", career)
 	return roleID, nil
 }

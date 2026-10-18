@@ -72,6 +72,7 @@ type Server struct {
 	consumers *gamemq.Group
 	roleSvc   *service.RoleService
 	metricsSrv *metrics.Server
+	idTable   *cache.IDTable // ID 表：存在性判断从 MySQL 挪到 Redis（12.5）
 
 	crossPool *gamecross.Pool   // 到跨服节点的连接池
 	centerCli *gamecenter.Client // 到中心服的 Report 流
@@ -142,6 +143,17 @@ func (s *Server) Start(ctx context.Context) error {
 		deduper = cache.NewRedisDeduper(redisClient.GetClient())
 	}
 
+	// ②' ID 表（12.5）：Redis + MySQL 都可用才建。
+	// 构建在后台进行：ready 未置位期间所有存在性判断回落 DB，服务可正常启动。
+	if s.database != nil && s.redis != nil {
+		s.idTable = cache.NewIDTable(s.redis.GetClient(), s.database.DB)
+		if s.roleSvc != nil {
+			s.roleSvc.SetIDTable(s.idTable)
+		}
+		go s.buildIDTables(ctx)
+		go s.maintainIDTables(ctx)
+	}
+
 	// ③ Actor 系统 + 模块
 	s.actorSys = actor.NewSystem(actor.Config{
 		ShardCount:  s.cfg.Actor.ShardCount,
@@ -182,7 +194,11 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(mailMod)
 		s.modules.Register(chatMod)
 		s.modules.Register(quest.New(quest.NewRepo(s.database), s.logger))
-		s.modules.Register(equip.New(equip.NewRepo(s.database), s.logger))
+		equipRepo := equip.NewRepo(s.database)
+		if s.idTable != nil {
+			equipRepo.SetIDTable(s.idTable)
+		}
+		s.modules.Register(equip.New(equipRepo, s.logger))
 		s.modules.Register(skill.New(skill.NewRepo(s.database), s.logger))
 		s.modules.Register(guild.New(guild.NewRepo(s.database), s.logger))
 		s.modules.Register(team.New(team.NewRepo(s.database), s.logger))
@@ -194,11 +210,17 @@ func (s *Server) Start(ctx context.Context) error {
 	// ④ Write-Behind flusher
 	flushInterval, _ := config.ParseDuration(s.cfg.Flush.Interval)
 	stagger, _ := config.ParseDuration(s.cfg.Flush.Stagger)
+	// 墓碑删除（12.4.5）：业务登记 MarkDelete，本周期内合批 DELETE
+	var deleteFn flush.DeleteFunc
+	if s.database != nil {
+		deleteFn = flush.NewSQLDeleter(s.database.DB).DeleteBatch
+	}
 	s.flusher = flush.New(flush.Config{
 		ShardCount: s.cfg.Flush.ShardCount,
 		Interval:   flushInterval,
 		Stagger:    stagger,
 		BatchRows:  s.cfg.Flush.BatchRows,
+		DeleteFn:   deleteFn,
 	}, s.persistPlayer, s.logger)
 	s.flusher.Start(ctx)
 
@@ -756,4 +778,106 @@ func (r rankReporter) ReportArenaScore(playerID int64, score int64) error {
 		return fmt.Errorf("center client not configured")
 	}
 	return r.cli.SendRank("arena_score", playerID, score, "")
+}
+
+// buildIDTables 后台构建 ID 表（12.5.1）。
+//
+// 必须先建热表（player/player_equip/mail）再建其余表：热表决定登录与穿戴是否
+// 能走 Redis 快路径，冷表（如 friend）缺失只影响对应功能的性能。
+func (s *Server) buildIDTables(ctx context.Context) {
+	hot := make(map[string]bool, len(cache.TableHotTables))
+	for _, t := range cache.TableHotTables {
+		hot[t] = true
+	}
+
+	// 热表在前
+	ordered := make([]cache.TableMeta, 0, len(cache.DefaultIDTables))
+	for _, m := range cache.DefaultIDTables {
+		if hot[m.Name] {
+			ordered = append(ordered, m)
+		}
+	}
+	for _, m := range cache.DefaultIDTables {
+		if !hot[m.Name] {
+			ordered = append(ordered, m)
+		}
+	}
+
+	var built, failed int
+	for _, meta := range ordered {
+		if ctx.Err() != nil {
+			return
+		}
+		start := time.Now()
+		n, err := s.idTable.BuildOne(ctx, meta)
+		elapsed := time.Since(start)
+		if err != nil {
+			failed++
+			s.logger.Warn("idtab build failed", "table", meta.Name, "err", err)
+			continue
+		}
+		built++
+		if metrics.Enabled() {
+			metrics.IDTabBuildObserve(meta.Name, elapsed)
+			metrics.IDTabState(meta.Name, n, true)
+		}
+		s.logger.Info("idtab built", "table", meta.Name, "count", n,
+			"elapsed", elapsed.Round(time.Millisecond))
+	}
+	s.logger.Info("idtab build done", "built", built, "failed", failed)
+}
+
+// maintainIDTables ID 表维护（12.5.3）。
+//
+//   - 每 10 分钟：对热表做数量核对，不一致则重建（重建期间回落 DB，不阻塞查询）
+//   - 每小时：清理孤儿实体 hash（e:{table}:{id} 存在但 idtab 无此 id）
+func (s *Server) maintainIDTables(ctx context.Context) {
+	reconcile := time.NewTicker(10 * time.Minute)
+	defer reconcile.Stop()
+	clean := time.NewTicker(time.Hour)
+	defer clean.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-reconcile.C:
+			for _, meta := range cache.DefaultIDTables {
+				if ctx.Err() != nil {
+					return
+				}
+				rebuilt, err := s.idTable.Reconcile(ctx, meta)
+				if err != nil {
+					s.logger.Warn("idtab reconcile failed", "table", meta.Name, "err", err)
+					continue
+				}
+				if rebuilt {
+					if metrics.Enabled() {
+						metrics.IDTabReconcileMismatch(meta.Name)
+					}
+					s.logger.Warn("idtab rebuilt after mismatch", "table", meta.Name)
+				}
+				if n, err := s.idTable.Count(ctx, meta.Name); err == nil {
+					if metrics.Enabled() {
+						metrics.IDTabState(meta.Name, n, s.idTable.Ready(ctx, meta.Name))
+					}
+				}
+			}
+		case <-clean.C:
+			for _, meta := range cache.DefaultIDTables {
+				if ctx.Err() != nil {
+					return
+				}
+				if !s.idTable.Ready(ctx, meta.Name) {
+					continue
+				}
+				n, err := s.idTable.CleanOrphans(ctx, meta.Name, 5000)
+				if err != nil {
+					s.logger.Warn("idtab orphan clean failed", "table", meta.Name, "err", err)
+				} else if n > 0 {
+					s.logger.Info("idtab orphan cleaned", "table", meta.Name, "removed", n)
+				}
+			}
+		}
+	}
 }

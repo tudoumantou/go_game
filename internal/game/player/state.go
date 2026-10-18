@@ -26,16 +26,25 @@ type State struct {
 	bonus    Attr // 装备等加成（登录时按已穿装备重算，不落库）
 	items    map[int32]int64 // item_id -> count
 
-	dirty   map[string]bool // module -> dirty 标记
-	mu      sync.RWMutex
+	dirty      map[string]bool // module -> dirty 标记
+	dirtyItems map[int32]bool  // 变更过的道具（落库只写这些，见 persist.Save）
+
+	// dirtyHook 任何数据变更后回调（由 Actor 注入 → flusher.MarkDirty）。
+	//
+	// 没有这个回调时，只有玩家下线（onUnbind）才会标脏 —— 意味着**在线玩家的
+	// 所有改动都不会落库**，进程崩溃即全部丢失。P4 的 Write-Behind 一直缺这一环。
+	dirtyHook func()
+
+	mu sync.RWMutex
 }
 
 // NewState 创建玩家状态。
 func NewState(playerID int64) *State {
 	return &State{
 		playerID: playerID,
-		items:    make(map[int32]int64),
-		dirty:    make(map[string]bool),
+		items:      make(map[int32]int64),
+		dirty:      make(map[string]bool),
+		dirtyItems: make(map[int32]bool),
 	}
 }
 
@@ -173,32 +182,85 @@ func (s *State) GetItemCount(itemID int32) int64 {
 	return s.items[itemID]
 }
 
-// AddItem 增加道具。
+// SetDirtyHook 注入变更回调（进程内一次，Actor 构造时设置）。
+func (s *State) SetDirtyHook(hook func()) {
+	s.mu.Lock()
+	s.dirtyHook = hook
+	s.mu.Unlock()
+}
+
+// notifyDirty 在锁外触发回调（避免持锁调用外部代码）。
+func (s *State) notifyDirty() {
+	s.mu.RLock()
+	hook := s.dirtyHook
+	s.mu.RUnlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+// AddItem 增加道具（标记脏，落库时只写变更项）。
 func (s *State) AddItem(itemID int32, count int64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.items[itemID] += count
+	s.dirtyItems[itemID] = true
+	s.mu.Unlock()
+	s.notifyDirty()
+}
+
+// SeedItem 初始化道具（从库里加载时用，**不标脏**）。
+//
+// 与 AddItem 区分：预加载灌数据不应该产生写回，否则每次登录都会把所有道具
+// 重写一遍，白白放大落库量。
+func (s *State) SeedItem(itemID int32, count int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.items[itemID] = count
 }
 
 // RemoveItem 扣除道具，数量不足返回 false。
 func (s *State) RemoveItem(itemID int32, count int64) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.items[itemID] < count {
+		s.mu.Unlock()
 		return false
 	}
 	s.items[itemID] -= count
+	s.dirtyItems[itemID] = true // 归零也要标脏：落库时转为 DELETE
 	if s.items[itemID] == 0 {
 		delete(s.items, itemID)
 	}
+	s.mu.Unlock()
+	s.notifyDirty()
 	return true
 }
 
-// MarkDirty 标记模块数据脏。
-func (s *State) MarkDirty(module string) {
+// DirtyItems 返回变更过的道具及其当前数量（0 表示应删除该行）。
+//
+// 落库只需处理这部分，而不是整包重写：背包 50 个道具里通常只有 1-2 个变化。
+func (s *State) DirtyItems() map[int32]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[int32]int64, len(s.dirtyItems))
+	for id := range s.dirtyItems {
+		out[id] = s.items[id] // 不存在时为 0 → 落库转 DELETE
+	}
+	return out
+}
+
+// ClearItemsDirty 清空道具脏标记（落库成功后调用）。
+func (s *State) ClearItemsDirty() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	clear(s.dirtyItems)
+}
+
+// MarkDirty 标记模块数据脏，并通知 flusher 纳入本轮落库。
+func (s *State) MarkDirty(module string) {
+	s.mu.Lock()
 	s.dirty[module] = true
+	s.mu.Unlock()
+	s.notifyDirty()
 }
 
 // IsDirty 查询模块是否脏。

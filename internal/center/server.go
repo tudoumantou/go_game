@@ -12,6 +12,7 @@ package center
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"game_study/internal/center/leader"
@@ -48,6 +49,11 @@ type Server struct {
 	rpcServer *rpcpkg.Server
 	redisCli  redis.UniversalClient
 
+	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
+	relayBridge *relay.Bridge
+	// instanceID 本实例唯一标识（消费组后缀 + 自发自收去重）
+	instanceID string
+
 	// groupID 本实例负责的分组（demo 单分组；多分组按 node 上报分配）
 	groupID string
 }
@@ -66,12 +72,13 @@ func New(cfg *config.Config) *Server {
 	router := relay.NewRouter(cfg.Report.RelayRetry, 200*time.Millisecond)
 
 	return &Server{
-		cfg:     cfg,
-		logger:  logger,
-		reg:     reg,
-		matcher: matcher,
-		router:  router,
-		groupID: "group-01",
+		cfg:        cfg,
+		logger:     logger,
+		reg:        reg,
+		matcher:    matcher,
+		router:     router,
+		groupID:    "group-01",
+		instanceID: instanceID(cfg.Server.Name),
 	}
 }
 
@@ -127,10 +134,28 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
-	// ⑤ 选主（9.6）：leader 负责赛季归档、全服活动调度等有主任务
+	// ⑤ 跨实例中转桥（9.3）：只有配置了 Kafka 才启用；否则退化为单实例模式
+	s.relayBridge = relay.NewBridge(relay.BridgeConfig{
+		Brokers:    s.cfg.RelayKafka.Brokers,
+		Topic:      s.cfg.RelayKafka.Topic,
+		InstanceID: s.instanceID,
+	}, s.deliverLocal, s.logger)
+	if s.relayBridge != nil {
+		go func() {
+			if err := s.relayBridge.Run(ctx); err != nil && ctx.Err() == nil {
+				s.logger.Warn("relay bridge stopped", "err", err)
+			}
+		}()
+		s.logger.Info("cross-instance relay enabled",
+			"topic", s.cfg.RelayKafka.Topic, "instance", s.instanceID)
+	} else {
+		s.logger.Info("cross-instance relay disabled (no kafka brokers), single-instance mode")
+	}
+
+	// ⑥ 选主（9.6）：leader 负责赛季归档、全服活动调度等有主任务
 	s.startElection(ctx)
 
-	// ⑥ 后台任务：心跳巡检 + 匹配 sweep + 中转重试 + 统计快照 + 指标
+	// ⑦ 后台任务：心跳巡检 + 匹配 sweep + 中转重试 + 统计快照 + 指标
 	go s.tickLoop(ctx)
 
 	s.logger.Info("CenterServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
@@ -320,7 +345,14 @@ func (s *Server) deliverMatchResult(res *match.Result) {
 		"mode", res.Mode, "cross", res.CrossAddr, "players", len(res.Players))
 }
 
-// OnRelayRequest 实现 centerRPC.Handler：消息中转。
+// OnRelayRequest 实现 centerRPC.Handler：消息中转（9.3）。
+//
+// 两条投递路径，按目标节点归属选择：
+//
+//	本地有目标 → router.Relay 直接经 Report 流下发（同实例，一跳）
+//	本地无目标 → 写入 Kafka center.relay，由承载该节点的实例消费后下发（跨实例）
+//
+// 广播同时走两条：本实例投自己承载的节点，其余实例各投各的 —— 每个节点只收一次。
 func (s *Server) OnRelayRequest(nodeID string, req *internalv2.RelayRequest) {
 	if req == nil {
 		return
@@ -333,17 +365,58 @@ func (s *Server) OnRelayRequest(nodeID string, req *internalv2.RelayRequest) {
 		GroupID:   req.GroupId,
 		Body:      req.Payload,
 	}
+
 	targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
-	if len(targets) == 0 {
-		s.logger.Debug("relay no targets", "from", nodeID, "to", p.ToNode,
-			"broadcast", p.Broadcast, "group", p.GroupID)
+	if len(targets) > 0 {
+		if n := s.router.Relay(p, targets); n < len(targets) {
+			s.logger.Warn("relay partial delivery", "relay_id", p.RelayID,
+				"delivered", n, "targets", len(targets))
+		}
+	}
+
+	// 还需要跨实例转发的情形：
+	//   - 广播：组内还有别的实例承载的节点；
+	//   - 点对点且本实例没有该节点：目标一定在别的实例上。
+	needCross := p.Broadcast || len(targets) == 0
+	if !needCross {
 		return
 	}
-	n := s.router.Relay(p, targets)
-	if n < len(targets) {
-		s.logger.Warn("relay partial delivery", "relay_id", p.RelayID,
-			"delivered", n, "targets", len(targets))
+
+	if s.relayBridge == nil {
+		if len(targets) == 0 {
+			// 单实例部署时这就是「目标节点不存在」
+			s.logger.Debug("relay target not connected", "from", nodeID,
+				"to", p.ToNode, "broadcast", p.Broadcast, "group", p.GroupID)
+		}
+		return
 	}
+
+	if err := s.relayBridge.Forward(context.Background(), p); err != nil {
+		s.logger.Warn("relay cross-instance forward failed",
+			"relay_id", p.RelayID, "to", p.ToNode, "broadcast", p.Broadcast, "err", err)
+	}
+}
+
+// deliverLocal 供中转桥调用：只投递本实例承载的节点，返回投递成功数。
+//
+// 返回 0 表示目标都不归本实例管（由其他实例处理），不是错误。
+func (s *Server) deliverLocal(p relay.Payload) int {
+	targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
+	if len(targets) == 0 {
+		return 0
+	}
+	// 跨实例路径不再登记待重试：消息已被 Kafka ack，重复投递比丢失更糟（9.3 尽力而为）
+	delivered := 0
+	for _, t := range targets {
+		if err := t.SendPush(&relay.PushPayload{
+			RelayID:  p.RelayID,
+			FromNode: p.FromNode,
+			Payload:  p.Body,
+		}); err == nil {
+			delivered++
+		}
+	}
+	return delivered
 }
 
 // resolveTargets 解析中转目标。
@@ -398,7 +471,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.rpcServer.StopWithTimeout(3 * time.Second)
 	}
 
-	// ③ 停指标
+	// ③ 停中转桥（消费者 Run 随 ctx 退出，这里显式关闭释放 Kafka 连接）
+	if s.relayBridge != nil {
+		s.relayBridge.Close()
+		if fwd, recv, deliv, skip := s.relayBridge.Stats(); fwd+recv > 0 {
+			s.logger.Info("relay bridge stats",
+				"forwarded", fwd, "received", recv, "delivered", deliv, "skipped", skip)
+		}
+	}
+
+	// ④ 停指标
 	if s.metricsSrv != nil {
 		_ = s.metricsSrv.Stop(ctx)
 	}
@@ -489,4 +571,17 @@ func (s *Server) startElection(ctx context.Context) {
 // IsLeader 当前实例是否为主（GM/诊断用）。
 func (s *Server) IsLeader() bool {
 	return s.election != nil && s.election.IsLeader()
+}
+
+// instanceID 生成本实例唯一标识。
+//
+// 用 hostname 而非纯随机：StatefulSet 的 Pod 名稳定（center-0/center-1），
+// 重启后消费组不变，可续上上次提交的 offset；纯随机会在每次重启时
+// 创建新消费组，重启期间的中转消息直接丢失。
+func instanceID(serviceName string) string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return fmt.Sprintf("%s-%d", serviceName, time.Now().UnixNano())
+	}
+	return serviceName + "@" + host
 }

@@ -8,6 +8,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
+	"game_study/pkg/flush"
 	"game_study/pkg/model"
 )
 
@@ -60,7 +61,8 @@ func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 		return nil, err
 	}
 	for itemID, count := range items {
-		state.AddItem(itemID, count)
+		// SeedItem 不标脏：预加载灌数据不应触发写回
+		state.SeedItem(itemID, count)
 	}
 	return state, nil
 }
@@ -85,9 +87,18 @@ func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]i
 	return out, rows.Err()
 }
 
-// Save 落库玩家状态（事务：属性 + 道具）。
+// Save 落库玩家状态（事务：角色 + 属性 + 道具）。
+//
+// 道具从「先删后插全量重写」改为「只写变更项 + 合批 UPSERT」（12.4.4）：
+//   - 只有 AddItem/RemoveItem 碰过的道具才写，50 格背包里通常只变 1-2 格；
+//   - 多行合成一条 INSERT ... ON DUPLICATE KEY UPDATE（500 行/条）；
+//   - 数量归零的道具合成一条 DELETE ... WHERE player_id=? AND item_id IN (...)。
+//
+// SQL 语句数从「1 + N（道具数）」降到「1 + 批次 + 批次」。
 func (r *Repository) Save(ctx context.Context, state *State) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	dirty := state.DirtyItems()
+
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		playerID := state.PlayerID()
 		a := state.Attr()
 
@@ -110,20 +121,60 @@ func (r *Repository) Save(ctx context.Context, state *State) error {
 			return fmt.Errorf("upsert attr: %w", err)
 		}
 
-		// 道具：先删后插（P4 简化，P6 改增量）
-		if _, err := tx.ExecContext(ctx, "DELETE FROM player_item WHERE player_id = ?", playerID); err != nil {
-			return fmt.Errorf("delete items: %w", err)
-		}
-		for itemID, count := range state.Items() {
-			if count <= 0 {
-				continue
-			}
-			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO player_item (player_id, item_id, count) VALUES (?, ?, ?)",
-				playerID, itemID, count); err != nil {
-				return fmt.Errorf("insert item: %w", err)
-			}
-		}
-		return nil
+		return saveDirtyItems(ctx, tx, playerID, dirty)
 	})
+	if err != nil {
+		return err // 失败保留脏标记，下轮重试
+	}
+
+	// 同一 Actor 线程内执行（onSave 走 Actor 消息），清标记无并发风险
+	state.ClearItemsDirty()
+	return nil
+}
+
+// saveDirtyItems 写本次变更的道具（合批 UPSERT + 合批 DELETE）。
+func saveDirtyItems(ctx context.Context, tx *sql.Tx, playerID int64, dirty map[int32]int64) error {
+	if len(dirty) == 0 {
+		return nil
+	}
+
+	upserts := make([][]any, 0, len(dirty))
+	deletes := make([]any, 0, len(dirty))
+	for itemID, count := range dirty {
+		if count <= 0 {
+			deletes = append(deletes, itemID)
+			continue
+		}
+		upserts = append(upserts, []any{playerID, itemID, count})
+	}
+
+	itemCols := []string{"player_id", "item_id", "count"}
+
+	for _, batch := range flush.Chunk(upserts, flush.DefaultBatchRows, flush.DefaultBatchBytes) {
+		q, args, err := flush.BuildBatchUpsert("player_item", itemCols, batch)
+		if err != nil {
+			return fmt.Errorf("build item upsert: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("batch upsert items: %w", err)
+		}
+	}
+
+	// 删除也合批：数量归零的道具一条语句删完
+	const deleteChunk = flush.DefaultBatchRows
+	for start := 0; start < len(deletes); start += deleteChunk {
+		end := start + deleteChunk
+		if end > len(deletes) {
+			end = len(deletes)
+		}
+		q, args, err := flush.BuildBatchDeleteWhere("player_item", "player_id = ?",
+			[]any{playerID}, "item_id", deletes[start:end])
+		if err != nil {
+			return fmt.Errorf("build item delete: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return fmt.Errorf("batch delete items: %w", err)
+		}
+	}
+	return nil
 }

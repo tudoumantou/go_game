@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
@@ -49,13 +50,20 @@ type Entry struct {
 
 // Repo 装备仓储。
 type Repo struct {
-	db *db.DB
+	db      *db.DB
+	idTable *cache.IDTable // 可选：按实例 uid 查库前先判存在性（12.5）
 }
 
 // NewRepo 创建仓储。
 func NewRepo(database *db.DB) *Repo {
 	return &Repo{db: database}
 }
+
+// SetIDTable 注入 ID 表（12.5）。
+//
+// 价值：穿戴/脱下按客户端上报的实例 uid 查库，伪造或过期的 uid 在 Redis 一次
+// SISMEMBER 就能判定不存在，不必打一次库。真实存在的 uid 仍走原查询（校验归属）。
+func (r *Repo) SetIDTable(t *cache.IDTable) { r.idTable = t }
 
 // ListByPlayer 查询玩家装备。
 func (r *Repo) ListByPlayer(ctx context.Context, playerID int64) ([]Entry, error) {
@@ -82,6 +90,17 @@ func (r *Repo) ListByPlayer(ctx context.Context, playerID int64) ([]Entry, error
 
 // Find 按实例 ID 查询（校验归属）。
 func (r *Repo) Find(ctx context.Context, playerID, uid int64) (*Entry, error) {
+	// 先判存在性：uid 是客户端上报值，伪造/过期的情况下不必打库
+	if r.idTable != nil {
+		exists, err := r.idTable.Exists(ctx, "player_equip", uid)
+		if err != nil {
+			return nil, fmt.Errorf("check equip exists: %w", err)
+		}
+		if !exists {
+			return nil, ErrNotExist
+		}
+	}
+
 	const q = `SELECT id, equip_id, enhance_level, quality, equipped
 	           FROM player_equip WHERE id = ? AND player_id = ?`
 	var e Entry

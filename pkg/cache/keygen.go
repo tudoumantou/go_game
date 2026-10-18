@@ -8,7 +8,8 @@ const (
 	PrefixPlayer   = "player"   // player:<player_id>:<field>
 	PrefixOnline   = "online"   // online:<player_id>
 	PrefixToken    = "token"    // token:<token>
-	PrefixIDTab    = "idtab"    // idtab:<name>
+	PrefixIDTab    = "idtab"    // idtab:<table>（存在性集合，见 idtable.go）
+	PrefixSeq      = "seq"      // seq:<name>（ID 分配计数器，见 idtab.go）
 	PrefixLock     = "lock"     // lock:<resource>
 	PrefixMailBox  = "mailbox"  // mailbox:<player_id>
 	PrefixShard    = "shard"    // shard:<index>:<player_id>
@@ -27,9 +28,24 @@ func OnlineKey(playerID int64) string {
 	return fmt.Sprintf("%s:%d", PrefixOnline, playerID)
 }
 
-// IDTabKey ID 表 key。
-func IDTabKey(name string) string {
-	return fmt.Sprintf("%s:%s", PrefixIDTab, name)
+// IDTabKey ID 表 key（存在性集合，Set 类型）。
+func IDTabKey(table string) string {
+	return fmt.Sprintf("%s:%s", PrefixIDTab, table)
+}
+
+// IDTabReadyKey ID 表构建完成标记。
+func IDTabReadyKey(table string) string {
+	return fmt.Sprintf("%s:%s:ready", PrefixIDTab, table)
+}
+
+// SeqKey ID 分配计数器 key（String 类型，INCR）。
+func SeqKey(name string) string {
+	return fmt.Sprintf("%s:%s", PrefixSeq, name)
+}
+
+// EntityKey 实体热数据 key（Hash 类型）。
+func EntityKey(table string, id int64) string {
+	return fmt.Sprintf("e:%s:%d", table, id)
 }
 
 // LockKey 分布式锁 key。

@@ -107,3 +107,22 @@ type ChatCrossMsg struct {
 	Content  string `json:"content"`
 	SendTime int64  `json:"send_time"`
 }
+
+// RelayCrossMsg 中心服集群间中转（center.relay）
+//
+// 场景（9.3）：节点 A 连中心服#1、节点 B 连中心服#2 时，#1 无法直接向 B 推送，
+// 于是把 RelayRequest 写进本 topic（Key=目标 node_id 或 group_id），
+// 由各实例独立消费并只投递**自己承载的节点**，节点侧完全无感知。
+//
+// OriginInstance 用于去重：每个实例都用独立消费组（广播语义），
+// 发消息的实例自己也会收到一份，靠该字段跳过。
+type RelayCrossMsg struct {
+	RelayID        string `json:"relay_id"`
+	OriginInstance string `json:"origin_instance"`
+	FromNode       string `json:"from_node"`
+	ToNode         string `json:"to_node,omitempty"`      // 点对点目标（与 Broadcast 二选一）
+	Broadcast      bool   `json:"broadcast,omitempty"`    // 组播
+	GroupID        string `json:"group_id,omitempty"`     // 广播时的目标分组
+	Payload        []byte `json:"payload"`
+	CreatedAt      int64  `json:"created_at"`             // unix 毫秒
+}

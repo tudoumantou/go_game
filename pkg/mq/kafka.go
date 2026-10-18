@@ -23,6 +23,11 @@ type Config struct {
 	BatchSize     int
 	BatchTimeout  time.Duration
 	MaxRetries    int // 消费失败重试次数，默认 3
+	// StartOffset 新消费组首次拉取的位点："first"（默认，全量重放）或 "last"（只消费新消息）。
+	//
+	// 广播类 topic（每实例独立 group）必须用 "last"：每个实例重启都会创建全新 group，
+	// 若从 first 开始，会把历史消息全部重放一遍 —— 中转消息尤其致命（重复投递 + 内存放大）。
+	StartOffset string
 }
 
 // Producer Kafka 生产者。
@@ -156,12 +161,16 @@ func NewConsumer(cfg Config, topic, groupID string, producer *Producer) *Consume
 	if retries <= 0 {
 		retries = 3
 	}
+	startOffset := kafka.FirstOffset
+	if cfg.StartOffset == "last" {
+		startOffset = kafka.LastOffset
+	}
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:        cfg.Brokers,
 			GroupID:        groupID,
 			Topic:          topic,
-			StartOffset:    kafka.FirstOffset,
+			StartOffset:    startOffset,
 			MinBytes:       1,
 			MaxBytes:       10 << 20, // 10MB
 			CommitInterval: 0,        // 关闭自动提交，由 Run 手动 commit

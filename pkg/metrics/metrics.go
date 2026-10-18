@@ -61,6 +61,7 @@ func Init(service string) {
 		registerChannel()
 		registerCross()
 		registerLogin()
+		registerIDTab()
 		registerCenter()
 		registerKafka()
 		enabled.Store(true)
@@ -289,6 +290,7 @@ var (
 	flushRows     *prometheus.CounterVec
 	flushFail     *prometheus.CounterVec
 	flushLag      *prometheus.GaugeVec
+	flushTomb     *prometheus.CounterVec
 )
 
 func registerFlush() {
@@ -313,7 +315,19 @@ func registerFlush() {
 		Namespace: Namespace, Subsystem: "flush", Name: "lag_seconds",
 		Help: "落库延迟：距上次成功落库的秒数（20.3 告警项）",
 	}, []string{"service", "shard"})
-	registry.MustRegister(flushDirty, flushDuration, flushRows, flushFail, flushLag)
+	flushTomb = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "flush", Name: "tombstone_total",
+		Help: "物理删除（墓碑）行数（按结果：ok/fail/dropped）",
+	}, []string{"service", "shard", "result"})
+	registry.MustRegister(flushDirty, flushDuration, flushRows, flushFail, flushLag, flushTomb)
+}
+
+// FlushTombstone 墓碑删除计数。
+func FlushTombstone(shard int, result string, n int) {
+	if !enabled.Load() {
+		return
+	}
+	flushTomb.WithLabelValues(Service(), fmt.Sprintf("%d", shard), result).Add(float64(n))
 }
 
 // FlushDirty 设置分片脏实体数。
@@ -467,6 +481,65 @@ func LoginPreloadObserve(d time.Duration, ok bool) {
 		result = "error"
 	}
 	loginPreload.WithLabelValues(Service(), result).Observe(d.Seconds())
+}
+
+// ============================ ID 表 ============================
+
+var (
+	idtabSize      *prometheus.GaugeVec
+	idtabReady     *prometheus.GaugeVec
+	idtabReconcile *prometheus.CounterVec
+	idtabBuildDur  *prometheus.HistogramVec
+)
+
+func registerIDTab() {
+	idtabSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "idtab", Name: "size",
+		Help: "ID 表集合大小（条数）",
+	}, []string{"service", "table"})
+	idtabReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "idtab", Name: "ready",
+		Help: "ID 表构建完成标记（1/0）。0 表示存在性判断回落 MySQL",
+	}, []string{"service", "table"})
+	idtabReconcile = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "idtab", Name: "reconcile_mismatch_total",
+		Help: "对账发现数量不一致的次数（20.3 告警项）",
+	}, []string{"service", "table"})
+	idtabBuildDur = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: Namespace, Subsystem: "idtab", Name: "build_duration_seconds",
+		Help:    "ID 表构建耗时",
+		Buckets: []float64{0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60},
+	}, []string{"service", "table"})
+	registry.MustRegister(idtabSize, idtabReady, idtabReconcile, idtabBuildDur)
+}
+
+// IDTabState 上报某张表 ID 集合的状态。
+func IDTabState(table string, size int64, ready bool) {
+	if !enabled.Load() {
+		return
+	}
+	idtabSize.WithLabelValues(Service(), table).Set(float64(size))
+	r := 0.0
+	if ready {
+		r = 1
+	}
+	idtabReady.WithLabelValues(Service(), table).Set(r)
+}
+
+// IDTabReconcileMismatch 对账不一致计数。
+func IDTabReconcileMismatch(table string) {
+	if !enabled.Load() {
+		return
+	}
+	idtabReconcile.WithLabelValues(Service(), table).Inc()
+}
+
+// IDTabBuildObserve 记录单表构建耗时。
+func IDTabBuildObserve(table string, d time.Duration) {
+	if !enabled.Load() {
+		return
+	}
+	idtabBuildDur.WithLabelValues(Service(), table).Observe(d.Seconds())
 }
 
 // ============================ 中心服 ============================
