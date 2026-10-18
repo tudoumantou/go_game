@@ -59,8 +59,10 @@ message RankReport {
   string node_id   = 1;
   string rank_type = 2; // 榜单类型（如 arena_score / guild_power）
   int64  player_id = 3;
-  int64  score     = 4; // 增量或绝对值（由 rank_type 约定）
+  int64  score     = 4; // **增量**（delta），中心服用 ZINCRBY 累加
   string season    = 5;
+  // scope 榜单作用域："global"（默认，全服总榜）或 "group:{gid}"（分组榜）
+  string scope     = 6;
 }
 
 message RankNotify {

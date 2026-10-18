@@ -475,6 +475,8 @@ var (
 	centerNodes        *prometheus.GaugeVec
 	centerMatchQueue   prometheus.Gauge
 	centerRelayPending prometheus.Gauge
+	centerStatsSeries  prometheus.Gauge
+	centerIsLeader     prometheus.Gauge
 )
 
 func registerCenter() {
@@ -490,7 +492,16 @@ func registerCenter() {
 		Namespace: Namespace, Subsystem: "center", Name: "relay_pending",
 		Help: "待重试的中转消息数",
 	})
-	registry.MustRegister(centerNodes, centerMatchQueue, centerRelayPending)
+	centerStatsSeries = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "center", Name: "stats_series",
+		Help: "内存聚合中的统计序列数（group × feature）",
+	})
+	centerIsLeader = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "center", Name: "is_leader",
+		Help: "本实例是否为 etcd 选主 leader（1/0）",
+	})
+	registry.MustRegister(centerNodes, centerMatchQueue, centerRelayPending,
+		centerStatsSeries, centerIsLeader)
 }
 
 // CenterNodes 设置某类型节点数。
@@ -515,6 +526,26 @@ func CenterRelayPending(n int) {
 		return
 	}
 	centerRelayPending.Set(float64(n))
+}
+
+// CenterStatsSeries 设置统计序列数。
+func CenterStatsSeries(n int) {
+	if !enabled.Load() {
+		return
+	}
+	centerStatsSeries.Set(float64(n))
+}
+
+// CenterIsLeader 设置选主状态。
+func CenterIsLeader(v bool) {
+	if !enabled.Load() {
+		return
+	}
+	f := 0.0
+	if v {
+		f = 1
+	}
+	centerIsLeader.Set(f)
 }
 
 // ============================ Kafka ============================

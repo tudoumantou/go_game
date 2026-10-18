@@ -14,16 +14,22 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/center/leader"
 	"game_study/internal/center/match"
+	"game_study/internal/center/rank"
 	"game_study/internal/center/registry"
 	"game_study/internal/center/relay"
 	centerRPC "game_study/internal/center/rpc"
+	"game_study/internal/center/stats"
+	"game_study/pkg/cache"
 	"game_study/pkg/config"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	rpcpkg "game_study/pkg/rpc"
 
 	internalv2 "game_study/pkg/pb/internalv2"
+	"github.com/redis/go-redis/v9"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // Server 中心服。
@@ -32,11 +38,15 @@ type Server struct {
 	logger     *log.Logger
 	metricsSrv *metrics.Server
 
-	reg      *registry.Registry
-	matcher  *match.Matcher
-	router   *relay.Router
+	reg       *registry.Registry
+	matcher   *match.Matcher
+	router    *relay.Router
+	rankSvc   *rank.Service
+	statsSvc  *stats.Service
+	election  *leader.Election
 	centerRPC *centerRPC.Server
 	rpcServer *rpcpkg.Server
+	redisCli  redis.UniversalClient
 
 	// groupID 本实例负责的分组（demo 单分组；多分组按 node 上报分配）
 	groupID string
@@ -79,8 +89,35 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Info("metrics server started", "addr", mSrv.Addr())
 	}
 
-	// ② gRPC（CenterService.Report + GM 查询）
+	// ② Redis（排行榜 ZSet + 统计快照）
+	if len(s.cfg.Redis.Addrs) > 0 {
+		redisClient, err := cache.New(cache.RedisConfig{
+			Addrs:    s.cfg.Redis.Addrs,
+			Password: s.cfg.Redis.Password,
+			DB:       s.cfg.Redis.DB,
+			PoolSize: s.cfg.Redis.PoolSize,
+			MinIdle:  s.cfg.Redis.MinIdleConn,
+		})
+		if err != nil {
+			return fmt.Errorf("redis: %w", err)
+		}
+		s.redisCli = redisClient.GetClient()
+	}
+
+	// ③ 排行榜与统计（Redis 可用时才启用；否则 GM 查询返回空）
+	if s.redisCli != nil {
+		s.rankSvc = rank.New(s.redisCli, "s1", s.logger)
+		s.statsSvc = stats.New(s.redisCli, s.logger)
+	}
+
+	// ④ gRPC（CenterService.Report + GM 查询）
 	s.centerRPC = centerRPC.NewServer(s.reg, s, s.logger)
+	if s.rankSvc != nil {
+		s.centerRPC.SetRankQuerier(s.rankSvc)
+	}
+	if s.statsSvc != nil {
+		s.centerRPC.SetStatsQuerier(s.statsSvc)
+	}
 	s.rpcServer = rpcpkg.NewServer(s.cfg.Server.GRPCAddr, s.logger)
 	internalv2.RegisterCenterServiceServer(s.rpcServer.GRPCServer(), s.centerRPC)
 
@@ -90,7 +127,10 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
-	// ③ 后台任务：心跳巡检 + 匹配 sweep + 中转重试 + 指标
+	// ⑤ 选主（9.6）：leader 负责赛季归档、全服活动调度等有主任务
+	s.startElection(ctx)
+
+	// ⑥ 后台任务：心跳巡检 + 匹配 sweep + 中转重试 + 统计快照 + 指标
 	go s.tickLoop(ctx)
 
 	s.logger.Info("CenterServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
@@ -104,7 +144,10 @@ func (s *Server) tickLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	var lastMetric time.Time
+	var (
+		lastMetric   time.Time
+		lastSnapshot time.Time
+	)
 	for {
 		select {
 		case <-ctx.Done():
@@ -124,6 +167,16 @@ func (s *Server) tickLoop(ctx context.Context) {
 			for _, p := range s.router.NextRetry(now) {
 				targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
 				s.router.Relay(p, targets)
+			}
+
+			// 统计快照（每 5 分钟，9.5：内存聚合 → Redis Hash）
+			if s.statsSvc != nil && now.Sub(lastSnapshot) >= 5*time.Minute {
+				lastSnapshot = now
+				snapCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				if err := s.statsSvc.Snapshot(snapCtx); err != nil {
+					s.logger.Warn("stats snapshot failed", "err", err)
+				}
+				cancel()
 			}
 
 			// 指标（每 10s）
@@ -148,6 +201,12 @@ func (s *Server) reportMetrics() {
 	waiting, _ := s.matcher.Stats()
 	metrics.CenterMatchQueue(waiting)
 	metrics.CenterRelayPending(s.router.PendingCount())
+	if s.statsSvc != nil {
+		metrics.CenterStatsSeries(s.statsSvc.SeriesCount())
+	}
+	if s.election != nil {
+		metrics.CenterIsLeader(s.election.IsLeader())
+	}
 }
 
 // readiness 就绪探针：中心服无强依赖，注册表就绪即可。
@@ -386,4 +445,48 @@ func pow10(n uint32) uint32 {
 		out *= 10
 	}
 	return out
+}
+
+// startElection 参与 etcd 选主（9.6）。etcd 未配置时跳过（单实例部署无需选主）。
+func (s *Server) startElection(ctx context.Context) {
+	if len(s.cfg.Etcd.Endpoints) == 0 {
+		s.logger.Info("etcd not configured, skip leader election")
+		return
+	}
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   s.cfg.Etcd.Endpoints,
+		DialTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		s.logger.Warn("etcd client for election failed", "err", err)
+		return
+	}
+
+	ttl := int64(s.cfg.Etcd.LeaseTTL)
+	if ttl <= 0 {
+		ttl = 10
+	}
+	s.election = leader.New(cli, leader.Config{
+		Key:    s.cfg.Etcd.LeaderKey,
+		SelfID: s.cfg.Server.Name,
+		TTL:    ttl,
+		OnChange: func(isLeader bool) {
+			if isLeader {
+				s.logger.Info("this instance is now the center leader")
+			} else {
+				s.logger.Info("this instance is no longer the leader")
+			}
+		},
+	}, s.logger)
+
+	go func() {
+		if err := s.election.Run(ctx); err != nil && ctx.Err() == nil {
+			s.logger.Warn("leader election stopped", "err", err)
+		}
+	}()
+}
+
+// IsLeader 当前实例是否为主（GM/诊断用）。
+func (s *Server) IsLeader() bool {
+	return s.election != nil && s.election.IsLeader()
 }

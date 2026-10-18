@@ -162,6 +162,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if d, err := config.ParseDuration(s.cfg.Cross.BattleTimeout); err == nil && d > 0 {
 		s.battleMod.SetBattleTimeout(d)
 	}
+	// 排行上报（P14）：战斗结算后写全服竞技场榜
+	if s.centerCli != nil {
+		s.battleMod.SetRanker(rankReporter{cli: s.centerCli})
+	}
 
 	s.modules = module.NewRegistry()
 	s.modules.Register(profile.New(s.logger))
@@ -739,4 +743,17 @@ func (h centerHandler) OnConfigPush(c *internalv2.ConfigPush) {
 // CenterReady 中心服 Report 流是否就绪（测试/探针用）。
 func (s *Server) CenterReady() bool {
 	return s.centerCli != nil && s.centerCli.Ready()
+}
+
+// rankReporter 把中心服客户端适配为 battle.RankReporter。
+type rankReporter struct {
+	cli *gamecenter.Client
+}
+
+// ReportArenaScore 实现 battle.RankReporter。
+func (r rankReporter) ReportArenaScore(playerID int64, score int64) error {
+	if r.cli == nil {
+		return fmt.Errorf("center client not configured")
+	}
+	return r.cli.SendRank("arena_score", playerID, score, "")
 }

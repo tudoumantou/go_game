@@ -84,6 +84,12 @@ type CenterMatcher interface {
 	Match(playerID int64, mode string, elo int32, snapshot []byte) error
 }
 
+// RankReporter 排行分上报（P14：战斗结算后写全服榜）。
+type RankReporter interface {
+	// ReportArenaScore 上报竞技场积分（delta 为增减量，中心服负责累加/覆盖）。
+	ReportArenaScore(playerID int64, score int64) error
+}
+
 // Pusher 向在线玩家推送（由组装层实现，跨 Actor 安全）。
 type Pusher interface {
 	Push(playerID int64, msgID uint32, body []byte) bool
@@ -103,6 +109,7 @@ type Session struct {
 type Module struct {
 	cross  CrossCaller
 	center CenterMatcher
+	ranker RankReporter
 	pusher Pusher
 	logger *log.Logger
 
@@ -189,10 +196,15 @@ func (m *Module) onMatch(ctx *module.Context, body []byte) error {
 		resp.Code = codeAlreadyIn
 		return m.reply(ctx, msgIDMatchResp, resp)
 	}
-	if _, inBattle := m.sessions[playerID]; inBattle {
-		m.mu.Unlock()
-		resp.Code = codeAlreadyIn
-		return m.reply(ctx, msgIDMatchResp, resp)
+	if s, inBattle := m.sessions[playerID]; inBattle {
+		if !s.Settled {
+			m.mu.Unlock()
+			resp.Code = codeAlreadyIn
+			return m.reply(ctx, msgIDMatchResp, resp)
+		}
+		// 已结算但会话还未回收（结算到清理之间有短暂窗口）：
+		// 立即清掉残留，允许重新匹配 —— 否则玩家打完一场要等 2s 才能再排。
+		delete(m.sessions, playerID)
 	}
 
 	// 中心服可用 → 走中心服匹配（P8 主路径）；否则降级为本服匹配（P13 直连）
@@ -501,6 +513,21 @@ func (m *Module) OnBattleResult(res *internalv2.BattleResult) {
 	m.logger.Info("battle settled by cross", "room_id", res.RoomId,
 		"player_id", res.PlayerId, "result", res.Result)
 
+	// 全服竞技场榜（P14）：胜 +30，负 -10（不低于 0 由中心服 ZSet 语义天然处理）
+	if m.ranker != nil {
+		delta := int64(-10)
+		if res.Result == 0 {
+			delta = 30
+		} else if res.Result == 2 {
+			delta = 0
+		}
+		if delta != 0 {
+			if err := m.ranker.ReportArenaScore(res.PlayerId, delta); err != nil {
+				m.logger.Debug("report arena score failed", "player_id", res.PlayerId, "err", err)
+			}
+		}
+	}
+
 	// 结算后清理会话（延迟一点，避免和正在处理的上报竞争）
 	go func() {
 		time.Sleep(2 * time.Second)
@@ -545,6 +572,9 @@ func (m *Module) battleTimeout() time.Duration {
 	}
 	return defaultBattleTimeout
 }
+
+// SetRanker 注入排行上报能力（P14）。
+func (m *Module) SetRanker(r RankReporter) { m.ranker = r }
 
 // SetBattleTimeout 覆盖默认战斗时限（组装层按配置注入）。
 func (m *Module) SetBattleTimeout(d time.Duration) {
