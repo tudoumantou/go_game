@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 )
 
 // PersistFunc 实际写库函数（返回 nil 表示成功）。
@@ -75,6 +76,7 @@ func (f *Flusher) runShard(ctx context.Context, sh *shard, offset time.Duration)
 
 	ticker := time.NewTicker(f.interval)
 	defer ticker.Stop()
+	lastSuccess := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -82,7 +84,22 @@ func (f *Flusher) runShard(ctx context.Context, sh *shard, offset time.Duration)
 		case <-f.stopCh:
 			return
 		case <-ticker.C:
-			if err := sh.flush(ctx); err != nil {
+			start := time.Now()
+			err := sh.flush(ctx)
+			elapsed := time.Since(start)
+			if metrics.Enabled() {
+				metrics.FlushObserve(elapsed)
+				if err != nil {
+					metrics.FlushFail(sh.index)
+				} else {
+					lastSuccess = time.Now()
+					metrics.FlushRows(true, sh.dirtyCount())
+				}
+				// 落库延迟：距上次成功落库的秒数（20.3 告警项：超 2 个周期告警）
+				metrics.FlushLag(sh.index, time.Since(lastSuccess).Seconds())
+				metrics.FlushDirty(sh.index, sh.dirtyCount())
+			}
+			if err != nil {
 				f.logger.Warn("flush shard failed", "shard", sh.index, "err", err)
 			}
 		}
@@ -154,6 +171,13 @@ func (s *shard) mark(playerID int64) {
 	s.dirty[playerID] = struct{}{}
 }
 
+// dirtyCount 当前脏实体数。
+func (s *shard) dirtyCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.dirty)
+}
+
 func (s *shard) flush(ctx context.Context) error {
 	s.mu.Lock()
 	if len(s.dirty) == 0 {
@@ -196,3 +220,6 @@ func (f *Flusher) Pending() int64 {
 	}
 	return total
 }
+
+// Shards 返回分片数（指标聚合用）。
+func (f *Flusher) Shards() int { return len(f.shards) }

@@ -23,10 +23,21 @@ spec:
               valueFrom: { secretKeyRef: { name: mysql-secret, key: MYSQL_PASSWORD } }
           volumeMounts:
             - { name: config, mountPath: /app/configs/login, readOnly: true }
-          # 19.6 探针表：登录服 HTTP /healthz（P1 落地后启用，P0 TCP 占位）
-          startupProbe:   { tcpSocket: { port: http }, periodSeconds: 5, failureThreshold: 12 }
-          readinessProbe: { tcpSocket: { port: http }, periodSeconds: 10 }
-          livenessProbe:  { tcpSocket: { port: http }, periodSeconds: 15 }
+          # 19.6 探针表（P7 已实现）：/readyz 校验 Redis + MySQL
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests: { cpu: "250m", memory: "256Mi" }
             limits:   { cpu: "1",    memory: "1Gi" }
@@ -50,6 +61,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: login
+  labels:
+    app: login
+    metrics: enabled
 spec:
   selector: { app: login }
   ports:

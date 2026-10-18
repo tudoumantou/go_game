@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/pkg/metrics"
+
 	"github.com/segmentio/kafka-go"
 )
 
@@ -173,6 +175,7 @@ func NewConsumer(cfg Config, topic, groupID string, producer *Producer) *Consume
 // Run 阻塞消费直到 ctx 取消。
 func (c *Consumer) Run(ctx context.Context, h Handler) error {
 	backoff := 100 * time.Millisecond
+	consumed := 0
 	for {
 		msg, err := c.reader.FetchMessage(ctx)
 		if err != nil {
@@ -206,6 +209,23 @@ func (c *Consumer) Run(ctx context.Context, h Handler) error {
 			dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = c.producer.DeadLetter(dlqCtx, env, lastErr)
 			cancel()
+		}
+
+		// 指标（20.3）：ok / retry / dead 三态
+		if metrics.Enabled() {
+			switch {
+			case lastErr == nil:
+				metrics.KafkaConsumed(c.topic, "ok")
+			case c.producer != nil:
+				metrics.KafkaConsumed(c.topic, "dead")
+			default:
+				metrics.KafkaConsumed(c.topic, "retry")
+			}
+			// 消费 lag：Stats() 需加锁，每 256 条采样一次即可反映趋势
+			if consumed++; consumed%256 == 1 {
+				st := c.reader.Stats()
+				metrics.KafkaLag(c.topic, st.Lag)
+			}
 		}
 
 		// 无论成功还是进死信，都提交 offset：失败消息已进死信，不能阻塞分区

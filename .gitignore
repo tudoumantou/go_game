@@ -1,5 +1,6 @@
 # 构建产物
 /bin/
+/loadtest
 /volumes/
 *.out
 coverage.txt

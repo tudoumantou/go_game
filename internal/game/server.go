@@ -33,6 +33,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
@@ -67,6 +68,7 @@ type Server struct {
 	producer  *pkgmq.Producer
 	consumers *gamemq.Group
 	roleSvc   *service.RoleService
+	metricsSrv *metrics.Server
 
 	mu       sync.RWMutex
 	sessions map[uint64]int64 // session_id -> player_id（0 = 未选角）
@@ -85,6 +87,18 @@ func New(cfg *config.Config) *Server {
 
 // Start 启动服务（阻塞至 ctx 取消）。
 func (s *Server) Start(ctx context.Context) error {
+	// 指标（20.3）：注册服务名 + 起 /metrics、/healthz、/readyz
+	if s.cfg.Metrics.Enable {
+		metrics.Init(s.cfg.Server.Name)
+		mSrv, err := metrics.NewServer(s.cfg.Metrics.Addr, s.readiness)
+		if err != nil {
+			return fmt.Errorf("metrics server: %w", err)
+		}
+		mSrv.Start()
+		s.metricsSrv = mSrv
+		s.logger.Info("metrics server started", "addr", mSrv.Addr())
+	}
+
 	// ① MySQL（业务库）
 	if s.cfg.MySQL.DSN != "" {
 		database, err := db.New(db.Config{
@@ -122,6 +136,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.actorSys = actor.NewSystem(actor.Config{
 		ShardCount:  s.cfg.Actor.ShardCount,
 		MailboxSize: s.cfg.Actor.MailboxSize,
+		Logger:      s.logger, // panic 恢复时记录堆栈（不再静默吞掉）
 	})
 	s.actorSys.Start(ctx)
 
@@ -222,6 +237,21 @@ func (s *Server) Start(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// readiness 就绪探针：DB/Redis 可用才允许接流量（19.6 探针表）。
+func (s *Server) readiness(ctx context.Context) error {
+	if s.database != nil {
+		if err := s.database.PingContext(ctx); err != nil {
+			return fmt.Errorf("mysql: %w", err)
+		}
+	}
+	if s.redis != nil {
+		if err := s.redis.GetClient().Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("redis: %w", err)
+		}
+	}
+	return nil
+}
+
 // Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，pkg/shutdown 编排）。
 func (s *Server) Shutdown(ctx context.Context) error {
 	// DRAIN：摘注册
@@ -261,6 +291,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.redis != nil {
 		_ = s.redis.Close()
+	}
+	if s.metricsSrv != nil {
+		_ = s.metricsSrv.Stop(ctx)
 	}
 	s.logger.Info("game stopped")
 	return nil

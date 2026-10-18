@@ -1,0 +1,119 @@
+# deploy/monitoring/rules/gs-alerts.yml —— 告警规则（设计文档 20.3 告警项）
+#
+# 覆盖 5 条核心不变量：
+#   1. 落库连续失败 / 落库延迟超 2 个周期
+#   2. Actor 队列积压
+#   3. Kafka 消费 lag 超阈值
+#   4. 节点心跳超时（up == 0）
+#   5. 消息错误率 / 连接数打满
+groups:
+  - name: game-study-availability
+    interval: 30s
+    rules:
+      # ---------- 节点存活 ----------
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "服务 {{ $labels.job }} 不可达"
+          description: "{{ $labels.instance }} 已连续 1 分钟抓取失败，检查进程与网络。"
+
+      # ---------- 落库 ----------
+      - alert: FlushFailures
+        expr: increase(gs_flush_failures_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "落库失败 {{ $labels.job }} shard={{ $labels.shard }}"
+          description: "5 分钟内出现落库失败，数据仍在内存但已延迟，检查 MySQL 连接与慢查询。"
+
+      - alert: FlushLagHigh
+        expr: gs_flush_lag_seconds > 120
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "落库延迟 {{ $value }}s（阈值 120s = 2 个周期）"
+          description: "shard={{ $labels.shard }} 超过 2 个落库周期未成功，18 章四道防线将介入，需立即排查。"
+
+      - alert: FlushBacklog
+        expr: gs_flush_dirty_entities > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "脏实体积压 {{ $value }} 个"
+          description: "分片 {{ $labels.shard }} 持续积压，可能导致落库延迟扩散。"
+
+      # ---------- Actor ----------
+      - alert: ActorMailboxBacklog
+        expr: gs_actor_mailbox_depth > 1000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Actor 信箱积压 {{ $value }}（shard {{ $labels.shard }}）"
+          description: "单分片积压超 1000，接近有界信箱上限，可能开始丢最旧消息。"
+
+      - alert: ActorPanic
+        expr: increase(gs_actor_panic_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Actor panic（5 分钟内 {{ $value }} 次）"
+          description: "panic 已被 recover，但说明存在代码缺陷，请查日志中的 actor panic recovered。"
+
+      # ---------- Kafka ----------
+      - alert: KafkaConsumerLag
+        expr: gs_kafka_consumer_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Topic {{ $labels.topic }} 消费 lag {{ $value }}"
+          description: "持续积压将导致邮件/充值发货延迟，检查消费者实例数与处理耗时。"
+
+      - alert: KafkaDeadLetter
+        expr: increase(gs_kafka_consumed_total{result="dead"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Topic {{ $labels.topic }} 出现死信"
+          description: "消息重试耗尽进入 gs.flush.retry，需人工排查并补偿。"
+
+      # ---------- 网关 ----------
+      - alert: GatewayConnectionSaturated
+        expr: gs_gateway_connections / on(instance) group_left() 100000 > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "网关连接数接近上限（{{ $value | humanizePercentage }}）"
+          description: "当前 {{ $labels.instance }} 连接数超过 8.5W，接近 10W 设计上限。"
+
+      # ---------- 消息质量 ----------
+      - alert: MessageErrorRateHigh
+        expr: |
+          sum by (job) (rate(gs_message_total{result="error"}[5m]))
+            / sum by (job) (rate(gs_message_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }} 消息错误率 {{ $value | humanizePercentage }}"
+          description: "错误率超过 1%，检查最近的协议变更或客户端版本。"
+
+      # ---------- 延迟 ----------
+      - alert: MessageLatencyHigh
+        expr: histogram_quantile(0.99, sum by (le) (rate(gs_message_duration_seconds_bucket[5m]))) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "消息 P99 延迟 {{ $value }}s（目标 < 50ms）"
+          description: "端到端延迟超过 20.1 节目标，检查 DB/Redis 抖动与 Actor 积压。"

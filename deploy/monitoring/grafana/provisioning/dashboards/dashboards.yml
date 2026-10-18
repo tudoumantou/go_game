@@ -1,0 +1,15 @@
+# deploy/monitoring/grafana/provisioning/dashboards/dashboards.yml
+# 从 /var/lib/grafana/dashboards 目录自动加载看板 JSON
+apiVersion: 1
+
+providers:
+  - name: game-study
+    orgId: 1
+    folder: Game Study
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

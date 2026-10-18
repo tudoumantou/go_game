@@ -1,0 +1,38 @@
+# deploy/monitoring/prometheus.yml —— Prometheus 抓取配置（设计文档 20.3）
+#
+# 本地：docker compose -f deploy/docker-compose.yaml up -d prometheus grafana
+# 生产：K8s 用 ServiceMonitor（见 deploy/k8s/monitoring/），此文件对应 compose 场景。
+#
+# metrics 端口来自 configs/<svc>/<svc>-dev.yaml 的 metrics.addr：
+#   login 8081 / gateway 9101 / game 9102 / center 9201 / cross 9301
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: game-study-dev
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # 五类游戏服务各自独立 job —— 告警规则按 job 精确匹配，
+  # 避免「网关指标缺失」被误判成「游戏服指标缺失」。
+  - job_name: login
+    static_configs:
+      - targets: ["login:8081"]
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:9101"]
+  - job_name: game
+    static_configs:
+      - targets: ["game:9102"]
+  - job_name: center
+    static_configs:
+      - targets: ["center:9201"]
+  - job_name: cross
+    static_configs:
+      - targets: ["cross:9301"]

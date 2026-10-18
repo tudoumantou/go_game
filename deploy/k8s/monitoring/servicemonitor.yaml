@@ -1,0 +1,111 @@
+# deploy/k8s/monitoring/servicemonitor.yaml —— Prometheus Operator 抓取配置（设计文档 20.3）
+#
+# 前提：集群已装 kube-prometheus-stack（或 Prometheus Operator）。
+# 与 deploy/monitoring/prometheus.yml 等价，区别是这里用 CRD 动态发现 Pod，
+# 不写死实例地址 —— 扩容后自动纳入抓取。
+#
+# 应用：kubectl apply -f deploy/k8s/monitoring/
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: game-study
+  namespace: game-study
+  labels:
+    release: prometheus   # 与 kube-prometheus-stack 的 serviceMonitorSelector 对齐
+spec:
+  namespaceSelector:
+    matchNames: [game-study]
+  selector:
+    matchLabels:
+      metrics: enabled   # 由各 workload 的 Service 打上此标签
+  endpoints:
+    - port: metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      path: /metrics
+      # 用 Pod 名做 instance 标签，面板上能直接定位到具体副本
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: instance
+        - sourceLabels: [__meta_kubernetes_pod_label_app]
+          targetLabel: app
+---
+# 告警规则（与 deploy/monitoring/rules/gs-alerts.yml 同源，此处转成 CRD）
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: game-study-alerts
+  namespace: game-study
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: game-study-availability
+      interval: 30s
+      rules:
+        - alert: ServiceDown
+          expr: up{job=~"login|gateway|game|center|cross"} == 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "服务 {{ $labels.job }} 不可达"
+            description: "{{ $labels.instance }} 连续 1 分钟抓取失败。"
+
+        - alert: FlushFailures
+          expr: increase(gs_flush_failures_total[5m]) > 0
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: "落库失败 shard={{ $labels.shard }}"
+            description: "5 分钟内出现落库失败，检查 MySQL。"
+
+        - alert: FlushLagHigh
+          expr: gs_flush_lag_seconds > 120
+          for: 3m
+          labels: { severity: critical }
+          annotations:
+            summary: "落库延迟 {{ $value }}s（阈值 2 个周期）"
+
+        - alert: ActorMailboxBacklog
+          expr: gs_actor_mailbox_depth > 1000
+          for: 2m
+          labels: { severity: warning }
+          annotations:
+            summary: "Actor 信箱积压 {{ $value }}（shard {{ $labels.shard }}）"
+
+        - alert: ActorPanic
+          expr: increase(gs_actor_panic_total[5m]) > 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "Actor panic 发生 {{ $value }} 次"
+
+        - alert: KafkaConsumerLag
+          expr: gs_kafka_consumer_lag > 10000
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "Topic {{ $labels.topic }} lag {{ $value }}"
+
+        - alert: KafkaDeadLetter
+          expr: increase(gs_kafka_consumed_total{result="dead"}[10m]) > 0
+          for: 1m
+          labels: { severity: critical }
+          annotations:
+            summary: "Topic {{ $labels.topic }} 出现死信"
+
+        - alert: MessageErrorRateHigh
+          expr: |
+            sum by (job) (rate(gs_message_total{result="error"}[5m]))
+              / sum by (job) (rate(gs_message_total[5m])) > 0.01
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "{{ $labels.job }} 消息错误率 {{ $value | humanizePercentage }}"
+
+        - alert: MessageLatencyHigh
+          expr: histogram_quantile(0.99, sum by (le) (rate(gs_message_duration_seconds_bucket[5m]))) > 0.05
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "消息 P99 延迟 {{ $value }}s（目标 < 50ms）"

@@ -28,6 +28,31 @@ P0 占位用 TCP 探针保证可运行；P1/P2 按探针表替换：
 
 | 服务 | startupProbe | readinessProbe | livenessProbe |
 | --- | --- | --- | --- |
-| 网关/登录 | HTTP `/healthz` | HTTP `/healthz` | HTTP `/healthz` |
-| 游戏/跨服 | TCP gRPC 端口 | etcd 注册 + idtab ready（exec） | actor 分片心跳（exec） |
-| 中心服 | TCP gRPC 端口 | etcd 注册 + 选主完成（exec） | 主循环心跳（exec） |
+| 网关/登录 | HTTP `/healthz`（metrics 端口） | HTTP `/readyz`（校验 Redis/MySQL） | HTTP `/healthz` |
+| 游戏 | HTTP `/healthz`（metrics 端口） | HTTP `/readyz`（校验 Redis/MySQL） | HTTP `/healthz` |
+| 中心/跨服 | HTTP `/healthz` | HTTP `/readyz` | HTTP `/healthz` |
+
+**探针语义（P7 已全部落地）**：
+
+- `/healthz` —— 只回答「进程活着吗」，**不查任何依赖**。中间件短时抖动不应让全部 Pod 一起重启。
+- `/readyz` —— 回答「能接业务流量吗」，Redis/MySQL 探活失败返回 503，K8s 从 Endpoints 摘除该实例。
+- `/metrics` —— Prometheus 抓取（见下方监控一节）。
+
+> P0 阶段的 TCP 探针已全部替换为 HTTP 探针（TCP 探针在「进程活着但 DB 断了」时仍报就绪，会让流量打到不可用实例）。
+
+## 监控（P7）
+
+| 文件 | 用途 |
+| --- | --- |
+| `deploy/k8s/monitoring/servicemonitor.yaml` | ServiceMonitor + PrometheusRule（Prometheus Operator 场景） |
+| `deploy/monitoring/prometheus.yml` | 抓取配置（docker compose 场景） |
+| `deploy/monitoring/rules/gs-alerts.yml` | 告警规则（9 条） |
+| `deploy/monitoring/grafana/` | 看板 `gs-overview`（5 分区 15 面板）+ 数据源自动注册 |
+
+前提：集群装了 kube-prometheus-stack。各 workload 的 Service 已打 `metrics: enabled` 标签，ServiceMonitor 据此动态发现，扩容后自动纳入。
+
+```bash
+kubectl apply -f deploy/k8s/monitoring/
+```
+
+指标清单与告警阈值见设计文档 20.3.1。

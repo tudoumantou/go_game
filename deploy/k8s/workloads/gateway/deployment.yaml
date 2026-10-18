@@ -22,10 +22,21 @@ spec:
           volumeMounts:
             - { name: config, mountPath: /app/configs/gateway, readOnly: true }
             - { name: keys,   mountPath: /app/keys, readOnly: true }
-          # 19.6 探针表：网关应为 HTTP /healthz（P1 网关 HTTP 服务落地后启用，P0 用 TCP 占位）
-          startupProbe:    { tcpSocket: { port: tcp }, periodSeconds: 5, failureThreshold: 12 }
-          readinessProbe:  { tcpSocket: { port: tcp }, periodSeconds: 10 }
-          livenessProbe:   { tcpSocket: { port: tcp }, periodSeconds: 15 }
+          # 19.6 探针表（P7 已实现）：存活看进程，就绪看是否可接新连接
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
           lifecycle:
             preStop:       # 18.4 排水 30s：摘流 → 存量连接处理完再退出
               exec: { command: ["sleep", "30"] }
@@ -54,6 +65,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: gateway
+  labels:
+    app: gateway
+    metrics: enabled
 spec:
   selector: { app: gateway }
   ports:

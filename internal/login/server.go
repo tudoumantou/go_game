@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"game_study/internal/login/handler"
@@ -15,6 +16,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
 )
 
@@ -24,7 +26,8 @@ type Server struct {
 	logger  *log.Logger
 	redis   *cache.Client
 	database *db.DB
-	httpSrv *http.Server
+	httpSrv   *http.Server
+	metricsSrv *metrics.Server
 
 	producer  *pkgmq.Producer
 	delivered *mq.DeliveredConsumer
@@ -42,6 +45,18 @@ func New(cfg *config.Config) *Server {
 
 // Start 启动服务（阻塞至 ctx 取消）。
 func (s *Server) Start(ctx context.Context) error {
+	// 指标（20.3）：注册服务名 + 起 /metrics、/healthz、/readyz
+	if s.cfg.Metrics.Enable {
+		metrics.Init(s.cfg.Server.Name)
+		mSrv, err := metrics.NewServer(s.cfg.Metrics.Addr, s.readiness)
+		if err != nil {
+			return fmt.Errorf("metrics server: %w", err)
+		}
+		mSrv.Start()
+		s.metricsSrv = mSrv
+		s.logger.Info("metrics server started", "addr", mSrv.Addr())
+	}
+
 	// ① Redis
 	redisClient, err := cache.New(cache.RedisConfig{
 		Addrs:    s.cfg.Redis.Addrs,
@@ -130,7 +145,11 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.reconcileLoop(ctx, rechargeSvc)
 	}
 
-	s.httpSrv = &http.Server{Addr: s.cfg.Server.HTTPAddr, Handler: mux}
+	s.httpSrv = &http.Server{
+		Addr:              s.cfg.Server.HTTPAddr,
+		Handler:           withMetrics(mux, s.logger),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	go func() {
 		if err := s.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("http server error", "err", err)
@@ -190,7 +209,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.logger.Warn("redis close", "err", err)
 		}
 	}
+	if s.metricsSrv != nil {
+		_ = s.metricsSrv.Stop(ctx)
+	}
 	s.logger.Info("login stopped")
+	return nil
+}
+
+// readiness 就绪探针：Redis/MySQL 可用才接流量（19.6 探针表）。
+func (s *Server) readiness(ctx context.Context) error {
+	if s.redis != nil {
+		if err := s.redis.GetClient().Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("redis: %w", err)
+		}
+	}
+	if s.database != nil {
+		if err := s.database.PingContext(ctx); err != nil {
+			return fmt.Errorf("mysql: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -210,4 +247,44 @@ func parseTTL(s string) time.Duration {
 		return 24 * time.Hour
 	}
 	return d
+}
+
+// withMetrics HTTP 埋点中间件（20.3：登录服 QPS / 延迟 / 错误率）。
+//
+// 只统计业务接口（/v1/ 前缀），跳过 /healthz 这类探针 —— 探针由 K8s 高频调用，
+// 计入会稀释真实业务指标。
+func withMetrics(next http.Handler, logger *log.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		if metrics.Enabled() {
+			metrics.MsgObserve("in", time.Since(start), 0)
+			if rec.status >= 500 {
+				metrics.MsgInc("in", "error")
+			} else {
+				metrics.MsgInc("in", "ok")
+			}
+		}
+		if rec.status >= 500 {
+			logger.Warn("http handler error", "path", r.URL.Path, "status", rec.status)
+		}
+	})
+}
+
+// statusRecorder 记录响应码（默认 200，handler 未显式写时也正确）。
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+// WriteHeader 记录状态码。
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
 }

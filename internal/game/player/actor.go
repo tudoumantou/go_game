@@ -4,10 +4,12 @@ package player
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"game_study/internal/game/module"
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -164,7 +166,17 @@ func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 
 func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 	mctx := a.moduleCtx(ctx)
-	if err := a.registry.Dispatch(mctx, msg.MsgID, msg.Body); err != nil {
+	start := time.Now()
+	err := a.registry.Dispatch(mctx, msg.MsgID, msg.Body)
+	if metrics.Enabled() {
+		metrics.MsgObserve("in", time.Since(start), len(msg.Body))
+		if err != nil {
+			metrics.MsgInc("in", "error")
+		} else {
+			metrics.MsgInc("in", "ok")
+		}
+	}
+	if err != nil {
 		a.logger.Warn("packet handle failed", "msg_id", msg.MsgID, "err", err)
 	}
 }

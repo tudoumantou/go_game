@@ -12,6 +12,7 @@ import (
 
 	"game_study/pkg/codec"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 )
 
 const (
@@ -135,6 +136,10 @@ func (c *Conn) processReadBuf() {
 		}
 
 		c.handler.OnPacket(c, pkt)
+		if metrics.Enabled() {
+			metrics.MsgInc("in", "ok")
+			metrics.MsgObserve("in", 0, len(pkt.Body))
+		}
 		copy(c.readBuf, c.readBuf[total:])
 		c.readBuf = c.readBuf[:len(c.readBuf)-total]
 	}

@@ -35,6 +35,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: cross
+  labels:
+    app: cross
+    metrics: enabled
 spec:
   selector: { app: cross }
   ports:

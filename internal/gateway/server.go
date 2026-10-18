@@ -20,6 +20,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/crypto"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 	gameetcd "game_study/pkg/registry/etcd"
 	netpkg "game_study/pkg/net"
 	rpcpkg "game_study/pkg/rpc"
@@ -48,6 +49,7 @@ type Server struct {
 	etcdCancel context.CancelFunc
 	backend    *backend.Pool
 	redis      *cache.Client
+	metricsSrv *metrics.Server
 
 	sessMu   sync.RWMutex
 	sessGame map[uint64]string // session_id -> game target
@@ -70,6 +72,17 @@ func New(cfg *config.Config) *Server {
 
 // Start 启动服务（阻塞至 ctx 取消）。
 func (s *Server) Start(ctx context.Context) error {
+	// 指标（20.3）：注册服务名 + 起 /metrics 端点
+	if s.cfg.Metrics.Enable {
+		metrics.Init(s.cfg.Server.Name)
+		mSrv, err := metrics.NewServer(s.cfg.Metrics.Addr, nil)
+		if err != nil {
+			return fmt.Errorf("metrics server: %w", err)
+		}
+		mSrv.Start()
+		s.metricsSrv = mSrv
+		s.logger.Info("metrics server started", "addr", mSrv.Addr())
+	}
 	// 加载网关 RSA 密钥对（优先用配置路径，缺省回退 keys/）
 	privPath := s.cfg.Crypto.RSAPrivateKey
 	if privPath == "" {
@@ -243,7 +256,8 @@ func (s *Server) forwardPacket(sess *session.Session, msgID uint32, body []byte)
 
 func (s *Server) onAccept(raw net.Conn) {
 	if s.connMgr.Count() >= s.cfg.Server.MaxConns {
-		s.logger.Warn("max connections reached")
+		s.logger.Warn("max connections reached", "max", s.cfg.Server.MaxConns)
+		metrics.ConnRejected("max_conns")
 		_ = raw.Close()
 		return
 	}
@@ -251,6 +265,7 @@ func (s *Server) onAccept(raw net.Conn) {
 	connID := s.connMgr.NextID()
 	c := conn.New(connID, raw, s.router, s.logger)
 	s.connMgr.Add(c)
+	metrics.ConnInc()
 
 	sess := s.sessMgr.NewSession(c)
 
@@ -260,12 +275,14 @@ func (s *Server) onAccept(raw net.Conn) {
 	pub, salt := hs.ServerHello()
 	if err := s.router.SendServerHello(c, pub, salt); err != nil {
 		s.logger.Warn("send server hello failed", "conn_id", connID, "err", err)
+		metrics.ConnRejected("hello_failed")
 		_ = c.Close(err)
 		return
 	}
 	sess.SetState(session.StateHelloSent)
 
 	c.Serve(context.Background())
+	metrics.ConnDec()
 }
 
 func (s *Server) httpHandler() http.Handler {
@@ -312,6 +329,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.redis != nil {
 		_ = s.redis.Close()
+	}
+	if s.metricsSrv != nil {
+		_ = s.metricsSrv.Stop(ctx)
 	}
 	s.logger.Info("gateway stopped")
 	return nil

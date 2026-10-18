@@ -27,11 +27,23 @@ spec:
               valueFrom: { secretKeyRef: { name: mysql-secret, key: MYSQL_PASSWORD } }
           volumeMounts:
             - { name: config, mountPath: /app/configs/game, readOnly: true }
-          # 19.6 探针表：游戏服 readiness = etcd 注册完成 + idtab ready（12.5 启动构建）
-          # P2 实现 exec 探针（/healthz 检查 idtab:ready）后替换 TCP 占位
-          startupProbe:   { tcpSocket: { port: grpc }, periodSeconds: 10, failureThreshold: 30 }
-          readinessProbe: { tcpSocket: { port: grpc }, periodSeconds: 15 }
-          livenessProbe:  { tcpSocket: { port: grpc }, periodSeconds: 30 }
+          # 19.6 探针表（P7 已实现）：
+          #   /healthz 存活：进程活着即 200，不查依赖（避免中间件抖动引发重启风暴）
+          #   /readyz  就绪：MySQL + Redis 可用才 200，不通则从 Endpoints 摘除
+          startupProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 5
+            failureThreshold: 60      # 最多等 5 分钟（大区数据加载）
+          readinessProbe:
+            httpGet: { path: /readyz, port: metrics }
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: metrics }
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
           resources:
             requests: { cpu: "2",   memory: "4Gi" }
             limits:   { cpu: "4",   memory: "8Gi" }
@@ -43,6 +55,9 @@ apiVersion: v1
 kind: Service
 metadata:
   name: game-headless
+  labels:
+    app: game
+    metrics: enabled
 spec:
   clusterIP: None
   selector: { app: game }

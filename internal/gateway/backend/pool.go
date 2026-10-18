@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 	rpcpkg "game_study/pkg/rpc"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -67,6 +68,7 @@ func (p *Pool) GetOrConnect(ctx context.Context, target string, sessionID uint64
 	stream, err := client.Channel(streamCtx)
 	if err != nil {
 		cancel()
+		metrics.ChannelError("open")
 		return nil, fmt.Errorf("channel %s: %w", target, err)
 	}
 
@@ -78,6 +80,9 @@ func (p *Pool) GetOrConnect(ctx context.Context, target string, sessionID uint64
 	}
 
 	p.streams[sessionID] = &streamConn{client: stream, cancel: cancel, target: target}
+	if metrics.Enabled() {
+		metrics.ChannelStreams(len(p.streams))
+	}
 	go p.recvLoop(sessionID, stream)
 	return stream, nil
 }
@@ -88,9 +93,14 @@ func (p *Pool) Send(sessionID uint64, frame *internalv2.StreamFrame) error {
 	sc, ok := p.streams[sessionID]
 	p.mu.RUnlock()
 	if !ok || sc == nil {
+		metrics.ChannelError("send_no_stream")
 		return fmt.Errorf("session %d stream not found", sessionID)
 	}
-	return sc.client.Send(frame)
+	if err := sc.client.Send(frame); err != nil {
+		metrics.ChannelError("send")
+		return err
+	}
+	return nil
 }
 
 func (p *Pool) recvLoop(sessionID uint64, stream internalv2.GameService_ChannelClient) {

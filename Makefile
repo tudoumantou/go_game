@@ -5,7 +5,8 @@ BIN     := bin
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test lint fmt vet dev run-all clean
+.PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test test-integration lint fmt vet dev run-all \
+        monitoring smoke loadtest drill-crash clean
 
 help: ## 查看全部命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[32m%-12s\033[0m %s\n", $$1, $$2}'
@@ -50,6 +51,23 @@ dev: ## 仅起中间件（etcd/redis/mysql/kafka）
 
 run-all: ## 本地跑五进程（需先 make dev && make db-init && make db-seed）
 	@./scripts/run-all.sh
+
+test-integration: ## 集成测试（testcontainers 起真实中间件）
+	$(GO) test -tags=integration -timeout 20m ./test/integration/
+
+monitoring: ## 起 Prometheus + Grafana（http://localhost:3000，admin/admin）
+	docker compose -f deploy/docker-compose.yaml up -d prometheus grafana
+	@echo "Grafana: http://localhost:3000 (admin/admin)"
+	@echo "Prometheus: http://localhost:9090"
+
+smoke: ## E2E 五步冒烟（需要五服务已启动）
+	@./scripts/smoke.sh
+
+loadtest: ## 网关连接压测（默认 1000 连接；10W 需 ulimit -n 200000）
+	$(GO) run ./tools/loadtest -mode conn -n $(or $(N),1000) -hold $(or $(HOLD),30s)
+
+drill-crash: ## 故障演练：kill -9 游戏服后校验数据零丢失
+	@./scripts/drill-crash.sh
 
 clean: ## 清理构建产物
 	rm -rf $(BIN)

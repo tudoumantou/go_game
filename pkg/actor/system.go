@@ -8,27 +8,36 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"game_study/pkg/metrics"
 )
+
+// Logger Actor 系统日志接口（避免 pkg/actor 依赖具体日志实现）。
+type Logger interface {
+	Error(msg string, keysAndValues ...any)
+}
 
 // System Actor 系统。
 type System struct {
-	shardCount int
+	shardCount  int
 	mailboxSize int
-	shards     []*shard
-	wg         sync.WaitGroup
-	stopOnce   sync.Once
-	stopCh     chan struct{}
+	shards      []*shard
+	logger      Logger
+	wg          sync.WaitGroup
+	stopOnce    sync.Once
+	stopCh      chan struct{}
 
 	// 定时器
-	timerMu  sync.Mutex
-	timers   []*timerEntry
-	timerWg  sync.WaitGroup
+	timerMu sync.Mutex
+	timers  []*timerEntry
+	timerWg sync.WaitGroup
 }
 
 // Config ActorSystem 配置。
 type Config struct {
 	ShardCount  int
 	MailboxSize int
+	Logger      Logger // 可选：panic 恢复时记录堆栈
 }
 
 // NewSystem 创建 ActorSystem。
@@ -43,6 +52,7 @@ func NewSystem(cfg Config) *System {
 		shardCount:  cfg.ShardCount,
 		mailboxSize: cfg.MailboxSize,
 		shards:      make([]*shard, cfg.ShardCount),
+		logger:      cfg.Logger,
 		stopCh:      make(chan struct{}),
 	}
 	for i := range s.shards {
@@ -77,6 +87,9 @@ func (s *System) Spawn(id string, actor Actor) (*PID, error) {
 	cell := newActorCell(pid, actor, s.mailboxSize, s)
 	if err := sh.add(cell); err != nil {
 		return nil, err
+	}
+	if metrics.Enabled() {
+		metrics.ActorCountAdd(1)
 	}
 	return pid, nil
 }
@@ -125,6 +138,9 @@ type shard struct {
 	cells map[string]*actorCell
 	mu    sync.RWMutex
 	sys   *System
+
+	// lastDropped 上次上报时的累计丢弃数（只由分片循环 goroutine 读写，无需加锁）
+	lastDropped int64
 }
 
 func newShard(index int, sys *System) *shard {
@@ -157,6 +173,9 @@ func (sh *shard) remove(id string) {
 	if cell, ok := sh.cells[id]; ok {
 		cell.mbox.close()
 		delete(sh.cells, id)
+		if metrics.Enabled() {
+			metrics.ActorCountAdd(-1)
+		}
 	}
 }
 
@@ -184,6 +203,8 @@ func (sh *shard) run(ctx context.Context, wg *sync.WaitGroup) {
 				processed++
 			}
 		}
+		// 指标：每轮更新一次信箱深度（避免每条消息打点带来的锁竞争）
+		sh.reportDepth()
 		if processed == 0 {
 			select {
 			case <-ctx.Done():
@@ -193,6 +214,28 @@ func (sh *shard) run(ctx context.Context, wg *sync.WaitGroup) {
 			case <-ticker.C:
 			}
 		}
+	}
+}
+
+// reportDepth 上报本分片信箱积压（20.3 告警项：Actor 队列积压）。
+func (sh *shard) reportDepth() {
+	if !metrics.Enabled() {
+		return
+	}
+	sh.mu.RLock()
+	cells := sh.cells
+	total := 0
+	var dropped int64
+	for _, c := range cells {
+		total += c.mbox.len()
+		dropped += c.mbox.droppedCount()
+	}
+	sh.mu.RUnlock()
+	metrics.ActorMailbox(sh.index, total)
+	// 只上报增量：记录上次累计值，本次差值即为新增丢弃
+	if delta := dropped - sh.lastDropped; delta > 0 {
+		metrics.ActorDroppedAdd(delta)
+		sh.lastDropped = dropped
 	}
 }
 
@@ -207,11 +250,25 @@ func (sh *shard) allCells() []*actorCell {
 }
 
 func (sh *shard) process(cell *actorCell, env envelope) {
+	start := time.Now()
+	ok := true
 	defer func() {
 		if r := recover(); r != nil {
-			// TODO: 接入日志与 metrics
-			_ = r
-			debug.PrintStack()
+			ok = false
+			metrics.ActorPanicInc()
+			// panic 不拖垮分片：记录堆栈后继续处理下一条
+			logger := sh.sys.logger
+			if logger != nil {
+				logger.Error("actor panic recovered",
+					"actor", cell.pid.ID, "shard", sh.index, "panic", fmt.Sprint(r),
+					"stack", string(debug.Stack()))
+			} else {
+				debug.PrintStack()
+			}
+		}
+		if metrics.Enabled() {
+			metrics.ActorProcessed(ok)
+			metrics.ActorObserve(time.Since(start))
 		}
 	}()
 	actx := &Context{
