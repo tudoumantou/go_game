@@ -3,7 +3,18 @@
 通用游戏服务器框架（Go 1.22+）——面向中小型实时/半实时游戏（MMO、MOBA、卡牌、ARPG）。
 
 - **设计文档**：[`docs/game_study-服务器框架设计文档.md`](docs/game_study-服务器框架设计文档.md)（唯一事实源，架构/协议/数据/部署全部以它为准）
-- **当前阶段**：**P0 工程骨架已完成**（目录结构 / Makefile / buf / gendata / gendb / CI 五步卡点 / docker-compose / k8s manifests / 集成测试骨架），全量验证通过：`go build` `go vet` `golangci-lint` `go test` `buf lint` `scripts/build.sh` 交叉编译、game 服启动 + SIGINT 优雅退出冒烟均绿。业务模块（登录/网关/游戏逻辑）按路线图 P1 起填充。
+- **当前阶段**：**P1–P4 最小可运行链路已完成**。一个机器人客户端可完成「登录 → 网关 RSA/AES 握手 → Token 鉴权 → 绑定游戏服 → 玩家 Actor 上线 → 心跳」全链路，数据经 Write-Behind 分片落库 MySQL。详见下文「已实现能力」。
+
+## 已实现能力（P1–P4）
+
+| 阶段 | 能力 | 关键代码 |
+| --- | --- | --- |
+| P1 加密接入 | RSA-OAEP 换钥、AES-256-GCM 会话加密、Seq 64 窗口防重放、报文封包、TCP 接入、会话状态机、Login HTTP + Redis Token | `pkg/crypto`、`pkg/codec`、`pkg/net`、`internal/login`、`internal/gateway/{conn,session,router}` |
+| P2 内部通信 | etcd 注册/发现/keepalive、gRPC etcd:// 解析器、GameService.Channel 双向流、网关→游戏服 BIND 路由 | `pkg/registry/etcd`、`pkg/rpc`、`internal/game/rpc`、`internal/gateway/backend` |
+| P3 游戏服内核 | 自研 Actor 运行时（分片事件循环、有界信箱背压、定时器）、玩家 Actor 生命周期、attr/bag/item 模块 | `pkg/actor`、`internal/game/player`、`internal/game/module/*` |
+| P4 数据持久化 | MySQL 连接池与事务、Redis keygen/分布式锁/ID 表、10 分片 Write-Behind flusher、优雅关闭、登录预加载与落库 | `pkg/db`、`pkg/cache`、`pkg/flush`、`pkg/shutdown`、`internal/game/player/persist.go` |
+
+验收机器人：`test/robot/robot_client.go`；全链路冒烟：`test/integration/p1_p4_smoke_test.go`（testcontainers 起 MySQL+Redis+etcd，真实跑通三服务）。
 
 ## 服务组成
 

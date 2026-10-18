@@ -17,6 +17,8 @@ redis:
   addrs: ["127.0.0.1:6379"]
   pool_size: 50
   min_idle_conns: 10
+  password: ""
+  db: 0
 
 mysql:                          # 账号/角色元信息（Tier-1 直连）
   dsn: "game:game_study@tcp(127.0.0.1:3306)/game_study?parseTime=true"

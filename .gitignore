@@ -5,6 +5,7 @@
 coverage.txt
 
 # 密钥（make keygen 生成，严禁入库）
+/keys/*.pem
 /deploy/keys/*.pem
 !/deploy/keys/.gitkeep
 

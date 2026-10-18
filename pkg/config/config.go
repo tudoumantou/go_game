@@ -76,6 +76,8 @@ type RPCConfig struct {
 
 type RedisConfig struct {
 	Addrs       []string `yaml:"addrs"`
+	Password    string   `yaml:"password"`
+	DB          int      `yaml:"db"`
 	PoolSize    int      `yaml:"pool_size"`
 	MinIdleConn int      `yaml:"min_idle_conns"` // 必须 ≤ PoolSize（19.1）
 }
@@ -227,4 +229,13 @@ func ParseDuration(s string) (time.Duration, error) {
 		return 0, nil
 	}
 	return time.ParseDuration(s)
+}
+
+// GetDialTimeout 返回 RPC 拨号超时，未配置默认 5s。
+func (c *Config) GetDialTimeout() time.Duration {
+	d, err := ParseDuration(c.RPC.DialTimeout)
+	if err != nil || d == 0 {
+		return 5 * time.Second
+	}
+	return d
 }

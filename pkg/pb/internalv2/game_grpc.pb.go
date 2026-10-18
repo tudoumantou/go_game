@@ -5,7 +5,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             (unknown)
-// source: internal/v2/game.proto
+// source: internalv2/game.proto
 
 package internalv2
 
@@ -118,5 +118,5 @@ var GameService_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "internal/v2/game.proto",
+	Metadata: "internalv2/game.proto",
 }

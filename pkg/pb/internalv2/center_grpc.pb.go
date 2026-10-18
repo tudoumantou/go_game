@@ -5,7 +5,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             (unknown)
-// source: internal/v2/center.proto
+// source: internalv2/center.proto
 
 package internalv2
 
@@ -198,5 +198,5 @@ var CenterService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "internal/v2/center.proto",
+	Metadata: "internalv2/center.proto",
 }

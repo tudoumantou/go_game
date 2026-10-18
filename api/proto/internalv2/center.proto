@@ -4,7 +4,7 @@ syntax = "proto3";
 
 package game_study.internal.v2;
 
-option go_package = "game_study/pkg/pb/internal/v2;internalv2";
+option go_package = "game_study/pkg/pb/internalv2;internalv2";
 
 service CenterService {
   // 长连接：节点上报 + 中心服下发指令

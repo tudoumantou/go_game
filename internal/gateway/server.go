@@ -3,25 +3,270 @@ package gateway
 
 import (
 	"context"
+	"crypto/rsa"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 
+	"game_study/internal/gateway/backend"
+	"game_study/internal/gateway/conn"
+	"game_study/internal/gateway/router"
+	"game_study/internal/gateway/session"
+	"game_study/pkg/cache"
 	"game_study/pkg/config"
+	"game_study/pkg/crypto"
+	"game_study/pkg/log"
+	gameetcd "game_study/pkg/registry/etcd"
+	netpkg "game_study/pkg/net"
+	rpcpkg "game_study/pkg/rpc"
+	resolver "game_study/pkg/rpc/resolver"
+
+	internalv2 "game_study/pkg/pb/internalv2"
+	"google.golang.org/grpc"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // Server 网关服（组装层入口，职责见设计文档 3.1 目录树）
 type Server struct {
-	cfg *config.Config
+	cfg     *config.Config
+	logger  *log.Logger
+	connMgr *conn.Manager
+	sessMgr *session.Manager
+	router  *router.Handler
+	tcpSrv  *netpkg.TCPServer
+	httpSrv *http.Server
+
+	gatewayKey *rsa.PrivateKey
+	gatewayPub *rsa.PublicKey
+
+	etcdClient *clientv3.Client
+	etcdReg    *gameetcd.Registry
+	etcdCancel context.CancelFunc
+	backend    *backend.Pool
+	redis      *cache.Client
 }
 
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
-func New(cfg *config.Config) *Server { return &Server{cfg: cfg} }
+func New(cfg *config.Config) *Server {
+	logger := log.New("gateway", log.WithLevel(cfg.Log.Level))
+	connMgr := conn.NewManager()
+	sessMgr := session.NewManager(logger)
+
+	return &Server{
+		cfg:     cfg,
+		logger:  logger,
+		connMgr: connMgr,
+		sessMgr: sessMgr,
+	}
+}
 
 // Start 启动服务（阻塞至 ctx 取消）。
-// TODO(P1): TCP 接入（conn/crypto/session）+ router + backend Channel 池
 func (s *Server) Start(ctx context.Context) error {
-	<-ctx.Done()
+	// 加载网关 RSA 密钥对（优先用配置路径，缺省回退 keys/）
+	privPath := s.cfg.Crypto.RSAPrivateKey
+	if privPath == "" {
+		privPath = "keys/gateway_rsa.pem"
+	}
+	if _, statErr := os.Stat(privPath); statErr != nil {
+		// 配置路径不可用（本地未部署到 /etc）时回退项目内 keys/
+		privPath = "keys/gateway_rsa.pem"
+	}
+	pubPath := strings.TrimSuffix(privPath, ".pem") + "_pub.pem"
+	pair, err := crypto.LoadRSAKeyPair(pubPath, privPath)
+	if err != nil {
+		return fmt.Errorf("load gateway rsa keys: %w", err)
+	}
+	s.gatewayKey = pair.Private
+	s.gatewayPub = pair.Public
+
+	// Redis（token 校验）
+	if len(s.cfg.Redis.Addrs) > 0 {
+		redisClient, err := cache.New(cache.RedisConfig{
+			Addrs:    s.cfg.Redis.Addrs,
+			Password: s.cfg.Redis.Password,
+			DB:       s.cfg.Redis.DB,
+			PoolSize: s.cfg.Redis.PoolSize,
+			MinIdle:  s.cfg.Redis.MinIdleConn,
+		})
+		if err != nil {
+			return fmt.Errorf("redis: %w", err)
+		}
+		s.redis = redisClient
+	}
+
+	// 路由（token 校验器 + 鉴权成功回调）
+	validator := func(token string) (int64, error) {
+		if s.redis == nil {
+			return 0, nil // 无 Redis 环境（单测）放行
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return s.redis.GetClient().Get(ctx, "token:"+token).Int64()
+	}
+	s.router = router.NewHandler(s.sessMgr, s.connMgr, s.logger, validator, s.bindToGame)
+
+	// etcd
+	if len(s.cfg.Etcd.Endpoints) > 0 {
+		cli, err := clientv3.New(clientv3.Config{Endpoints: s.cfg.Etcd.Endpoints, DialTimeout: s.cfg.GetDialTimeout()})
+		if err != nil {
+			return fmt.Errorf("etcd: %w", err)
+		}
+		s.etcdClient = cli
+		s.etcdReg, _ = gameetcd.New(s.cfg.Etcd.Endpoints)
+
+		// 注册自己到 etcd
+		node := gameetcd.Node{
+			ID:      s.cfg.Server.Name,
+			Service: "gateway",
+			Addr:    s.cfg.Server.TCPAddr,
+			Version: "1.0.0",
+		}
+		cancel, err := s.etcdReg.RegisterWithKeepalive(ctx, node, s.cfg.Etcd.LeaseTTL)
+		if err != nil {
+			return fmt.Errorf("register gateway: %w", err)
+		}
+		s.etcdCancel = cancel
+
+		// backend pool with etcd resolver
+		resolverBuilder := grpc.WithResolvers(resolver.NewBuilder(cli))
+		clientPool := rpcpkg.NewClientPool(resolverBuilder)
+		s.backend = backend.NewPool(clientPool, s.logger)
+	}
+
+	// HTTP 健康检查 / 网关状态
+	s.httpSrv = &http.Server{
+		Addr:    s.cfg.Server.HTTPAddr,
+		Handler: s.httpHandler(),
+	}
+	go func() {
+		if err := s.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Error("http server error", "err", err)
+		}
+	}()
+
+	// TCP 接入
+	s.tcpSrv = netpkg.NewTCPServer(s.cfg.Server.TCPAddr, s.onAccept)
+	if err := s.tcpSrv.Start(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
+// bindToGame 鉴权成功后把会话绑定到游戏服。
+func (s *Server) bindToGame(sess *session.Session) {
+	if s.backend == nil || s.etcdReg == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	nodes, err := s.etcdReg.List(ctx, "game")
+	if err != nil || len(nodes) == 0 {
+		s.logger.Warn("no game server available", "err", err)
+		return
+	}
+	// 按 player_id 取模选 game server
+	idx := int(sess.PlayerID() % int64(len(nodes)))
+	node := nodes[idx]
+
+	target := "etcd:///" + node.Service
+	frame := &internalv2.StreamFrame{
+		Data: &internalv2.StreamFrame_Ctrl{
+			Ctrl: &internalv2.CtrlMsg{
+				Type:      internalv2.CtrlMsg_BIND,
+				SessionId: sess.NumID(),
+				PlayerId:  sess.PlayerID(),
+			},
+		},
+	}
+	// 建立（或复用）stream 后发送 BIND
+	if _, err := s.backend.GetOrConnect(ctx, target, nil); err != nil {
+		s.logger.Warn("bind to game failed", "game", node.ID, "err", err)
+		s.sessMgr.Remove(sess)
+		sess.Close(err)
+		return
+	}
+	if err := s.backend.Send(target, frame); err != nil {
+		s.logger.Warn("send bind frame failed", "game", node.ID, "err", err)
+	}
+	s.logger.Info("bound to game", "session_id", sess.NumID(), "game", node.ID)
+}
+
+func (s *Server) onAccept(raw net.Conn) {
+	if s.connMgr.Count() >= s.cfg.Server.MaxConns {
+		s.logger.Warn("max connections reached")
+		_ = raw.Close()
+		return
+	}
+
+	connID := s.connMgr.NextID()
+	c := conn.New(connID, raw, s.router, s.logger)
+	s.connMgr.Add(c)
+
+	sess := s.sessMgr.NewSession(c)
+
+	// 发送 ServerHello（明文）
+	hs := crypto.NewHandshakeServer(s.gatewayPub, s.gatewayKey)
+	sess.SetHandshakeServer(hs)
+	pub, salt := hs.ServerHello()
+	if err := s.router.SendServerHello(c, pub, salt); err != nil {
+		s.logger.Warn("send server hello failed", "conn_id", connID, "err", err)
+		_ = c.Close(err)
+		return
+	}
+	sess.SetState(session.StateHelloSent)
+
+	c.Serve(context.Background())
+}
+
+func (s *Server) httpHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, "conns=%d sessions=%d", s.connMgr.Count(), s.sessMgr.Count())
+	})
+	return mux
+}
+
 // Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，pkg/shutdown 编排）。
-// TODO(P1): 注册关闭步骤（摘注册 → 停止新流量 → Flush 屏障 → 停 gRPC/Kafka）。
-func (s *Server) Shutdown(ctx context.Context) error { return nil }
+func (s *Server) Shutdown(ctx context.Context) error {
+	// DRAIN：摘注册
+	if s.etcdCancel != nil {
+		s.etcdCancel()
+	}
+	// DRAINING：关所有会话连接，让 conn handler 退出
+	s.sessMgr.CloseAll()
+	if s.tcpSrv != nil {
+		if err := s.tcpSrv.Stop(); err != nil {
+			s.logger.Warn("tcp stop", "err", err)
+		}
+	}
+	if s.httpSrv != nil {
+		if err := s.httpSrv.Shutdown(ctx); err != nil {
+			s.logger.Warn("http shutdown", "err", err)
+		}
+	}
+	if s.etcdCancel != nil {
+		s.etcdCancel()
+	}
+	if s.backend != nil {
+		_ = s.backend.Close()
+	}
+	if s.etcdReg != nil {
+		_ = s.etcdReg.Close()
+	}
+	if s.etcdClient != nil {
+		_ = s.etcdClient.Close()
+	}
+	if s.redis != nil {
+		_ = s.redis.Close()
+	}
+	s.logger.Info("gateway stopped")
+	return nil
+}

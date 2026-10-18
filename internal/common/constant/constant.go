@@ -27,6 +27,18 @@ const (
 	MsgIDInternalMax = 9999
 )
 
+// 系统消息号（4.3；握手期明文，见 15 章）
+const (
+	MsgIDHeartbeatReq       uint16 = 1
+	MsgIDHeartbeatResp      uint16 = 2
+	MsgIDKickNotify         uint16 = 10
+	MsgIDServerHello        uint16 = 11 // 网关→客户端：RSA 公钥 + 随机盐
+	MsgIDClientKeyExchange  uint16 = 12 // 客户端→网关：RSA 加密的 pre-master
+	MsgIDFinished           uint16 = 13 // 双向：握手完成确认
+	MsgIDHandshakeReq       uint16 = 1001
+	MsgIDHandshakeResp      uint16 = 1002
+)
+
 // IsClientMsgID 判断是否客户端消息号（内部号段不暴露）
 func IsClientMsgID(id uint32) bool {
 	return id < MsgIDInternalMin

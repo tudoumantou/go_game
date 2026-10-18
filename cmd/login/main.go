@@ -5,7 +5,7 @@ package main
 import (
 	"context"
 	"flag"
-	"log/slog"
+	"game_study/pkg/log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,16 +22,19 @@ var (
 
 func main() {
 	flag.Parse()
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	log.Info("LoginServer server starting", "version", version, "config", *configPath)
+	// ① 先用默认 logger（配置加载前不可读 cfg.Log.Level）
+	logger := log.New("login")
+	logger.Info("LoginServer server starting", "version", version, "config", *configPath)
 
-	// ① 配置（19.1：YAML + ${VAR} 环境变量注入）
+	// ② 配置（19.1：YAML + ${VAR} 环境变量注入）
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Error("load config failed", "err", err)
+		logger.Error("load config failed", "err", err)
 		os.Exit(1)
 	}
-	log.Info("config loaded", "name", cfg.Server.Name, "env", cfg.Server.Env)
+	// 配置加载成功后，按配置级别重建 logger
+	logger = log.New("login", log.WithLevel(cfg.Log.Level))
+	logger.Info("config loaded", "name", cfg.Server.Name, "env", cfg.Server.Env)
 
 	// ② 信号上下文（SIGINT/SIGTERM → 优雅关闭，18.1）
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -40,12 +43,12 @@ func main() {
 	// ③ 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心；内部组装细节见 internal/login）
 	//   启动顺序有依赖：etcd → 中间件 → 中心服 → 游戏服/跨服 → 网关 → 登录服（19.5）
 	srv := login.New(cfg)
-	log.Info("LoginServer bootstrap done, starting", "listen", cfg.Server.HTTPAddr)
+	logger.Info("LoginServer bootstrap done, starting", "listen", cfg.Server.HTTPAddr)
 	if err := srv.Start(ctx); err != nil {
-		log.Error("server start failed", "err", err)
+		logger.Error("server start failed", "err", err)
 		os.Exit(1)
 	}
-	log.Info("shutdown signal received")
+	logger.Info("shutdown signal received")
 
 	// ④ 优雅关闭总超时（18.1；游戏服需覆盖 Actor Flush + flusher + Kafka Producer 全流程）
 	total := 60 * time.Second
@@ -57,9 +60,9 @@ func main() {
 
 	// 18.1：DRAIN→DRAINING→FLUSH→STOP，由 Server.Shutdown 内部编排
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("shutdown failed", "err", err)
+		logger.Error("shutdown failed", "err", err)
 		os.Exit(1)
 	}
 
-	log.Info("LoginServer server stopped")
+	logger.Info("LoginServer server stopped")
 }

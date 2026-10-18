@@ -30,6 +30,8 @@ redis:
   addrs: ["127.0.0.1:6379"]
   pool_size: 100               # Token/在线状态查询为主
   min_idle_conns: 20           # 必须 ≤ pool_size
+  password: ""
+  db: 0
 
 kafka:
   brokers: ["127.0.0.1:9092"]

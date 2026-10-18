@@ -35,6 +35,8 @@ redis:
   addrs: ["198.51.100.11:6379", "198.51.100.12:6379", "198.51.100.13:6379"]
   pool_size: 50
   min_idle_conns: 10
+  password: ""
+  db: 0
 
 mysql:
   dsn: "game:${MYSQL_PASSWORD}@tcp(198.51.100.21:3306)/game_study?parseTime=true"

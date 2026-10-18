@@ -5,7 +5,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             (unknown)
-// source: internal/v2/cross.proto
+// source: internalv2/cross.proto
 
 package internalv2
 
@@ -114,5 +114,5 @@ var CrossService_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "internal/v2/cross.proto",
+	Metadata: "internalv2/cross.proto",
 }
