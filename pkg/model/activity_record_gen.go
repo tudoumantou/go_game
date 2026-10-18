@@ -16,7 +16,7 @@ type ActivityRecord struct {
 	ActivityId int32 `db:"activity_id"`
 	Progress int32 `db:"progress"`
 	RewardMask int64 `db:"reward_mask"`
-	JoinedAt time.Time `db:"joined_at"`
+	JoinedAt sql.NullTime `db:"joined_at"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -50,7 +50,7 @@ var ActivityRecordColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertActivityRecord(ctx context.Context, db *sql.DB, m *ActivityRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO activity_record (player_id,activity_id,progress,reward_mask,joined_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO activity_record (id,player_id,activity_id,progress,reward_mask,joined_at) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt)
 }
 
 // FindActivityRecordByPK 按主键查询
@@ -70,12 +70,12 @@ func scanActivityRecord(m *ActivityRecord, sc interface{ Scan(...any) error }) e
 
 // UpdateActivityRecordByPK 按主键更新（幂等）
 func UpdateActivityRecordByPK(ctx context.Context, db *sql.DB, m *ActivityRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE activity_record SET player_id = ?, activity_id = ?, progress = ?, reward_mask = ?, joined_at = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE activity_record SET player_id = ?, activity_id = ?, progress = ?, reward_mask = ?, joined_at = ? WHERE id = ?", m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt, m.Id)
 }
 
 // UpsertActivityRecordByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertActivityRecordByPK(ctx context.Context, db *sql.DB, m *ActivityRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO activity_record (player_id,activity_id,progress,reward_mask,joined_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), activity_id = VALUES(activity_id), progress = VALUES(progress), reward_mask = VALUES(reward_mask), joined_at = VALUES(joined_at), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO activity_record (id,player_id,activity_id,progress,reward_mask,joined_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), activity_id = VALUES(activity_id), progress = VALUES(progress), reward_mask = VALUES(reward_mask), joined_at = VALUES(joined_at)", m.Id, m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt)
 }
 
 // DeleteActivityRecordByPK 按主键删除

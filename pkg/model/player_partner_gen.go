@@ -50,7 +50,7 @@ var PlayerPartnerColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerPartner(ctx context.Context, db *sql.DB, m *PlayerPartner) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_partner (player_id,partner_id,star,level,exp,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_partner (id,player_id,partner_id,star,level,exp) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp)
 }
 
 // FindPlayerPartnerByPK 按主键查询
@@ -70,12 +70,12 @@ func scanPlayerPartner(m *PlayerPartner, sc interface{ Scan(...any) error }) err
 
 // UpdatePlayerPartnerByPK 按主键更新（幂等）
 func UpdatePlayerPartnerByPK(ctx context.Context, db *sql.DB, m *PlayerPartner) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_partner SET player_id = ?, partner_id = ?, star = ?, level = ?, exp = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_partner SET player_id = ?, partner_id = ?, star = ?, level = ?, exp = ? WHERE id = ?", m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp, m.Id)
 }
 
 // UpsertPlayerPartnerByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerPartnerByPK(ctx context.Context, db *sql.DB, m *PlayerPartner) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_partner (player_id,partner_id,star,level,exp,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), partner_id = VALUES(partner_id), star = VALUES(star), level = VALUES(level), exp = VALUES(exp), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_partner (id,player_id,partner_id,star,level,exp) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), partner_id = VALUES(partner_id), star = VALUES(star), level = VALUES(level), exp = VALUES(exp)", m.Id, m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp)
 }
 
 // DeletePlayerPartnerByPK 按主键删除

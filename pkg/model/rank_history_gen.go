@@ -50,7 +50,7 @@ var RankHistoryColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertRankHistory(ctx context.Context, db *sql.DB, m *RankHistory) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO rank_history (group_id,rank_type,season,player_id,score,rank_no,snapshot_at) VALUES (?,?,?,?,?,?,?)", m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo, m.SnapshotAt)
+	return db.ExecContext(ctx, "INSERT INTO rank_history (id,group_id,rank_type,season,player_id,score,rank_no) VALUES (?,?,?,?,?,?,?)", m.Id, m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo)
 }
 
 // FindRankHistoryByPK 按主键查询
@@ -70,12 +70,12 @@ func scanRankHistory(m *RankHistory, sc interface{ Scan(...any) error }) error {
 
 // UpdateRankHistoryByPK 按主键更新（幂等）
 func UpdateRankHistoryByPK(ctx context.Context, db *sql.DB, m *RankHistory) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE rank_history SET group_id = ?, rank_type = ?, season = ?, player_id = ?, score = ?, rank_no = ?, snapshot_at = ? WHERE id = ?", m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo, m.SnapshotAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE rank_history SET group_id = ?, rank_type = ?, season = ?, player_id = ?, score = ?, rank_no = ? WHERE id = ?", m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo, m.Id)
 }
 
 // UpsertRankHistoryByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertRankHistoryByPK(ctx context.Context, db *sql.DB, m *RankHistory) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO rank_history (group_id,rank_type,season,player_id,score,rank_no,snapshot_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE group_id = VALUES(group_id), rank_type = VALUES(rank_type), season = VALUES(season), player_id = VALUES(player_id), score = VALUES(score), rank_no = VALUES(rank_no), snapshot_at = VALUES(snapshot_at)", m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo, m.SnapshotAt)
+	return db.ExecContext(ctx, "INSERT INTO rank_history (id,group_id,rank_type,season,player_id,score,rank_no) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE group_id = VALUES(group_id), rank_type = VALUES(rank_type), season = VALUES(season), player_id = VALUES(player_id), score = VALUES(score), rank_no = VALUES(rank_no)", m.Id, m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo)
 }
 
 // DeleteRankHistoryByPK 按主键删除

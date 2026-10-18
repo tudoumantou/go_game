@@ -41,7 +41,7 @@ var FriendColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertFriend(ctx context.Context, db *sql.DB, m *Friend) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO friend (player_id,friend_id,intimacy,created_at) VALUES (?,?,?,?)", m.PlayerId, m.FriendId, m.Intimacy, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO friend (id,player_id,friend_id,intimacy) VALUES (?,?,?,?)", m.Id, m.PlayerId, m.FriendId, m.Intimacy)
 }
 
 // FindFriendByPK 按主键查询
@@ -61,12 +61,12 @@ func scanFriend(m *Friend, sc interface{ Scan(...any) error }) error {
 
 // UpdateFriendByPK 按主键更新（幂等）
 func UpdateFriendByPK(ctx context.Context, db *sql.DB, m *Friend) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE friend SET player_id = ?, friend_id = ?, intimacy = ?, created_at = ? WHERE id = ?", m.PlayerId, m.FriendId, m.Intimacy, m.CreatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE friend SET player_id = ?, friend_id = ?, intimacy = ? WHERE id = ?", m.PlayerId, m.FriendId, m.Intimacy, m.Id)
 }
 
 // UpsertFriendByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertFriendByPK(ctx context.Context, db *sql.DB, m *Friend) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO friend (player_id,friend_id,intimacy,created_at) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), friend_id = VALUES(friend_id), intimacy = VALUES(intimacy), created_at = VALUES(created_at)", m.PlayerId, m.FriendId, m.Intimacy, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO friend (id,player_id,friend_id,intimacy) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), friend_id = VALUES(friend_id), intimacy = VALUES(intimacy)", m.Id, m.PlayerId, m.FriendId, m.Intimacy)
 }
 
 // DeleteFriendByPK 按主键删除

@@ -5,7 +5,7 @@ CREATE TABLE `player_item` (
   `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '归属玩家',
   `item_id`    INT            NOT NULL COMMENT '道具配置ID(见 item.xml)',
   `count`      INT            NOT NULL DEFAULT 1 COMMENT '堆叠数量',
-  `expire_at`  TIMESTAMP      NULL DEFAULT NULL COMMENT '过期时间( null=永久 )',
+  `expire_at`  DATETIME      NULL DEFAULT NULL COMMENT '过期时间( null=永久 )',
   `created_at` TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

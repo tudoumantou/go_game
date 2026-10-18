@@ -53,7 +53,7 @@ var PlayerAttrColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerAttr(ctx context.Context, db *sql.DB, m *PlayerAttr) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_attr (player_id,career,hp,mp,atk,def,spd,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)", m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_attr (player_id,career,hp,mp,atk,def,spd) VALUES (?,?,?,?,?,?,?)", m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd)
 }
 
 // FindPlayerAttrByPK 按主键查询
@@ -73,12 +73,12 @@ func scanPlayerAttr(m *PlayerAttr, sc interface{ Scan(...any) error }) error {
 
 // UpdatePlayerAttrByPK 按主键更新（幂等）
 func UpdatePlayerAttrByPK(ctx context.Context, db *sql.DB, m *PlayerAttr) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_attr SET career = ?, hp = ?, mp = ?, atk = ?, def = ?, spd = ?, created_at = ?, updated_at = ? WHERE player_id = ?", m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd, m.CreatedAt, m.UpdatedAt, m.PlayerId)
+	return db.ExecContext(ctx, "UPDATE player_attr SET career = ?, hp = ?, mp = ?, atk = ?, def = ?, spd = ? WHERE player_id = ?", m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd, m.PlayerId)
 }
 
 // UpsertPlayerAttrByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerAttrByPK(ctx context.Context, db *sql.DB, m *PlayerAttr) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_attr (player_id,career,hp,mp,atk,def,spd,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE career = VALUES(career), hp = VALUES(hp), mp = VALUES(mp), atk = VALUES(atk), def = VALUES(def), spd = VALUES(spd), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_attr (player_id,career,hp,mp,atk,def,spd) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE career = VALUES(career), hp = VALUES(hp), mp = VALUES(mp), atk = VALUES(atk), def = VALUES(def), spd = VALUES(spd)", m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd)
 }
 
 // DeletePlayerAttrByPK 按主键删除

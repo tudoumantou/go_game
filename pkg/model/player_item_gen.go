@@ -15,7 +15,7 @@ type PlayerItem struct {
 	PlayerId int64 `db:"player_id"`
 	ItemId int32 `db:"item_id"`
 	Count int32 `db:"count"`
-	ExpireAt time.Time `db:"expire_at"`
+	ExpireAt sql.NullTime `db:"expire_at"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -47,7 +47,7 @@ var PlayerItemColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerItem(ctx context.Context, db *sql.DB, m *PlayerItem) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_item (player_id,item_id,count,expire_at,created_at,updated_at) VALUES (?,?,?,?,?,?)", m.PlayerId, m.ItemId, m.Count, m.ExpireAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_item (id,player_id,item_id,count,expire_at) VALUES (?,?,?,?,?)", m.Id, m.PlayerId, m.ItemId, m.Count, m.ExpireAt)
 }
 
 // FindPlayerItemByPK 按主键查询
@@ -67,12 +67,12 @@ func scanPlayerItem(m *PlayerItem, sc interface{ Scan(...any) error }) error {
 
 // UpdatePlayerItemByPK 按主键更新（幂等）
 func UpdatePlayerItemByPK(ctx context.Context, db *sql.DB, m *PlayerItem) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_item SET player_id = ?, item_id = ?, count = ?, expire_at = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.ItemId, m.Count, m.ExpireAt, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_item SET player_id = ?, item_id = ?, count = ?, expire_at = ? WHERE id = ?", m.PlayerId, m.ItemId, m.Count, m.ExpireAt, m.Id)
 }
 
 // UpsertPlayerItemByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerItemByPK(ctx context.Context, db *sql.DB, m *PlayerItem) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_item (player_id,item_id,count,expire_at,created_at,updated_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), item_id = VALUES(item_id), count = VALUES(count), expire_at = VALUES(expire_at), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.ItemId, m.Count, m.ExpireAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_item (id,player_id,item_id,count,expire_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), item_id = VALUES(item_id), count = VALUES(count), expire_at = VALUES(expire_at)", m.Id, m.PlayerId, m.ItemId, m.Count, m.ExpireAt)
 }
 
 // DeletePlayerItemByPK 按主键删除

@@ -44,7 +44,7 @@ var MailAttachmentColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertMailAttachment(ctx context.Context, db *sql.DB, m *MailAttachment) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO mail_attachment (mail_id,item_id,count,claimed,created_at) VALUES (?,?,?,?,?)", m.MailId, m.ItemId, m.Count, m.Claimed, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO mail_attachment (id,mail_id,item_id,count,claimed) VALUES (?,?,?,?,?)", m.Id, m.MailId, m.ItemId, m.Count, m.Claimed)
 }
 
 // FindMailAttachmentByPK 按主键查询
@@ -64,12 +64,12 @@ func scanMailAttachment(m *MailAttachment, sc interface{ Scan(...any) error }) e
 
 // UpdateMailAttachmentByPK 按主键更新（幂等）
 func UpdateMailAttachmentByPK(ctx context.Context, db *sql.DB, m *MailAttachment) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE mail_attachment SET mail_id = ?, item_id = ?, count = ?, claimed = ?, created_at = ? WHERE id = ?", m.MailId, m.ItemId, m.Count, m.Claimed, m.CreatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE mail_attachment SET mail_id = ?, item_id = ?, count = ?, claimed = ? WHERE id = ?", m.MailId, m.ItemId, m.Count, m.Claimed, m.Id)
 }
 
 // UpsertMailAttachmentByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertMailAttachmentByPK(ctx context.Context, db *sql.DB, m *MailAttachment) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO mail_attachment (mail_id,item_id,count,claimed,created_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE mail_id = VALUES(mail_id), item_id = VALUES(item_id), count = VALUES(count), claimed = VALUES(claimed), created_at = VALUES(created_at)", m.MailId, m.ItemId, m.Count, m.Claimed, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO mail_attachment (id,mail_id,item_id,count,claimed) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE mail_id = VALUES(mail_id), item_id = VALUES(item_id), count = VALUES(count), claimed = VALUES(claimed)", m.Id, m.MailId, m.ItemId, m.Count, m.Claimed)
 }
 
 // DeleteMailAttachmentByPK 按主键删除

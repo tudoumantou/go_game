@@ -47,7 +47,7 @@ var FeatureStatsColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertFeatureStats(ctx context.Context, db *sql.DB, m *FeatureStats) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO feature_stats (group_id,feature,window_start,window_end,value,updated_at) VALUES (?,?,?,?,?,?)", m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO feature_stats (id,group_id,feature,window_start,window_end,value) VALUES (?,?,?,?,?,?)", m.Id, m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value)
 }
 
 // FindFeatureStatsByPK 按主键查询
@@ -67,12 +67,12 @@ func scanFeatureStats(m *FeatureStats, sc interface{ Scan(...any) error }) error
 
 // UpdateFeatureStatsByPK 按主键更新（幂等）
 func UpdateFeatureStatsByPK(ctx context.Context, db *sql.DB, m *FeatureStats) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE feature_stats SET group_id = ?, feature = ?, window_start = ?, window_end = ?, value = ?, updated_at = ? WHERE id = ?", m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE feature_stats SET group_id = ?, feature = ?, window_start = ?, window_end = ?, value = ? WHERE id = ?", m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value, m.Id)
 }
 
 // UpsertFeatureStatsByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertFeatureStatsByPK(ctx context.Context, db *sql.DB, m *FeatureStats) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO feature_stats (group_id,feature,window_start,window_end,value,updated_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE group_id = VALUES(group_id), feature = VALUES(feature), window_start = VALUES(window_start), window_end = VALUES(window_end), value = VALUES(value), updated_at = VALUES(updated_at)", m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO feature_stats (id,group_id,feature,window_start,window_end,value) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE group_id = VALUES(group_id), feature = VALUES(feature), window_start = VALUES(window_start), window_end = VALUES(window_end), value = VALUES(value)", m.Id, m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value)
 }
 
 // DeleteFeatureStatsByPK 按主键删除

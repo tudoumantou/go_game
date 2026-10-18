@@ -213,6 +213,34 @@ func TestCRUDAndIdempotent(t *testing.T) {
 		t.Error("重复 chat_record 应触发 uk_owner_msg 冲突")
 	}
 
+	// 可空时间列（player_item.expire_at，DATETIME NULL）：
+	// ① 零值 sql.NullTime 写入应为 NULL（曾因 Go 零值 time.Time 越界报 1292）；
+	// ② 读出 NULL 不应报 converting 错误
+	item := &model.PlayerItem{Id: 9001, PlayerId: 1001, ItemId: 10001, Count: 5}
+	if _, err := model.InsertPlayerItem(ctx, testDB, item); err != nil {
+		t.Fatalf("InsertPlayerItem: %v", err)
+	}
+	gotItem, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
+	if err != nil {
+		t.Fatalf("FindPlayerItemByPK: %v", err)
+	}
+	if gotItem.ExpireAt.Valid {
+		t.Error("未设过期时间的道具 expire_at 应为 NULL")
+	}
+	// 显式设置过期时间后应可往返
+	expire := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	item.ExpireAt = sql.NullTime{Time: expire, Valid: true}
+	if _, err := model.UpdatePlayerItemByPK(ctx, testDB, item); err != nil {
+		t.Fatalf("UpdatePlayerItemByPK: %v", err)
+	}
+	gotItem2, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
+	if err != nil {
+		t.Fatalf("FindPlayerItemByPK(2): %v", err)
+	}
+	if !gotItem2.ExpireAt.Valid || !gotItem2.ExpireAt.Time.Equal(expire) {
+		t.Errorf("expire_at 往返异常: %+v", gotItem2.ExpireAt)
+	}
+
 	// 清理
 	if _, err := model.DeletePlayerByPK(ctx, testDB, 1001); err != nil {
 		t.Fatalf("DeletePlayerByPK: %v", err)

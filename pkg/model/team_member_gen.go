@@ -41,7 +41,7 @@ var TeamMemberColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertTeamMember(ctx context.Context, db *sql.DB, m *TeamMember) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO team_member (team_id,player_id,ready,joined_at) VALUES (?,?,?,?)", m.TeamId, m.PlayerId, m.Ready, m.JoinedAt)
+	return db.ExecContext(ctx, "INSERT INTO team_member (id,team_id,player_id,ready) VALUES (?,?,?,?)", m.Id, m.TeamId, m.PlayerId, m.Ready)
 }
 
 // FindTeamMemberByPK 按主键查询
@@ -61,12 +61,12 @@ func scanTeamMember(m *TeamMember, sc interface{ Scan(...any) error }) error {
 
 // UpdateTeamMemberByPK 按主键更新（幂等）
 func UpdateTeamMemberByPK(ctx context.Context, db *sql.DB, m *TeamMember) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE team_member SET team_id = ?, player_id = ?, ready = ?, joined_at = ? WHERE id = ?", m.TeamId, m.PlayerId, m.Ready, m.JoinedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE team_member SET team_id = ?, player_id = ?, ready = ? WHERE id = ?", m.TeamId, m.PlayerId, m.Ready, m.Id)
 }
 
 // UpsertTeamMemberByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertTeamMemberByPK(ctx context.Context, db *sql.DB, m *TeamMember) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO team_member (team_id,player_id,ready,joined_at) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE team_id = VALUES(team_id), player_id = VALUES(player_id), ready = VALUES(ready), joined_at = VALUES(joined_at)", m.TeamId, m.PlayerId, m.Ready, m.JoinedAt)
+	return db.ExecContext(ctx, "INSERT INTO team_member (id,team_id,player_id,ready) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE team_id = VALUES(team_id), player_id = VALUES(player_id), ready = VALUES(ready)", m.Id, m.TeamId, m.PlayerId, m.Ready)
 }
 
 // DeleteTeamMemberByPK 按主键删除

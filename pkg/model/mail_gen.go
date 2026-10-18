@@ -18,7 +18,7 @@ type Mail struct {
 	Content string `db:"content"`
 	Channel int32 `db:"channel"`
 	Status int32 `db:"status"`
-	ExpireAt time.Time `db:"expire_at"`
+	ExpireAt sql.NullTime `db:"expire_at"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -56,7 +56,7 @@ var MailColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertMail(ctx context.Context, db *sql.DB, m *Mail) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO mail (player_id,template_id,title,content,channel,status,expire_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)", m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO mail (id,player_id,template_id,title,content,channel,status,expire_at) VALUES (?,?,?,?,?,?,?,?)", m.Id, m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt)
 }
 
 // FindMailByPK 按主键查询
@@ -76,12 +76,12 @@ func scanMail(m *Mail, sc interface{ Scan(...any) error }) error {
 
 // UpdateMailByPK 按主键更新（幂等）
 func UpdateMailByPK(ctx context.Context, db *sql.DB, m *Mail) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE mail SET player_id = ?, template_id = ?, title = ?, content = ?, channel = ?, status = ?, expire_at = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE mail SET player_id = ?, template_id = ?, title = ?, content = ?, channel = ?, status = ?, expire_at = ? WHERE id = ?", m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt, m.Id)
 }
 
 // UpsertMailByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertMailByPK(ctx context.Context, db *sql.DB, m *Mail) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO mail (player_id,template_id,title,content,channel,status,expire_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), template_id = VALUES(template_id), title = VALUES(title), content = VALUES(content), channel = VALUES(channel), status = VALUES(status), expire_at = VALUES(expire_at), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO mail (id,player_id,template_id,title,content,channel,status,expire_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), template_id = VALUES(template_id), title = VALUES(title), content = VALUES(content), channel = VALUES(channel), status = VALUES(status), expire_at = VALUES(expire_at)", m.Id, m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt)
 }
 
 // DeleteMailByPK 按主键删除

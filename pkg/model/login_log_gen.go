@@ -50,7 +50,7 @@ var LoginLogColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertLoginLog(ctx context.Context, db *sql.DB, m *LoginLog) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO login_log (account_id,player_id,ip,device,result,reason,created_at) VALUES (?,?,?,?,?,?,?)", m.AccountId, m.PlayerId, m.Ip, m.Device, m.Result, m.Reason, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO login_log (id,account_id,player_id,ip,device,result,reason) VALUES (?,?,?,?,?,?,?)", m.Id, m.AccountId, m.PlayerId, m.Ip, m.Device, m.Result, m.Reason)
 }
 
 // FindLoginLogByPK 按主键查询
@@ -70,12 +70,12 @@ func scanLoginLog(m *LoginLog, sc interface{ Scan(...any) error }) error {
 
 // UpdateLoginLogByPK 按主键更新（幂等）
 func UpdateLoginLogByPK(ctx context.Context, db *sql.DB, m *LoginLog) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE login_log SET account_id = ?, player_id = ?, ip = ?, device = ?, result = ?, reason = ?, created_at = ? WHERE id = ?", m.AccountId, m.PlayerId, m.Ip, m.Device, m.Result, m.Reason, m.CreatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE login_log SET account_id = ?, player_id = ?, ip = ?, device = ?, result = ?, reason = ? WHERE id = ?", m.AccountId, m.PlayerId, m.Ip, m.Device, m.Result, m.Reason, m.Id)
 }
 
 // UpsertLoginLogByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertLoginLogByPK(ctx context.Context, db *sql.DB, m *LoginLog) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO login_log (account_id,player_id,ip,device,result,reason,created_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account_id = VALUES(account_id), player_id = VALUES(player_id), ip = VALUES(ip), device = VALUES(device), result = VALUES(result), reason = VALUES(reason), created_at = VALUES(created_at)", m.AccountId, m.PlayerId, m.Ip, m.Device, m.Result, m.Reason, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO login_log (id,account_id,player_id,ip,device,result,reason) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account_id = VALUES(account_id), player_id = VALUES(player_id), ip = VALUES(ip), device = VALUES(device), result = VALUES(result), reason = VALUES(reason)", m.Id, m.AccountId, m.PlayerId, m.Ip, m.Device, m.Result, m.Reason)
 }
 
 // DeleteLoginLogByPK 按主键删除

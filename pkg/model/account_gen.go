@@ -19,7 +19,7 @@ type Account struct {
 	Device string `db:"device"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
-	LastLoginAt time.Time `db:"last_login_at"`
+	LastLoginAt sql.NullTime `db:"last_login_at"`
 }
 
 // Account 列名
@@ -53,7 +53,7 @@ var AccountColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertAccount(ctx context.Context, db *sql.DB, m *Account) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO account (account,password_hash,salt,status,device,created_at,updated_at,last_login_at) VALUES (?,?,?,?,?,?,?,?)", m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.CreatedAt, m.UpdatedAt, m.LastLoginAt)
+	return db.ExecContext(ctx, "INSERT INTO account (id,account,password_hash,salt,status,device,last_login_at) VALUES (?,?,?,?,?,?,?)", m.Id, m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt)
 }
 
 // FindAccountByPK 按主键查询
@@ -73,12 +73,12 @@ func scanAccount(m *Account, sc interface{ Scan(...any) error }) error {
 
 // UpdateAccountByPK 按主键更新（幂等）
 func UpdateAccountByPK(ctx context.Context, db *sql.DB, m *Account) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE account SET account = ?, password_hash = ?, salt = ?, status = ?, device = ?, created_at = ?, updated_at = ?, last_login_at = ? WHERE id = ?", m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.CreatedAt, m.UpdatedAt, m.LastLoginAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE account SET account = ?, password_hash = ?, salt = ?, status = ?, device = ?, last_login_at = ? WHERE id = ?", m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt, m.Id)
 }
 
 // UpsertAccountByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertAccountByPK(ctx context.Context, db *sql.DB, m *Account) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO account (account,password_hash,salt,status,device,created_at,updated_at,last_login_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account = VALUES(account), password_hash = VALUES(password_hash), salt = VALUES(salt), status = VALUES(status), device = VALUES(device), created_at = VALUES(created_at), updated_at = VALUES(updated_at), last_login_at = VALUES(last_login_at)", m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.CreatedAt, m.UpdatedAt, m.LastLoginAt)
+	return db.ExecContext(ctx, "INSERT INTO account (id,account,password_hash,salt,status,device,last_login_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account = VALUES(account), password_hash = VALUES(password_hash), salt = VALUES(salt), status = VALUES(status), device = VALUES(device), last_login_at = VALUES(last_login_at)", m.Id, m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt)
 }
 
 // DeleteAccountByPK 按主键删除

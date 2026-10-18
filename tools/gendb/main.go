@@ -20,13 +20,14 @@ import (
 )
 
 type column struct {
-	Name    string // 原名 snake_case
-	GoName  string // CamelCase
-	GoType  string // int64/int32/string/bool/float64/time.Time
-	SQLType string // 原始 SQL 类型
-	NotNull bool
-	AutoInc bool
-	IsPK    bool
+	Name     string // 原名 snake_case
+	GoName   string // CamelCase
+	GoType   string // int64/int32/string/bool/float64/time.Time
+	SQLType  string // 原始 SQL 类型
+	NotNull  bool
+	AutoInc  bool
+	AutoTime bool // DEFAULT CURRENT_TIMESTAMP：时间由 DB 生成，写路径跳过该列
+	IsPK     bool
 }
 
 type table struct {
@@ -108,8 +109,12 @@ func parseSQL(path string) ([]table, error) {
 			}
 			c.GoName = upperCamel(c.Name)
 			c.GoType = goType(c.SQLType)
-			c.AutoInc = strings.Contains(strings.ToUpper(line), "AUTO_INCREMENT")
+			c.AutoInc = strings.Contains(up, "AUTO_INCREMENT")
 			c.NotNull = strings.Contains(up, "NOT NULL")
+			// DEFAULT CURRENT_TIMESTAMP（created_at/updated_at）：写入时由 DB 生成，
+			// 不传 Go 零值时间（time.Time{} = 0001-01-01 会超出 TIMESTAMP/DATETIME 范围，
+			// MySQL 报 1292 Incorrect datetime value，集成测试实测复现）
+			c.AutoTime = strings.Contains(up, "DEFAULT CURRENT_TIMESTAMP")
 			t.Columns = append(t.Columns, c)
 		}
 		if len(t.PKs) == 0 {
@@ -221,8 +226,9 @@ func genModel(outDir string, t table) error {
 	}
 	b.WriteString("}\n\n")
 
-	// Insert（跳过自增列）
-	insCols := nonAutoCols(t)
+	// Insert：列 = 全部列排除 DB 生成时间列（保留自增 PK：显式 Id 落库时保留，
+	// Id 为零值时 MySQL 自增列特性把 0 替换为下一个自增值，行为与跳过一致）
+	insCols := upsertCols(t)
 	if len(insCols) > 0 {
 		ph := strings.TrimSuffix(strings.Repeat("?,", len(insCols)), ",")
 		names := colNames(insCols)
@@ -258,14 +264,18 @@ func genModel(outDir string, t table) error {
 		b.WriteString("}\n\n")
 
 		// UpsertByPK（INSERT ... ON DUPLICATE KEY UPDATE）
+		// INSERT 列 = 全部列（含自增 PK）：显式指定 Id 时靠 PK 唯一键冲突触发 UPDATE 分支；
+		// Id 为零值时 MySQL 自增列特性会把 0 替换为下一个自增值，行为不变。
+		// 若 INSERT 跳过自增 PK，ON DUPLICATE 永不命中，Upsert 退化为纯 INSERT（幂等失效）。
 		b.WriteString("// Upsert" + tn + "ByPK 插入或更新（落库幂等，18.2 防线②）\n")
 		b.WriteString("func Upsert" + tn + "ByPK(ctx context.Context, db *sql.DB, m *" + tn + ") (sql.Result, error) {\n")
 		updSet := make([]string, 0, len(updCols))
 		for _, c := range updCols {
 			updSet = append(updSet, c.Name+" = VALUES("+c.Name+")")
 		}
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(insCols)), ",")
-		b.WriteString("\treturn db.ExecContext(ctx, \"INSERT INTO " + t.Name + " (" + strings.Join(colNames(insCols), ",") + ") VALUES (" + ph + ") ON DUPLICATE KEY UPDATE " + strings.Join(updSet, ", ") + "\", " + argsOf(insCols) + ")\n")
+		upsCols := upsertCols(t) // 全部列（含自增 PK），排除 DB 生成时间列
+		phAll := strings.TrimSuffix(strings.Repeat("?,", len(upsCols)), ",")
+		b.WriteString("\treturn db.ExecContext(ctx, \"INSERT INTO " + t.Name + " (" + strings.Join(colNames(upsCols), ",") + ") VALUES (" + phAll + ") ON DUPLICATE KEY UPDATE " + strings.Join(updSet, ", ") + "\", " + argsOf(upsCols) + ")\n")
 		b.WriteString("}\n\n")
 	}
 
@@ -284,26 +294,32 @@ func goFieldType(c column) string {
 		return "int64"
 	}
 	if c.GoType == "time.Time" && !c.NotNull {
-		// 可空时间用 sql.NullTime 更严谨；P0 简化：保持 time.Time（零值可用）
-		return "time.Time"
+		// 可空时间列（如 expire_at/paid_at）：sql.NullTime 同时根治两个问题——
+		// ① 写入零值不越界（Valid=false → NULL）；② 读出 NULL 不报
+		// "converting NULL to time.Time is unsupported"
+		return "sql.NullTime"
 	}
 	return c.GoType
 }
 
-func nonAutoCols(t table) []column {
+// upsertCols Upsert 的 INSERT 列：保留自增 PK（显式 Id 幂等命中唯一键），
+// 排除 DB 生成时间列（created_at/updated_at 由 DEFAULT/ON UPDATE 维护）
+func upsertCols(t table) []column {
 	var out []column
 	for _, c := range t.Columns {
-		if !c.AutoInc {
+		if !c.AutoTime {
 			out = append(out, c)
 		}
 	}
 	return out
 }
 
+// nonPKNonAutoCols Update 的 SET 列：排除 PK、自增列与 DB 生成时间列
+// （updated_at 依赖 DDL 的 ON UPDATE CURRENT_TIMESTAMP 自动维护）
 func nonPKNonAutoCols(t table) []column {
 	var out []column
 	for _, c := range t.Columns {
-		if !c.IsPK && !c.AutoInc {
+		if !c.IsPK && !c.AutoInc && !c.AutoTime {
 			out = append(out, c)
 		}
 	}

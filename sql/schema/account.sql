@@ -10,7 +10,7 @@ CREATE TABLE `account` (
   `device`        VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '注册设备',
   `created_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `last_login_at` TIMESTAMP    NULL DEFAULT NULL COMMENT '最近登录时间',
+  `last_login_at` DATETIME    NULL DEFAULT NULL COMMENT '最近登录时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_account` (`account`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号表';

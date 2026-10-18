@@ -53,7 +53,7 @@ var GuildColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertGuild(ctx context.Context, db *sql.DB, m *Guild) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO guild (name,leader_id,level,exp,notice,member_count,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO guild (id,name,leader_id,level,exp,notice,member_count) VALUES (?,?,?,?,?,?,?)", m.Id, m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount)
 }
 
 // FindGuildByPK 按主键查询
@@ -73,12 +73,12 @@ func scanGuild(m *Guild, sc interface{ Scan(...any) error }) error {
 
 // UpdateGuildByPK 按主键更新（幂等）
 func UpdateGuildByPK(ctx context.Context, db *sql.DB, m *Guild) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE guild SET name = ?, leader_id = ?, level = ?, exp = ?, notice = ?, member_count = ?, created_at = ?, updated_at = ? WHERE id = ?", m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE guild SET name = ?, leader_id = ?, level = ?, exp = ?, notice = ?, member_count = ? WHERE id = ?", m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount, m.Id)
 }
 
 // UpsertGuildByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertGuildByPK(ctx context.Context, db *sql.DB, m *Guild) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO guild (name,leader_id,level,exp,notice,member_count,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name = VALUES(name), leader_id = VALUES(leader_id), level = VALUES(level), exp = VALUES(exp), notice = VALUES(notice), member_count = VALUES(member_count), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO guild (id,name,leader_id,level,exp,notice,member_count) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name = VALUES(name), leader_id = VALUES(leader_id), level = VALUES(level), exp = VALUES(exp), notice = VALUES(notice), member_count = VALUES(member_count)", m.Id, m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount)
 }
 
 // DeleteGuildByPK 按主键删除

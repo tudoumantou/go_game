@@ -16,7 +16,7 @@ type ShopRecord struct {
 	ShopId int32 `db:"shop_id"`
 	GoodsId int32 `db:"goods_id"`
 	BuyCount int32 `db:"buy_count"`
-	RefreshedAt time.Time `db:"refreshed_at"`
+	RefreshedAt sql.NullTime `db:"refreshed_at"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -50,7 +50,7 @@ var ShopRecordColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertShopRecord(ctx context.Context, db *sql.DB, m *ShopRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO shop_record (player_id,shop_id,goods_id,buy_count,refreshed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO shop_record (id,player_id,shop_id,goods_id,buy_count,refreshed_at) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt)
 }
 
 // FindShopRecordByPK 按主键查询
@@ -70,12 +70,12 @@ func scanShopRecord(m *ShopRecord, sc interface{ Scan(...any) error }) error {
 
 // UpdateShopRecordByPK 按主键更新（幂等）
 func UpdateShopRecordByPK(ctx context.Context, db *sql.DB, m *ShopRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE shop_record SET player_id = ?, shop_id = ?, goods_id = ?, buy_count = ?, refreshed_at = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE shop_record SET player_id = ?, shop_id = ?, goods_id = ?, buy_count = ?, refreshed_at = ? WHERE id = ?", m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt, m.Id)
 }
 
 // UpsertShopRecordByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertShopRecordByPK(ctx context.Context, db *sql.DB, m *ShopRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO shop_record (player_id,shop_id,goods_id,buy_count,refreshed_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), shop_id = VALUES(shop_id), goods_id = VALUES(goods_id), buy_count = VALUES(buy_count), refreshed_at = VALUES(refreshed_at), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO shop_record (id,player_id,shop_id,goods_id,buy_count,refreshed_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), shop_id = VALUES(shop_id), goods_id = VALUES(goods_id), buy_count = VALUES(buy_count), refreshed_at = VALUES(refreshed_at)", m.Id, m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt)
 }
 
 // DeleteShopRecordByPK 按主键删除

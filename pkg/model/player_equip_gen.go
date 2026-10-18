@@ -47,7 +47,7 @@ var PlayerEquipColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerEquip(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_equip (player_id,equip_id,enhance_level,quality,created_at,updated_at) VALUES (?,?,?,?,?,?)", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality) VALUES (?,?,?,?,?)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality)
 }
 
 // FindPlayerEquipByPK 按主键查询
@@ -67,12 +67,12 @@ func scanPlayerEquip(m *PlayerEquip, sc interface{ Scan(...any) error }) error {
 
 // UpdatePlayerEquipByPK 按主键更新（幂等）
 func UpdatePlayerEquipByPK(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_equip SET player_id = ?, equip_id = ?, enhance_level = ?, quality = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_equip SET player_id = ?, equip_id = ?, enhance_level = ?, quality = ? WHERE id = ?", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Id)
 }
 
 // UpsertPlayerEquipByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerEquipByPK(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_equip (player_id,equip_id,enhance_level,quality,created_at,updated_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), equip_id = VALUES(equip_id), enhance_level = VALUES(enhance_level), quality = VALUES(quality), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), equip_id = VALUES(equip_id), enhance_level = VALUES(enhance_level), quality = VALUES(quality)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality)
 }
 
 // DeletePlayerEquipByPK 按主键删除

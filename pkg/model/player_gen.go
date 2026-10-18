@@ -53,7 +53,7 @@ var PlayerColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayer(ctx context.Context, db *sql.DB, m *Player) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player (account_id,name,level,exp,coin,scene_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player (id,account_id,name,level,exp,coin,scene_id) VALUES (?,?,?,?,?,?,?)", m.Id, m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId)
 }
 
 // FindPlayerByPK 按主键查询
@@ -73,12 +73,12 @@ func scanPlayer(m *Player, sc interface{ Scan(...any) error }) error {
 
 // UpdatePlayerByPK 按主键更新（幂等）
 func UpdatePlayerByPK(ctx context.Context, db *sql.DB, m *Player) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player SET account_id = ?, name = ?, level = ?, exp = ?, coin = ?, scene_id = ?, created_at = ?, updated_at = ? WHERE id = ?", m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE player SET account_id = ?, name = ?, level = ?, exp = ?, coin = ?, scene_id = ? WHERE id = ?", m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId, m.Id)
 }
 
 // UpsertPlayerByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerByPK(ctx context.Context, db *sql.DB, m *Player) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player (account_id,name,level,exp,coin,scene_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account_id = VALUES(account_id), name = VALUES(name), level = VALUES(level), exp = VALUES(exp), coin = VALUES(coin), scene_id = VALUES(scene_id), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player (id,account_id,name,level,exp,coin,scene_id) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account_id = VALUES(account_id), name = VALUES(name), level = VALUES(level), exp = VALUES(exp), coin = VALUES(coin), scene_id = VALUES(scene_id)", m.Id, m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId)
 }
 
 // DeletePlayerByPK 按主键删除

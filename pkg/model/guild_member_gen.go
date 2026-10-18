@@ -44,7 +44,7 @@ var GuildMemberColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertGuildMember(ctx context.Context, db *sql.DB, m *GuildMember) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO guild_member (guild_id,player_id,title,contributed,joined_at) VALUES (?,?,?,?,?)", m.GuildId, m.PlayerId, m.Title, m.Contributed, m.JoinedAt)
+	return db.ExecContext(ctx, "INSERT INTO guild_member (id,guild_id,player_id,title,contributed) VALUES (?,?,?,?,?)", m.Id, m.GuildId, m.PlayerId, m.Title, m.Contributed)
 }
 
 // FindGuildMemberByPK 按主键查询
@@ -64,12 +64,12 @@ func scanGuildMember(m *GuildMember, sc interface{ Scan(...any) error }) error {
 
 // UpdateGuildMemberByPK 按主键更新（幂等）
 func UpdateGuildMemberByPK(ctx context.Context, db *sql.DB, m *GuildMember) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE guild_member SET guild_id = ?, player_id = ?, title = ?, contributed = ?, joined_at = ? WHERE id = ?", m.GuildId, m.PlayerId, m.Title, m.Contributed, m.JoinedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE guild_member SET guild_id = ?, player_id = ?, title = ?, contributed = ? WHERE id = ?", m.GuildId, m.PlayerId, m.Title, m.Contributed, m.Id)
 }
 
 // UpsertGuildMemberByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertGuildMemberByPK(ctx context.Context, db *sql.DB, m *GuildMember) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO guild_member (guild_id,player_id,title,contributed,joined_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE guild_id = VALUES(guild_id), player_id = VALUES(player_id), title = VALUES(title), contributed = VALUES(contributed), joined_at = VALUES(joined_at)", m.GuildId, m.PlayerId, m.Title, m.Contributed, m.JoinedAt)
+	return db.ExecContext(ctx, "INSERT INTO guild_member (id,guild_id,player_id,title,contributed) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE guild_id = VALUES(guild_id), player_id = VALUES(player_id), title = VALUES(title), contributed = VALUES(contributed)", m.Id, m.GuildId, m.PlayerId, m.Title, m.Contributed)
 }
 
 // DeleteGuildMemberByPK 按主键删除

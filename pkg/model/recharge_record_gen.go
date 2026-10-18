@@ -47,7 +47,7 @@ var RechargeRecordColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertRechargeRecord(ctx context.Context, db *sql.DB, m *RechargeRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO recharge_record (order_id,player_id,product_id,amount_fen,channel,created_at) VALUES (?,?,?,?,?,?)", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO recharge_record (id,order_id,player_id,product_id,amount_fen,channel) VALUES (?,?,?,?,?,?)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel)
 }
 
 // FindRechargeRecordByPK 按主键查询
@@ -67,12 +67,12 @@ func scanRechargeRecord(m *RechargeRecord, sc interface{ Scan(...any) error }) e
 
 // UpdateRechargeRecordByPK 按主键更新（幂等）
 func UpdateRechargeRecordByPK(ctx context.Context, db *sql.DB, m *RechargeRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE recharge_record SET order_id = ?, player_id = ?, product_id = ?, amount_fen = ?, channel = ?, created_at = ? WHERE id = ?", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.CreatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE recharge_record SET order_id = ?, player_id = ?, product_id = ?, amount_fen = ?, channel = ? WHERE id = ?", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Id)
 }
 
 // UpsertRechargeRecordByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertRechargeRecordByPK(ctx context.Context, db *sql.DB, m *RechargeRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO recharge_record (order_id,player_id,product_id,amount_fen,channel,created_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE order_id = VALUES(order_id), player_id = VALUES(player_id), product_id = VALUES(product_id), amount_fen = VALUES(amount_fen), channel = VALUES(channel), created_at = VALUES(created_at)", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO recharge_record (id,order_id,player_id,product_id,amount_fen,channel) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE order_id = VALUES(order_id), player_id = VALUES(player_id), product_id = VALUES(product_id), amount_fen = VALUES(amount_fen), channel = VALUES(channel)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel)
 }
 
 // DeleteRechargeRecordByPK 按主键删除

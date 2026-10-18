@@ -50,7 +50,7 @@ var ChatRecordColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertChatRecord(ctx context.Context, db *sql.DB, m *ChatRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO chat_record (owner_id,peer_id,msg_id,direction,channel,content,created_at) VALUES (?,?,?,?,?,?,?)", m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO chat_record (id,owner_id,peer_id,msg_id,direction,channel,content) VALUES (?,?,?,?,?,?,?)", m.Id, m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content)
 }
 
 // FindChatRecordByPK 按主键查询
@@ -70,12 +70,12 @@ func scanChatRecord(m *ChatRecord, sc interface{ Scan(...any) error }) error {
 
 // UpdateChatRecordByPK 按主键更新（幂等）
 func UpdateChatRecordByPK(ctx context.Context, db *sql.DB, m *ChatRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE chat_record SET owner_id = ?, peer_id = ?, msg_id = ?, direction = ?, channel = ?, content = ?, created_at = ? WHERE id = ?", m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content, m.CreatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE chat_record SET owner_id = ?, peer_id = ?, msg_id = ?, direction = ?, channel = ?, content = ? WHERE id = ?", m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content, m.Id)
 }
 
 // UpsertChatRecordByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertChatRecordByPK(ctx context.Context, db *sql.DB, m *ChatRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO chat_record (owner_id,peer_id,msg_id,direction,channel,content,created_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE owner_id = VALUES(owner_id), peer_id = VALUES(peer_id), msg_id = VALUES(msg_id), direction = VALUES(direction), channel = VALUES(channel), content = VALUES(content), created_at = VALUES(created_at)", m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO chat_record (id,owner_id,peer_id,msg_id,direction,channel,content) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE owner_id = VALUES(owner_id), peer_id = VALUES(peer_id), msg_id = VALUES(msg_id), direction = VALUES(direction), channel = VALUES(channel), content = VALUES(content)", m.Id, m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content)
 }
 
 // DeleteChatRecordByPK 按主键删除

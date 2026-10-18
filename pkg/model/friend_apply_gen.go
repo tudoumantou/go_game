@@ -41,7 +41,7 @@ var FriendApplyColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertFriendApply(ctx context.Context, db *sql.DB, m *FriendApply) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO friend_apply (from_id,to_id,status,created_at) VALUES (?,?,?,?)", m.FromId, m.ToId, m.Status, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO friend_apply (id,from_id,to_id,status) VALUES (?,?,?,?)", m.Id, m.FromId, m.ToId, m.Status)
 }
 
 // FindFriendApplyByPK 按主键查询
@@ -61,12 +61,12 @@ func scanFriendApply(m *FriendApply, sc interface{ Scan(...any) error }) error {
 
 // UpdateFriendApplyByPK 按主键更新（幂等）
 func UpdateFriendApplyByPK(ctx context.Context, db *sql.DB, m *FriendApply) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE friend_apply SET from_id = ?, to_id = ?, status = ?, created_at = ? WHERE id = ?", m.FromId, m.ToId, m.Status, m.CreatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE friend_apply SET from_id = ?, to_id = ?, status = ? WHERE id = ?", m.FromId, m.ToId, m.Status, m.Id)
 }
 
 // UpsertFriendApplyByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertFriendApplyByPK(ctx context.Context, db *sql.DB, m *FriendApply) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO friend_apply (from_id,to_id,status,created_at) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE from_id = VALUES(from_id), to_id = VALUES(to_id), status = VALUES(status), created_at = VALUES(created_at)", m.FromId, m.ToId, m.Status, m.CreatedAt)
+	return db.ExecContext(ctx, "INSERT INTO friend_apply (id,from_id,to_id,status) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE from_id = VALUES(from_id), to_id = VALUES(to_id), status = VALUES(status)", m.Id, m.FromId, m.ToId, m.Status)
 }
 
 // DeleteFriendApplyByPK 按主键删除

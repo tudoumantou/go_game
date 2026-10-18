@@ -50,7 +50,7 @@ var CopyRecordColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertCopyRecord(ctx context.Context, db *sql.DB, m *CopyRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO copy_record (player_id,copy_id,star,pass_count,first_pass,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO copy_record (id,player_id,copy_id,star,pass_count,first_pass) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass)
 }
 
 // FindCopyRecordByPK 按主键查询
@@ -70,12 +70,12 @@ func scanCopyRecord(m *CopyRecord, sc interface{ Scan(...any) error }) error {
 
 // UpdateCopyRecordByPK 按主键更新（幂等）
 func UpdateCopyRecordByPK(ctx context.Context, db *sql.DB, m *CopyRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE copy_record SET player_id = ?, copy_id = ?, star = ?, pass_count = ?, first_pass = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE copy_record SET player_id = ?, copy_id = ?, star = ?, pass_count = ?, first_pass = ? WHERE id = ?", m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass, m.Id)
 }
 
 // UpsertCopyRecordByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertCopyRecordByPK(ctx context.Context, db *sql.DB, m *CopyRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO copy_record (player_id,copy_id,star,pass_count,first_pass,created_at,updated_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), copy_id = VALUES(copy_id), star = VALUES(star), pass_count = VALUES(pass_count), first_pass = VALUES(first_pass), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO copy_record (id,player_id,copy_id,star,pass_count,first_pass) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), copy_id = VALUES(copy_id), star = VALUES(star), pass_count = VALUES(pass_count), first_pass = VALUES(first_pass)", m.Id, m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass)
 }
 
 // DeleteCopyRecordByPK 按主键删除

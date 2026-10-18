@@ -44,7 +44,7 @@ var PlayerSkillColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerSkill(ctx context.Context, db *sql.DB, m *PlayerSkill) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_skill (player_id,skill_id,level,created_at,updated_at) VALUES (?,?,?,?,?)", m.PlayerId, m.SkillId, m.Level, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_skill (id,player_id,skill_id,level) VALUES (?,?,?,?)", m.Id, m.PlayerId, m.SkillId, m.Level)
 }
 
 // FindPlayerSkillByPK 按主键查询
@@ -64,12 +64,12 @@ func scanPlayerSkill(m *PlayerSkill, sc interface{ Scan(...any) error }) error {
 
 // UpdatePlayerSkillByPK 按主键更新（幂等）
 func UpdatePlayerSkillByPK(ctx context.Context, db *sql.DB, m *PlayerSkill) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_skill SET player_id = ?, skill_id = ?, level = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.SkillId, m.Level, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_skill SET player_id = ?, skill_id = ?, level = ? WHERE id = ?", m.PlayerId, m.SkillId, m.Level, m.Id)
 }
 
 // UpsertPlayerSkillByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerSkillByPK(ctx context.Context, db *sql.DB, m *PlayerSkill) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_skill (player_id,skill_id,level,created_at,updated_at) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), skill_id = VALUES(skill_id), level = VALUES(level), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.SkillId, m.Level, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_skill (id,player_id,skill_id,level) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), skill_id = VALUES(skill_id), level = VALUES(level)", m.Id, m.PlayerId, m.SkillId, m.Level)
 }
 
 // DeletePlayerSkillByPK 按主键删除

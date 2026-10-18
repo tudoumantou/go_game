@@ -6,7 +6,7 @@ CREATE TABLE `shop_record` (
   `shop_id`      INT  NOT NULL COMMENT '商店配置ID(见 shop.xml)',
   `goods_id`     INT  NOT NULL COMMENT '商品配置ID(见 shop_goods.xml)',
   `buy_count`    INT  NOT NULL DEFAULT 0 COMMENT '本周期已购次数',
-  `refreshed_at` TIMESTAMP NULL DEFAULT NULL COMMENT '上次刷新时间',
+  `refreshed_at` DATETIME NULL DEFAULT NULL COMMENT '上次刷新时间',
   `created_at`   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

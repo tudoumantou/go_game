@@ -6,7 +6,7 @@ CREATE TABLE `activity_record` (
   `activity_id` INT   NOT NULL COMMENT '活动配置ID(见 activity.xml)',
   `progress`    INT   NOT NULL DEFAULT 0 COMMENT '当前进度',
   `reward_mask` BIGINT NOT NULL DEFAULT 0 COMMENT '已领奖励位图',
-  `joined_at`   TIMESTAMP NULL DEFAULT NULL COMMENT '首次参与时间',
+  `joined_at`   DATETIME NULL DEFAULT NULL COMMENT '首次参与时间',
   `created_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),

@@ -18,8 +18,8 @@ type RechargeOrder struct {
 	AmountFen int32 `db:"amount_fen"`
 	Channel int32 `db:"channel"`
 	Status int32 `db:"status"`
-	PaidAt time.Time `db:"paid_at"`
-	DeliveredAt time.Time `db:"delivered_at"`
+	PaidAt sql.NullTime `db:"paid_at"`
+	DeliveredAt sql.NullTime `db:"delivered_at"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -59,7 +59,7 @@ var RechargeOrderColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertRechargeOrder(ctx context.Context, db *sql.DB, m *RechargeOrder) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO recharge_order (order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO recharge_order (id,order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at) VALUES (?,?,?,?,?,?,?,?,?)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt)
 }
 
 // FindRechargeOrderByPK 按主键查询
@@ -79,12 +79,12 @@ func scanRechargeOrder(m *RechargeOrder, sc interface{ Scan(...any) error }) err
 
 // UpdateRechargeOrderByPK 按主键更新（幂等）
 func UpdateRechargeOrderByPK(ctx context.Context, db *sql.DB, m *RechargeOrder) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE recharge_order SET order_id = ?, player_id = ?, product_id = ?, amount_fen = ?, channel = ?, status = ?, paid_at = ?, delivered_at = ?, created_at = ?, updated_at = ? WHERE id = ?", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE recharge_order SET order_id = ?, player_id = ?, product_id = ?, amount_fen = ?, channel = ?, status = ?, paid_at = ?, delivered_at = ? WHERE id = ?", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt, m.Id)
 }
 
 // UpsertRechargeOrderByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertRechargeOrderByPK(ctx context.Context, db *sql.DB, m *RechargeOrder) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO recharge_order (order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE order_id = VALUES(order_id), player_id = VALUES(player_id), product_id = VALUES(product_id), amount_fen = VALUES(amount_fen), channel = VALUES(channel), status = VALUES(status), paid_at = VALUES(paid_at), delivered_at = VALUES(delivered_at), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO recharge_order (id,order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE order_id = VALUES(order_id), player_id = VALUES(player_id), product_id = VALUES(product_id), amount_fen = VALUES(amount_fen), channel = VALUES(channel), status = VALUES(status), paid_at = VALUES(paid_at), delivered_at = VALUES(delivered_at)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt)
 }
 
 // DeleteRechargeOrderByPK 按主键删除

@@ -47,7 +47,7 @@ var PlayerQuestColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerQuest(ctx context.Context, db *sql.DB, m *PlayerQuest) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_quest (player_id,quest_id,status,progress,created_at,updated_at) VALUES (?,?,?,?,?,?)", m.PlayerId, m.QuestId, m.Status, m.Progress, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_quest (id,player_id,quest_id,status,progress) VALUES (?,?,?,?,?)", m.Id, m.PlayerId, m.QuestId, m.Status, m.Progress)
 }
 
 // FindPlayerQuestByPK 按主键查询
@@ -67,12 +67,12 @@ func scanPlayerQuest(m *PlayerQuest, sc interface{ Scan(...any) error }) error {
 
 // UpdatePlayerQuestByPK 按主键更新（幂等）
 func UpdatePlayerQuestByPK(ctx context.Context, db *sql.DB, m *PlayerQuest) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_quest SET player_id = ?, quest_id = ?, status = ?, progress = ?, created_at = ?, updated_at = ? WHERE id = ?", m.PlayerId, m.QuestId, m.Status, m.Progress, m.CreatedAt, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_quest SET player_id = ?, quest_id = ?, status = ?, progress = ? WHERE id = ?", m.PlayerId, m.QuestId, m.Status, m.Progress, m.Id)
 }
 
 // UpsertPlayerQuestByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerQuestByPK(ctx context.Context, db *sql.DB, m *PlayerQuest) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_quest (player_id,quest_id,status,progress,created_at,updated_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), quest_id = VALUES(quest_id), status = VALUES(status), progress = VALUES(progress), created_at = VALUES(created_at), updated_at = VALUES(updated_at)", m.PlayerId, m.QuestId, m.Status, m.Progress, m.CreatedAt, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO player_quest (id,player_id,quest_id,status,progress) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), quest_id = VALUES(quest_id), status = VALUES(status), progress = VALUES(progress)", m.Id, m.PlayerId, m.QuestId, m.Status, m.Progress)
 }
 
 // DeletePlayerQuestByPK 按主键删除
