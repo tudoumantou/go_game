@@ -31,7 +31,11 @@ message RoomCreateReq {
   string          mode           = 2;
   int32           expect_players = 3;
   int32           timeout_sec    = 4;
-  repeated int64  player_ids     = 5; // 参战玩家（用于生成令牌）
+  repeated int64  player_ids     = 5; // 参战玩家
+  // room_id 非 0 时使用中心服分配的号（P8 路径）；0 表示由 CrossServer 自增（P13 直连路径）
+  uint64          room_id        = 6;
+  // preset_tokens 非空时直接采用（中心服已签发）；为空则由 CrossServer 自行签名
+  map<int64, string> preset_tokens = 7;
 }
 
 message RoomCreateResp {

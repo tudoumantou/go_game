@@ -48,18 +48,40 @@ const defaultBattleTimeout = 180 * time.Second
 // matchPlayers 一个房间的参战人数（demo 期 1v1）。
 const matchPlayers = 2
 
+// CreateRoomReq 建房请求。
+//
+// RoomID 非 0 时使用中心服分配的房间号（P8 路径，多参战方各自请求同一号，幂等）；
+// PresetTokens 携带中心服已签发的准入令牌（令牌权威在中心服）。
+type CreateRoomReq struct {
+	RoomID       uint64
+	Mode         string
+	PlayerIDs    []int64
+	PresetTokens map[int64]string
+	Timeout      time.Duration
+	// ExpectPlayers 房间满员人数；0 表示按 len(PlayerIDs) 推断
+	ExpectPlayers int32
+}
+
 // CrossCaller 跨服调用能力（由游戏服组装层实现）。
 type CrossCaller interface {
 	// Available 是否有可用的跨服节点。
 	Available() bool
 	// CreateRoom 申请建房，返回 roomID 与各玩家令牌。
-	CreateRoom(ctx context.Context, mode string, playerIDs []int64, timeout time.Duration) (uint64, map[int64]string, error)
+	CreateRoom(ctx context.Context, req CreateRoomReq) (uint64, map[int64]string, error)
 	// SendSnapshot 送玩家快照入房。
 	SendSnapshot(roomID uint64, playerID int64, token string, snapshot []byte) error
 	// SendOp 转发投操作。
 	SendOp(roomID uint64, playerID int64, msgID uint32, body []byte) error
 	// SendResult 转发结算。
 	SendResult(roomID uint64, playerID int64, token string, result int32, rewards []byte) error
+}
+
+// CenterMatcher 中心服匹配能力（P8）。为空表示走本地匹配降级路径。
+type CenterMatcher interface {
+	// Available 中心服 Report 流是否就绪。
+	Available() bool
+	// Match 上报匹配请求（结果异步经 OnMatchResult 回来）。
+	Match(playerID int64, mode string, elo int32, snapshot []byte) error
 }
 
 // Pusher 向在线玩家推送（由组装层实现，跨 Actor 安全）。
@@ -80,6 +102,7 @@ type Session struct {
 // Module 战斗模块。
 type Module struct {
 	cross  CrossCaller
+	center CenterMatcher
 	pusher Pusher
 	logger *log.Logger
 
@@ -90,12 +113,15 @@ type Module struct {
 	queue map[string][]int64
 	// queued 玩家是否已在队列（防重复入队）
 	queued map[int64]bool
+	// timeout 单场战斗时限
+	timeout time.Duration
 }
 
 // New 创建战斗模块。
-func New(cross CrossCaller, pusher Pusher, logger *log.Logger) *Module {
+func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Logger) *Module {
 	return &Module{
 		cross:    cross,
+		center:   center,
 		pusher:   pusher,
 		logger:   logger,
 		sessions: make(map[int64]*Session),
@@ -168,6 +194,21 @@ func (m *Module) onMatch(ctx *module.Context, body []byte) error {
 		resp.Code = codeAlreadyIn
 		return m.reply(ctx, msgIDMatchResp, resp)
 	}
+
+	// 中心服可用 → 走中心服匹配（P8 主路径）；否则降级为本服匹配（P13 直连）
+	if m.center != nil && m.center.Available() {
+		m.mu.Unlock()
+		elo := ctx.State.Profile().Level * 100
+		if err := m.center.Match(playerID, mode, elo, m.buildSnapshot(playerID)); err != nil {
+			m.logger.Warn("center match failed", "player_id", playerID, "err", err)
+			resp.Code = codeModeClosed
+			return m.reply(ctx, msgIDMatchResp, resp)
+		}
+		resp.Code = codeOK
+		resp.Queued = 1 // 中心服匹配池不回传精确人数，客户端按「已入队」处理
+		return m.reply(ctx, msgIDMatchResp, resp)
+	}
+
 	m.queue[mode] = append(m.queue[mode], playerID)
 	m.queued[playerID] = true
 	queued := len(m.queue[mode])
@@ -198,7 +239,11 @@ func (m *Module) onMatch(ctx *module.Context, body []byte) error {
 // startMatch 建房并通知双方开战。
 func (m *Module) startMatch(mode string, players []int64) {
 	bg := context.Background()
-	roomID, tokens, err := m.cross.CreateRoom(bg, mode, players, defaultBattleTimeout)
+	roomID, tokens, err := m.cross.CreateRoom(bg, CreateRoomReq{
+		Mode:      mode,
+		PlayerIDs: players,
+		Timeout:   defaultBattleTimeout,
+	})
 	if err != nil {
 		m.logger.Error("create cross room failed", "mode", mode, "err", err)
 		// 回队，让玩家重新匹配（简化处理）
@@ -342,6 +387,62 @@ func (m *Module) onResultReport(ctx *module.Context, body []byte) error {
 	return m.reply(ctx, msgIDSettleNotify, resp)
 }
 
+// OnMatchResult 处理中心服下发的匹配结果（P8 主路径）。
+//
+// 关键点：同一房间的多个参战游戏服会各自收到自己的 MatchResult 并各自请求建房，
+// CrossServer 侧按 room_id 幂等处理（首个真建，其余直接返回成功）。
+// 准入令牌一律采用 MatchResult 里的值（中心服签发），忽略建房响应里的 tokens。
+func (m *Module) OnMatchResult(res *internalv2.MatchResult) {
+	if res == nil || res.RoomId == 0 || res.BattleToken == "" {
+		return
+	}
+	playerID := res.PlayerId
+	if playerID == 0 {
+		m.logger.Warn("match result without player id", "room_id", res.RoomId)
+		return
+	}
+
+	bg := context.Background()
+	// 建房（幂等）+ 送自己的快照
+	if _, _, err := m.cross.CreateRoom(bg, CreateRoomReq{
+		RoomID:       res.RoomId,
+		Mode:         res.Mode,
+		PlayerIDs:    []int64{playerID},
+		PresetTokens: map[int64]string{playerID: res.BattleToken},
+		Timeout:      m.battleTimeout(),
+	}); err != nil {
+		m.logger.Error("create room from match result failed", "room_id", res.RoomId, "err", err)
+		return
+	}
+
+	snap := m.buildSnapshot(playerID)
+	if err := m.cross.SendSnapshot(res.RoomId, playerID, res.BattleToken, snap); err != nil {
+		m.logger.Warn("send snapshot failed", "room_id", res.RoomId, "err", err)
+	}
+
+	m.mu.Lock()
+	m.sessions[playerID] = &Session{
+		RoomID:  res.RoomId,
+		Token:   res.BattleToken,
+		PeerID:  res.PeerId,
+		Started: time.Now(),
+		Peer:    res.PeerSnapshot,
+	}
+	m.mu.Unlock()
+
+	notify := &gamev1.BattleStartNotify{
+		RoomId:      res.RoomId,
+		BattleToken: res.BattleToken,
+		Opponent:    res.PeerSnapshot,
+		TimeoutSec:  int64(m.battleTimeout().Seconds()),
+	}
+	if raw, err := proto.Marshal(notify); err == nil {
+		m.pusher.Push(playerID, msgIDStartNotify, raw)
+	}
+	m.logger.Info("battle started via center", "room_id", res.RoomId,
+		"player_id", playerID, "peer", res.PeerId, "cross", res.CrossAddr)
+}
+
 // OnRoomReady 实现 cross.Handler：房间就绪（当前无需额外动作，快照已送）。
 func (m *Module) OnRoomReady(roomID uint64) {
 	m.logger.Debug("cross room ready", "room_id", roomID)
@@ -435,6 +536,21 @@ func (m *Module) SessionOf(playerID int64) *Session {
 		return &cp
 	}
 	return nil
+}
+
+// battleTimeout 单场战斗时限（超时由 CrossServer 按平局兜底结算）。
+func (m *Module) battleTimeout() time.Duration {
+	if m.timeout > 0 {
+		return m.timeout
+	}
+	return defaultBattleTimeout
+}
+
+// SetBattleTimeout 覆盖默认战斗时限（组装层按配置注入）。
+func (m *Module) SetBattleTimeout(d time.Duration) {
+	if d > 0 {
+		m.timeout = d
+	}
 }
 
 func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {

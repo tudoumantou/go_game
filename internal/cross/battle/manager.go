@@ -46,7 +46,7 @@ func NewManager(sys *actor.System, sink Sink, logger *log.Logger) *Manager {
 
 // Create 创建房间并返回 roomID。
 //
-// roomID = 时间戳低 16 位 << 32 | 进程内自增序号，避免节点重启后复用旧号
+// roomID 生成规则：时间戳低 16 位 << 32 | 进程内自增序号，避免节点重启后复用旧号
 // （客户端可能用旧 room_id 上报，重号会导致串房）。
 func (m *Manager) Create(mode string, expectPlayers int, timeout time.Duration) (uint64, error) {
 	if m.closing.Load() {
@@ -54,11 +54,37 @@ func (m *Manager) Create(mode string, expectPlayers int, timeout time.Duration) 
 	}
 	n := m.seq.Add(1)
 	roomID := uint64(time.Now().Unix()&0xFFFF)<<32 | n
+	if err := m.CreateWithID(roomID, mode, expectPlayers, timeout); err != nil {
+		return 0, err
+	}
+	return roomID, nil
+}
+
+// CreateWithID 用指定 roomID 创建房间（P8：中心服分配的号）。
+//
+// 同一 roomID 重复创建会失败 —— 中心服分配器保证唯一，这里做防御性校验。
+func (m *Manager) CreateWithID(roomID uint64, mode string, expectPlayers int, timeout time.Duration) error {
+	if m.closing.Load() {
+		return fmt.Errorf("cross server is draining, reject new room")
+	}
+	if roomID == 0 {
+		return fmt.Errorf("room id must be non-zero")
+	}
+
+	// 中心服分配 room_id 时，同一房间的多个参战游戏服会各自请求建房 ——
+	// 首个真正建，其余幂等返回成功（否则第二个玩家永远拿不到房间）。
+	m.mu.RLock()
+	_, dup := m.rooms[roomID]
+	m.mu.RUnlock()
+	if dup {
+		m.logger.Debug("room already exists, idempotent create", "room_id", roomID)
+		return nil
+	}
 
 	room := NewRoom(roomID, mode, expectPlayers, timeout, m.sink, m.logger)
 	pid, err := m.sys.Spawn(fmt.Sprintf("room:%d", roomID), room)
 	if err != nil {
-		return 0, fmt.Errorf("spawn room actor: %w", err)
+		return fmt.Errorf("spawn room actor: %w", err)
 	}
 	room.SetPID(pid)
 
@@ -67,7 +93,7 @@ func (m *Manager) Create(mode string, expectPlayers int, timeout time.Duration) 
 	m.mu.Unlock()
 
 	m.logger.Info("room created", "room_id", roomID, "mode", mode, "expect", expectPlayers)
-	return roomID, nil
+	return nil
 }
 
 // Join 玩家入房（快照入队，满员自动开战）。

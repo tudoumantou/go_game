@@ -313,10 +313,21 @@ func (s *Server) onCreateReq(nodeID string, p *peer, req *internalv2.RoomCreateR
 	}
 	timeout := time.Duration(req.GetTimeoutSec()) * time.Second
 
-	roomID, err := s.rooms.Create(req.GetMode(), expect, timeout)
+	// room_id 非 0 → 用中心服分配的号（P8）；否则本地自增（P13 直连）
+	var (
+		roomID uint64
+		err    error
+	)
+	if req.GetRoomId() != 0 {
+		roomID = req.GetRoomId()
+		err = s.rooms.CreateWithID(roomID, req.GetMode(), expect, timeout)
+	} else {
+		roomID, err = s.rooms.Create(req.GetMode(), expect, timeout)
+	}
 	if err != nil {
 		resp.Code = 1
-		s.logger.Warn("create room failed", "node", nodeID, "req", req.GetReqId(), "err", err)
+		s.logger.Warn("create room failed", "node", nodeID, "req", req.GetReqId(),
+			"room_id", req.GetRoomId(), "err", err)
 		_ = p.send(&internalv2.CrossFrame{
 			Data: &internalv2.CrossFrame_CreateResp{CreateResp: resp},
 		})
@@ -327,7 +338,11 @@ func (s *Server) onCreateReq(nodeID string, p *peer, req *internalv2.RoomCreateR
 	resp.RoomId = roomID
 	resp.Tokens = make(map[int64]string, len(req.GetPlayerIds()))
 	for _, pid := range req.GetPlayerIds() {
-		token := s.signToken(nodeID, roomID, pid)
+		// 中心服已签发令牌则直接采用（令牌权威在中心服）；否则本地签名
+		token := req.GetPresetTokens()[pid]
+		if token == "" {
+			token = s.signToken(nodeID, roomID, pid)
+		}
 		resp.Tokens[pid] = token
 		// 预登记玩家归属：快照到达前就要能路由
 		s.playerNode.Store(pid, nodeID)

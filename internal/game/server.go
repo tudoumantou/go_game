@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	gamecenter "game_study/internal/game/center"
 	gamecross "game_study/internal/game/cross"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/activity"
@@ -73,6 +74,7 @@ type Server struct {
 	metricsSrv *metrics.Server
 
 	crossPool *gamecross.Pool   // 到跨服节点的连接池
+	centerCli *gamecenter.Client // 到中心服的 Report 流
 	battleMod *battle.Module    // 战斗模块（匹配/透传/结算）
 
 	mu       sync.RWMutex
@@ -152,7 +154,14 @@ func (s *Server) Start(ctx context.Context) error {
 	if len(s.cfg.Cross.Nodes) > 0 {
 		s.crossPool = gamecross.NewPool(s.cfg.Server.Name, crossHandler{srv: s}, s.logger)
 	}
-	s.battleMod = battle.New(s.crossPool, gamePusher{srv: s}, s.logger)
+	// 中心服客户端（P8）：匹配主路径，未配置则 battle 降级为本服匹配
+	if s.cfg.Center.Addr != "" {
+		s.centerCli = gamecenter.NewClient(s.cfg.Server.Name, s.cfg.Center.Addr, centerHandler{srv: s}, s.logger)
+	}
+	s.battleMod = battle.New(s.crossPool, centerMatchAdapter{cli: s.centerCli}, gamePusher{srv: s}, s.logger)
+	if d, err := config.ParseDuration(s.cfg.Cross.BattleTimeout); err == nil && d > 0 {
+		s.battleMod.SetBattleTimeout(d)
+	}
 
 	s.modules = module.NewRegistry()
 	s.modules.Register(profile.New(s.logger))
@@ -246,6 +255,12 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	// 建立到中心服的 Report 流（9.2：断流指数退避重连）
+	if s.centerCli != nil {
+		go s.centerCli.Start(ctx)
+		s.logger.Info("center client started", "center", s.cfg.Center.Addr)
+	}
+
 	// 建立到跨服节点的 CrossService 流（10.2：断流指数退避重连）
 	if s.crossPool != nil {
 		s.crossPool.Start(ctx, s.cfg.Cross.Nodes)
@@ -287,6 +302,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.flusher.Stop()
 	}
 	// STOP：停跨服流 → 停消费者 → 停 gRPC → 停 Actor → Flush 生产者
+	if s.centerCli != nil {
+		s.centerCli.Stop()
+	}
 	if s.crossPool != nil {
 		s.crossPool.Stop()
 	}
@@ -646,3 +664,64 @@ func (s *Server) CrossReady() int {
 
 // BattleModule 暴露战斗模块（测试用）。
 func (s *Server) BattleModule() *battle.Module { return s.battleMod }
+
+// centerMatchAdapter 把中心服客户端适配为 battle.CenterMatcher。
+type centerMatchAdapter struct {
+	cli *gamecenter.Client
+}
+
+// Available 实现 battle.CenterMatcher。
+func (a centerMatchAdapter) Available() bool {
+	return a.cli != nil && a.cli.Ready()
+}
+
+// Match 实现 battle.CenterMatcher。
+func (a centerMatchAdapter) Match(playerID int64, mode string, elo int32, snapshot []byte) error {
+	if a.cli == nil {
+		return fmt.Errorf("center client not configured")
+	}
+	return a.cli.SendMatch(playerID, mode, elo, snapshot)
+}
+
+// centerHandler 实现 center.Handler：把中心服下行指令转给对应模块。
+type centerHandler struct {
+	srv *Server
+}
+
+// OnMatchResult 实现 center.Handler。
+func (h centerHandler) OnMatchResult(res *internalv2.MatchResult) {
+	if h.srv.battleMod != nil {
+		h.srv.battleMod.OnMatchResult(res)
+	}
+}
+
+// OnRelayPush 实现 center.Handler（P9 中转业务接入前只记日志）。
+func (h centerHandler) OnRelayPush(push *internalv2.RelayPush) {
+	h.srv.logger.Debug("relay push received", "from", push.GetFromNode(),
+		"relay_id", push.GetRelayId(), "bytes", len(push.GetPayload()))
+}
+
+// OnGroupUpdate 实现 center.Handler：组内跨服地址变化 → 重建/新增跨服流。
+func (h centerHandler) OnGroupUpdate(g *internalv2.GroupUpdate) {
+	if h.srv.crossPool == nil || len(g.GetCrossAddrs()) == 0 {
+		return
+	}
+	h.srv.crossPool.Start(context.Background(), g.GetCrossAddrs())
+	h.srv.logger.Info("group update applied", "group", g.GetGroupId(),
+		"games", len(g.GetGameNodes()), "cross", len(g.GetCrossAddrs()))
+}
+
+// OnKick 实现 center.Handler：中心服滚动重启，本节点会自行重连。
+func (h centerHandler) OnKick(k *internalv2.KickNode) {
+	h.srv.logger.Warn("center asked to reconnect", "reason", k.GetReason())
+}
+
+// OnConfigPush 实现 center.Handler（配置热更新 P7+ 接入）。
+func (h centerHandler) OnConfigPush(c *internalv2.ConfigPush) {
+	h.srv.logger.Info("config push received", "key", c.GetConfigKey(), "checksum", c.GetChecksum())
+}
+
+// CenterReady 中心服 Report 流是否就绪（测试/探针用）。
+func (s *Server) CenterReady() bool {
+	return s.centerCli != nil && s.centerCli.Ready()
+}

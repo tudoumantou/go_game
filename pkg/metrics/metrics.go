@@ -60,6 +60,7 @@ func Init(service string) {
 		registerFlush()
 		registerChannel()
 		registerCross()
+		registerCenter()
 		registerKafka()
 		enabled.Store(true)
 	})
@@ -440,6 +441,54 @@ func CrossSettled(reason string) {
 		return
 	}
 	crossSettled.WithLabelValues(Service(), reason).Inc()
+}
+
+// ============================ 中心服 ============================
+
+var (
+	centerNodes        *prometheus.GaugeVec
+	centerMatchQueue   prometheus.Gauge
+	centerRelayPending prometheus.Gauge
+)
+
+func registerCenter() {
+	centerNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "center", Name: "nodes",
+		Help: "已注册节点数（按类型）",
+	}, []string{"service", "type"})
+	centerMatchQueue = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "center", Name: "match_queue",
+		Help: "等待匹配的玩家数",
+	})
+	centerRelayPending = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "center", Name: "relay_pending",
+		Help: "待重试的中转消息数",
+	})
+	registry.MustRegister(centerNodes, centerMatchQueue, centerRelayPending)
+}
+
+// CenterNodes 设置某类型节点数。
+func CenterNodes(nodeType string, n int) {
+	if !enabled.Load() {
+		return
+	}
+	centerNodes.WithLabelValues(Service(), nodeType).Set(float64(n))
+}
+
+// CenterMatchQueue 设置匹配队列长度。
+func CenterMatchQueue(n int) {
+	if !enabled.Load() {
+		return
+	}
+	centerMatchQueue.Set(float64(n))
+}
+
+// CenterRelayPending 设置待重试中转数。
+func CenterRelayPending(n int) {
+	if !enabled.Load() {
+		return
+	}
+	centerRelayPending.Set(float64(n))
 }
 
 // ============================ Kafka ============================

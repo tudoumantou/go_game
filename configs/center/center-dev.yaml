@@ -13,6 +13,10 @@ etcd:
   keepalive_interval: 3
   leader_key: "/game_study/leader/center"   # 选主
 
+cross:                         # 组内跨服节点（匹配时分配给游戏服；生产由运营配置下发）
+  nodes:
+    - "127.0.0.1:9300"
+
 report:
   heartbeat_interval: 5s       # 期望节点心跳间隔
   heartbeat_timeout: 15s       # 超时判定不可用

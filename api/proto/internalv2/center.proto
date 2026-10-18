@@ -122,10 +122,13 @@ message MatchAssign {
 }
 
 message MatchResult {
-  uint64 room_id      = 1;
-  string battle_token = 2;
-  string mode         = 3;
-  // cross 地址由接收方本地分组信息补全（GroupUpdate 已下发组内地址）
+  uint64 room_id       = 1;
+  string battle_token  = 2; // 收件方玩家自己的准入令牌（每位参战者独立）
+  string mode          = 3;
+  string cross_addr    = 4; // 目标跨服节点 gRPC 地址（组内可能多个，必须显式指定）
+  int64  peer_id       = 5; // 对手 player_id
+  bytes  peer_snapshot = 6; // 对手战斗快照（客户端渲染用）
+  int64  player_id     = 7; // 收件方自己 —— 一条流承载多玩家，必须标明归属
 }
 
 message GroupUpdate {

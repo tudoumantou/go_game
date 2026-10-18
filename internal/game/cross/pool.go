@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"game_study/internal/game/module/battle"
 	"game_study/pkg/log"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -115,7 +116,9 @@ func (p *Pool) ReadyCount() int {
 }
 
 // CreateRoom 申请建房（轮询选一个就绪节点）。
-func (p *Pool) CreateRoom(ctx context.Context, mode string, playerIDs []int64, timeout time.Duration) (uint64, map[int64]string, error) {
+//
+// req.RoomID 非 0 时表示使用中心服分配的房间号（多参战方各自请求同一号，CrossServer 幂等）。
+func (p *Pool) CreateRoom(ctx context.Context, req battle.CreateRoomReq) (uint64, map[int64]string, error) {
 	c, addr, err := p.pickReady(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -135,10 +138,12 @@ func (p *Pool) CreateRoom(ctx context.Context, mode string, playerIDs []int64, t
 	if err := c.Send(&internalv2.CrossFrame{
 		Data: &internalv2.CrossFrame_CreateReq{CreateReq: &internalv2.RoomCreateReq{
 			ReqId:         reqID,
-			Mode:          mode,
-			ExpectPlayers: int32(len(playerIDs)),
-			TimeoutSec:    int32(timeout.Seconds()),
-			PlayerIds:     playerIDs,
+			Mode:          req.Mode,
+			ExpectPlayers: int32(matchPlayersOf(req)),
+			TimeoutSec:    int32(req.Timeout.Seconds()),
+			PlayerIds:     req.PlayerIDs,
+			RoomId:        req.RoomID,
+			PresetTokens:  req.PresetTokens,
 		}},
 	}); err != nil {
 		return 0, nil, fmt.Errorf("send create req: %w", err)
@@ -292,4 +297,15 @@ func (p *Pool) nextReqID() string {
 	defer p.pendingMu.Unlock()
 	p.reqSeq++
 	return fmt.Sprintf("cr-%d-%d", time.Now().UnixNano(), p.reqSeq)
+}
+
+// matchPlayersOf 推断房间人数。
+func matchPlayersOf(req battle.CreateRoomReq) int {
+	if req.ExpectPlayers > 0 {
+		return int(req.ExpectPlayers)
+	}
+	if n := len(req.PlayerIDs); n > 0 {
+		return n
+	}
+	return 2
 }
