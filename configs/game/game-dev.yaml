@@ -33,6 +33,12 @@ etcd:
   lease_ttl: 10
   keepalive_interval: 3
 
+cross:                         # 小组跨服节点（P8 前用静态配置；之后由 GroupUpdate 下发）
+  nodes:
+    - "127.0.0.1:9300"
+  battle_timeout: 180s         # 单场战斗时限（超时按平局兜底结算）
+  reconnect_max: 30s
+
 center:                        # 中心服上报（控制面）
   addr: "127.0.0.1:9200"
   reconnect_max_wait: 30s

@@ -32,6 +32,7 @@ type Config struct {
 	Token TokenConfig `yaml:"token"`
 	// 游戏服
 	Actor   ActorConfig   `yaml:"actor"`
+	Cross   CrossConfig   `yaml:"cross"`
 	Flush   FlushConfig   `yaml:"flush"`
 	IDTab   IDTabConfig   `yaml:"idtab"`
 	Center  CenterConfig  `yaml:"center"`
@@ -173,6 +174,14 @@ type RelayKafkaConfig struct {
 type BattleConfig struct {
 	RoomMaxIdle string `yaml:"room_max_idle"`
 	ResultRetry int    `yaml:"result_retry"`
+}
+
+// CrossConfig 小组跨服节点地址（10.2：生产由中心服 GroupUpdate 下发，此处为
+// 静态配置的降级路径 —— P8 中心服上线前，游戏服直接从配置读跨服地址）。
+type CrossConfig struct {
+	Nodes          []string `yaml:"nodes"`           // 跨服节点 gRPC 地址
+	BattleTimeout  string   `yaml:"battle_timeout"`  // 单场战斗时限（超时平局兜底）
+	ReconnectMax   string   `yaml:"reconnect_max"`   // 断流重连最大退避
 }
 
 type XServiceConfig struct {

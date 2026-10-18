@@ -8,8 +8,10 @@ import (
 	"sync"
 	"time"
 
+	gamecross "game_study/internal/game/cross"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/activity"
+	"game_study/internal/game/module/battle"
 	"game_study/internal/game/module/attr"
 	"game_study/internal/game/module/bag"
 	"game_study/internal/game/module/chat"
@@ -70,9 +72,14 @@ type Server struct {
 	roleSvc   *service.RoleService
 	metricsSrv *metrics.Server
 
+	crossPool *gamecross.Pool   // 到跨服节点的连接池
+	battleMod *battle.Module    // 战斗模块（匹配/透传/结算）
+
 	mu       sync.RWMutex
 	sessions map[uint64]int64 // session_id -> player_id（0 = 未选角）
 	accounts map[uint64]int64 // session_id -> account_id
+	// players 反向索引：player_id -> session_id（跨服结算推送用）
+	players2sess map[int64]uint64
 }
 
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
@@ -80,8 +87,9 @@ func New(cfg *config.Config) *Server {
 	return &Server{
 		cfg:      cfg,
 		logger:   log.New("game", log.WithLevel(cfg.Log.Level)),
-		sessions: make(map[uint64]int64),
-		accounts: make(map[uint64]int64),
+		sessions:     make(map[uint64]int64),
+		accounts:     make(map[uint64]int64),
+		players2sess: make(map[int64]uint64),
 	}
 }
 
@@ -140,11 +148,18 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 	s.actorSys.Start(ctx)
 
+	// 跨服连接池（P13）：在模块注册前建好，battle 模块依赖它
+	if len(s.cfg.Cross.Nodes) > 0 {
+		s.crossPool = gamecross.NewPool(s.cfg.Server.Name, crossHandler{srv: s}, s.logger)
+	}
+	s.battleMod = battle.New(s.crossPool, gamePusher{srv: s}, s.logger)
+
 	s.modules = module.NewRegistry()
 	s.modules.Register(profile.New(s.logger))
 	s.modules.Register(attr.New(s.logger))
 	s.modules.Register(bag.New(s.logger))
 	s.modules.Register(item.New(s.logger))
+	s.modules.Register(s.battleMod)
 
 	var mailMod *mail.Module
 	var chatMod *chat.Module
@@ -231,6 +246,12 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}()
 
+	// 建立到跨服节点的 CrossService 流（10.2：断流指数退避重连）
+	if s.crossPool != nil {
+		s.crossPool.Start(ctx, s.cfg.Cross.Nodes)
+		s.logger.Info("cross pool started", "nodes", s.cfg.Cross.Nodes)
+	}
+
 	s.logger.Info("GameServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
 		"players", s.players.Count())
 	<-ctx.Done()
@@ -265,7 +286,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		s.flusher.Stop()
 	}
-	// STOP：停消费者 → 停 gRPC → 停 Actor → Flush 生产者
+	// STOP：停跨服流 → 停消费者 → 停 gRPC → 停 Actor → Flush 生产者
+	if s.crossPool != nil {
+		s.crossPool.Stop()
+	}
 	if s.consumers != nil {
 		if err := s.consumers.Close(); err != nil {
 			s.logger.Warn("consumer close", "err", err)
@@ -417,6 +441,7 @@ func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int6
 	}
 	s.mu.Lock()
 	s.sessions[sessionID] = playerID
+	s.players2sess[playerID] = sessionID
 	accountID := s.accounts[sessionID]
 	s.mu.Unlock()
 
@@ -438,6 +463,9 @@ func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	playerID := s.sessions[sessionID]
 	delete(s.sessions, sessionID)
 	delete(s.accounts, sessionID)
+	if playerID != 0 && s.players2sess[playerID] == sessionID {
+		delete(s.players2sess, playerID)
+	}
 	s.mu.Unlock()
 	if playerID == 0 {
 		return nil
@@ -551,3 +579,70 @@ func mapCreateRoleErr(err error) int32 {
 		return 5000
 	}
 }
+
+// gamePusher 实现 battle.Pusher：把推送转成对玩家会话的下行。
+type gamePusher struct {
+	srv *Server
+}
+
+// Push 实现 battle.Pusher。
+func (p gamePusher) Push(playerID int64, msgID uint32, body []byte) bool {
+	p.srv.mu.RLock()
+	sessionID, ok := p.srv.players2sess[playerID]
+	p.srv.mu.RUnlock()
+	if !ok || sessionID == 0 {
+		return false
+	}
+	if err := p.srv.sendToClient(sessionID, msgID, body); err != nil {
+		p.srv.logger.Debug("battle push failed", "player_id", playerID, "msg_id", msgID, "err", err)
+		return false
+	}
+	return true
+}
+
+// crossHandler 实现 cross.Handler：把跨服下行帧分发给 pool（建房响应）与 battle 模块。
+type crossHandler struct {
+	srv *Server
+}
+
+// OnCreateResp 实现 cross.Handler。
+func (h crossHandler) OnCreateResp(resp *internalv2.RoomCreateResp) {
+	if h.srv.crossPool != nil {
+		h.srv.crossPool.OnCreateResp(resp)
+	}
+}
+
+// OnRoomReady 实现 cross.Handler。
+func (h crossHandler) OnRoomReady(roomID uint64) {
+	if h.srv.battleMod != nil {
+		h.srv.battleMod.OnRoomReady(roomID)
+	}
+}
+
+// OnBattleSync 实现 cross.Handler。
+func (h crossHandler) OnBattleSync(msg *internalv2.BattleMsg) {
+	if h.srv.battleMod != nil {
+		h.srv.battleMod.OnBattleSync(msg)
+	}
+}
+
+// OnBattleResult 实现 cross.Handler。
+func (h crossHandler) OnBattleResult(res *internalv2.BattleResult) {
+	if h.srv.battleMod != nil {
+		h.srv.battleMod.OnBattleResult(res)
+	}
+	if h.srv.crossPool != nil {
+		h.srv.crossPool.OnRoomClosed(res.GetRoomId())
+	}
+}
+
+// CrossReady 已就绪的跨服节点数（测试/运维探针用）。
+func (s *Server) CrossReady() int {
+	if s.crossPool == nil {
+		return 0
+	}
+	return s.crossPool.ReadyCount()
+}
+
+// BattleModule 暴露战斗模块（测试用）。
+func (s *Server) BattleModule() *battle.Module { return s.battleMod }

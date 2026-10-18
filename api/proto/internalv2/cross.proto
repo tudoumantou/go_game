@@ -12,11 +12,33 @@ service CrossService {
 
 message CrossFrame {
   oneof data {
-    PlayerSnapshot snapshot = 1; // GS→X：玩家进入跨服（token + 战斗快照）
-    BattleMsg      battle   = 2; // 双向：战斗消息（GS 代收客户端消息 / X 同步）
-    BattleResult   result   = 3; // X→GS：战斗结算（兜底路径；demo 主路径为客户端上报，见 4.9.3）
-    CrossCtrl      ctrl     = 4; // 控制消息（房间就绪/关闭、心跳）
+    PlayerSnapshot snapshot   = 1; // GS→X：玩家进入跨服（token + 战斗快照）
+    BattleMsg      battle     = 2; // 双向：战斗消息（GS 代收客户端消息 / X 同步）
+    BattleResult   result     = 3; // X→GS：战斗结算（兜底路径；demo 主路径为客户端上报，见 4.9.3）
+    CrossCtrl      ctrl       = 4; // 控制消息（房间就绪/关闭、心跳）
+    RoomCreateReq  create_req = 5; // GS→X：申请建房（P13 直连路径；P8 后由中心服 MatchAssign 下发）
+    RoomCreateResp create_resp = 6; // X→GS：建房结果（room_id + 各玩家准入令牌）
   }
+}
+
+// RoomCreateReq 游戏服申请建房。
+//
+// 两条路径并存：
+//   - P13 直连：GS 本地凑够人后直接向 CrossServer 申请（无需中心服，便于独立验证）；
+//   - P8 之后：中心服匹配后经 MatchAssign 下发，GS 只负责送快照。
+message RoomCreateReq {
+  string          req_id         = 1; // 请求关联 ID（GS 侧 pending map 键）
+  string          mode           = 2;
+  int32           expect_players = 3;
+  int32           timeout_sec    = 4;
+  repeated int64  player_ids     = 5; // 参战玩家（用于生成令牌）
+}
+
+message RoomCreateResp {
+  int32           code       = 1; // 0 成功
+  string          req_id     = 2; // 回带
+  uint64          room_id    = 3;
+  map<int64, string> tokens  = 4; // player_id → battle_token
 }
 
 message PlayerSnapshot {
@@ -34,11 +56,14 @@ message BattleMsg {
 }
 
 message BattleResult {
-  uint64 room_id     = 1;
-  int64  player_id   = 2;
-  int32  result      = 3; // 0 胜 1 负 2 平
-  bytes  rewards     = 4; // 奖励明细
-  int64  finished_at = 5;
+  uint64 room_id      = 1;
+  int64  player_id    = 2;
+  int32  result       = 3; // 0 胜 1 负 2 平
+  bytes  rewards      = 4; // 奖励明细
+  int64  finished_at  = 5;
+  // 准入令牌：GS→X 上报路线带上，CrossServer 做纵深校验（防伪造结算）。
+  // X→GS 兜底结算路径此字段为空（CrossServer 自身即权威）。
+  string battle_token = 6;
 }
 
 message CrossCtrl {
@@ -46,7 +71,11 @@ message CrossCtrl {
     ROOM_READY  = 0; // X→GS：房间就绪，可推送快照
     ROOM_CLOSED = 1; // 双向：房间关闭
     HEALTH      = 2; // 心跳
+    // BIND 必须作为流首帧，用于把连接绑定到具体游戏服节点
+    // （CrossServer 据此精确回推结算，不做全网广播）。
+    BIND        = 3;
   }
   Type   type    = 1;
   uint64 room_id = 2;
+  string node_id = 3; // BIND 帧必填：发起方游戏服节点 ID
 }

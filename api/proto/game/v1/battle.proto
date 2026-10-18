@@ -7,6 +7,17 @@ package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
+// 发起匹配（进入跨服竞技场队列）
+message MatchReq { // MsgID: 5002
+  string mode = 1; // 玩法模式（arena/guild_war/copy），空则默认 arena
+}
+
+message MatchResp { // MsgID: 5003
+  int32  code   = 1; // 0 已入队；6001 已在队列/战斗中；6004 玩法未开放
+  string mode   = 2;
+  int32  queued = 3; // 当前队列人数（客户端展示用）
+}
+
 // 战斗发起通知（匹配完成后由服务端下发）
 message BattleStartNotify { // MsgID: 5001 [Push]
   uint64 room_id      = 1; // 房间号

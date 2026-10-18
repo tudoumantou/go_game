@@ -40,5 +40,6 @@ metrics:
   addr: "0.0.0.0:9301"
 
 shutdown:
-  total_timeout: 30s
-  drain_timeout: 10s
+  # 10.5：优雅关闭要等存量战斗结束（最多 5 分钟），故总超时须大于 drain
+  total_timeout: 360s
+  drain_timeout: 300s

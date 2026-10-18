@@ -12,6 +12,8 @@ spec:
     metadata:
       labels: { app: cross }
     spec:
+      # 10.5：优雅关闭要等存量战斗结束（最多 5 分钟），K8s 宽限期须大于 drain_timeout
+      terminationGracePeriodSeconds: 360
       containers:
         - name: cross
           image: game-study/cross:dev

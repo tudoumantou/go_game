@@ -59,6 +59,7 @@ func Init(service string) {
 		registerActor()
 		registerFlush()
 		registerChannel()
+		registerCross()
 		registerKafka()
 		enabled.Store(true)
 	})
@@ -404,6 +405,41 @@ func ChannelError(op string) {
 		return
 	}
 	channelErr.WithLabelValues(Service(), op).Inc()
+}
+
+// ============================ 跨服房间 ============================
+
+var (
+	crossRooms   *prometheus.GaugeVec
+	crossSettled *prometheus.CounterVec
+)
+
+func registerCross() {
+	crossRooms = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "cross", Name: "rooms",
+		Help: "跨服房间数（按状态）",
+	}, []string{"service", "state"})
+	crossSettled = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "cross", Name: "settled_total",
+		Help: "已结算房间数（按原因：all_reported / timeout / closed）",
+	}, []string{"service", "reason"})
+	registry.MustRegister(crossRooms, crossSettled)
+}
+
+// CrossRooms 设置某状态房间数。
+func CrossRooms(state string, n int) {
+	if !enabled.Load() {
+		return
+	}
+	crossRooms.WithLabelValues(Service(), state).Set(float64(n))
+}
+
+// CrossSettled 结算计数。
+func CrossSettled(reason string) {
+	if !enabled.Load() {
+		return
+	}
+	crossSettled.WithLabelValues(Service(), reason).Inc()
 }
 
 // ============================ Kafka ============================

@@ -601,3 +601,115 @@ func (c *Client) ActivityClaim(activityID int32) (*gamev1.ActivityClaimResp, err
 	}
 	return resp, nil
 }
+
+// ---------------- P13 战斗 / 跨服 ----------------
+
+// Match 发起匹配（5002/5003）。
+func (c *Client) Match(mode string) (*gamev1.MatchResp, error) {
+	resp := &gamev1.MatchResp{}
+	if err := c.call(5002, &gamev1.MatchReq{Mode: mode}, 5003, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// WaitBattleStart 等待开战通知（5001 推送）。
+func (c *Client) WaitBattleStart(timeout time.Duration) (*gamev1.BattleStartNotify, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pkt, err := c.readPacket(time.Until(deadline))
+		if err != nil {
+			return nil, err
+		}
+		if uint32(pkt.MsgID) != 5001 {
+			continue
+		}
+		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+		if err != nil {
+			return nil, err
+		}
+		msg := &gamev1.BattleStartNotify{}
+		if err := proto.Unmarshal(plain, msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	}
+	return nil, fmt.Errorf("no battle start within %s", timeout)
+}
+
+// BattleOp 上报战斗操作（5021，无响应）。
+func (c *Client) BattleOp(roomID uint64, msgID uint32, body []byte) error {
+	req := &gamev1.BattleOpReport{RoomId: roomID, MsgId: msgID, Body: body}
+	raw, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+	enc, seq, err := c.cipher.Encrypt(5021, raw)
+	if err != nil {
+		return err
+	}
+	return c.writePacket(codec.Packet{MsgID: 5021, Seq: seq, Body: enc})
+}
+
+// WaitBattleSync 等待对手战斗事件（5020 推送）。
+func (c *Client) WaitBattleSync(timeout time.Duration) (*gamev1.BattleSyncNotify, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pkt, err := c.readPacket(time.Until(deadline))
+		if err != nil {
+			return nil, err
+		}
+		if uint32(pkt.MsgID) != 5020 {
+			continue
+		}
+		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+		if err != nil {
+			return nil, err
+		}
+		msg := &gamev1.BattleSyncNotify{}
+		if err := proto.Unmarshal(plain, msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	}
+	return nil, fmt.Errorf("no battle sync within %s", timeout)
+}
+
+// BattleResult 上报战斗结论（5010/5011）。
+func (c *Client) BattleResult(roomID uint64, token string, result int32) (*gamev1.BattleSettleNotify, error) {
+	resp := &gamev1.BattleSettleNotify{}
+	req := &gamev1.BattleResultReport{
+		RoomId:      roomID,
+		BattleToken: token,
+		Result:      result,
+		FinishedAt:  time.Now().Unix(),
+	}
+	if err := c.call(5010, req, 5011, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// WaitBattleSettle 等待结算推送（5011 推送，兜底路径）。
+func (c *Client) WaitBattleSettle(timeout time.Duration) (*gamev1.BattleSettleNotify, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		pkt, err := c.readPacket(time.Until(deadline))
+		if err != nil {
+			return nil, err
+		}
+		if uint32(pkt.MsgID) != 5011 {
+			continue
+		}
+		_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+		if err != nil {
+			return nil, err
+		}
+		msg := &gamev1.BattleSettleNotify{}
+		if err := proto.Unmarshal(plain, msg); err != nil {
+			return nil, err
+		}
+		return msg, nil
+	}
+	return nil, fmt.Errorf("no battle settle within %s", timeout)
+}
