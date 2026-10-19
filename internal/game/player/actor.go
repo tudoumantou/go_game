@@ -208,6 +208,10 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 		}
 	}
 
+	// 登录/重连：按等级重算基础属性（基础 + 成长），之后由模块叠加装备等加成。
+	// 顺序不能反：装备的 OnLogin 会 ClearBonus，先重算基础才不会把成长清掉。
+	a.state.RecalcAttrs()
+
 	mctx := a.moduleCtx(ctx)
 	if err := a.registry.LoginAll(mctx); err != nil {
 		a.logger.Error("module login failed", "err", err)

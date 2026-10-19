@@ -32,6 +32,7 @@ const (
 	codeMailNotExist int32 = 5001
 	codeMailTaken    int32 = 5002
 	codeNoAttachment int32 = 5003
+	codeBagFull      int32 = 5004
 )
 
 // 仓储级错误。
@@ -372,6 +373,14 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 	}
 
 	applied, err := ctx.ApplyOnce(key, func() error {
+		grants := make([]module.ItemGrant, 0, len(atts))
+		for _, a := range atts {
+			grants = append(grants, module.ItemGrant{ItemID: a.ItemID, Count: int64(a.Count)})
+		}
+		// 满包时返回 ErrBagFull：ApplyOnce 不占业务键，玩家清包后可重新领取。
+		if !ctx.State.CanHold(grants) {
+			return module.ErrBagFull
+		}
 		for _, a := range atts {
 			ctx.State.AddItem(a.ItemID, int64(a.Count))
 		}
@@ -379,6 +388,10 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, module.ErrBagFull) {
+			resp.Code = codeBagFull
+			return m.replyTake(ctx, resp)
+		}
 		return err
 	}
 	if !applied {

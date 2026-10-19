@@ -34,6 +34,7 @@ const (
 	codeOK             int32 = 0
 	codeCopyNotExist   int32 = 6301
 	codeLevelNotEnough int32 = 6302
+	codeBagFull        int32 = 6303
 )
 
 // Record 单个副本的通关记录。
@@ -176,20 +177,27 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 	}
 	resp.ExpGain = expGain
 
-	// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具
+	// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
+	// 先收集再预检容量，避免「发到一半满包」留下部分到账。
 	var changes []*gamev1.ItemChange
 	if firstPass {
+		grants := make([]module.ItemGrant, 0, 4)
 		for _, drop := range gamedata.CopyDropCfgList {
 			if drop.Col1 != cfg.Id {
 				continue
 			}
-			itemID := int32(drop.Col2)
-			count := drop.Col3
-			ctx.State.AddItem(itemID, count)
+			grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
+		}
+		if !ctx.State.CanHold(grants) {
+			resp.Code = codeBagFull
+			return reply(ctx, msgIDSettleResp, resp)
+		}
+		for _, g := range grants {
+			ctx.State.AddItem(g.ItemID, g.Count)
 			changes = append(changes, &gamev1.ItemChange{
-				ItemUid: int64(itemID),
-				ItemId:  itemID,
-				Count:   int32(ctx.State.GetItemCount(itemID)),
+				ItemUid: int64(g.ItemID),
+				ItemId:  g.ItemID,
+				Count:   int32(ctx.State.GetItemCount(g.ItemID)),
 				Change:  1,
 			})
 		}

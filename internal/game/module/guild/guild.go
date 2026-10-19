@@ -11,6 +11,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
+	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -39,8 +40,16 @@ const (
 	codeGuildFull   int32 = 6105
 )
 
-// maxMembers 公会上限（P6 固定，P7 接 guild_level.xml）。
-const maxMembers = 50
+// maxMembers 公会人数上限：按 guild_level.xml（col1=人数上限, col2=等级）取当前等级；
+// 缺配置回退 50，避免配置漏项导致公会无法收人。
+func maxMembers(level int32) int {
+	for _, cfg := range gamedata.GuildLevelCfgList {
+		if int32(cfg.Col2) == level && cfg.Col1 > 0 {
+			return int(cfg.Col1)
+		}
+	}
+	return 50
+}
 
 // 职位。
 const (
@@ -112,14 +121,14 @@ var ErrNameUsed = errors.New("guild name used")
 // Join 加入公会（事务：成员 + 人数 +1，超上限回滚）。
 func (r *Repo) Join(ctx context.Context, guildID, playerID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var count int32
-		if err := tx.QueryRowContext(ctx, `SELECT member_count FROM guild WHERE id = ? FOR UPDATE`, guildID).Scan(&count); err != nil {
+		var count, level int32
+		if err := tx.QueryRowContext(ctx, `SELECT member_count, level FROM guild WHERE id = ? FOR UPDATE`, guildID).Scan(&count, &level); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return ErrGuildNotExist
 			}
 			return err
 		}
-		if count >= maxMembers {
+		if count >= int32(maxMembers(level)) {
 			return ErrGuildFull
 		}
 		if _, err := tx.ExecContext(ctx,

@@ -38,6 +38,7 @@ func stateFromSnapshot(snapshot writebehind.Snapshot) *State {
 	s := NewState(snapshot.PlayerID)
 	s.profile = snapshot.Profile
 	s.attr = snapshot.Attr
+	s.baseAttr = snapshot.Attr
 	s.ext = cloneExt(snapshot.Ext)
 	if s.ext == nil {
 		s.ext = make(map[string]json.RawMessage)

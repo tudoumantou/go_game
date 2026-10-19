@@ -17,8 +17,9 @@ type Attr = writebehind.Attr
 type State struct {
 	playerID      int64
 	profile       module.Profile
-	attr          Attr                       // 基础属性（落库）
-	bonus         Attr                       // 装备等加成（登录时按已穿装备重算，不落库）
+	attr          Attr                       // 当前基础属性 = baseAttr + 等级成长（落库的是 baseAttr）
+	baseAttr      Attr                       // 落库的职业基础属性（等级成长在它之上叠加，不写回）
+	bonus         Attr                       // 装备/伙伴等加成（登录时重算，不落库）
 	items         map[int32]int64            // item_id -> count
 	ext           map[string]json.RawMessage // 模块私有状态（键 = writebehind.Persister.Name）
 	appliedGrants map[string]bool
@@ -104,12 +105,13 @@ func (s *State) Profile() module.Profile {
 }
 
 // AddExp 增加经验并按 level.xml 连续升级（满级停止）。
+//
+// 升级后立即重算等级属性，在线就能看到属性变化，不用等重登。
 func (s *State) AddExp(n int64) (levelUp bool, level int32) {
 	if n <= 0 {
 		return false, s.Profile().Level
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.profile.Exp += n
 	for {
 		cfg, ok := gamedata.GetLevelCfg(int64(s.profile.Level) + 1)
@@ -124,7 +126,53 @@ func (s *State) AddExp(n int64) (levelUp bool, level int32) {
 		s.profile.Level++
 		levelUp = true
 	}
-	return levelUp, s.profile.Level
+	level = s.profile.Level
+	s.mu.Unlock()
+	if levelUp {
+		s.RecalcAttrs()
+	}
+	return levelUp, level
+}
+
+// RecalcAttrs 按等级重算基础属性：落库基础 + attr_formula 的等级成长。
+//
+// 属性计算顺序（R4.2）：
+//  1. baseAttr：职业初始值，创角写入 player_attr，不随等级变；
+//  2. 等级成长：(level-1) * col3，登录与升级时重算，不落库；
+//  3. bonus：装备/伙伴加成，登录时模块重算，不落库。
+//
+// 每次都从 baseAttr 重算，天然幂等；不碰 bonus，在线升级不会清掉已生效的装备加成。
+func (s *State) RecalcAttrs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recalcLocked()
+}
+
+func (s *State) recalcLocked() {
+	a := s.baseAttr
+	levels := int64(s.profile.Level) - 1
+	if levels < 0 {
+		levels = 0
+	}
+	for _, cfg := range gamedata.AttrFormulaCfgList {
+		delta := cfg.Col3 * levels
+		if delta == 0 {
+			continue
+		}
+		switch cfg.Col1 {
+		case "hp":
+			a.Hp += int32(delta)
+		case "mp":
+			a.Mp += int32(delta)
+		case "atk":
+			a.Atk += int32(delta)
+		case "def":
+			a.Def += int32(delta)
+		case "spd":
+			a.Spd += int32(delta)
+		}
+	}
+	s.attr = a
 }
 
 // ExpMax 返回升到下一级所需经验（满级 0）。
@@ -242,6 +290,56 @@ func (s *State) notifyDirty() {
 	if hook != nil {
 		hook()
 	}
+}
+
+// Capacity 背包容量（可容纳的道具**种类**数）：初始值 + 等级 * 每级扩容。
+//
+// 配置缺失时返回 0，表示不做容量限制（开发环境与旧存档友好）。
+func (s *State) Capacity() int32 {
+	s.mu.RLock()
+	level := s.profile.Level
+	s.mu.RUnlock()
+	return capacityFor(level)
+}
+
+// CanHold 预检：这批道具是否都放得下。
+//
+// 只统计「新增种类」：已有道具继续叠加不受容量限制。先预检再统一发奖，
+// 避免多物品奖励发到一半才发现满包，留下「部分到账」的状态。
+func (s *State) CanHold(grants []writebehind.ItemGrant) bool {
+	cap := s.Capacity()
+	if cap <= 0 {
+		return true
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	kinds := 0
+	for _, n := range s.items {
+		if n > 0 {
+			kinds++
+		}
+	}
+	// 本批新增种类去重；已在背包里的直接跳过。
+	seen := make(map[int32]bool, len(grants))
+	for _, g := range grants {
+		if g.Count <= 0 || g.ItemID <= 0 || s.items[g.ItemID] > 0 || seen[g.ItemID] {
+			continue
+		}
+		seen[g.ItemID] = true
+	}
+	return kinds+len(seen) <= int(cap)
+}
+
+// capacityFor 按配置计算容量；无配置返回 0（不限制）。
+func capacityFor(level int32) int32 {
+	if len(gamedata.BagCapacityCfgList) == 0 {
+		return 0
+	}
+	cfg := gamedata.BagCapacityCfgList[0]
+	if cfg.Col1 <= 0 {
+		return 0
+	}
+	return int32(cfg.Col1 + int64(level)*cfg.Col2)
 }
 
 // AddItem 增加道具（标记脏，落库时只写变更项）。

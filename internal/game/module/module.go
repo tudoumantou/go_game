@@ -5,11 +5,16 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"game_study/pkg/actor"
 	"game_study/pkg/writebehind"
 )
+
+// ErrBagFull 背包已满：新增道具种类超过容量。模块用它作为「发奖被拒」的信号，
+// 由玩家层回滚整条消息，保证不会出现扣了费却发不出货。
+var ErrBagFull = errors.New("bag full")
 
 // Profile 角色基础信息。
 type Profile = writebehind.Profile
@@ -31,6 +36,9 @@ type PlayerState interface {
 	// Ext 读取模块私有状态；SetExt 覆盖并标脏。键必须是 writebehind.Persister.Name()。
 	Ext(name string) json.RawMessage
 	SetExt(name string, raw json.RawMessage)
+	// CanHold 预检：这批道具是否都放得下（只统计新增种类，已有道具可叠加）。
+	// 发奖前先预检，避免多物品奖励发到一半才发现满包。
+	CanHold(grants []ItemGrant) bool
 	// ClaimBiz 占用业务唯一键；返回 false 表示该键已应用过（幂等命中）。
 	// 键随快照一起 CAS 并落库到 player_writebehind.applied_grants，重启后仍有效。
 	ClaimBiz(key string) bool

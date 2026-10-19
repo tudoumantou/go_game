@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
@@ -35,6 +36,7 @@ const (
 	codeGoodsNotExist    int32 = 6401
 	codeDiamondNotEnough int32 = 6402
 	codeLimitExceeded    int32 = 6403
+	codeBagFull          int32 = 6404
 )
 
 const itemDiamond int32 = 1001
@@ -43,7 +45,10 @@ const itemDiamond int32 = 1001
 const defaultShopID int32 = 1
 
 // Data 是商店模块的私有状态： "shopID:goodsID" -> 本周期已购次数。
+//
+// Day 是购买次数所属的业务日；每日刷新的商店在读取时按天清零（shop_refresh.xml）。
 type Data struct {
+	Day    int64            `json:"day"`
 	Bought map[string]int32 `json:"bought"`
 }
 
@@ -107,7 +112,7 @@ func (m *Module) OnLogout(*module.Context) error { return nil }
 // onList 商店列表（商品 + 本周期已购 / 限购）。
 func (m *Module) onList(ctx *module.Context) error {
 	resp := &gamev1.ShopListResp{Code: codeOK}
-	d, err := load(ctx.State)
+	d, err := load(ctx.State, businessDay(time.Now()))
 	if err != nil {
 		return err
 	}
@@ -145,6 +150,14 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 		count = 999
 	}
 
+	itemID := int32(cfg.Col2)
+	gain := int64(cfg.Col4) * count
+	// 先查容量再扣费：满包时不能先把钻石扣掉再发现发不出货
+	if !ctx.State.CanHold([]module.ItemGrant{{ItemID: itemID, Count: gain}}) {
+		resp.Code = codeBagFull
+		return reply(ctx, msgIDBuyResp, resp)
+	}
+
 	price := int64(cfg.Col3) * count
 	if ctx.State.GetItemCount(itemDiamond) < price {
 		resp.Code = codeDiamondNotEnough
@@ -155,15 +168,15 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 		return reply(ctx, msgIDBuyResp, resp)
 	}
 
-	itemID := int32(cfg.Col2)
-	gain := int64(cfg.Col4) * count
 	ctx.State.AddItem(itemID, gain)
 	ctx.State.MarkDirty("bag")
 
-	d, err := load(ctx.State)
+	today := businessDay(time.Now())
+	d, err := load(ctx.State, today)
 	if err != nil {
 		return err
 	}
+	d.Day = today
 	key := goodsKey(defaultShopID, req.GoodsId)
 	d.Bought[key] += int32(count)
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
@@ -196,16 +209,38 @@ func goodsKey(shopID, goodsID int32) string {
 }
 
 // load 读取购买次数；从未购买返回空结构。
-func load(state writebehind.ExtState) (*Data, error) {
+//
+// 每日刷新的商店（shop_refresh.xml 的 col2=daily）在跨天时清零购买次数：
+// 清零发生在读取路径上，不需要全服定时任务，也不会因为玩家离线几天而漏刷。
+func load(state writebehind.ExtState, today int64) (*Data, error) {
 	row, err := writebehind.LoadExt[model.ShopRecord](state, stateKey)
 	if err != nil {
 		return nil, err
 	}
 	if row == nil {
-		return &Data{Bought: map[string]int32{}}, nil
+		return &Data{Day: today, Bought: map[string]int32{}}, nil
 	}
-	return decode(row)
+	d, err := decode(row)
+	if err != nil {
+		return nil, err
+	}
+	if dailyRefresh() && d.Day != today {
+		d.Bought = map[string]int32{}
+		d.Day = today
+	}
+	return d, nil
 }
+
+// dailyRefresh 商店是否按日刷新（配置缺失视为不刷新）。
+func dailyRefresh() bool {
+	if len(gamedata.ShopRefreshCfgList) == 0 {
+		return false
+	}
+	return gamedata.ShopRefreshCfgList[0].Col2 == "daily"
+}
+
+// businessDay 北京时间自然日序号。
+func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }
 
 func decode(row *model.ShopRecord) (*Data, error) {
 	d := &Data{Bought: map[string]int32{}}
@@ -227,6 +262,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	}
 	return writebehind.SaveExt(state, stateKey, &model.ShopRecord{
 		PlayerId: playerID,
+		Day:      d.Day,
 		Bought:   string(raw),
 	})
 }

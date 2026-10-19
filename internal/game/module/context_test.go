@@ -37,6 +37,7 @@ func (s *bizState) RemoveItem(id int32, count int64) bool {
 func (s *bizState) MarkDirty(string)               {}
 func (s *bizState) Ext(string) json.RawMessage     { return nil }
 func (s *bizState) SetExt(string, json.RawMessage) {}
+func (s *bizState) CanHold([]ItemGrant) bool       { return true }
 func (s *bizState) ClaimBiz(key string) bool {
 	if key == "" {
 		return true

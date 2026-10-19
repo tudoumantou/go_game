@@ -39,6 +39,7 @@ const (
 	codeQuestAccepted   int32 = 7102
 	codeQuestUnfinished int32 = 7103
 	codeQuestClaimed    int32 = 7104
+	codeBagFull         int32 = 7105
 )
 
 // 任务状态（与快照内 JSON 一致）。
@@ -264,6 +265,11 @@ func (m *Module) onClaim(ctx *module.Context, body []byte) error {
 	// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）
 	expGain := int64(cfg.Col3) * 100
 	itemCount := int64(cfg.Col3) * 10
+	grants := []module.ItemGrant{{ItemID: 1001, Count: itemCount}}
+	if !ctx.State.CanHold(grants) {
+		resp.Code = codeBagFull
+		return reply(ctx, msgIDClaimResp, resp)
+	}
 	ctx.State.AddItem(1001, itemCount)
 	ctx.State.MarkDirty("bag")
 

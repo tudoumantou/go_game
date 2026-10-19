@@ -10,6 +10,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
+	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -30,15 +31,22 @@ const (
 
 // 业务码（4.10）。
 const (
-	codeOK         int32 = 0
-	codeNotInTeam  int32 = 6201
-	codeAlreadyIn  int32 = 6202
+	codeOK           int32 = 0
+	codeNotInTeam    int32 = 6201
+	codeAlreadyIn    int32 = 6202
 	codeTeamNotExist int32 = 6203
-	codeTeamFull   int32 = 6204
+	codeTeamFull     int32 = 6204
 )
 
-// maxMembers 队伍上限（P6 固定，P7 接 team_limit.xml）。
-const maxMembers = 5
+// maxMembers 队伍上限（team_limit.xml 第一行 col1；缺配置回退 5）。
+func maxMembers() int {
+	if len(gamedata.TeamLimitCfgList) > 0 {
+		if n := gamedata.TeamLimitCfgList[0].Col1; n > 0 {
+			return int(n)
+		}
+	}
+	return 5
+}
 
 // Member 队伍成员。
 type Member struct {
@@ -117,7 +125,7 @@ func (r *Repo) Join(ctx context.Context, teamID, playerID int64) error {
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_member WHERE team_id = ?`, teamID).Scan(&count); err != nil {
 			return err
 		}
-		if count >= maxMembers {
+		if count >= maxMembers() {
 			return ErrTeamFull
 		}
 		if _, err := tx.ExecContext(ctx,

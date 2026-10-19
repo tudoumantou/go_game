@@ -34,6 +34,7 @@ const (
 	codeSystem   int32 = 1
 	codeConfig   int32 = 6601
 	codeBagLimit int32 = 6602
+	codeBagFull  int32 = 6603
 
 	weekDays int32 = 7
 )
@@ -177,6 +178,9 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 		if current < 0 || g.Count > math.MaxInt32-current {
 			return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 		}
+	}
+	if !ctx.State.CanHold(grants) {
+		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagFull, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 	}
 	d.add(today, grants)
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {

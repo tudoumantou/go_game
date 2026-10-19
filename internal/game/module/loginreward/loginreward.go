@@ -120,6 +120,11 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 		m.warn("login reward config missing", ctx, err)
 		return nil
 	}
+	// 满包时不前进状态：下次登录会重新发放，不会吞掉当天奖励。
+	if !ctx.State.CanHold(grants) {
+		m.warn("login reward deferred: bag full", ctx, module.ErrBagFull)
+		return nil
+	}
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}

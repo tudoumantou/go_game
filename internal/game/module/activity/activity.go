@@ -35,6 +35,7 @@ const (
 	codeActivityNotExist int32 = 6501
 	codeNotFinished      int32 = 6502
 	codeAlreadyClaimed   int32 = 6503
+	codeBagFull          int32 = 6504
 )
 
 // 奖励道具（P6 固定：钻石 1001）。
@@ -213,8 +214,12 @@ func (m *Module) onClaim(ctx *module.Context, body []byte) error {
 		return reply(ctx, msgIDClaimResp, resp)
 	}
 
-	// 发奖：target * 20 钻石
+	// 发奖：target * 20 钻石；先预检容量，满包时不发也不置领取位
 	gain := int64(cfg.Col3) * 20
+	if !ctx.State.CanHold([]module.ItemGrant{{ItemID: itemDiamond, Count: gain}}) {
+		resp.Code = codeBagFull
+		return reply(ctx, msgIDClaimResp, resp)
+	}
 	ctx.State.AddItem(itemDiamond, gain)
 	ctx.State.MarkDirty("bag")
 	rec.RewardMask |= 1

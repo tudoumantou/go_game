@@ -38,6 +38,8 @@ func (f *fakeState) Ext(name string) json.RawMessage { return f.ext[name] }
 func (f *fakeState) SetExt(name string, raw json.RawMessage) {
 	f.ext[name] = raw
 }
+func (f *fakeState) CanHold([]module.ItemGrant) bool { return true }
+
 func (f *fakeState) ClaimBiz(key string) bool {
 	if f.biz[key] {
 		return false
