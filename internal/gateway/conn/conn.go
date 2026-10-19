@@ -41,8 +41,8 @@ type Conn struct {
 	logger  *log.Logger
 
 	// close 控制
-	closed   atomic.Bool
-	closeCh  chan struct{}
+	closed    atomic.Bool
+	closeCh   chan struct{}
 	closeOnce sync.Once
 	closeErr  error
 

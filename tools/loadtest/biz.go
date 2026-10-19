@@ -175,7 +175,7 @@ func sendBiz(c *robot.Client, kind string, rnd *rand.Rand) error {
 		return err
 	case "chat":
 		// 发给自己（channel=1 世界/系统频道由服务端决定，这里只验证往返）
-		_, err := c.ChatSend(1, 0, fmt.Sprintf("bench-%d", rnd.Int()));
+		_, err := c.ChatSend(1, 0, fmt.Sprintf("bench-%d", rnd.Int()))
 		return err
 	default:
 		return fmt.Errorf("unknown biz kind %q", kind)

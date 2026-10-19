@@ -20,8 +20,8 @@ import (
 
 	"game_study/pkg/log"
 
-	"github.com/redis/go-redis/v9"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"github.com/redis/go-redis/v9"
 )
 
 // 榜单作用域。

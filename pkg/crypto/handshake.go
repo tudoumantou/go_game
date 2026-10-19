@@ -1,9 +1,9 @@
 // pkg/crypto/handshake.go —— RSA/AES 握手协议状态机
 // 协议流程（设计文档 4.4 + 4.9）：
-//   1. ServerHello:    网关下发 RSA 公钥 + 随机盐
-//   2. ClientKeyExchange: 客户端生成 pre-master，用 RSA 公钥加密后发回
-//   3. 双方用 HKDF(pre-master, salt) 派生 AES-256 会话密钥
-//   4. Finished:       客户端用会话密钥加密 finished 标记，网关验证后握手完成
+//  1. ServerHello:    网关下发 RSA 公钥 + 随机盐
+//  2. ClientKeyExchange: 客户端生成 pre-master，用 RSA 公钥加密后发回
+//  3. 双方用 HKDF(pre-master, salt) 派生 AES-256 会话密钥
+//  4. Finished:       客户端用会话密钥加密 finished 标记，网关验证后握手完成
 package crypto
 
 import (

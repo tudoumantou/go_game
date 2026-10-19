@@ -19,8 +19,8 @@ type Manager struct {
 	byConn   map[int64]*Session
 	byPlayer map[int64]*Session
 
-	seq      int64
-	logger   *log.Logger
+	seq    int64
+	logger *log.Logger
 }
 
 // NewManager 创建 Manager。

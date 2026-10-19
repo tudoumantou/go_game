@@ -7,10 +7,10 @@ import (
 
 // GatewayNode 网关节点。
 type GatewayNode struct {
-	ID       string `json:"id"`
-	Addr     string `json:"addr"`
-	Load     int    `json:"load"`
-	Version  string `json:"version"`
+	ID      string `json:"id"`
+	Addr    string `json:"addr"`
+	Load    int    `json:"load"`
+	Version string `json:"version"`
 }
 
 // DispatchService 网关分派。

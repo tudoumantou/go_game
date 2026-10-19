@@ -20,8 +20,8 @@ import (
 
 	"game_study/pkg/log"
 
-	"github.com/redis/go-redis/v9"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"github.com/redis/go-redis/v9"
 )
 
 // 时间窗定义。
@@ -226,8 +226,8 @@ func (s *Service) Snapshot(ctx context.Context) error {
 
 	s.mu.RLock()
 	entries := make([]struct {
-		key  string
-		se   *Series
+		key string
+		se  *Series
 	}, 0, len(s.series))
 	for k, se := range s.series {
 		entries = append(entries, struct {

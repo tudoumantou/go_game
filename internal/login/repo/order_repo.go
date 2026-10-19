@@ -24,8 +24,8 @@ const (
 
 // 仓储错误。
 var (
-	ErrOrderExists        = errors.New("order already exists")
-	ErrOrderNotFound      = errors.New("order not found")
+	ErrOrderExists         = errors.New("order already exists")
+	ErrOrderNotFound       = errors.New("order not found")
 	ErrOrderStatusConflict = errors.New("order status conflict")
 )
 

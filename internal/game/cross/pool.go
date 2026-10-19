@@ -28,9 +28,9 @@ type Pool struct {
 	logger *log.Logger
 
 	mu      sync.RWMutex
-	clients map[string]*Client      // addr -> client
+	clients map[string]*Client          // addr -> client
 	conns   map[string]*grpc.ClientConn // addr -> 连接（Stop 时关闭，否则对端 GracefulStop 会一直等）
-	rooms   map[uint64]string       // room_id -> addr（建房时记录）
+	rooms   map[uint64]string           // room_id -> addr（建房时记录）
 
 	pendingMu sync.Mutex
 	pending   map[string]chan *internalv2.RoomCreateResp

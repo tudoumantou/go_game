@@ -9,10 +9,10 @@ import (
 )
 
 type fakePusher struct {
-	id    string
-	fail  bool
-	mu    sync.Mutex
-	got   []*PushPayload
+	id   string
+	fail bool
+	mu   sync.Mutex
+	got  []*PushPayload
 }
 
 func (f *fakePusher) NodeID() string { return f.id }

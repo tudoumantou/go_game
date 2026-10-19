@@ -393,7 +393,7 @@ func (t *IDTable) CleanOrphans(ctx context.Context, table string, limit int64) (
 	pattern = strings.TrimSuffix(pattern, "0") + "*"
 
 	var (
-		cursor uint64
+		cursor           uint64
 		scanned, removed int64
 	)
 	for scanned < limit {

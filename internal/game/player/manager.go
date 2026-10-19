@@ -12,9 +12,9 @@ import (
 
 // Manager 管理在线玩家 Actor。
 type Manager struct {
-	sys      *actor.System
-	registry *module.Registry
-	logger   *log.Logger
+	sys       *actor.System
+	registry  *module.Registry
+	logger    *log.Logger
 	repo      *Repository
 	preloader *Preloader
 	onDirty   func(playerID int64)

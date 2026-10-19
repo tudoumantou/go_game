@@ -49,7 +49,7 @@ func TestEnqueuePairSameBucket(t *testing.T) {
 func TestEnqueueDifferentBucketNoImmediateMatch(t *testing.T) {
 	m := New(1, []string{"cross-01:9300"}, time.Minute)
 
-	_ = enqueue(m, "game-01", 1001, 100)  // bucket 0
+	_ = enqueue(m, "game-01", 1001, 100)     // bucket 0
 	res := enqueue(m, "game-02", 1002, 5000) // bucket 25
 	if res != nil {
 		t.Fatalf("different buckets should not match immediately, got %d", len(res))
@@ -72,8 +72,8 @@ func TestDuplicateEnqueueIgnored(t *testing.T) {
 func TestSweepRelaxesEloAfterTimeout(t *testing.T) {
 	m := New(1, []string{"cross-01:9300"}, 50*time.Millisecond)
 
-	_ = enqueue(m, "game-01", 1001, 100)   // bucket 0
-	_ = enqueue(m, "game-02", 1002, 5000)  // bucket 25
+	_ = enqueue(m, "game-01", 1001, 100)  // bucket 0
+	_ = enqueue(m, "game-02", 1002, 5000) // bucket 25
 	time.Sleep(120 * time.Millisecond)
 
 	// 超时后 sweep 应跨桶配对（只产出 1 条 —— 每次 sweep 配对一对中的一个）

@@ -194,7 +194,6 @@ func (h *Handler) SendFinished(c *conn.Conn, sess *session.Session) error {
 	return sess.Send(constant.MsgIDFinished, body)
 }
 
-
 // OnClose 实现 conn.Handler。
 func (h *Handler) OnClose(c *conn.Conn, err error) {
 	sess := h.sessMgr.GetByConn(c.ID())

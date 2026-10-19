@@ -16,33 +16,33 @@ type Code = commonv1.ErrCode
 
 // 错误码常量（与 errcode.proto 一一对应；parity 由 errcode_test.go 守护）
 const (
-	OK                       = commonv1.ErrCode_ERR_CODE_OK
-	ErrParam                 = commonv1.ErrCode_ERR_CODE_PARAM
-	ErrTokenExpired          = commonv1.ErrCode_ERR_CODE_TOKEN_EXPIRED
-	ErrMaintenance           = commonv1.ErrCode_ERR_CODE_MAINTENANCE
-	ErrRateLimited           = commonv1.ErrCode_ERR_CODE_RATE_LIMITED
-	ErrServerBusy            = commonv1.ErrCode_ERR_CODE_SERVER_BUSY
-	ErrAccountBanned         = commonv1.ErrCode_ERR_CODE_ACCOUNT_BANNED
-	ErrKicked                = commonv1.ErrCode_ERR_CODE_KICKED
-	ErrNoRole                = commonv1.ErrCode_ERR_CODE_NO_ROLE
-	ErrNameUsed              = commonv1.ErrCode_ERR_CODE_NAME_USED
-	ErrNameIllegal           = commonv1.ErrCode_ERR_CODE_NAME_ILLEGAL
-	ErrItemNotExist          = commonv1.ErrCode_ERR_CODE_ITEM_NOT_EXIST
-	ErrItemNotEnough         = commonv1.ErrCode_ERR_CODE_ITEM_NOT_ENOUGH
-	ErrBagFull               = commonv1.ErrCode_ERR_CODE_BAG_FULL
-	ErrItemNotUsable         = commonv1.ErrCode_ERR_CODE_ITEM_NOT_USABLE
-	ErrChannelClosed         = commonv1.ErrCode_ERR_CODE_CHANNEL_CLOSED
-	ErrPeerNotFound          = commonv1.ErrCode_ERR_CODE_PEER_NOT_FOUND
-	ErrChatTooFast           = commonv1.ErrCode_ERR_CODE_CHAT_TOO_FAST
-	ErrChatMuted             = commonv1.ErrCode_ERR_CODE_CHAT_MUTED
-	ErrMailNotFound          = commonv1.ErrCode_ERR_CODE_MAIL_NOT_FOUND
-	ErrMailTaken             = commonv1.ErrCode_ERR_CODE_MAIL_TAKEN
-	ErrNoAttachment          = commonv1.ErrCode_ERR_CODE_NO_ATTACHMENT
-	ErrBattleNotFound        = commonv1.ErrCode_ERR_CODE_BATTLE_NOT_FOUND
-	ErrBattleTokenInvalid    = commonv1.ErrCode_ERR_CODE_BATTLE_TOKEN_INVALID
-	ErrResultReported        = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
-	ErrBattleFull            = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
-	ErrResultRewardInvalid   = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
+	OK                     = commonv1.ErrCode_ERR_CODE_OK
+	ErrParam               = commonv1.ErrCode_ERR_CODE_PARAM
+	ErrTokenExpired        = commonv1.ErrCode_ERR_CODE_TOKEN_EXPIRED
+	ErrMaintenance         = commonv1.ErrCode_ERR_CODE_MAINTENANCE
+	ErrRateLimited         = commonv1.ErrCode_ERR_CODE_RATE_LIMITED
+	ErrServerBusy          = commonv1.ErrCode_ERR_CODE_SERVER_BUSY
+	ErrAccountBanned       = commonv1.ErrCode_ERR_CODE_ACCOUNT_BANNED
+	ErrKicked              = commonv1.ErrCode_ERR_CODE_KICKED
+	ErrNoRole              = commonv1.ErrCode_ERR_CODE_NO_ROLE
+	ErrNameUsed            = commonv1.ErrCode_ERR_CODE_NAME_USED
+	ErrNameIllegal         = commonv1.ErrCode_ERR_CODE_NAME_ILLEGAL
+	ErrItemNotExist        = commonv1.ErrCode_ERR_CODE_ITEM_NOT_EXIST
+	ErrItemNotEnough       = commonv1.ErrCode_ERR_CODE_ITEM_NOT_ENOUGH
+	ErrBagFull             = commonv1.ErrCode_ERR_CODE_BAG_FULL
+	ErrItemNotUsable       = commonv1.ErrCode_ERR_CODE_ITEM_NOT_USABLE
+	ErrChannelClosed       = commonv1.ErrCode_ERR_CODE_CHANNEL_CLOSED
+	ErrPeerNotFound        = commonv1.ErrCode_ERR_CODE_PEER_NOT_FOUND
+	ErrChatTooFast         = commonv1.ErrCode_ERR_CODE_CHAT_TOO_FAST
+	ErrChatMuted           = commonv1.ErrCode_ERR_CODE_CHAT_MUTED
+	ErrMailNotFound        = commonv1.ErrCode_ERR_CODE_MAIL_NOT_FOUND
+	ErrMailTaken           = commonv1.ErrCode_ERR_CODE_MAIL_TAKEN
+	ErrNoAttachment        = commonv1.ErrCode_ERR_CODE_NO_ATTACHMENT
+	ErrBattleNotFound      = commonv1.ErrCode_ERR_CODE_BATTLE_NOT_FOUND
+	ErrBattleTokenInvalid  = commonv1.ErrCode_ERR_CODE_BATTLE_TOKEN_INVALID
+	ErrResultReported      = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
+	ErrBattleFull          = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
+	ErrResultRewardInvalid = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
 )
 
 // messages 中文文案表（可热更新；不进协议 wire）

@@ -5,14 +5,14 @@ import "fmt"
 
 // key 命名规范：<域>:<实体>:<id>[:<子键>]
 const (
-	PrefixPlayer   = "player"   // player:<player_id>:<field>
-	PrefixOnline   = "online"   // online:<player_id>
-	PrefixToken    = "token"    // token:<token>
-	PrefixIDTab    = "idtab"    // idtab:<table>（存在性集合，见 idtable.go）
-	PrefixSeq      = "seq"      // seq:<name>（ID 分配计数器，见 idtab.go）
-	PrefixLock     = "lock"     // lock:<resource>
-	PrefixMailBox  = "mailbox"  // mailbox:<player_id>
-	PrefixShard    = "shard"    // shard:<index>:<player_id>
+	PrefixPlayer  = "player"  // player:<player_id>:<field>
+	PrefixOnline  = "online"  // online:<player_id>
+	PrefixToken   = "token"   // token:<token>
+	PrefixIDTab   = "idtab"   // idtab:<table>（存在性集合，见 idtable.go）
+	PrefixSeq     = "seq"     // seq:<name>（ID 分配计数器，见 idtab.go）
+	PrefixLock    = "lock"    // lock:<resource>
+	PrefixMailBox = "mailbox" // mailbox:<player_id>
+	PrefixShard   = "shard"   // shard:<index>:<player_id>
 )
 
 // PlayerKey 玩家数据 key。

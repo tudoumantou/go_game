@@ -11,11 +11,11 @@ import (
 
 // SessionCipher 维护一条连接的加解密与 Seq 状态。
 type SessionCipher struct {
-	gcm      *AESGCM
-	sendSeq  uint32
-	recvSeq  uint32
-	window   uint64 // 64-bit 滑动窗口，低位对应最新 seq-63 到最新 seq
-	mu       sync.Mutex
+	gcm     *AESGCM
+	sendSeq uint32
+	recvSeq uint32
+	window  uint64 // 64-bit 滑动窗口，低位对应最新 seq-63 到最新 seq
+	mu      sync.Mutex
 }
 
 // NewSessionCipher 从 32 字节会话密钥创建 SessionCipher。

@@ -15,12 +15,12 @@ type Handler func(conn net.Conn)
 
 // TCPServer TCP 服务端。
 type TCPServer struct {
-	addr     string
-	listener net.Listener
-	handler  Handler
-	wg       sync.WaitGroup
+	addr      string
+	listener  net.Listener
+	handler   Handler
+	wg        sync.WaitGroup
 	closeOnce sync.Once
-	closeErr error
+	closeErr  error
 }
 
 // NewTCPServer 创建 TCP 服务端。

@@ -45,10 +45,10 @@ type Ticket struct {
 
 // Result 匹配成功的结果（每位玩家一条）。
 type Result struct {
-	RoomID     uint64
-	Mode       string
-	CrossAddr  string
-	Players    []ResultPlayer
+	RoomID    uint64
+	Mode      string
+	CrossAddr string
+	Players   []ResultPlayer
 }
 
 // ResultPlayer 单个参战者的结果。
@@ -65,9 +65,9 @@ type Matcher struct {
 	instanceID uint32
 	crossAddrs []string
 
-	mu      sync.Mutex
-	queues  map[string][]*Ticket // key = group|mode|bucket
-	seq     uint64
+	mu       sync.Mutex
+	queues   map[string][]*Ticket // key = group|mode|bucket
+	seq      uint64
 	tokenKey []byte
 
 	timeout time.Duration

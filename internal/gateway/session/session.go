@@ -57,7 +57,7 @@ type Session struct {
 	token    string
 	playerID int64
 
-	mu sync.RWMutex
+	mu     sync.RWMutex
 	logger *log.Logger
 }
 

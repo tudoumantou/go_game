@@ -5,6 +5,7 @@
 //     私钥进网关配置（crypto.rsa_private_key），公钥由登录服随 Token 下发；
 //   - login_rsa.pem / login_rsa_pub.pem：Token 签发密钥。
 //     私钥进登录服配置（token.rsa_private_key），公钥给网关验签。
+//
 // 密钥严禁入库（.gitignore 已排除 deploy/keys/*.pem）。
 package main
 

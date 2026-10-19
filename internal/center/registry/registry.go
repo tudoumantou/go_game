@@ -36,8 +36,8 @@ type Node struct {
 
 // Registry 节点注册表。
 type Registry struct {
-	mu     sync.RWMutex
-	nodes  map[string]*Node
+	mu    sync.RWMutex
+	nodes map[string]*Node
 	// senders node_id → 下发通道（由 Report 流注册）
 	senders map[string]Sender
 

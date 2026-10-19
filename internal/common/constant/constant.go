@@ -5,38 +5,38 @@ import "time"
 
 // 消息号段（设计文档 4.3 分配规范；内部 gRPC 走 9000+，与客户端协议物理隔离）
 const (
-	MsgIDSystemMin   = 1     // 系统消息（心跳/握手/踢下线/错误码）
+	MsgIDSystemMin   = 1 // 系统消息（心跳/握手/踢下线/错误码）
 	MsgIDSystemMax   = 99
-	MsgIDConnMin     = 100   // 网关/连接管理
+	MsgIDConnMin     = 100 // 网关/连接管理
 	MsgIDConnMax     = 199
-	MsgIDLoginMin    = 1000  // 登录/账号
+	MsgIDLoginMin    = 1000 // 登录/账号
 	MsgIDLoginMax    = 1999
-	MsgIDPlayerMin   = 2000  // 玩家数据
+	MsgIDPlayerMin   = 2000 // 玩家数据
 	MsgIDPlayerMax   = 2999
-	MsgIDBagMin      = 3000  // 背包道具
+	MsgIDBagMin      = 3000 // 背包道具
 	MsgIDBagMax      = 3999
-	MsgIDSceneMin    = 4000  // 场景/地图
+	MsgIDSceneMin    = 4000 // 场景/地图
 	MsgIDSceneMax    = 4999
-	MsgIDBattleMin   = 5000  // 战斗（demo 演算在客户端，见 4.9.3）
+	MsgIDBattleMin   = 5000 // 战斗（demo 演算在客户端，见 4.9.3）
 	MsgIDBattleMax   = 5999
-	MsgIDSocialMin   = 6000  // 社交
+	MsgIDSocialMin   = 6000 // 社交
 	MsgIDSocialMax   = 6999
-	MsgIDMailMin     = 7000  // 邮件/任务
+	MsgIDMailMin     = 7000 // 邮件/任务
 	MsgIDMailMax     = 7999
-	MsgIDInternalMin = 9000  // 内部 gRPC（不暴露给客户端）
+	MsgIDInternalMin = 9000 // 内部 gRPC（不暴露给客户端）
 	MsgIDInternalMax = 9999
 )
 
 // 系统消息号（4.3；握手期明文，见 15 章）
 const (
-	MsgIDHeartbeatReq       uint16 = 1
-	MsgIDHeartbeatResp      uint16 = 2
-	MsgIDKickNotify         uint16 = 10
-	MsgIDServerHello        uint16 = 11 // 网关→客户端：RSA 公钥 + 随机盐
-	MsgIDClientKeyExchange  uint16 = 12 // 客户端→网关：RSA 加密的 pre-master
-	MsgIDFinished           uint16 = 13 // 双向：握手完成确认
-	MsgIDHandshakeReq       uint16 = 1001
-	MsgIDHandshakeResp      uint16 = 1002
+	MsgIDHeartbeatReq      uint16 = 1
+	MsgIDHeartbeatResp     uint16 = 2
+	MsgIDKickNotify        uint16 = 10
+	MsgIDServerHello       uint16 = 11 // 网关→客户端：RSA 公钥 + 随机盐
+	MsgIDClientKeyExchange uint16 = 12 // 客户端→网关：RSA 加密的 pre-master
+	MsgIDFinished          uint16 = 13 // 双向：握手完成确认
+	MsgIDHandshakeReq      uint16 = 1001
+	MsgIDHandshakeResp     uint16 = 1002
 )
 
 // IsClientMsgID 判断是否客户端消息号（内部号段不暴露）
