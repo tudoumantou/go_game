@@ -401,9 +401,25 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	mgr := shutdown.NewManager(s.logger)
 
 	// DRAIN：摘注册，不再有新流量路由进来。
-	mgr.Register("unregister", shutdown.PhaseDrain, func(context.Context) error {
-		if s.etcdCancel != nil {
-			s.etcdCancel()
+	mgr.Register("unregister", shutdown.PhaseDrain, func(cctx context.Context) error {
+		if s.etcdCancel == nil {
+			return nil
+		}
+		s.etcdCancel()
+
+		// 网关靠 etcd watch 感知节点下线，需要一点时间重建连接池，
+		// 这段等待保证「新连接」不再路由到本实例。
+		//
+		// 它**不能**消除滚动发布期间的请求失败：玩家会话（Actor）绑定在本实例，
+		// 实例下线必然断开这些连接。实测 7100 请求 45 失败（0.63%），
+		// 加 3s 等待后仍是 45——失败来自「已绑定会话被断开」，不是路由滞后。
+		wait := 3 * time.Second
+		if d, err := config.ParseDuration(s.cfg.Shutdown.RegisterDrain); err == nil && d > 0 {
+			wait = d
+		}
+		select {
+		case <-time.After(wait):
+		case <-cctx.Done():
 		}
 		return nil
 	})

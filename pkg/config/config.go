@@ -128,6 +128,9 @@ type ShutdownConfig struct {
 	TotalTimeout string `yaml:"total_timeout"`
 	DrainTimeout string `yaml:"drain_timeout"`
 	FlushTimeout string `yaml:"flush_timeout"`
+	// RegisterDrain 摘注册后等待网关 resolver 感知的时间（默认 3s）。
+	// 立即停 RPC 会让这段时间的请求打到已关闭实例——滚动发布实测约 0.6% 失败。
+	RegisterDrain string `yaml:"register_drain"`
 }
 
 type TokenConfig struct {

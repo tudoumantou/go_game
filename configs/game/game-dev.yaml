@@ -66,6 +66,7 @@ metrics:
   addr: "0.0.0.0:9102"
 
 shutdown:
+  register_drain: 3s            # 摘注册后等网关感知，再停 RPC（滚动发布）
   total_timeout: 60s
   drain_timeout: 30s
   flush_timeout: 30s
