@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"game_study/pkg/metrics"
@@ -81,6 +82,38 @@ func (s *System) Stop() {
 	s.timerWg.Wait()
 }
 
+// Drain 等待所有分片把信箱里的消息处理完（含已取出、正在执行的），ctx 到期返回错误。
+//
+// 关闭顺序里必须排在保存之前：在途消息的最后一次 Redis 提交如果没等到，
+// 后续 FlushAll 读到的就是旧快照，玩家最后一段进度会丢。
+//
+// Drain 不阻止新消息投递，调用方应先停掉外部入口（gRPC、Kafka 消费者），
+// 否则一边排空一边进新消息，只能等到超时。
+func (s *System) Drain(ctx context.Context) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.idle() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("actor drain: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+// idle 所有分片都空闲才算 Drain 完成。
+func (s *System) idle() bool {
+	for _, sh := range s.shards {
+		if !sh.idle() {
+			return false
+		}
+	}
+	return true
+}
+
 // Spawn 创建 Actor。
 func (s *System) Spawn(id string, actor Actor) (*PID, error) {
 	sh := s.shardFor(id)
@@ -146,6 +179,12 @@ type shard struct {
 	// 实测业务 P99 因此被钉在 ~150ms，直接违反「P99 < 50ms」的验收目标。
 	// 改为「有消息立即唤醒 + ticker 兜底」，延迟降到微秒级。
 	wake chan struct{}
+
+	// inflight 已从信箱取出、尚未处理完的消息数。
+	//
+	// 关闭时需要区分「信箱空」和「真的处理完」：一条消息被 pop 之后信箱计数已归零，
+	// 但 handler 可能还在写 Redis。只看 len(mbox) 会让 Drain 提前返回，丢掉最后一条业务。
+	inflight atomic.Int64
 
 	// lastRejected 上次上报时的累计拒绝数（只由分片循环 goroutine 读写，无需加锁）
 	lastRejected int64
@@ -246,11 +285,28 @@ func (sh *shard) drain(budget int) int {
 			if !ok {
 				break
 			}
+			sh.inflight.Add(1)
 			sh.process(cell, env)
+			sh.inflight.Add(-1)
 			processed++
 		}
 	}
 	return processed
+}
+
+// idle 判断分片是否真的空闲：信箱无积压，且没有已取出但未处理完的消息。
+func (sh *shard) idle() bool {
+	if sh.inflight.Load() > 0 {
+		return false
+	}
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	for _, c := range sh.cells {
+		if c.mbox.len() > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // reportDepth 上报本分片信箱积压（20.3 告警项：Actor 队列积压）。

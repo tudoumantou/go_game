@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -51,6 +52,32 @@ func (w *Worker) FlushBatch(ctx context.Context, partition int) (int, error) {
 		}
 	}
 	return len(records), nil
+}
+
+// FlushAll 循环排空所有分区的脏任务，直到没有待处理记录或 ctx 截止。
+//
+// 关闭时必须调用：缓存权威模式下玩家脏数据只在 Redis 队列里，进程内 worker
+// 若只等下一次 ticker，退出时这批数据既没落库、也不在 flush.Flusher 的视野内
+// （那条路径处理的是非缓存玩家），等于直接丢失。
+func (w *Worker) FlushAll(ctx context.Context) error {
+	var errs []error
+	for part := 0; part < Partitions; part++ {
+		for {
+			if err := ctx.Err(); err != nil {
+				return errors.Join(append(errs, err)...)
+			}
+			n, err := w.FlushBatch(ctx, part)
+			if err != nil {
+				// 单个分区失败不挡住其它分区：能救的先救，错误一起上报。
+				errs = append(errs, fmt.Errorf("partition %d: %w", part, err))
+				break
+			}
+			if n == 0 {
+				break
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Run 可由独立进程运行；首轮也等待定时器，不因一条签到触发同步 MySQL。

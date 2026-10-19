@@ -6,6 +6,7 @@ package mq
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
@@ -32,8 +33,8 @@ type Config struct {
 
 // Producer Kafka 生产者。
 type Producer struct {
-	writer  *kafka.Writer
-	retry   *kafka.Writer // 死信写入
+	writer   *kafka.Writer
+	retry    *kafka.Writer // 死信写入
 	maxRetry int
 }
 
@@ -147,10 +148,23 @@ func (p *Producer) Close() error {
 // Handler 消费处理函数；返回 error 表示处理失败（触发重试）。
 type Handler func(ctx context.Context, env *Envelope) error
 
+// messageReader 是 Consumer 对 kafka.Reader 的最小依赖，抽出来便于注入故障测试。
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Stats() kafka.ReaderStats
+	Close() error
+}
+
+// deadLetterWriter 是死信写入的最小依赖。
+type deadLetterWriter interface {
+	DeadLetter(ctx context.Context, env *Envelope, cause error) error
+}
+
 // Consumer Kafka 消费者（Group 消费 + 手动 commit）。
 type Consumer struct {
-	reader   *kafka.Reader
-	producer *Producer // 死信写入
+	reader   messageReader
+	producer deadLetterWriter // 死信写入
 	maxRetry int
 	topic    string
 }
@@ -182,6 +196,10 @@ func NewConsumer(cfg Config, topic, groupID string, producer *Producer) *Consume
 }
 
 // Run 阻塞消费直到 ctx 取消。
+//
+// 提交规则（R1.4）：只有「业务成功」或「失败消息已可靠写入死信」才推进 offset。
+// 死信写不进去时绝不能提交——那等于既没处理、也没留下痕迹，消息凭空消失。
+// 这条路径上宁可让分区停住（返回错误、由上层重启后重放），也不越过失败消息。
 func (c *Consumer) Run(ctx context.Context, h Handler) error {
 	backoff := 100 * time.Millisecond
 	consumed := 0
@@ -196,52 +214,100 @@ func (c *Consumer) Run(ctx context.Context, h Handler) error {
 
 		env, err := Unmarshal(msg.Value)
 		if err != nil {
-			// 非法消息直接 commit，避免卡分区
-			_ = c.reader.CommitMessages(ctx, msg)
+			// 无法解析就没有业务语义，进死信后提交；死信写不进去仍不提交。
+			if derr := c.moveToDeadLetter(msg, nil, fmt.Errorf("unmarshal: %w", err)); derr != nil {
+				metrics.KafkaConsumed(c.topic, "dead_failed")
+				return fmt.Errorf("dead letter malformed %s@%d: %w", c.topic, msg.Offset, derr)
+			}
+			metrics.KafkaConsumed(c.topic, "malformed")
+			if cerr := c.commit(ctx, msg); cerr != nil {
+				return cerr
+			}
 			continue
 		}
 
-		var lastErr error
-		for attempt := 0; attempt <= c.maxRetry; attempt++ {
-			lastErr = h(ctx, env)
-			if lastErr == nil {
-				break
+		lastErr := c.handle(ctx, h, env, backoff)
+		if lastErr != nil && ctx.Err() != nil {
+			// 关服中断：不提交，重启后从该 offset 重放。
+			return nil
+		}
+		if lastErr != nil {
+			if derr := c.moveToDeadLetter(msg, env, lastErr); derr != nil {
+				metrics.KafkaConsumed(c.topic, "dead_failed")
+				return fmt.Errorf("dead letter %s@%d after %d attempts: %w", c.topic, msg.Offset, c.maxRetry, derr)
 			}
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(backoff * time.Duration(attempt+1)):
-			}
+			metrics.KafkaConsumed(c.topic, "dead")
+		} else {
+			metrics.KafkaConsumed(c.topic, "ok")
 		}
 
-		if lastErr != nil && c.producer != nil {
-			dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = c.producer.DeadLetter(dlqCtx, env, lastErr)
-			cancel()
+		// 消费 lag：Stats() 需加锁，每 256 条采样一次即可反映趋势
+		if consumed++; consumed%256 == 1 {
+			st := c.reader.Stats()
+			metrics.KafkaLag(c.topic, st.Lag)
 		}
 
-		// 指标（20.3）：ok / retry / dead 三态
-		if metrics.Enabled() {
-			switch {
-			case lastErr == nil:
-				metrics.KafkaConsumed(c.topic, "ok")
-			case c.producer != nil:
-				metrics.KafkaConsumed(c.topic, "dead")
-			default:
-				metrics.KafkaConsumed(c.topic, "retry")
-			}
-			// 消费 lag：Stats() 需加锁，每 256 条采样一次即可反映趋势
-			if consumed++; consumed%256 == 1 {
-				st := c.reader.Stats()
-				metrics.KafkaLag(c.topic, st.Lag)
-			}
-		}
-
-		// 无论成功还是进死信，都提交 offset：失败消息已进死信，不能阻塞分区
-		if err := c.reader.CommitMessages(ctx, msg); err != nil && ctx.Err() == nil {
-			return fmt.Errorf("commit %s: %w", c.topic, err)
+		if cerr := c.commit(ctx, msg); cerr != nil {
+			return cerr
 		}
 	}
+}
+
+// handle 带线性退避重试；ctx 取消时立即返回 ctx 错误，交给调用方决定不提交。
+func (c *Consumer) handle(ctx context.Context, h Handler, env *Envelope, backoff time.Duration) error {
+	var lastErr error
+	for attempt := 0; attempt <= c.maxRetry; attempt++ {
+		lastErr = h(ctx, env)
+		if lastErr == nil {
+			return nil
+		}
+		if attempt == c.maxRetry {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff * time.Duration(attempt+1)):
+		}
+	}
+	return lastErr
+}
+
+// moveToDeadLetter 写死信；没有死信通道同样算失败——不能假装消息已处理。
+//
+// 用独立的超时上下文：关服时业务 ctx 可能已取消，但已经把消息取出来的这一条
+// 仍要尽力留下痕迹，否则只能靠重放。
+func (c *Consumer) moveToDeadLetter(msg kafka.Message, env *Envelope, cause error) error {
+	if c.producer == nil {
+		return fmt.Errorf("no dead letter writer configured")
+	}
+	if env == nil {
+		// 解析失败的消息：原始字节以 base64 存进头，payload 用 null 保持信封合法 JSON。
+		env = &Envelope{
+			Topic: c.topic,
+			Key:   string(msg.Key),
+			Headers: map[string]string{
+				"dlq_raw":             base64.StdEncoding.EncodeToString(msg.Value),
+				"dlq_partition":       fmt.Sprint(msg.Partition),
+				"dlq_offset":          fmt.Sprint(msg.Offset),
+				"dlq_unmarshal_error": cause.Error(),
+			},
+		}
+	}
+	dlqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.producer.DeadLetter(dlqCtx, env, cause)
+}
+
+// commit 提交 offset；关服期间的提交失败不算错误（消息会重放）。
+func (c *Consumer) commit(ctx context.Context, msg kafka.Message) error {
+	if err := c.reader.CommitMessages(ctx, msg); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return fmt.Errorf("commit %s@%d: %w", c.topic, msg.Offset, err)
+	}
+	return nil
 }
 
 // Close 关闭消费者（提交 offset 后退出）。

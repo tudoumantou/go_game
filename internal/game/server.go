@@ -41,6 +41,7 @@ import (
 	pkgmq "game_study/pkg/mq"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
+	"game_study/pkg/shutdown"
 	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -69,7 +70,8 @@ type Server struct {
 	flusher  *flush.Flusher
 
 	redis      *cache.Client
-	cacheStore *writebehind.Store // Redis 权威快照 + 脏队列
+	cacheStore *writebehind.Store  // Redis 权威快照 + 脏队列
+	wbWorker   *writebehind.Worker // 进程内落库者（缓存权威模式）
 	presence   *cache.Presence
 	producer   *pkgmq.Producer
 	consumers  *gamemq.Group
@@ -86,6 +88,14 @@ type Server struct {
 	accounts map[uint64]int64 // session_id -> account_id
 	// players 反向索引：player_id -> session_id（跨服结算推送用）
 	players2sess map[int64]uint64
+
+	// runCtx 是组件生命周期，与外部信号 ctx 解耦。
+	//
+	// 收到 SIGTERM 时外部 ctx 立刻取消；如果组件直接挂在它上面，Actor 会同时停掉，
+	// Shutdown 再想「排空在途 → 确认保存」就没有对象可等了。所以内部统一用
+	// runCtx，由 Shutdown 在正确时机 cancel。
+	runCtx    context.Context
+	runCancel context.CancelFunc
 }
 
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
@@ -101,6 +111,15 @@ func New(cfg *config.Config) *Server {
 
 // Start 启动服务（阻塞至 ctx 取消）。
 func (s *Server) Start(ctx context.Context) error {
+	// 组件生命周期与信号 ctx 解耦（见 runCtx 字段注释）。
+	s.runCtx, s.runCancel = context.WithCancel(context.Background())
+	// 只有「启动失败提前返回」才收掉内部 ctx；正常走到末尾时由 Shutdown 负责取消。
+	started := false
+	defer func() {
+		if !started && s.runCancel != nil {
+			s.runCancel()
+		}
+	}()
 	// 指标（20.3）：注册服务名 + 起 /metrics、/healthz、/readyz
 	if s.cfg.Metrics.Enable {
 		metrics.Init(s.cfg.Server.Name)
@@ -157,8 +176,8 @@ func (s *Server) Start(ctx context.Context) error {
 		if s.roleSvc != nil {
 			s.roleSvc.SetIDTable(s.idTable)
 		}
-		go s.buildIDTables(ctx)
-		go s.maintainIDTables(ctx)
+		go s.buildIDTables(s.runCtx)
+		go s.maintainIDTables(s.runCtx)
 	}
 
 	// ③ Actor 系统 + 模块
@@ -167,7 +186,7 @@ func (s *Server) Start(ctx context.Context) error {
 		MailboxSize: s.cfg.Actor.MailboxSize,
 		Logger:      s.logger, // panic 恢复时记录堆栈（不再静默吞掉）
 	})
-	s.actorSys.Start(ctx)
+	s.actorSys.Start(s.runCtx)
 
 	// 跨服连接池（P13）：在模块注册前建好，battle 模块依赖它
 	if len(s.cfg.Cross.Nodes) > 0 {
@@ -230,7 +249,7 @@ func (s *Server) Start(ctx context.Context) error {
 		BatchRows:  s.cfg.Flush.BatchRows,
 		DeleteFn:   deleteFn,
 	}, s.persistPlayer, s.logger)
-	s.flusher.Start(ctx)
+	s.flusher.Start(s.runCtx)
 
 	// 缓存权威状态下，脏队列的唯一消费者是 writebehind worker。
 	// 进程内默认起一个，避免「忘了部署 cmd/flusher 就永远不落库」；
@@ -244,8 +263,9 @@ func (s *Server) Start(ctx context.Context) error {
 				return fmt.Errorf("flush interval: %w", err)
 			}
 			worker := writebehind.NewWorker(s.cacheStore, s.database.DB, s.cfg.Flush.BatchRows)
+			s.wbWorker = worker
 			go func() {
-				if err := worker.Run(ctx, interval, func(err error) {
+				if err := worker.Run(s.runCtx, interval, func(err error) {
 					s.logger.Warn("writebehind flush failed; Redis task retained", "err", err)
 				}); err != nil {
 					s.logger.Warn("writebehind worker stopped", "err", err)
@@ -287,7 +307,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("kafka consumers: %w", err)
 		}
 		s.consumers = group
-		group.Run(ctx)
+		group.Run(s.runCtx)
 		s.logger.Info("kafka consumers started", "count", group.Len())
 	}
 
@@ -304,7 +324,7 @@ func (s *Server) Start(ctx context.Context) error {
 		Addr:    s.cfg.Server.GRPCAddr,
 		Version: "1.0.0",
 	}
-	cancel, err := etcdReg.RegisterWithKeepalive(ctx, node, s.cfg.Etcd.LeaseTTL)
+	cancel, err := etcdReg.RegisterWithKeepalive(s.runCtx, node, s.cfg.Etcd.LeaseTTL)
 	if err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
@@ -316,25 +336,26 @@ func (s *Server) Start(ctx context.Context) error {
 	internalv2.RegisterGameServiceServer(s.rpcServer.GRPCServer(), s.gameRPC)
 
 	go func() {
-		if err := s.rpcServer.Start(ctx); err != nil && err != context.Canceled {
+		if err := s.rpcServer.Start(s.runCtx); err != nil && err != context.Canceled {
 			s.logger.Error("grpc server error", "err", err)
 		}
 	}()
 
 	// 建立到中心服的 Report 流（9.2：断流指数退避重连）
 	if s.centerCli != nil {
-		go s.centerCli.Start(ctx)
+		go s.centerCli.Start(s.runCtx)
 		s.logger.Info("center client started", "center", s.cfg.Center.Addr)
 	}
 
 	// 建立到跨服节点的 CrossService 流（10.2：断流指数退避重连）
 	if s.crossPool != nil {
-		s.crossPool.Start(ctx, s.cfg.Cross.Nodes)
+		s.crossPool.Start(s.runCtx, s.cfg.Cross.Nodes)
 		s.logger.Info("cross pool started", "nodes", s.cfg.Cross.Nodes)
 	}
 
 	s.logger.Info("GameServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
 		"players", s.players.Count())
+	started = true
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -354,54 +375,124 @@ func (s *Server) readiness(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，pkg/shutdown 编排）。
+// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP）。
+//
+// 顺序是这套流程的全部意义：
+//  1. 摘注册：网关不再把新会话路由过来；
+//  2. 停 gRPC、停消费者：外部与内部的新业务入口都先关掉；
+//  3. 排空 Actor：等已经在信箱里的消息处理完，把状态写进 Redis；
+//  4. FlushAll：把 Redis 脏任务确认落库，失败必须上报；
+//  5. 停 Actor 与其余组件。
+//
+// 反过来（先 FlushAll 再停入口）会留一个窗口：FlushAll 扫完后仍有请求进来标脏，
+// 进程退出时这批数据谁都没落库 —— R1.3 修的就是这个。
 func (s *Server) Shutdown(ctx context.Context) error {
-	// DRAIN：摘注册
-	if s.etcdCancel != nil {
-		s.etcdCancel()
-	}
-	// FLUSH：全量落库（Actor 停止前）
-	if s.flusher != nil {
-		if err := s.flusher.FlushAll(ctx); err != nil {
-			s.logger.Warn("flush all", "err", err)
+	mgr := shutdown.NewManager(s.logger)
+
+	// DRAIN：摘注册，不再有新流量路由进来。
+	mgr.Register("unregister", shutdown.PhaseDrain, func(context.Context) error {
+		if s.etcdCancel != nil {
+			s.etcdCancel()
 		}
-		s.flusher.Stop()
-	}
-	// STOP：停跨服流 → 停消费者 → 停 gRPC → 停 Actor → Flush 生产者
-	if s.centerCli != nil {
-		s.centerCli.Stop()
-	}
-	if s.crossPool != nil {
-		s.crossPool.Stop()
-	}
-	if s.consumers != nil {
-		if err := s.consumers.Close(); err != nil {
-			s.logger.Warn("consumer close", "err", err)
+		return nil
+	})
+
+	// DRAINING：先关入口，再等在途。
+	mgr.Register("stop-rpc", shutdown.PhaseDraining, func(context.Context) error {
+		if s.rpcServer != nil {
+			s.rpcServer.Stop()
 		}
-	}
-	if s.rpcServer != nil {
-		s.rpcServer.Stop()
-	}
-	if s.actorSys != nil {
-		s.actorSys.Stop()
-	}
-	if s.producer != nil {
+		return nil
+	})
+	mgr.Register("stop-consumers", shutdown.PhaseDraining, func(context.Context) error {
+		if s.consumers == nil {
+			return nil
+		}
+		return s.consumers.Close()
+	})
+	mgr.Register("drain-actors", shutdown.PhaseDraining, func(ctx context.Context) error {
+		if s.actorSys == nil {
+			return nil
+		}
+		return s.actorSys.Drain(ctx)
+	})
+
+	// FLUSH：确认落库。失败要出现在返回值里，由 main 非零退出。
+	mgr.Register("flush-all", shutdown.PhaseFlush, func(ctx context.Context) error {
+		var errs []error
+		// 缓存权威模式：脏任务在 Redis 队列里，必须先把进程内 worker 的积压排空。
+		// 只调 flusher.FlushAll 是空转（缓存玩家的 onDirty 已被置空），数据会随进程消失。
+		if s.wbWorker != nil {
+			if err := s.wbWorker.FlushAll(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("writebehind: %w", err))
+			}
+		}
+		// 非缓存玩家的直连落库路径。
+		if s.flusher != nil {
+			if err := s.flusher.FlushAll(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("flusher: %w", err))
+			}
+			s.flusher.Stop()
+		}
+		return errors.Join(errs...)
+	})
+
+	mgr.Register("stop-cross", shutdown.PhaseStop, func(context.Context) error {
+		if s.crossPool != nil {
+			s.crossPool.Stop()
+		}
+		return nil
+	})
+	mgr.Register("stop-center", shutdown.PhaseStop, func(context.Context) error {
+		if s.centerCli != nil {
+			s.centerCli.Stop()
+		}
+		return nil
+	})
+	mgr.Register("stop-actors", shutdown.PhaseStop, func(context.Context) error {
+		// 先取消内部生命周期（定时器与后台 worker 退出），再停分片。
+		if s.runCancel != nil {
+			s.runCancel()
+		}
+		if s.actorSys != nil {
+			s.actorSys.Stop()
+		}
+		return nil
+	})
+	mgr.Register("close-producer", shutdown.PhaseStop, func(ctx context.Context) error {
+		if s.producer == nil {
+			return nil
+		}
 		_ = s.producer.Flush(ctx)
-		if err := s.producer.Close(); err != nil {
-			s.logger.Warn("producer close", "err", err)
+		return s.producer.Close()
+	})
+	mgr.Register("close-etcd", shutdown.PhaseStop, func(context.Context) error {
+		if s.etcdReg != nil {
+			return s.etcdReg.Close()
 		}
-	}
-	if s.etcdReg != nil {
-		_ = s.etcdReg.Close()
-	}
-	if s.database != nil {
-		_ = s.database.Close()
-	}
-	if s.redis != nil {
-		_ = s.redis.Close()
-	}
-	if s.metricsSrv != nil {
-		_ = s.metricsSrv.Stop(ctx)
+		return nil
+	})
+	mgr.Register("close-database", shutdown.PhaseStop, func(context.Context) error {
+		if s.database != nil {
+			return s.database.Close()
+		}
+		return nil
+	})
+	mgr.Register("close-redis", shutdown.PhaseStop, func(context.Context) error {
+		if s.redis != nil {
+			return s.redis.Close()
+		}
+		return nil
+	})
+	mgr.Register("stop-metrics", shutdown.PhaseStop, func(ctx context.Context) error {
+		if s.metricsSrv != nil {
+			return s.metricsSrv.Stop(ctx)
+		}
+		return nil
+	})
+
+	if err := mgr.Run(ctx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
 	}
 	s.logger.Info("game stopped")
 	return nil
