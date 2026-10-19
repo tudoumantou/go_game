@@ -157,3 +157,43 @@ func TestSnapshotEmptyNoError(t *testing.T) {
 		t.Fatalf("empty snapshot should not error: %v", err)
 	}
 }
+
+// TestSnapshotMergedAcrossInstances 多实例快照求和而不是互相覆盖（R8.4）。
+func TestSnapshotMergedAcrossInstances(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	a := New(rdb, log.New("test", log.WithLevel("error")))
+	a.SetInstanceID("center-a")
+	b := New(rdb, log.New("test", log.WithLevel("error")))
+	b.SetInstanceID("center-b")
+
+	rep := func() *internalv2.FeatureReport {
+		return &internalv2.FeatureReport{
+			GroupId: "group-01",
+			Feature: "battle",
+			Metrics: map[string]int64{"count": 5},
+			Ts:      time.Now().Unix(),
+		}
+	}
+	a.Write(rep())
+	b.Write(rep())
+
+	ctx := context.Background()
+	if err := a.Snapshot(ctx); err != nil {
+		t.Fatalf("snapshot a: %v", err)
+	}
+	if err := b.Snapshot(ctx); err != nil {
+		t.Fatalf("snapshot b: %v", err)
+	}
+
+	if n := a.InstanceCount(ctx, "group-01", "battle"); n != 2 {
+		t.Fatalf("instance fields = %d, want 2（覆盖会退化成 1）", n)
+	}
+	merged := a.MergedMetrics(ctx, "group-01", "battle")
+	// 两个实例各上报 5，合并后必须是 10。
+	if merged[Window1h] != 10 {
+		t.Fatalf("merged 1h = %d, want 10", merged[Window1h])
+	}
+}

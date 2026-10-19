@@ -123,6 +123,8 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.redisCli != nil {
 		s.rankSvc = rank.New(s.redisCli, "s1", s.logger)
 		s.statsSvc = stats.New(s.redisCli, s.logger)
+		// 快照按实例分字段写：多中心服实例求和而不是互相覆盖（R8.4）
+		s.statsSvc.SetInstanceID(s.instanceID)
 	}
 
 	// ④ gRPC（CenterService.Report + GM 查询）

@@ -13,6 +13,7 @@ package stats
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -113,6 +114,17 @@ type Service struct {
 
 	// features 已上报过的 feature 列表（供 GM 查询时枚举）
 	features map[string]struct{}
+
+	// instanceID 本实例标识：快照按实例分字段写，多实例求和而不是互相覆盖（R8.4）。
+	instanceID string
+}
+
+// SetInstanceID 设置实例标识（center 启动时注入）。为空时退化为 "default"，
+// 单实例部署下行为不变；多实例必须各用不同 ID，否则仍会覆盖。
+func (s *Service) SetInstanceID(id string) {
+	if id != "" {
+		s.instanceID = id
+	}
 }
 
 // New 创建统计服务。
@@ -246,13 +258,20 @@ func (s *Service) Snapshot(ctx context.Context) error {
 		redisKey := fmt.Sprintf("stats:%s:%s", gid, feat)
 
 		e.se.mu.Lock()
-		vals := make(map[string]interface{}, len(windowSpec))
+		vals := make(map[string]int64, len(windowSpec))
 		for name, spec := range windowSpec {
 			vals[name] = e.se.windows[name].sumWindow(now, spec.bucket*time.Duration(spec.count))
 		}
 		e.se.mu.Unlock()
 
-		pipe.HSet(ctx, redisKey, vals)
+		// field = 实例 ID，value = 该实例各窗口的 JSON。
+		// 早期实现是 HSet(窗口名 → 值)：多个中心服实例写同一 field 会互相覆盖，
+		// 后写者把先写者的量抹掉，落库值偏小且无法察觉。
+		raw, err := json.Marshal(vals)
+		if err != nil {
+			continue
+		}
+		pipe.HSet(ctx, redisKey, s.instanceOf(), string(raw))
 	}
 	if len(entries) == 0 {
 		return nil
@@ -289,4 +308,47 @@ func splitKey(k string) (groupID, feature string, ok bool) {
 		}
 	}
 	return "", "", false
+}
+
+// instanceOf 实例标识；未设置时用 default（单实例部署无需关心）。
+func (s *Service) instanceOf() string {
+	if s.instanceID == "" {
+		return "default"
+	}
+	return s.instanceID
+}
+
+// MergedMetrics 读取某 (group, feature) 在 Redis 上的多实例合并值。
+//
+// 每个实例只写自己那份，这里逐个相加——这是 R8.4 要求的「合并而不是覆盖」。
+// 某个实例的 JSON 解析失败只跳过该实例并记日志：宁可少算一份，也不要整体失败
+// 导致所有实例的数据都落不了库。
+func (s *Service) MergedMetrics(ctx context.Context, groupID, feature string) map[string]int64 {
+	key := fmt.Sprintf("stats:%s:%s", groupID, feature)
+	fields, err := s.rdb.HGetAll(ctx, key).Result()
+	if err != nil || len(fields) == 0 {
+		return nil
+	}
+
+	out := make(map[string]int64, len(windowSpec))
+	for instance, raw := range fields {
+		var vals map[string]int64
+		if err := json.Unmarshal([]byte(raw), &vals); err != nil {
+			s.logger.Warn("stats snapshot decode failed", "instance", instance, "feature", feature, "err", err)
+			continue
+		}
+		for window, v := range vals {
+			out[window] += v
+		}
+	}
+	return out
+}
+
+// InstanceCount 某 (group, feature) 的已上报实例数（诊断多实例合并是否生效）。
+func (s *Service) InstanceCount(ctx context.Context, groupID, feature string) int64 {
+	n, err := s.rdb.HLen(ctx, fmt.Sprintf("stats:%s:%s", groupID, feature)).Result()
+	if err != nil {
+		return 0
+	}
+	return n
 }

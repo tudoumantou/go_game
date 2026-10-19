@@ -287,12 +287,14 @@ func (s *Service) reward(ctx context.Context, season, rankType string, entries [
 func (s *Service) flushStats(ctx context.Context) error {
 	now := s.now()
 	for _, feature := range s.stats.Features() {
-		reports := s.stats.Query(s.cfg.GroupID, feature, 0, now.Unix())
-		if len(reports) == 0 {
+		// 读 Redis 上的多实例合并值：各实例只写自己那份，这里求和。
+		// 用本地 Query 会把其它实例的贡献漏掉（多中心服部署下落库值偏小）。
+		metrics := s.stats.MergedMetrics(ctx, s.cfg.GroupID, feature)
+		if len(metrics) == 0 {
 			continue
 		}
-		for _, rep := range reports {
-			for window, value := range rep.Metrics {
+		{
+			for window, value := range metrics {
 				start, end := windowRange(now, window)
 				// 唯一键是 (group_id, feature, window_start)，不是自增主键，
 				// 所以用 ON DUPLICATE KEY 覆盖同一窗口，而不是插入新行。
