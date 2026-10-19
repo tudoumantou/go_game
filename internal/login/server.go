@@ -22,11 +22,11 @@ import (
 
 // Server 登录服（组装层入口，职责见设计文档 3.1 目录树）
 type Server struct {
-	cfg     *config.Config
-	logger  *log.Logger
-	redis   *cache.Client
-	database *db.DB
-	httpSrv   *http.Server
+	cfg        *config.Config
+	logger     *log.Logger
+	redis      *cache.Client
+	database   *db.DB
+	httpSrv    *http.Server
 	metricsSrv *metrics.Server
 
 	producer  *pkgmq.Producer
@@ -117,7 +117,13 @@ func (s *Server) Start(ctx context.Context) error {
 	s.authHandler = handler.NewAuthHandler(authSvc, loginAudit{producer: s.producer, logger: s.logger})
 	s.serverListHandler = handler.NewServerListHandler(dispatchSvc)
 	if rechargeSvc != nil {
-		s.rechargeHandler = handler.NewRechargeHandler(rechargeSvc, s.logger)
+		// 支付渠道：未配置密钥直接启动失败，不允许「无验签回调」上线（R3.3）。
+		payWindow, _ := config.ParseDuration(s.cfg.Pay.SignWindow)
+		payChannel, err := service.NewPayChannel(s.cfg.Pay.Channel, s.cfg.Pay.SandboxSecret, payWindow)
+		if err != nil {
+			return fmt.Errorf("pay channel: %w", err)
+		}
+		s.rechargeHandler = handler.NewRechargeHandler(rechargeSvc, authSvc, repo.NewRoleRepo(s.database), payChannel, s.logger)
 	}
 
 	mux := http.NewServeMux()

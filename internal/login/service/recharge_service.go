@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"game_study/internal/login/repo"
+	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 )
@@ -44,11 +45,25 @@ func NewRechargeService(orderRepo *repo.OrderRepo, producer OrderProducer, logge
 	return &RechargeService{repo: orderRepo, producer: producer, logger: logger}
 }
 
-// CreateOrder 创建待支付订单，返回业务订单号。
-func (s *RechargeService) CreateOrder(ctx context.Context, playerID int64, productID, amountFen, channel int32) (string, error) {
+// CreateOrder 创建待支付订单，返回业务订单号与金额（分）。
+//
+// 金额只由服务端配置决定（recharge_product.xml 的 col3 = 元），不接受客户端传值：
+// 否则客户端可以把 98 元的档位报成 1 分。PlayerID 也由调用方从登录态推导。
+func (s *RechargeService) CreateOrder(ctx context.Context, playerID int64, productID, channel int32) (string, int32, error) {
+	if playerID <= 0 {
+		return "", 0, fmt.Errorf("invalid player id")
+	}
+	cfg, ok := gamedata.GetRechargeProductCfg(int64(productID))
+	if !ok {
+		return "", 0, fmt.Errorf("unknown product %d", productID)
+	}
+	if cfg.Col3 <= 0 {
+		return "", 0, fmt.Errorf("product %d has invalid price", productID)
+	}
+	amountFen := int32(cfg.Col3 * 100)
 	orderID, err := generateOrderID()
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	order := &model.RechargeOrder{
 		OrderId:   orderID,
@@ -59,9 +74,9 @@ func (s *RechargeService) CreateOrder(ctx context.Context, playerID int64, produ
 		Status:    repo.OrderStatusPending,
 	}
 	if err := s.repo.Create(ctx, order); err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return orderID, nil
+	return orderID, amountFen, nil
 }
 
 // PayCallbackResult 支付回调结果。
@@ -71,12 +86,18 @@ type PayCallbackResult struct {
 
 // PayCallback 处理渠道支付回调：
 //  1. 查订单（不存在返回错误）
-//  2. CAS 推进 待支付→已支付（重复回调/已支付幂等成功）
-//  3. 发 Kafka gs.recharge.order 触发发货
-func (s *RechargeService) PayCallback(ctx context.Context, orderID string) (*PayCallbackResult, error) {
+//  2. 金额匹配（渠道回调金额必须等于下单金额，防止改价与部分支付）
+//  3. CAS 推进 待支付→已支付（重复回调/已支付幂等成功）
+//  4. 发 Kafka gs.recharge.order 触发发货
+//
+// 签名由渠道适配器在 handler 层校验；这里只处理「已验签的事实」。
+func (s *RechargeService) PayCallback(ctx context.Context, orderID string, amountFen int32) (*PayCallbackResult, error) {
 	order, err := s.repo.FindByOrderID(ctx, orderID)
 	if err != nil {
 		return nil, err
+	}
+	if amountFen != order.AmountFen {
+		return nil, fmt.Errorf("amount mismatch for order %s: callback=%d order=%d", orderID, amountFen, order.AmountFen)
 	}
 
 	// 已支付/已发货：幂等返回成功，不重复发消息

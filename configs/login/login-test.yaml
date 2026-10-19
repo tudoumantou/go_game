@@ -9,6 +9,13 @@ server:
   tls_cert: "/etc/game_study/login.pem"
   tls_key: "/etc/game_study/login.key"
 
+# 支付渠道（R3.3）：sandbox = HMAC 模拟渠道，仅供联调；生产接入真实渠道后改 channel。
+# sandbox_secret 留空时服务能启动但所有回调验签失败（等价于关闭充值回调）。
+pay:
+  channel: sandbox
+  sandbox_secret: "dev-sandbox-secret-change-me"
+  sign_window: 5m
+
 token:
   ttl: 24h
   rsa_private_key: "/etc/game_study/login_rsa.pem"   # 签发 Token 用，与网关握手密钥分离

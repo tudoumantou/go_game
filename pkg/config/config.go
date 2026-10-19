@@ -16,6 +16,16 @@ import (
 )
 
 // Config 全服务配置（各服务只使用自己需要的段，未用段留空）
+// PayConfig 支付渠道配置（R3.3）。
+//
+// channel 目前只支持 "sandbox"（HMAC 模拟渠道，供联调与测试）；
+// 真实渠道接入时新增适配器并在此登记名称，未登记的名称启动直接报错。
+type PayConfig struct {
+	Channel       string `yaml:"channel"`        // sandbox
+	SandboxSecret string `yaml:"sandbox_secret"` // HMAC 密钥；空则拒绝启用沙箱渠道
+	SignWindow    string `yaml:"sign_window"`    // 回调时间窗，默认 5m
+}
+
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
 	Crypto   CryptoConfig   `yaml:"crypto"`
@@ -30,12 +40,13 @@ type Config struct {
 
 	// 登录服
 	Token TokenConfig `yaml:"token"`
+	Pay   PayConfig   `yaml:"pay"`
 	// 游戏服
-	Actor   ActorConfig   `yaml:"actor"`
-	Cross   CrossConfig   `yaml:"cross"`
-	Flush   FlushConfig   `yaml:"flush"`
-	IDTab   IDTabConfig   `yaml:"idtab"`
-	Center  CenterConfig  `yaml:"center"`
+	Actor  ActorConfig  `yaml:"actor"`
+	Cross  CrossConfig  `yaml:"cross"`
+	Flush  FlushConfig  `yaml:"flush"`
+	IDTab  IDTabConfig  `yaml:"idtab"`
+	Center CenterConfig `yaml:"center"`
 	// 中心服
 	Report     ReportConfig     `yaml:"report"`
 	Rank       RankConfig       `yaml:"rank"`
@@ -47,32 +58,32 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Name              string `yaml:"name"`
-	Env               string `yaml:"env"`
-	TCPAddr           string `yaml:"tcp_addr"`   // 网关：客户端长连接
-	HTTPAddr          string `yaml:"http_addr"`  // 登录服：HTTPS API
-	GRPCAddr          string `yaml:"grpc_addr"`  // 游戏/中心/跨服：gRPC
-	MaxConns          int    `yaml:"max_conns"`  // 单网关最大连接
-	MaxPacketSize     int    `yaml:"max_packet_size"`
-	ReadTimeout       string `yaml:"read_timeout"`
-	WriteQueueSize    int    `yaml:"write_queue_size"`
-	SessionReconnTTL  string `yaml:"session_reconnect_ttl"`
+	Name             string `yaml:"name"`
+	Env              string `yaml:"env"`
+	TCPAddr          string `yaml:"tcp_addr"`  // 网关：客户端长连接
+	HTTPAddr         string `yaml:"http_addr"` // 登录服：HTTPS API
+	GRPCAddr         string `yaml:"grpc_addr"` // 游戏/中心/跨服：gRPC
+	MaxConns         int    `yaml:"max_conns"` // 单网关最大连接
+	MaxPacketSize    int    `yaml:"max_packet_size"`
+	ReadTimeout      string `yaml:"read_timeout"`
+	WriteQueueSize   int    `yaml:"write_queue_size"`
+	SessionReconnTTL string `yaml:"session_reconnect_ttl"`
 }
 
 type CryptoConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	RSAPrivateKey   string `yaml:"rsa_private_key"`
-	RSAKeyID        string `yaml:"rsa_key_id"`
+	Enabled          bool   `yaml:"enabled"`
+	RSAPrivateKey    string `yaml:"rsa_private_key"`
+	RSAKeyID         string `yaml:"rsa_key_id"`
 	PrevRSAPublicKey string `yaml:"prev_rsa_public_key"` // 轮换期上一把公钥
 }
 
 type RPCConfig struct {
-	EtcdEndpoints       []string `yaml:"etcd_endpoints"`
-	ServicePrefix       string   `yaml:"service_prefix"`
-	ChannelPerTarget    int      `yaml:"channel_per_target"`
-	MaxStreamsPerChan   int      `yaml:"max_streams_per_channel"`
-	DialTimeout         string   `yaml:"dial_timeout"`
-	Keepalive           string   `yaml:"keepalive"`
+	EtcdEndpoints     []string `yaml:"etcd_endpoints"`
+	ServicePrefix     string   `yaml:"service_prefix"`
+	ChannelPerTarget  int      `yaml:"channel_per_target"`
+	MaxStreamsPerChan int      `yaml:"max_streams_per_channel"`
+	DialTimeout       string   `yaml:"dial_timeout"`
+	Keepalive         string   `yaml:"keepalive"`
 }
 
 type RedisConfig struct {
@@ -125,14 +136,14 @@ type TokenConfig struct {
 }
 
 type ActorConfig struct {
-	ShardCount   int `yaml:"shard_count"`   // 2 的幂
-	MailboxSize  int `yaml:"mailbox_size"`
+	ShardCount  int `yaml:"shard_count"` // 2 的幂
+	MailboxSize int `yaml:"mailbox_size"`
 }
 
 type FlushConfig struct {
 	ShardCount int    `yaml:"shard_count"` // 10 分片分时落库（worker 共享连接池）
 	Interval   string `yaml:"interval"`
-	Stagger    string `yaml:"stagger"`    // 相邻 worker 唤醒间隔
+	Stagger    string `yaml:"stagger"` // 相邻 worker 唤醒间隔
 	BatchRows  int    `yaml:"batch_rows"`
 	DirtyTTL   string `yaml:"dirty_ttl"`
 	// DisableInlineWritebehind 关闭游戏服进程内的写穿 worker。
@@ -185,9 +196,9 @@ type BattleConfig struct {
 // CrossConfig 小组跨服节点地址（10.2：生产由中心服 GroupUpdate 下发，此处为
 // 静态配置的降级路径 —— P8 中心服上线前，游戏服直接从配置读跨服地址）。
 type CrossConfig struct {
-	Nodes          []string `yaml:"nodes"`           // 跨服节点 gRPC 地址
-	BattleTimeout  string   `yaml:"battle_timeout"`  // 单场战斗时限（超时平局兜底）
-	ReconnectMax   string   `yaml:"reconnect_max"`   // 断流重连最大退避
+	Nodes         []string `yaml:"nodes"`          // 跨服节点 gRPC 地址
+	BattleTimeout string   `yaml:"battle_timeout"` // 单场战斗时限（超时平局兜底）
+	ReconnectMax  string   `yaml:"reconnect_max"`  // 断流重连最大退避
 }
 
 type XServiceConfig struct {
