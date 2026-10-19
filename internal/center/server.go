@@ -18,6 +18,7 @@ import (
 	"game_study/internal/center/archive"
 	"game_study/internal/center/leader"
 	"game_study/internal/center/match"
+	"game_study/internal/center/milestone"
 	"game_study/internal/center/rank"
 	"game_study/internal/center/registry"
 	"game_study/internal/center/relay"
@@ -55,9 +56,10 @@ type Server struct {
 	// database 中心服 MySQL：赛季状态、归档任务、rank_history、feature_stats
 	database *db.DB
 	// producer 归档奖励邮件（gs.mail）；未配置 Kafka 时为空，归档仍继续，只是不发奖
-	producer   *pkgmq.Producer
-	archiveSvc *archive.Service
-	schedSvc   *scheduler.Service
+	producer     *pkgmq.Producer
+	archiveSvc   *archive.Service
+	schedSvc     *scheduler.Service
+	milestoneSvc *milestone.Service
 
 	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
 	relayBridge *relay.Bridge
@@ -194,6 +196,19 @@ func (s *Server) Start(ctx context.Context) error {
 		// 活动实例调度：算当前周期 → 落库 → 下发 gs.activity.schedule（R7.1/R7.2）
 		s.schedSvc = scheduler.New(database, s.producer, s.logger)
 		go s.schedSvc.Run(ctx, s.IsLeader)
+
+		// 全服里程碑（R7.3/R7.4）：消费贡献 + leader 判定与发奖
+		if s.redisCli != nil && len(s.cfg.Kafka.Brokers) > 0 {
+			consumer := pkgmq.NewConsumer(pkgmq.Config{Brokers: s.cfg.Kafka.Brokers},
+				pkgmq.TopicActivityProgress, "center-activity-progress", s.producer)
+			s.milestoneSvc = milestone.New(database, s.redisCli, s.producer, consumer, s.logger)
+			go func() {
+				if err := s.milestoneSvc.RunConsumer(ctx); err != nil && ctx.Err() == nil {
+					s.logger.Warn("activity progress consumer stopped", "err", err)
+				}
+			}()
+			go s.milestoneSvc.Run(ctx, s.IsLeader)
+		}
 	} else {
 		s.logger.Warn("mysql not configured, season archive and stats persistence disabled")
 	}
@@ -527,6 +542,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	// ④ 归档与统计落库：Run 随 ctx 退出；这里确保 producer 缓冲已刷出
+	if s.milestoneSvc != nil {
+		_ = s.milestoneSvc.Close()
+	}
 	if s.producer != nil {
 		_ = s.producer.Flush(ctx)
 		s.producer.Close()

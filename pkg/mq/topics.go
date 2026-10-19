@@ -19,6 +19,8 @@ const (
 	TopicFlushRetry = "gs.flush.retry"
 	// TopicActivitySchedule 全局活动定时触发
 	TopicActivitySchedule = "gs.activity.schedule"
+	// TopicActivityProgress 全服活动贡献（游戏服 → 中心服，Key=instance_id）
+	TopicActivityProgress = "gs.activity.progress"
 	// TopicCenterRelay 中心服集群间中转（Key=目标 node_id）
 	TopicCenterRelay = "center.relay"
 )
@@ -34,6 +36,7 @@ func AllTopics() []string {
 		TopicLoginLog,
 		TopicFlushRetry,
 		TopicActivitySchedule,
+		TopicActivityProgress,
 		TopicCenterRelay,
 	}
 }

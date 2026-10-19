@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 全服里程碑（R7.3）：id 自增，col1 = 活动 ID，col2 = 阈值，col3 = 奖励道具，col4 = 数量。
+     全服贡献达到阈值后，给「本活动有贡献的玩家」各发一份（见 center/milestone）。 -->
+<activity_milestone>
+    <row id="1" col1="2" col2="50" col3="1001" col4="200" />
+    <row id="2" col1="2" col2="100" col3="1001" col4="500" />
+</activity_milestone>

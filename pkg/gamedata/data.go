@@ -14,45 +14,46 @@ import (
 var rawXML embed.FS
 
 // embeddedVersion 编译期内嵌配置的内容哈希（启动日志与线上核对用）
-const embeddedVersion = "555ac31c6ca0e0b3"
+const embeddedVersion = "fc4f6e3d2484bff2"
 
 // Tables 一份不可变配置快照：热更新整体替换，读取方永远看到自洽的一套表。
 type Tables struct {
-	Version         string // 快照版本（内嵌哈希，或热更新后的派生版本）
-	Activity        ActivityTable
-	ActivityPeriod  ActivityPeriodTable
-	AttrFormula     AttrFormulaTable
-	BagCapacity     BagCapacityTable
-	Battle          BattleTable
-	Career          CareerTable
-	ChatChannel     ChatChannelTable
-	Copy            CopyTable
-	CopyDrop        CopyDropTable
-	CreateName      CreateNameTable
-	Equip           EquipTable
-	EquipEnhance    EquipEnhanceTable
-	Friend          FriendTable
-	FriendLimit     FriendLimitTable
-	Guild           GuildTable
-	GuildLevel      GuildLevelTable
-	Item            ItemTable
-	Level           LevelTable
-	LoginReward     LoginRewardTable
-	MailTemplate    MailTemplateTable
-	Partner         PartnerTable
-	PartnerStar     PartnerStarTable
-	Quest           QuestTable
-	QuestChain      QuestChainTable
-	RechargeProduct RechargeProductTable
-	Scene           SceneTable
-	Shop            ShopTable
-	ShopGoods       ShopGoodsTable
-	ShopRefresh     ShopRefreshTable
-	SigninReward    SigninRewardTable
-	Skill           SkillTable
-	SkillUpgrade    SkillUpgradeTable
-	Team            TeamTable
-	TeamLimit       TeamLimitTable
+	Version           string // 快照版本（内嵌哈希，或热更新后的派生版本）
+	Activity          ActivityTable
+	ActivityMilestone ActivityMilestoneTable
+	ActivityPeriod    ActivityPeriodTable
+	AttrFormula       AttrFormulaTable
+	BagCapacity       BagCapacityTable
+	Battle            BattleTable
+	Career            CareerTable
+	ChatChannel       ChatChannelTable
+	Copy              CopyTable
+	CopyDrop          CopyDropTable
+	CreateName        CreateNameTable
+	Equip             EquipTable
+	EquipEnhance      EquipEnhanceTable
+	Friend            FriendTable
+	FriendLimit       FriendLimitTable
+	Guild             GuildTable
+	GuildLevel        GuildLevelTable
+	Item              ItemTable
+	Level             LevelTable
+	LoginReward       LoginRewardTable
+	MailTemplate      MailTemplateTable
+	Partner           PartnerTable
+	PartnerStar       PartnerStarTable
+	Quest             QuestTable
+	QuestChain        QuestChainTable
+	RechargeProduct   RechargeProductTable
+	Scene             SceneTable
+	Shop              ShopTable
+	ShopGoods         ShopGoodsTable
+	ShopRefresh       ShopRefreshTable
+	SigninReward      SigninRewardTable
+	Skill             SkillTable
+	SkillUpgrade      SkillUpgradeTable
+	Team              TeamTable
+	TeamLimit         TeamLimitTable
 }
 
 // mustEmbedded 用编译期内嵌数据构造快照；主键重复属于生成期就该拦住的错误，这里直接 panic。
@@ -60,6 +61,9 @@ func mustEmbedded() *Tables {
 	t := &Tables{Version: embeddedVersion}
 	var err error
 	if t.Activity, err = newActivityTable(activityRows); err != nil {
+		panic("gamedata: " + err.Error())
+	}
+	if t.ActivityMilestone, err = newActivityMilestoneTable(activity_milestoneRows); err != nil {
 		panic("gamedata: " + err.Error())
 	}
 	if t.ActivityPeriod, err = newActivityPeriodTable(activity_periodRows); err != nil {
@@ -167,6 +171,9 @@ func mustEmbedded() *Tables {
 // validate 热更新后的自检：任何一张表为空都视为错误输入。
 func (t *Tables) validate() error {
 	if err := t.Activity.validate("activity"); err != nil {
+		return err
+	}
+	if err := t.ActivityMilestone.validate("activity_milestone"); err != nil {
 		return err
 	}
 	if err := t.ActivityPeriod.validate("activity_period"); err != nil {
@@ -283,6 +290,18 @@ var setters = map[string]func(*Tables, []byte) error{
 			return err
 		}
 		t.Activity = tb
+		return nil
+	},
+	"activity_milestone": func(t *Tables, raw []byte) error {
+		var rows []ActivityMilestoneCfg
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return fmt.Errorf("decode json: %w", err)
+		}
+		tb, err := newActivityMilestoneTable(rows)
+		if err != nil {
+			return err
+		}
+		t.ActivityMilestone = tb
 		return nil
 	},
 	"activity_period": func(t *Tables, raw []byte) error {
@@ -686,6 +705,7 @@ var setters = map[string]func(*Tables, []byte) error{
 // tableNames 表名（稳定顺序，日志与 LoadedTables 用）
 var tableNames = []string{
 	"activity",
+	"activity_milestone",
 	"activity_period",
 	"attr_formula",
 	"bag_capacity",

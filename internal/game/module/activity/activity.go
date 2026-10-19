@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/activity"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
+	pkgmq "game_study/pkg/mq"
 	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -76,11 +78,23 @@ func validate(row *model.ActivityRecord) error {
 
 // Module 活动模块。
 type Module struct {
-	logger *log.Logger
+	logger   *log.Logger
+	producer ProgressProducer // 全服里程碑贡献上报；nil 表示不上报（单机/测试）
+}
+
+// ProgressProducer 贡献上报能力（*pkgmq.Producer 实现）。
+type ProgressProducer interface {
+	ProduceEnvelope(ctx context.Context, env *pkgmq.Envelope) error
 }
 
 // New 创建活动模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
+func New(logger *log.Logger, producer ProgressProducer) *Module {
+	m := &Module{logger: logger}
+	if producer != nil {
+		m.producer = producer
+	}
+	return m
+}
 
 // Name 实现 module.Module。
 func (m *Module) Name() string { return stateKey }
@@ -144,6 +158,7 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 		return
 	}
 	changed := false
+	var reports [][2]int32 // 全服贡献上报：(activity_id, progress)
 	for _, cfg := range gamedata.ActivityCfgList() {
 		if cfg.Col2 != evt.Type {
 			continue
@@ -160,12 +175,57 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 		rec.Progress = next
 		d.Records[id] = rec
 		changed = true
+		if cfg.Col2 == "server_progress" {
+			// 全服活动：进度变化后上报新值（绝对值，中心服按差值累加）。
+			reports = append(reports, [2]int32{id, next})
+		}
 	}
 	if changed {
 		if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 			m.warn("activity progress update failed", ctx, err)
 		}
 	}
+	for _, r := range reports {
+		m.reportProgress(ctx, r[0], r[1])
+	}
+}
+
+// reportProgress 上报全服活动贡献（R7.3）。
+//
+// 上报绝对值而不是增量：重投相同值在中心服得到差值 0，天然幂等。
+// 上报失败只记日志——玩家本地进度已保存，下一次事件会带上更大的进度继续推进。
+func (m *Module) reportProgress(ctx *module.Context, activityID, progress int32) {
+	if m.producer == nil || progress <= 0 {
+		return
+	}
+	now := time.Now().Unix()
+	instanceID := instanceIDFor(activityID, now)
+	msg := pkgmq.ActivityProgressMsg{
+		InstanceID: instanceID,
+		ActivityID: activityID,
+		PlayerID:   ctx.State.PlayerID(),
+		Progress:   progress,
+	}
+	env, err := pkgmq.NewEnvelope(fmt.Sprintf("%s:%d", instanceID, ctx.State.PlayerID()),
+		pkgmq.TopicActivityProgress, instanceID, msg)
+	if err != nil {
+		return
+	}
+	if err := m.producer.ProduceEnvelope(context.Background(), env); err != nil {
+		m.logger.Debug("report activity progress failed", "activity_id", activityID, "err", err)
+	}
+}
+
+// instanceIDFor 当前活动实例：优先用中心服下发的，没有就按周期自算。
+func instanceIDFor(activityID int32, now int64) string {
+	if w, ok := DefaultRegistry().Get(activityID); ok {
+		return w.InstanceID
+	}
+	if cfg, ok := gamedata.GetActivityPeriodCfg(int64(activityID)); ok {
+		_, _, period := activity.Window(int32(cfg.Col1), now)
+		return fmt.Sprintf("%d-%d", activityID, period)
+	}
+	return fmt.Sprintf("%d-%d", activityID, now/86400)
 }
 
 // onList 活动列表（配置 + 进度 + 是否已领）。

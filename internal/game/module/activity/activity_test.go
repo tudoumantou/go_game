@@ -71,7 +71,7 @@ func TestClaimOnce(t *testing.T) {
 	cfg := firstActivity(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := New(nil, nil)
 	if err := save(st, st.PlayerID(), &Data{Records: map[int32]Record{
 		int32(cfg.Id): {Progress: int32(cfg.Col3)},
 	}}); err != nil {
@@ -98,7 +98,7 @@ func TestClaimUnfinished(t *testing.T) {
 	cfg := firstActivity(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := New(nil, nil)
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
 	if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func TestEventClampsProgress(t *testing.T) {
 	}
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := New(nil, nil)
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3) + 100})
 	d, _ := load(st)
 	if got := d.Records[int32(cfg.Id)].Progress; got != int32(cfg.Col3) {

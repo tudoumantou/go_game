@@ -107,6 +107,17 @@ type ActivityScheduleMsg struct {
 	Action     string `json:"action"` // start / end
 }
 
+// ActivityProgressMsg 全服活动贡献（gs.activity.progress）
+//
+// 上报的是玩家**当前累计进度**而不是增量：中心服按「新值 - 旧值」累加，
+// 重投相同值得到 0，天然幂等，不需要额外的业务键。
+type ActivityProgressMsg struct {
+	InstanceID string `json:"instance_id"`
+	ActivityID int32  `json:"activity_id"`
+	PlayerID   int64  `json:"player_id"`
+	Progress   int32  `json:"progress"`
+}
+
 // MailMsg 邮件投递（gs.mail）
 type MailMsg struct {
 	MailID     int64  `json:"mail_id"`

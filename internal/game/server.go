@@ -209,6 +209,14 @@ func (s *Server) Start(ctx context.Context) error {
 		s.battleMod.SetRanker(rankReporter{cli: s.centerCli})
 	}
 
+	// Kafka 生产者：活动贡献上报（R7.3）等业务共用；消费组在 ⑤ 创建。
+	if len(s.cfg.Kafka.Brokers) > 0 {
+		s.producer = pkgmq.NewProducer(pkgmq.Config{
+			Brokers:      s.cfg.Kafka.Brokers,
+			RequiredAcks: s.cfg.Kafka.ProducerRequiredAcks,
+		})
+	}
+
 	s.modules = module.NewRegistry()
 	s.modules.Register(profile.New(s.logger))
 	s.modules.Register(attr.New(s.logger))
@@ -230,7 +238,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(team.New(team.NewRepo(s.database), s.logger))
 		s.modules.Register(copy.New(s.logger))
 		s.modules.Register(shop.New(s.logger))
-		s.modules.Register(activity.New(s.logger))
+		s.modules.Register(activity.New(s.logger, s.producer))
 		s.modules.Register(signin.New(s.logger))
 		s.modules.Register(loginreward.New(s.logger))
 		// 榜单查询代理到中心服；未配置中心服时模块回「暂不可用」而不是空榜。
@@ -291,10 +299,6 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// ⑤ Kafka 消费者（充值/邮件/跨服私聊）
 	if len(s.cfg.Kafka.Brokers) > 0 {
-		s.producer = pkgmq.NewProducer(pkgmq.Config{
-			Brokers:      s.cfg.Kafka.Brokers,
-			RequiredAcks: s.cfg.Kafka.ProducerRequiredAcks,
-		})
 		group, err := gamemq.NewGroup(s.cfg, gamemq.Deps{
 			Deduper:  deduper,
 			DB:       s.database,
