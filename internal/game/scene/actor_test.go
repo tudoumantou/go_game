@@ -13,15 +13,30 @@ import (
 )
 
 // collector 收集场景 Actor 发给玩家的消息。
+//
+// 回执与推送分两个通道：单通道会让「等回执」的用例把推送当回执读走，
+// 也会让「数推送」的用例把回执算进去——两者语义不同，不该混在一条队列里。
 type collector struct {
-	msgs chan any
+	results chan *player.SceneResult
+	pushes  chan *player.ScenePush
 }
 
 func (c *collector) Receive(ctx *actor.Context) {
-	c.msgs <- ctx.Message()
+	switch m := ctx.Message().(type) {
+	case *player.SceneResult:
+		c.results <- m
+	case *player.ScenePush:
+		c.pushes <- m
+	}
 }
 
 func newRig(t *testing.T) (*Actor, *actor.System, *actor.PID) {
+	t.Helper()
+	return newRigWith(t, Config{ID: 1, Name: "test", Width: 100, Height: 100, Cell: 10, MaxPlayers: 2})
+}
+
+// newRigWith 自定义场景配置（AOI 用例需要 3 人以上）。
+func newRigWith(t *testing.T, cfg Config) (*Actor, *actor.System, *actor.PID) {
 	t.Helper()
 	sys := actor.NewSystem(actor.Config{ShardCount: 4, MailboxSize: 256})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -31,7 +46,7 @@ func newRig(t *testing.T) (*Actor, *actor.System, *actor.PID) {
 		sys.Stop()
 	})
 
-	sc := NewActor(Config{ID: 1, Name: "test", Width: 100, Height: 100, Cell: 10, MaxPlayers: 2}, sys, log.New("test", log.WithLevel("error")))
+	sc := NewActor(cfg, sys, log.New("test", log.WithLevel("error")))
 	pid, err := sys.Spawn("scene:1", sc)
 	if err != nil {
 		t.Fatalf("spawn scene: %v", err)
@@ -49,7 +64,10 @@ func send(t *testing.T, sys *actor.System, pid *actor.PID, msg any) {
 
 func spawnCollector(t *testing.T, sys *actor.System, id string) (*actor.PID, *collector) {
 	t.Helper()
-	c := &collector{msgs: make(chan any, 32)}
+	c := &collector{
+		results: make(chan *player.SceneResult, 32),
+		pushes:  make(chan *player.ScenePush, 64),
+	}
 	pid, err := sys.Spawn(id, c)
 	if err != nil {
 		t.Fatalf("spawn collector: %v", err)
@@ -60,11 +78,7 @@ func spawnCollector(t *testing.T, sys *actor.System, id string) (*actor.PID, *co
 func waitResult(t *testing.T, c *collector) *player.SceneResult {
 	t.Helper()
 	select {
-	case m := <-c.msgs:
-		r, ok := m.(*player.SceneResult)
-		if !ok {
-			t.Fatalf("expected SceneResult, got %T", m)
-		}
+	case r := <-c.results:
 		return r
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for scene result")
@@ -75,11 +89,7 @@ func waitResult(t *testing.T, c *collector) *player.SceneResult {
 func waitPush(t *testing.T, c *collector) *player.ScenePush {
 	t.Helper()
 	select {
-	case m := <-c.msgs:
-		p, ok := m.(*player.ScenePush)
-		if !ok {
-			t.Fatalf("expected ScenePush, got %T", m)
-		}
+	case p := <-c.pushes:
 		return p
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for scene push")
@@ -192,8 +202,8 @@ func TestMoveBroadcastsToOthers(t *testing.T) {
 	send(t, sys, scPID, &MoveMsg{PlayerID: 2, X: 20, Y: 20, Seq: 1})
 	waitResult(t, c2)
 	select {
-	case m := <-c1.msgs:
-		t.Fatalf("stationary move must not broadcast, got %T", m)
+	case p := <-c1.pushes:
+		t.Fatalf("stationary move must not broadcast, got %T", p)
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -236,8 +246,8 @@ func TestLeaveIsIdempotent(t *testing.T) {
 		t.Fatalf("count = %d, want 1", sc.Count())
 	}
 	select {
-	case m := <-c1.msgs:
-		t.Fatalf("duplicate leave must not broadcast, got %T", m)
+	case p := <-c1.pushes:
+		t.Fatalf("duplicate leave must not broadcast, got %T", p)
 	case <-time.After(150 * time.Millisecond):
 	}
 }

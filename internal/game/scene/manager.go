@@ -35,9 +35,36 @@ func (m *Manager) Boot() error {
 			return fmt.Errorf("spawn scene %d: %w", sc.ID, err)
 		}
 		m.pids[sc.ID] = pid
+		// 启动心跳扫描：自调度，之后由 Actor 自己续期。
+		if err := m.sys.Send(pid, &SweepMsg{}); err != nil {
+			return fmt.Errorf("start sweep for scene %d: %w", sc.ID, err)
+		}
 	}
 	m.logger.Info("scenes booted", "count", len(m.pids))
 	return nil
+}
+
+// Heartbeat 刷新玩家在场景内的在场时间（实现 player.SceneLink）。
+//
+// 玩家 Actor 每 30 秒调一次；缺了它，挂机玩家会在 90 秒后被兜底清理误踢。
+func (m *Manager) Heartbeat(playerID int64, sceneID int32) {
+	pid := m.PID(sceneID)
+	if pid == nil {
+		return
+	}
+	_ = m.sys.Send(pid, &HeartbeatMsg{PlayerID: playerID})
+}
+
+// Resync 请求场景推送一次全量视野（实现 player.SceneLink）。
+//
+// 重连时由服务端主动发起：断线期间视野里可能有人进出，客户端并不知道；
+// 等客户端自己发现断档再拉，会先经历一段「看不到人」的窗口。
+func (m *Manager) Resync(playerID int64, sceneID int32, playerPID *actor.PID) {
+	pid := m.PID(sceneID)
+	if pid == nil {
+		return
+	}
+	_ = m.sys.Send(pid, &SyncMsg{PlayerID: playerID, PID: playerPID})
 }
 
 // PID 场景 Actor 的 PID；场景不存在返回 nil。

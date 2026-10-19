@@ -309,6 +309,8 @@ func (s *Server) Start(ctx context.Context) error {
 		onDirty = nil
 	} // Redis 内的持久队列由 writebehind worker 消费。
 	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, onDirty, s.sendToClient)
+	// 场景心跳与重连同步：反向依赖由组装层注入，player 包不认识 scene。
+	s.players.SetSceneLink(s.sceneMgr)
 	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
 	if s.database != nil {
 		preloadTimeout := player.DefaultPreloadTimeout

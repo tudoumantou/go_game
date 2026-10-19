@@ -256,9 +256,17 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			if retry.Already != expectedAlready {
 				t.Fatalf("retry=%v", retry)
 			}
+			// 签到奖励按当天配置发（周一到周日不同），
+			// 不能写死 100——否则测试只在特定的星期几通过。
+			var want int64 = 10
+			for _, r := range retry.Rewards {
+				if r.ItemId == 1001 {
+					want += int64(r.Count)
+				}
+			}
 			record, err := store.Load(ctx, 7)
-			if err != nil || record.State.Items[1001] != 110 {
-				t.Fatal(record, err)
+			if err != nil || record.State.Items[1001] != want {
+				t.Fatalf("items[1001] = %d, want %d (%v)", record.State.Items[1001], want, err)
 			}
 			// 发奖消息超时/提交结果未知后重投，由缓存中的业务键保护。
 			hook.armed.Store(true)
@@ -281,7 +289,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 				t.Fatal(err)
 			}
 			record, err = store.Load(ctx, 7)
-			if err != nil || record.State.Items[1001] != 160 || !record.State.AppliedGrants["recharge:order-1"] {
+			if err != nil || record.State.Items[1001] != want+50 || !record.State.AppliedGrants["recharge:order-1"] {
 				t.Fatalf("grant repeated: %+v %v", record, err)
 			}
 			sys.Stop()

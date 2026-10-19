@@ -81,6 +81,22 @@ type ScenePush struct {
 	Body    []byte
 }
 
+// SceneLink 玩家与场景 Actor 的连接（由组装层注入，避免 player 依赖 scene）。
+//
+// 只放两个「玩家 Actor 主动发起」的动作；场景 → 玩家的方向走 SceneResult/ScenePush。
+type SceneLink interface {
+	// Heartbeat 刷新场景内的在场时间，防止挂机被兜底清理误踢。
+	Heartbeat(playerID int64, sceneID int32)
+	// Resync 请求场景推送一次全量视野（重连后由服务端主动发起）。
+	Resync(playerID int64, sceneID int32, pid *actor.PID)
+}
+
+// sceneHeartbeatInterval 心跳间隔：场景侧 90 秒无消息才判超时，30 秒一次足够。
+const sceneHeartbeatInterval = 30 * time.Second
+
+// sceneHeartbeatTick 心跳定时消息（自调度）。
+type sceneHeartbeatTick struct{}
+
 // GrantItemsMsg 发放奖励（充值发货/邮件领取等）。
 type GrantItemsMsg struct {
 	BizID  string // 与奖励一起持久化的业务唯一键，用于重复投递。
@@ -104,15 +120,18 @@ type Actor struct {
 	onDirty   func(playerID int64)
 	sendFunc  SendFunc
 
-	sessionID     uint64
-	online        bool
-	loaded        bool
-	needsReload   bool // 发奖提交结果未知时，禁止旧内存再次落库。
-	cacheVersion  int64
-	cacheReload   bool
-	bufferReplies bool
-	queuedReplies []cachedReply
-	cachePending  *writebehind.Record
+	sceneLink      SceneLink
+	heartbeatOn    bool
+	heartbeatEvery time.Duration // 0 用默认；测试注入短间隔
+	sessionID      uint64
+	online         bool
+	loaded         bool
+	needsReload    bool // 发奖提交结果未知时，禁止旧内存再次落库。
+	cacheVersion   int64
+	cacheReload    bool
+	bufferReplies  bool
+	queuedReplies  []cachedReply
+	cachePending   *writebehind.Record
 }
 
 // NewActor 创建玩家 Actor。
@@ -134,6 +153,12 @@ func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, rep
 	}
 }
 
+// WithSceneLink 注入场景连接（心跳与重连同步）。
+func (a *Actor) WithSceneLink(l SceneLink) *Actor {
+	a.sceneLink = l
+	return a
+}
+
 // WithPreloader 注入预加载器（12.6：一次往返拿完全部登录数据）。
 func (a *Actor) WithPreloader(p *Preloader) *Actor {
 	a.preloader = p
@@ -148,7 +173,7 @@ func (a *Actor) Receive(ctx *actor.Context) {
 	if a.repo.CacheEnabled() {
 		// 纯下行消息不参与「克隆快照 → 提交」流程：它们只读状态、不改状态。
 		switch ctx.Message().(type) {
-		case *PushMsg, *ScenePush:
+		case *PushMsg, *ScenePush, *sceneHeartbeatTick:
 		default:
 			a.receiveCached(ctx)
 			return
@@ -209,6 +234,8 @@ func (a *Actor) receive(ctx *actor.Context) {
 		a.onSceneResult(msg)
 	case *ScenePush:
 		a.onScenePush(msg)
+	case *sceneHeartbeatTick:
+		a.onSceneHeartbeat(ctx)
 	default:
 		a.logger.Debug("unknown message", "type", fmt.Sprintf("%T", msg))
 	}
@@ -272,8 +299,48 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 		_ = ctx.Respond(&BindResult{Code: 1, Err: err.Error()})
 		return
 	}
+	a.startSceneLink(ctx)
 	a.logger.Info("player online", "session_id", msg.SessionID)
 	_ = ctx.Respond(&BindResult{Code: 0})
+}
+
+// startSceneLink 重连后主动同步一次场景，并启动心跳。
+//
+// 断线期间视野里可能有人进出、也可能因为心跳超时被场景清掉——
+// 客户端不知道，所以由服务端推一次全量，而不是等客户端发现断档再拉。
+// 登录时若还没进场景（SceneID=0），这里什么也不做，等客户端发进入请求。
+func (a *Actor) startSceneLink(ctx *actor.Context) {
+	if a.sceneLink == nil {
+		return
+	}
+	if sceneID := a.state.Profile().SceneID; sceneID > 0 {
+		a.sceneLink.Resync(a.playerID, sceneID, ctx.PID())
+	}
+	if !a.heartbeatOn {
+		a.heartbeatOn = true
+		ctx.ScheduleOnce(a.heartbeatInterval(), ctx.PID(), &sceneHeartbeatTick{})
+	}
+}
+
+// onSceneHeartbeat 定时向场景刷新在场时间。
+//
+// 不做心跳的后果：挂机不动的玩家会被场景的「90 秒无消息」兜底当成幽灵清掉，
+// 但人其实还在线——下一次移动就收到 4005（不在场景中），表现为「原地卡住」。
+func (a *Actor) onSceneHeartbeat(ctx *actor.Context) {
+	if a.online && a.sceneLink != nil {
+		if sceneID := a.state.Profile().SceneID; sceneID > 0 {
+			a.sceneLink.Heartbeat(a.playerID, sceneID)
+		}
+	}
+	ctx.ScheduleOnce(a.heartbeatInterval(), ctx.PID(), &sceneHeartbeatTick{})
+}
+
+// heartbeatInterval 心跳间隔（测试可注入短间隔）。
+func (a *Actor) heartbeatInterval() time.Duration {
+	if a.heartbeatEvery > 0 {
+		return a.heartbeatEvery
+	}
+	return sceneHeartbeatInterval
 }
 
 // setState 替换玩家状态并重新挂上 dirty 回调。

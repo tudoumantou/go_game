@@ -1,4 +1,4 @@
-// Package scene 场景 Actor：地图边界、实体进出、位置与广播（R9）。
+// Package scene 场景 Actor：地图边界、实体进出、位置与 AOI 广播（R9）。
 //
 // 权威边界：**位置只由本 Actor 修改**。玩家 Actor 只发消息、收推送，
 // 不持有可写坐标——这条约束避免了两个 goroutine 同时改同一份场景数据。
@@ -8,13 +8,12 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/game/player"
 	"game_study/pkg/actor"
 	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	"game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
-
-	"game_study/internal/game/player"
 )
 
 // 客户端错误码（SceneEnterResp / SceneMoveResp 的 code 字段）。
@@ -26,6 +25,7 @@ const (
 	codeTooFast  int32 = 4004 // 移动超出速度上限
 	codeNotIn    int32 = 4005 // 不在场景中
 	codeNotReady int32 = 4006 // 场景未就绪
+	codeThrottle int32 = 4007 // 移动过于频繁（限频）
 )
 
 // 移动速度上限（单位/秒）与抖动容忍。
@@ -37,14 +37,35 @@ const (
 	minMoveDistance = 10 // 网络抖动与首次移动的容忍量
 )
 
+// 移动限频：窗口内最多 moveQuota 次。
+//
+// 速度校验只能防瞬移，防不住「原地高频小步」——那会把分片打满，
+// 也会把同屏玩家的信箱塞满。限频按实体计，不按连接计。
+const (
+	moveWindow = time.Second
+	moveQuota  = 12
+)
+
+// 心跳兜底：默认 90 秒无消息即视为幽灵实体，每 30 秒扫一次。
+//
+// 为什么必须有：玩家 Actor 终止时的 LeaveScene 可能失败（信箱满 / 对端已停），
+// 只靠「下线通知」会留下永久幽灵实体——它占名额、向别人广播、还挡住自己重进。
+const (
+	defaultIdleTimeout = 90 * time.Second
+	sweepInterval      = 30 * time.Second
+)
+
 // Config 场景静态配置（来自 scene.xml）。
 type Config struct {
 	ID         int32
 	Name       string
 	Width      int32 // 地图宽（坐标上界，开区间）
 	Height     int32
-	Cell       int32 // AOI 单元格边长（R9.2 使用）
+	Cell       int32 // AOI 单元格边长
 	MaxPlayers int32
+	// IdleTimeout 实体空闲多久后被兜底清理（0 用默认 90s）。
+	// 可注入是为了让测试不必等 90 秒——生产值不接受配置，避免误配成 0 秒清场。
+	IdleTimeout time.Duration
 }
 
 // entity 场景内实体。只存广播必需的最小信息。
@@ -54,7 +75,11 @@ type entity struct {
 	name     string
 	level    int32
 	x, y     int32
-	lastSeen time.Time // R9.3 心跳兜底使用
+	cell     int64     // 当前所在格的键（九宫格索引）
+	lastSeen time.Time // 心跳兜底与速度校验的时间基准
+
+	moveWindowStart time.Time
+	moveCount       int
 }
 
 // Actor 场景 Actor。所有字段只在分片 goroutine 内读写，无锁。
@@ -63,15 +88,20 @@ type Actor struct {
 	sys    *actor.System
 	logger *log.Logger
 	ents   map[int64]*entity
+	grid   map[int64]map[int64]struct{} // 格键 → 实体 ID 集合
 }
 
 // NewActor 创建场景 Actor。
 func NewActor(cfg Config, sys *actor.System, logger *log.Logger) *Actor {
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = defaultIdleTimeout
+	}
 	return &Actor{
 		cfg:    cfg,
 		sys:    sys,
 		logger: logger.With("scene_id", cfg.ID),
 		ents:   make(map[int64]*entity, cfg.MaxPlayers),
+		grid:   make(map[int64]map[int64]struct{}, 64),
 	}
 }
 
@@ -104,16 +134,19 @@ type SyncMsg struct {
 	PID      *actor.PID
 }
 
+// HeartbeatMsg 玩家侧心跳（兜底清理的依据）。
+type HeartbeatMsg struct {
+	PlayerID int64
+}
+
+// SweepMsg 触发一次心跳超时扫描（自调度，每 sweepInterval 一次）。
+type SweepMsg struct{}
+
 // CountMsg 查询在场人数（测试与运维观测用）。
 //
 // 人数是场景内部状态，外部只能通过消息读取——直接读 map 会与分片 goroutine 竞争。
 type CountMsg struct {
 	Reply chan int
-}
-
-// HeartbeatMsg 玩家侧心跳（R9.3 兜底清理的依据）。
-type HeartbeatMsg struct {
-	PlayerID int64
 }
 
 // Receive 实现 actor.Actor。
@@ -129,10 +162,13 @@ func (a *Actor) Receive(ctx *actor.Context) {
 		a.onSync(ctx, msg)
 	case *HeartbeatMsg:
 		a.onHeartbeat(msg)
+	case *SweepMsg:
+		a.sweep(time.Now())
+		ctx.ScheduleOnce(sweepInterval, ctx.PID(), &SweepMsg{})
 	case *CountMsg:
 		msg.Reply <- len(a.ents)
 	default:
-		a.logger.Debug("scene unknown message", "type", msgType(ctx.Message()))
+		a.logger.Debug("scene unknown message", "type", fmt.Sprintf("%T", ctx.Message()))
 	}
 }
 
@@ -153,26 +189,31 @@ func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 		return
 	}
 
+	now := time.Now()
 	e := &entity{
-		id:       msg.PlayerID,
-		pid:      msg.PID,
-		name:     msg.Name,
-		level:    msg.Level,
-		x:        Clamp(msg.X, a.cfg.Width),
-		y:        Clamp(msg.Y, a.cfg.Height),
-		lastSeen: time.Now(),
+		id:              msg.PlayerID,
+		pid:             msg.PID,
+		name:            msg.Name,
+		level:           msg.Level,
+		x:               Clamp(msg.X, a.cfg.Width),
+		y:               Clamp(msg.Y, a.cfg.Height),
+		lastSeen:        now,
+		moveWindowStart: now,
 	}
 	a.ents[e.id] = e
+	a.gridAdd(e)
 
-	// 先给本人全量视野快照，再向其他人广播出现——
+	// 先给本人视野快照，再向视野内其他人广播出现——
 	// 顺序反了会让新玩家先收到别人的出现通知、再收到快照，客户端出现重复实体。
 	a.replyEnter(ctx, msg.PID, codeOK, e, false)
 
-	if body, err := proto.Marshal(&gamev1.SceneEntityNotify{
-		Type:   1, // 出现
-		Entity: snapshot(e),
-	}); err == nil {
-		a.broadcastExcept(e.id, codec.MsgSceneEntityNotify, body)
+	for id := range a.viewSet(e.x, e.y) {
+		if id == e.id {
+			continue
+		}
+		if other := a.ents[id]; other != nil {
+			a.pushBody(other, appearNotice(e))
+		}
 	}
 }
 
@@ -183,14 +224,17 @@ func (a *Actor) replyEnter(ctx *actor.Context, pid *actor.PID, code int32, self 
 		Width:   a.cfg.Width,
 		Height:  a.cfg.Height,
 	}
-	resp.Entities = make([]*gamev1.SceneEntity, 0, len(a.ents))
 	if code == codeOK && self != nil {
 		resp.X, resp.Y = self.x, self.y
-		for id, e := range a.ents {
+		view := a.viewSet(self.x, self.y)
+		resp.Entities = make([]*gamev1.SceneEntity, 0, len(view))
+		for id := range view {
 			if id == self.id {
 				continue
 			}
-			resp.Entities = append(resp.Entities, snapshot(e))
+			if other := a.ents[id]; other != nil {
+				resp.Entities = append(resp.Entities, snapshot(other))
+			}
 		}
 	}
 	body, err := proto.Marshal(resp)
@@ -213,11 +257,28 @@ func (a *Actor) onMove(ctx *actor.Context, msg *MoveMsg) {
 		return
 	}
 
+	// 限频先于一切：超频时连速度校验都不做，直接丢弃，
+	// 否则恶意客户端能用高频请求占满分片。
+	now := time.Now()
+	if now.Sub(e.moveWindowStart) >= moveWindow {
+		e.moveWindowStart = now
+		e.moveCount = 0
+	}
+	e.moveCount++
+	if e.moveCount > moveQuota {
+		a.replyMove(ctx, msg.PlayerID, msg.Seq, codeThrottle, e.x, e.y)
+		return
+	}
+
 	x := Clamp(msg.X, a.cfg.Width)
 	y := Clamp(msg.Y, a.cfg.Height)
+	if x == e.x && y == e.y {
+		e.lastSeen = now
+		a.replyMove(ctx, msg.PlayerID, msg.Seq, codeOK, x, y)
+		return // 原地不动不广播，避免无意义的流量
+	}
 
 	// 速度校验：按距上次移动的时间给预算，超出则原地不动。
-	now := time.Now()
 	dt := now.Sub(e.lastSeen).Seconds()
 	allowed := maxSpeedPerSec*dt + minMoveDistance
 	if abs32(x-e.x)+abs32(y-e.y) > int32(allowed) {
@@ -225,21 +286,15 @@ func (a *Actor) onMove(ctx *actor.Context, msg *MoveMsg) {
 		return
 	}
 
-	moved := x != e.x || y != e.y
+	oldView := a.viewSet(e.x, e.y)
 	e.x, e.y = x, y
 	e.lastSeen = now
+	a.gridMove(e)
 
 	a.replyMove(ctx, msg.PlayerID, msg.Seq, codeOK, x, y)
-	if !moved {
-		return // 原地不动不广播，避免无意义的流量
-	}
 
-	if body, err := proto.Marshal(&gamev1.SceneEntityNotify{
-		Type:   2, // 移动
-		Entity: snapshot(e),
-	}); err == nil {
-		a.broadcastExcept(e.id, codec.MsgSceneEntityNotify, body)
-	}
+	newView := a.viewSet(x, y)
+	a.applyViewDelta(e, oldView, newView)
 }
 
 func (a *Actor) replyMove(ctx *actor.Context, playerID int64, seq, code, x, y int32) {
@@ -263,13 +318,43 @@ func (a *Actor) onLeave(ctx *actor.Context, msg *LeaveMsg) {
 	if !ok {
 		return // 幂等：重复离开不报错
 	}
-	delete(a.ents, msg.PlayerID)
 
-	if body, err := proto.Marshal(&gamev1.SceneEntityNotify{
-		Type:   3, // 离开
-		Entity: &gamev1.SceneEntity{PlayerId: e.id},
-	}); err == nil {
-		a.broadcastExcept(e.id, codec.MsgSceneEntityNotify, body)
+	a.removeEntity(e)
+}
+
+// removeEntity 从实体表与网格移除，并向视野内其他人广播 Leave。
+//
+// 视野必须在删除前算：删掉之后自己就不在格子里了，算出来会漏掉邻居。
+func (a *Actor) removeEntity(e *entity) {
+	view := a.viewSet(e.x, e.y)
+	a.gridRemove(e)
+	delete(a.ents, e.id)
+
+	for id := range view {
+		if id == e.id {
+			continue
+		}
+		if other := a.ents[id]; other != nil {
+			a.pushBody(other, leaveNotice(e.id))
+		}
+	}
+}
+
+// sweep 清理空闲超时的实体。
+func (a *Actor) sweep(now time.Time) {
+	if len(a.ents) == 0 {
+		return
+	}
+	var stale []*entity
+	for _, e := range a.ents {
+		if now.Sub(e.lastSeen) > a.cfg.IdleTimeout {
+			stale = append(stale, e)
+		}
+	}
+	for _, e := range stale {
+		a.removeEntity(e)
+		a.logger.Warn("scene entity timeout, removed",
+			"player_id", e.id, "idle", now.Sub(e.lastSeen).Round(time.Second).String())
 	}
 }
 
@@ -279,28 +364,30 @@ func (a *Actor) onSync(ctx *actor.Context, msg *SyncMsg) {
 		// 不在场（例如场景 Actor 曾重启）：让客户端重新进入，而不是回空列表。
 		a.logger.Debug("sync for absent entity", "player_id", msg.PlayerID)
 		body, _ := proto.Marshal(&gamev1.SceneSyncResp{Code: codeNotIn, SceneId: a.cfg.ID})
-		pid := msg.PID
-		if pid == nil {
+		if msg.PID == nil {
 			return
 		}
-		_ = ctx.Send(pid, &player.SceneResult{SceneID: a.cfg.ID, MsgID: codec.MsgSceneSyncResp, Body: body})
+		_ = ctx.Send(msg.PID, &player.SceneResult{SceneID: a.cfg.ID, MsgID: codec.MsgSceneSyncResp, Body: body})
 		return
 	}
 	e.pid = msg.PID // 重连后 PID 可能变化
 	e.lastSeen = time.Now()
 
+	view := a.viewSet(e.x, e.y)
 	resp := &gamev1.SceneSyncResp{
 		Code:     codeOK,
 		SceneId:  a.cfg.ID,
 		X:        e.x,
 		Y:        e.y,
-		Entities: make([]*gamev1.SceneEntity, 0, len(a.ents)),
+		Entities: make([]*gamev1.SceneEntity, 0, len(view)),
 	}
-	for id, other := range a.ents {
+	for id := range view {
 		if id == e.id {
 			continue
 		}
-		resp.Entities = append(resp.Entities, snapshot(other))
+		if other := a.ents[id]; other != nil {
+			resp.Entities = append(resp.Entities, snapshot(other))
+		}
 	}
 	body, err := proto.Marshal(resp)
 	if err != nil {
@@ -315,25 +402,20 @@ func (a *Actor) onHeartbeat(msg *HeartbeatMsg) {
 	}
 }
 
-// broadcastExcept 向场景内除指定玩家外的所有实体推送。
+// pushBody 向单个实体推送一条场景通知。
 //
 // 推送失败（信箱满 / Actor 已终止）**不重试**：重试只会加剧拥堵，
-// 客户端发现通知断档后走 Sync 全量补齐。R9.2 引入 AOI 后这里改为按视野推送。
-func (a *Actor) broadcastExcept(self int64, msgID uint32, body []byte) {
-	for id, e := range a.ents {
-		if id == self {
-			continue
-		}
-		if e.pid == nil {
-			continue
-		}
-		if err := a.sys.Send(e.pid, &player.ScenePush{
-			SceneID: a.cfg.ID,
-			MsgID:   msgID,
-			Body:    body,
-		}); err != nil {
-			a.logger.Debug("scene push dropped", "player_id", id, "err", err)
-		}
+// 客户端发现通知断档后走 Sync 全量补齐。
+func (a *Actor) pushBody(e *entity, body []byte) {
+	if e == nil || e.pid == nil || len(body) == 0 {
+		return
+	}
+	if err := a.sys.Send(e.pid, &player.ScenePush{
+		SceneID: a.cfg.ID,
+		MsgID:   codec.MsgSceneEntityNotify,
+		Body:    body,
+	}); err != nil {
+		a.logger.Debug("scene push dropped", "player_id", e.id, "err", err)
 	}
 }
 
@@ -350,11 +432,36 @@ func snapshot(e *entity) *gamev1.SceneEntity {
 	}
 }
 
+func appearNotice(e *entity) []byte {
+	body, err := proto.Marshal(&gamev1.SceneEntityNotify{Type: 1, Entity: snapshot(e)})
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
+func moveNotice(e *entity) []byte {
+	body, err := proto.Marshal(&gamev1.SceneEntityNotify{Type: 2, Entity: snapshot(e)})
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
+func leaveNotice(playerID int64) []byte {
+	body, err := proto.Marshal(&gamev1.SceneEntityNotify{
+		Type:   3,
+		Entity: &gamev1.SceneEntity{PlayerId: playerID},
+	})
+	if err != nil {
+		return nil
+	}
+	return body
+}
+
 func abs32(v int32) int32 {
 	if v < 0 {
 		return -v
 	}
 	return v
 }
-
-func msgType(v any) string { return fmt.Sprintf("%T", v) }

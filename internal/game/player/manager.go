@@ -19,6 +19,7 @@ type Manager struct {
 	preloader *Preloader
 	onDirty   func(playerID int64)
 	sendFunc  SendFunc
+	sceneLink SceneLink // 场景心跳与重连同步（启动时注入一次，之后只读）
 
 	mu    sync.RWMutex
 	index map[int64]*actor.PID // player_id -> PID
@@ -40,6 +41,9 @@ func NewManager(sys *actor.System, registry *module.Registry, logger *log.Logger
 // SetPreloader 注入预加载器（12.6）。
 func (m *Manager) SetPreloader(p *Preloader) { m.preloader = p }
 
+// SetSceneLink 注入场景连接（启动时调用一次，须在首个玩家 Spawn 之前）。
+func (m *Manager) SetSceneLink(l SceneLink) { m.sceneLink = l }
+
 // GetOrSpawn 获取或创建玩家 Actor。
 func (m *Manager) GetOrSpawn(playerID int64) (*actor.PID, error) {
 	m.mu.RLock()
@@ -59,6 +63,9 @@ func (m *Manager) GetOrSpawn(playerID int64) (*actor.PID, error) {
 	actor := NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty, m.sendFunc)
 	if m.preloader != nil {
 		actor.WithPreloader(m.preloader)
+	}
+	if m.sceneLink != nil {
+		actor.WithSceneLink(m.sceneLink)
 	}
 	pid, err := m.sys.Spawn(id, actor)
 	if err != nil {
