@@ -1,3 +1,4 @@
-// Package etcd Registry 的 etcd 实现（租约 + KeepAlive + Watch，设计文档 5.1）
-// TODO(P2): 实现 registry.Registry 接口。
+// Package etcd 基于 etcd 的服务注册与发现。
+//
+// 租约 + KeepAlive 维持节点存活，Watch 感知上下线；网关与游戏服都通过它注册。
 package etcd

@@ -1,3 +1,5 @@
-// Package shutdown 优雅关闭编排（Manager 按注册顺序执行带超时步骤，设计文档 18.1）
-// TODO(P4): 按设计文档落地实现；在此之前本目录仅有占位。
+// Package shutdown 优雅关闭编排。
+//
+// Manager 按阶段顺序执行带超时的关闭步骤，收集并聚合错误——
+// 关闭失败必须以非零退出码暴露，不能只打一行 Warn。
 package shutdown

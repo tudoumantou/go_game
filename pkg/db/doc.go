@@ -1,3 +1,4 @@
-// Package db MySQL 封装（database/sql 池参数按第 14 章容量规划；tx 事务辅助；builder 查询构造）
-// TODO(P4): 按设计文档落地实现；在此之前本目录仅有占位。
+// Package db MySQL 连接池与事务辅助。
+//
+// 池参数按设计文档第 14 章配置；Tx 提供「同一事务内多次执行，出错整体回滚」的封装。
 package db

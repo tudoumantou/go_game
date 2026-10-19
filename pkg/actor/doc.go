@@ -1,3 +1,6 @@
-// Package actor Actor 运行时（框架核心：信箱有界+背压、分片单 goroutine 事件循环、定时器时间轮，设计文档第 8 章）
-// TODO(P3): 按设计文档落地实现；在此之前本目录仅有占位。
+// Package actor Actor 运行时。
+//
+// 能力：有界信箱与严格背压（满则拒绝新消息，不静默挤掉旧消息）、按 playerID 分片的
+// 单 goroutine 事件循环、Drain 等待在途消息处理完、时间轮定时器。
+// 实现在 mailbox.go / system.go / actor.go。
 package actor

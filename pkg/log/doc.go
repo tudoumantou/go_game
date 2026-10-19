@@ -1,3 +1,4 @@
-// Package log 结构化日志（zap 封装，全链路 TraceID；P1 前可暂用 log/slog 兜底）
-// TODO(P1): 按设计文档落地实现；在此之前本目录仅有占位。
+// Package log 结构化日志。
+//
+// 基于 slog 的轻量封装：级别、JSON/文本格式、service 标签；不引入第三方日志库。
 package log
