@@ -31,12 +31,12 @@ func BenchmarkConfigLoad(b *testing.B) {
 // TestBaselineTargets 验收口径自检（23.4 目标值常量登记，防漂移）
 func TestBaselineTargets(t *testing.T) {
 	targets := map[string]string{
-		"单网关连接":       ">=10W 长连接, RSS < 2GB",
-		"单游戏服在线":      "5K 机器人, P99 消息延迟 < 50ms",
-		"登录吞吐":         ">=2000 TPS",
-		"落库吞吐":         "10 服 x 30 并发 = 300, 60s 周期",
-		"Kafka 扇出":      "世界聊天 1000 条/秒, 端到端 < 1s",
-		"Actor 背压":      "信箱满时拒绝而非 OOM",
+		"单网关连接":    ">=10W 长连接, RSS < 2GB",
+		"单游戏服在线":   "5K 机器人, P99 消息延迟 < 50ms",
+		"登录吞吐":     ">=2000 TPS",
+		"落库吞吐":     "10 服 x 30 并发 = 300, 60s 周期",
+		"Kafka 扇出": "世界聊天 1000 条/秒, 端到端 < 1s",
+		"Actor 背压": "信箱满时拒绝而非 OOM",
 	}
 	for k, v := range targets {
 		t.Logf("基线 %s: %s", k, v)

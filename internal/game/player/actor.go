@@ -60,6 +60,27 @@ type PushMsg struct {
 	Body  []byte
 }
 
+// SceneResult 场景 Actor 对玩家请求（进入/移动/离开/同步）的处理结果。
+//
+// 走正常快照路径：SetScene 为 true 时更新 Profile.SceneID 并标脏，
+// 回包在缓存提交成功后下发——否则会出现「客户端以为进了场景、服务端没记住」。
+type SceneResult struct {
+	SceneID  int32
+	MsgID    uint32
+	Body     []byte
+	SetScene bool // true：把 Profile.SceneID 更新为该场景
+}
+
+// ScenePush 场景广播（实体出现/移动/离开）。
+//
+// **纯下行**：不触碰玩家状态、不触发快照 CAS。AOI 推送频率远高于业务消息，
+// 若走 CAS 路径，每次广播都会写一次 Redis。
+type ScenePush struct {
+	SceneID int32
+	MsgID   uint32
+	Body    []byte
+}
+
 // GrantItemsMsg 发放奖励（充值发货/邮件领取等）。
 type GrantItemsMsg struct {
 	BizID  string // 与奖励一起持久化的业务唯一键，用于重复投递。
@@ -125,7 +146,10 @@ func (a *Actor) State() *State { return a.state }
 // Receive 实现 actor.Actor。
 func (a *Actor) Receive(ctx *actor.Context) {
 	if a.repo.CacheEnabled() {
-		if _, purePush := ctx.Message().(*PushMsg); !purePush {
+		// 纯下行消息不参与「克隆快照 → 提交」流程：它们只读状态、不改状态。
+		switch ctx.Message().(type) {
+		case *PushMsg, *ScenePush:
+		default:
 			a.receiveCached(ctx)
 			return
 		}
@@ -181,8 +205,36 @@ func (a *Actor) receive(ctx *actor.Context) {
 		a.onGrantItems(ctx, msg)
 	case *PushMsg:
 		_ = a.send(msg.MsgID, msg.Body)
+	case *SceneResult:
+		a.onSceneResult(msg)
+	case *ScenePush:
+		a.onScenePush(msg)
 	default:
 		a.logger.Debug("unknown message", "type", fmt.Sprintf("%T", msg))
+	}
+}
+
+// onSceneResult 处理场景 Actor 的回执：更新场景归属后回包。
+func (a *Actor) onSceneResult(msg *SceneResult) {
+	if msg.SetScene && a.state.Profile().SceneID != msg.SceneID {
+		a.state.SetSceneID(msg.SceneID)
+		a.state.MarkDirty("profile")
+	}
+	if len(msg.Body) > 0 {
+		_ = a.send(msg.MsgID, msg.Body)
+	}
+}
+
+// onScenePush 转发场景广播。
+//
+// 按当前场景过滤是必要的：切场景时旧场景的离场消息与新场景的进场消息
+// 属于不同 Actor，没有全局顺序，旧场景可能仍在推送——不过滤就会出现实体串场。
+func (a *Actor) onScenePush(msg *ScenePush) {
+	if msg.SceneID != a.state.Profile().SceneID {
+		return
+	}
+	if len(msg.Body) > 0 {
+		_ = a.send(msg.MsgID, msg.Body)
 	}
 }
 

@@ -193,6 +193,14 @@ func (s *State) SetProfile(p module.Profile) {
 	s.profile = p
 }
 
+// SetSceneID 更新所在场景并标脏（0 = 不在场景中）。
+func (s *State) SetSceneID(sceneID int32) {
+	s.mu.Lock()
+	s.profile.SceneID = sceneID
+	s.mu.Unlock()
+	s.notifyDirty()
+}
+
 // GetAttr 读取属性（基础值 + 装备加成）。
 func (s *State) GetAttr(key string) int64 {
 	s.mu.RLock()

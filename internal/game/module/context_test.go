@@ -35,6 +35,7 @@ func (s *bizState) RemoveItem(id int32, count int64) bool {
 	return true
 }
 func (s *bizState) MarkDirty(string)               {}
+func (s *bizState) SetSceneID(int32)               {}
 func (s *bizState) Ext(string) json.RawMessage     { return nil }
 func (s *bizState) SetExt(string, json.RawMessage) {}
 func (s *bizState) CanHold([]ItemGrant) bool       { return true }

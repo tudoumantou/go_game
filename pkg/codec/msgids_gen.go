@@ -28,6 +28,15 @@ const (
 	MsgSkillLearnResp         uint32 = 3204
 	MsgSkillUpgradeReq        uint32 = 3205
 	MsgSkillUpgradeResp       uint32 = 3206
+	MsgSceneEnterReq          uint32 = 4001
+	MsgSceneEnterResp         uint32 = 4002
+	MsgSceneMoveReq           uint32 = 4003
+	MsgSceneMoveResp          uint32 = 4004
+	MsgSceneLeaveReq          uint32 = 4005
+	MsgSceneLeaveResp         uint32 = 4006
+	MsgSceneEntityNotify      uint32 = 4010
+	MsgSceneSyncReq           uint32 = 4020
+	MsgSceneSyncResp          uint32 = 4021
 	MsgBattleStartNotify      uint32 = 5001
 	MsgMatchReq               uint32 = 5002
 	MsgMatchResp              uint32 = 5003
@@ -125,6 +134,15 @@ var msgNames = map[uint32]string{
 	3204: "SkillLearnResp",
 	3205: "SkillUpgradeReq",
 	3206: "SkillUpgradeResp",
+	4001: "SceneEnterReq",
+	4002: "SceneEnterResp",
+	4003: "SceneMoveReq",
+	4004: "SceneMoveResp",
+	4005: "SceneLeaveReq",
+	4006: "SceneLeaveResp",
+	4010: "SceneEntityNotify",
+	4020: "SceneSyncReq",
+	4021: "SceneSyncResp",
 	5001: "BattleStartNotify",
 	5002: "MatchReq",
 	5003: "MatchResp",
@@ -222,6 +240,15 @@ var msgIDs = map[string]uint32{
 	"SkillLearnResp":         3204,
 	"SkillUpgradeReq":        3205,
 	"SkillUpgradeResp":       3206,
+	"SceneEnterReq":          4001,
+	"SceneEnterResp":         4002,
+	"SceneMoveReq":           4003,
+	"SceneMoveResp":          4004,
+	"SceneLeaveReq":          4005,
+	"SceneLeaveResp":         4006,
+	"SceneEntityNotify":      4010,
+	"SceneSyncReq":           4020,
+	"SceneSyncResp":          4021,
 	"BattleStartNotify":      5001,
 	"MatchReq":               5002,
 	"MatchResp":              5003,
@@ -309,4 +336,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 93 }
+func MsgCount() int { return 102 }

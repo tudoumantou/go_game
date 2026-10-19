@@ -27,6 +27,7 @@ import (
 	"game_study/internal/game/module/profile"
 	"game_study/internal/game/module/quest"
 	rankmodule "game_study/internal/game/module/rank"
+	scenemod "game_study/internal/game/module/scene"
 	"game_study/internal/game/module/shop"
 	"game_study/internal/game/module/signin"
 	"game_study/internal/game/module/skill"
@@ -34,6 +35,7 @@ import (
 	gamemq "game_study/internal/game/mq"
 	"game_study/internal/game/player"
 	"game_study/internal/game/rpc"
+	"game_study/internal/game/scene"
 	"game_study/internal/game/service"
 	"game_study/pkg/actor"
 	"game_study/pkg/cache"
@@ -69,6 +71,7 @@ type Server struct {
 	gameRPC    *rpc.GameServer
 
 	actorSys *actor.System
+	sceneMgr *scene.Manager
 	modules  *module.Registry
 	players  *player.Manager
 	database *db.DB
@@ -194,6 +197,13 @@ func (s *Server) Start(ctx context.Context) error {
 	})
 	s.actorSys.Start(s.runCtx)
 
+	// 场景 Actor：数量由配置决定，启动期一次性拉起。
+	// Boot 会校验配置（宽高/格宽/人数上限必须为正），非法配置直接启动失败。
+	s.sceneMgr = scene.NewManager(s.actorSys, s.logger)
+	if err := s.sceneMgr.Boot(); err != nil {
+		return fmt.Errorf("boot scenes: %w", err)
+	}
+
 	// 跨服连接池（P13）：在模块注册前建好，battle 模块依赖它
 	if len(s.cfg.Cross.Nodes) > 0 {
 		s.crossPool = gamecross.NewPool(s.cfg.Server.Name, crossHandler{srv: s}, s.logger)
@@ -249,6 +259,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(friend.New(s.database, s.presence, s.logger))
 		// 伙伴：状态进快照，激活/升星与金币消耗同一份 CAS 提交。
 		s.modules.Register(partner.New(s.logger))
+		// 场景：协议转发到场景 Actor，位置与视野由场景 Actor 独占。
+		s.modules.Register(scenemod.New(s.sceneMgr, s.logger))
 	}
 
 	// ④ Write-Behind flusher

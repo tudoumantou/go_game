@@ -7,6 +7,10 @@ package gamedata
 type SceneCfg struct {
 	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
+	Col4 int64  `json:"col4"`
+	Col5 int64  `json:"col5"`
 }
 
 // SceneTable scene.xml 的只读视图，随快照整体替换，不做原地修改
@@ -18,8 +22,8 @@ func newSceneTable(list []SceneCfg) (SceneTable, error) {
 
 // sceneRows 内嵌快照的行数据
 var sceneRows = []SceneCfg{
-	{Id: 1, Col1: "新手村"},
-	{Id: 2, Col1: "竞技场"},
+	{Id: 1, Col1: "新手村", Col2: 100, Col3: 100, Col4: 10, Col5: 30},
+	{Id: 2, Col1: "竞技场", Col2: 80, Col3: 80, Col4: 10, Col5: 30},
 }
 
 // SceneCfgList 当前快照的全量行（等价于 Cur().Scene.List()）

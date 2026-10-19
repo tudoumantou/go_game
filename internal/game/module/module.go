@@ -33,6 +33,9 @@ type PlayerState interface {
 	AddItem(itemID int32, count int64)
 	RemoveItem(itemID int32, count int64) bool
 	MarkDirty(module string)
+	// SetSceneID 更新所在场景（0 表示不在场景中）并标脏。
+	// 场景归属由场景 Actor 决定，模块只负责把它写回玩家状态。
+	SetSceneID(sceneID int32)
 	// Ext 读取模块私有状态；SetExt 覆盖并标脏。键必须是 writebehind.Persister.Name()。
 	Ext(name string) json.RawMessage
 	SetExt(name string, raw json.RawMessage)

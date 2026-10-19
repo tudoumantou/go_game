@@ -305,7 +305,51 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("use item code=%d remain=%d (base %d)", use.Code, use.RemainCount, diamondBase)
 	}
 
-	// ⑪ 榜单查询：本用例没有启动中心服，必须回「暂不可用」（6702）而不是空榜。
+	// ⑪ 场景：越界钳制 → 近距离移动成功 → 瞬移被拒 → 离开后同步报「不在场景」
+	sceneEnt, err := r.SceneEnter(1, 150, 150)
+	if err != nil {
+		t.Fatalf("scene enter: %v", err)
+	}
+	if sceneEnt.Code != 0 {
+		t.Fatalf("scene enter code = %d", sceneEnt.Code)
+	}
+	// 地图 100x100，坐标上界是开区间：150 必须钳制到 99。
+	if sceneEnt.X != 99 || sceneEnt.Y != 99 {
+		t.Fatalf("scene enter clamped to (%d,%d), want (99,99)", sceneEnt.X, sceneEnt.Y)
+	}
+
+	nearMove, err := r.SceneMove(97, 99, 1)
+	if err != nil {
+		t.Fatalf("scene move: %v", err)
+	}
+	if nearMove.Code != 0 || nearMove.X != 97 {
+		t.Fatalf("near move = %+v", nearMove)
+	}
+
+	// 跨地图瞬移：超出「距上次移动时间 × 速度上限」，应被拒并回权威坐标。
+	farMove, err := r.SceneMove(10, 10, 2)
+	if err != nil {
+		t.Fatalf("scene move (far): %v", err)
+	}
+	if farMove.Code != 4004 {
+		t.Fatalf("far move code = %d, want 4004", farMove.Code)
+	}
+	if farMove.X != 97 || farMove.Y != 99 {
+		t.Fatalf("far move authority = (%d,%d), want (97,99)", farMove.X, farMove.Y)
+	}
+
+	if _, err := r.SceneLeave(); err != nil {
+		t.Fatalf("scene leave: %v", err)
+	}
+	syncResp, err := r.SceneSync(1)
+	if err != nil {
+		t.Fatalf("scene sync after leave: %v", err)
+	}
+	if syncResp.Code != 4005 {
+		t.Fatalf("sync after leave code = %d, want 4005", syncResp.Code)
+	}
+
+	// ⑫ 榜单查询：本用例没有启动中心服，必须回「暂不可用」（6702）而不是空榜。
 	// 空榜会让玩家误以为自己没有成绩，是列表类协议最容易做错的语义（R8.1/R11.1）。
 	rank, err := r.RankList("arena_score")
 	if err != nil {
@@ -318,7 +362,7 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("unavailable must not return entries: %+v", rank.Entries)
 	}
 
-	// ⑫ 优雅关闭
+	// ⑬ 优雅关闭
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	_ = gwSrv.Shutdown(shutdownCtx)

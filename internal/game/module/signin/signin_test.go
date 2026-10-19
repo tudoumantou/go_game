@@ -34,6 +34,7 @@ func (f *fakeState) GetItemCount(id int32) int64     { return f.items[id] }
 func (f *fakeState) Items() map[int32]int64          { return f.items }
 func (f *fakeState) AddItem(id int32, count int64)   { f.items[id] += count }
 func (f *fakeState) MarkDirty(name string)           { f.dirty = append(f.dirty, name) }
+func (f *fakeState) SetSceneID(int32)                {}
 func (f *fakeState) Ext(name string) json.RawMessage { return f.ext[name] }
 func (f *fakeState) SetExt(name string, raw json.RawMessage) {
 	f.ext[name] = raw

@@ -26,6 +26,7 @@ func (f *fakeState) Items() map[int32]int64          { return nil }
 func (f *fakeState) AddItem(int32, int64)            {}
 func (f *fakeState) RemoveItem(int32, int64) bool    { return true }
 func (f *fakeState) MarkDirty(string)                {}
+func (f *fakeState) SetSceneID(int32)                {}
 func (f *fakeState) Ext(string) json.RawMessage      { return nil }
 func (f *fakeState) SetExt(string, json.RawMessage)  {}
 func (f *fakeState) CanHold([]module.ItemGrant) bool { return true }

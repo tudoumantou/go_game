@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"game_study/internal/gateway"
 	"game_study/internal/game"
+	"game_study/internal/gateway"
 	"game_study/internal/login"
 	"game_study/pkg/config"
 	"game_study/pkg/db"

@@ -40,6 +40,7 @@ func (f *fakeState) RemoveItem(id int32, count int64) bool {
 	return true
 }
 func (f *fakeState) MarkDirty(string)                {}
+func (f *fakeState) SetSceneID(int32)                {}
 func (f *fakeState) Ext(name string) json.RawMessage { return f.ext[name] }
 func (f *fakeState) SetExt(name string, raw json.RawMessage) {
 	f.ext[name] = raw

@@ -359,6 +359,67 @@ func (c *Client) RankList(rankType string) (*gamev1.RankListResp, error) {
 	return resp, nil
 }
 
+// ---------------- B5 场景（R9） ----------------
+
+// SceneEnter 进入场景（4001/4002）。X/Y 为 0 时由服务端钳制。
+func (c *Client) SceneEnter(sceneID, x, y int32) (*gamev1.SceneEnterResp, error) {
+	resp := &gamev1.SceneEnterResp{}
+	req := &gamev1.SceneEnterReq{SceneId: sceneID, X: x, Y: y}
+	if err := c.call(codec.MsgSceneEnterReq, req, codec.MsgSceneEnterResp, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SceneMove 移动到目标坐标（4003/4004）。Seq 由调用方给，回执带回。
+func (c *Client) SceneMove(x, y, seq int32) (*gamev1.SceneMoveResp, error) {
+	resp := &gamev1.SceneMoveResp{}
+	req := &gamev1.SceneMoveReq{X: x, Y: y, Seq: seq}
+	if err := c.call(codec.MsgSceneMoveReq, req, codec.MsgSceneMoveResp, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SceneLeave 离开当前场景（4005/4006）。
+func (c *Client) SceneLeave() (*gamev1.SceneLeaveResp, error) {
+	resp := &gamev1.SceneLeaveResp{}
+	if err := c.call(codec.MsgSceneLeaveReq, &gamev1.SceneLeaveReq{}, codec.MsgSceneLeaveResp, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// SceneSync 拉取当前场景全量视野（4020/4021）。
+func (c *Client) SceneSync(sceneID int32) (*gamev1.SceneSyncResp, error) {
+	resp := &gamev1.SceneSyncResp{}
+	req := &gamev1.SceneSyncReq{SceneId: sceneID}
+	if err := c.call(codec.MsgSceneSyncReq, req, codec.MsgSceneSyncResp, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// WaitSceneNotify 等待一条场景实体通知（4010）。
+func (c *Client) WaitSceneNotify(timeout time.Duration) (*gamev1.SceneEntityNotify, error) {
+	pkt, ok, err := c.nextPush(codec.MsgSceneEntityNotify, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("no scene notify within %s", timeout)
+	}
+	_, _, plain, err := c.cipher.Decrypt(pkt.Body)
+	if err != nil {
+		return nil, err
+	}
+	msg := &gamev1.SceneEntityNotify{}
+	if err := proto.Unmarshal(plain, msg); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
 // ---------------- B1 等级 / 任务 ----------------
 
 // QuestList 任务列表（7101/7102）。
