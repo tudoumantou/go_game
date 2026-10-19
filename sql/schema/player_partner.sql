@@ -1,14 +1,8 @@
--- sql/schema/player_partner.sql
--- 玩家伙伴表（游戏服，分表键：player_id % 512；Redis e:player_partner:{id}）
+-- 玩家伙伴：整体进快照，激活/升星/上阵与材料消耗同一次 Redis CAS 提交（R6.2/R6.3）。
+-- 单行 JSON：{"stars":{"1":2},"field":[1]}
+-- @flat:partner
 CREATE TABLE `player_partner` (
-  `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '伙伴实例ID',
-  `player_id`   BIGINT UNSIGNED NOT NULL COMMENT '归属玩家',
-  `partner_id`  INT     NOT NULL COMMENT '伙伴配置ID(见 partner.xml)',
-  `star`        TINYINT NOT NULL DEFAULT 1 COMMENT '星级',
-  `level`       TINYINT NOT NULL DEFAULT 1 COMMENT '等级',
-  `exp`         INT     NOT NULL DEFAULT 0 COMMENT '经验',
-  `created_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_player` (`player_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='玩家伙伴表';
+  `player_id` BIGINT UNSIGNED NOT NULL,
+  `partners`  TEXT NOT NULL COMMENT '伙伴状态 JSON：{stars:{partner_id:star}, field:[partner_id]}',
+  PRIMARY KEY (`player_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色伙伴状态';

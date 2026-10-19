@@ -1,0 +1,207 @@
+package partner
+
+import (
+	"encoding/json"
+	"testing"
+
+	"game_study/internal/game/module"
+	"game_study/pkg/gamedata"
+	"game_study/pkg/log"
+	"game_study/pkg/model"
+
+	gamev1 "game_study/pkg/pb/game/v1"
+	"google.golang.org/protobuf/proto"
+)
+
+// fakeState 带真实物品与加成状态的替身：伙伴的扣费与属性变化都要能断言。
+type fakeState struct {
+	id    int64
+	items map[int32]int64
+	bonus map[string]int64
+	ext   map[string]json.RawMessage
+}
+
+func newFakeState(id int64, coin int64) *fakeState {
+	return &fakeState{
+		id:    id,
+		items: map[int32]int64{itemCoin: coin},
+		bonus: map[string]int64{},
+		ext:   map[string]json.RawMessage{},
+	}
+}
+
+func (f *fakeState) PlayerID() int64                  { return f.id }
+func (f *fakeState) Profile() module.Profile          { return module.Profile{Level: 1} }
+func (f *fakeState) ExpMax() int64                    { return 0 }
+func (f *fakeState) GetAttr(string) int64             { return 0 }
+func (f *fakeState) SetAttr(string, int64)            {}
+func (f *fakeState) AddBonus(key string, delta int64) { f.bonus[key] += delta }
+func (f *fakeState) ClearBonus()                      { f.bonus = map[string]int64{} }
+func (f *fakeState) GetItemCount(id int32) int64      { return f.items[id] }
+func (f *fakeState) Items() map[int32]int64           { return f.items }
+func (f *fakeState) AddItem(id int32, n int64)        { f.items[id] += n }
+func (f *fakeState) RemoveItem(id int32, n int64) bool {
+	if f.items[id] < n {
+		return false
+	}
+	f.items[id] -= n
+	return true
+}
+func (f *fakeState) MarkDirty(string)                {}
+func (f *fakeState) Ext(name string) json.RawMessage { return f.ext[name] }
+func (f *fakeState) SetExt(name string, raw json.RawMessage) {
+	f.ext[name] = raw
+}
+func (f *fakeState) CanHold([]module.ItemGrant) bool { return true }
+func (f *fakeState) ClaimBiz(string) bool            { return true }
+func (f *fakeState) HasBiz(string) bool              { return false }
+
+func newCtx(st *fakeState) (*module.Context, *[]byte) {
+	var got []byte
+	return &module.Context{
+		State: st,
+		Send: func(_ uint32, body []byte) error {
+			got = body
+			return nil
+		},
+	}, &got
+}
+
+func firstPartner(t *testing.T) gamedata.PartnerCfg {
+	t.Helper()
+	list := gamedata.PartnerCfgList()
+	if len(list) == 0 {
+		t.Fatal("partner config is empty")
+	}
+	return list[0]
+}
+
+func TestActivateAndStarUp(t *testing.T) {
+	cfg := firstPartner(t)
+	st := newFakeState(1, 10_000)
+	ctx, raw := newCtx(st)
+	m := New(log.New("test"))
+
+	// 激活：扣配置里的 col3，星级 1。
+	body, _ := proto.Marshal(&gamev1.PartnerActivateReq{PartnerId: int32(cfg.Id)})
+	if err := m.OnMessage(ctx, msgIDActivateReq, body); err != nil {
+		t.Fatal(err)
+	}
+	var act gamev1.PartnerActivateResp
+	_ = proto.Unmarshal(*raw, &act)
+	if act.Code != codeOK {
+		t.Fatalf("activate code = %d", act.Code)
+	}
+	if got := st.items[itemCoin]; got != 10_000-cfg.Col3 {
+		t.Fatalf("coin = %d, want %d", got, 10_000-cfg.Col3)
+	}
+
+	// 重复激活：拒绝且不扣钱。
+	if err := m.OnMessage(ctx, msgIDActivateReq, body); err != nil {
+		t.Fatal(err)
+	}
+	_ = proto.Unmarshal(*raw, &act)
+	if act.Code != codeOwned {
+		t.Fatalf("duplicate activate code = %d", act.Code)
+	}
+	if got := st.items[itemCoin]; got != 10_000-cfg.Col3 {
+		t.Fatalf("duplicate activate must not charge: %d", got)
+	}
+
+	// 升星：1→2 消耗 partner_star 里 (当前星级=1) 的 col3。
+	cost, ok := starCost(int32(cfg.Id), 1)
+	if !ok {
+		t.Fatal("missing star cost config")
+	}
+	starBody, _ := proto.Marshal(&gamev1.PartnerStarUpReq{PartnerId: int32(cfg.Id)})
+	if err := m.OnMessage(ctx, msgIDStarUpReq, starBody); err != nil {
+		t.Fatal(err)
+	}
+	var up gamev1.PartnerStarUpResp
+	_ = proto.Unmarshal(*raw, &up)
+	if up.Code != codeOK || up.Star != 2 {
+		t.Fatalf("star up code=%d star=%d", up.Code, up.Star)
+	}
+	if got := st.items[itemCoin]; got != 10_000-cfg.Col3-cost {
+		t.Fatalf("coin after star up = %d", got)
+	}
+}
+
+func TestFieldBonusAppliedOnce(t *testing.T) {
+	cfg := firstPartner(t)
+	st := newFakeState(1, 10_000)
+	ctx, raw := newCtx(st)
+	m := New(log.New("test"))
+
+	// 先激活。
+	body, _ := proto.Marshal(&gamev1.PartnerActivateReq{PartnerId: int32(cfg.Id)})
+	_ = m.OnMessage(ctx, msgIDActivateReq, body)
+
+	// 上阵：加成 = col3 × 1 星。
+	onBody, _ := proto.Marshal(&gamev1.PartnerFieldReq{PartnerId: int32(cfg.Id), On: true})
+	if err := m.OnMessage(ctx, msgIDFieldReq, onBody); err != nil {
+		t.Fatal(err)
+	}
+	var fr gamev1.PartnerFieldResp
+	_ = proto.Unmarshal(*raw, &fr)
+	if fr.AtkBonus != cfg.Col3 {
+		t.Fatalf("bonus = %d, want %d", fr.AtkBonus, cfg.Col3)
+	}
+	if st.bonus["atk"] != cfg.Col3 {
+		t.Fatalf("state bonus = %d", st.bonus["atk"])
+	}
+
+	// 重复上阵：幂等，不能二次累加（R6.3）。
+	_ = m.OnMessage(ctx, msgIDFieldReq, onBody)
+	for i := 0; i < 3; i++ {
+		_ = m.OnMessage(ctx, msgIDFieldReq, onBody)
+	}
+	if st.bonus["atk"] != cfg.Col3 {
+		t.Fatalf("repeated field must not stack: %d", st.bonus["atk"])
+	}
+
+	// 下阵：加成归零。
+	offBody, _ := proto.Marshal(&gamev1.PartnerFieldReq{PartnerId: int32(cfg.Id), On: false})
+	_ = m.OnMessage(ctx, msgIDFieldReq, offBody)
+	if st.bonus["atk"] != 0 {
+		t.Fatalf("bonus after off = %d", st.bonus["atk"])
+	}
+}
+
+// TestOnLoginRestoresBonus 登录时按快照重算加成，且不依赖上次会话的 bonus。
+func TestOnLoginRestoresBonus(t *testing.T) {
+	cfg := firstPartner(t)
+	st := newFakeState(1, 0)
+	ctx, _ := newCtx(st)
+	m := New(log.New("test"))
+
+	d := &Data{Stars: map[int32]int32{int32(cfg.Id): 2}, Field: []int32{int32(cfg.Id)}}
+	if err := save(st, 1, d); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟残留：上次会话的加成还在。
+	st.bonus["atk"] = 9999
+	st.ClearBonus() // 玩家层在 LoginAll 前统一清空
+
+	if err := m.OnLogin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := cfg.Col3 * 2
+	if st.bonus["atk"] != want {
+		t.Fatalf("login bonus = %d, want %d", st.bonus["atk"], want)
+	}
+}
+
+// TestDecodeRejectsBrokenState 上阵位超限/上阵未拥有都要在解码时拦住。
+func TestDecodeRejectsBrokenState(t *testing.T) {
+	cases := []string{
+		`{"stars":{},"field":[1,2,3,4]}`,  // 超上阵位
+		`{"stars":{},"field":[1]}`,        // 上阵但未拥有
+		`{"stars":{"1":1},"field":[1,1]}`, // 重复上阵
+	}
+	for _, raw := range cases {
+		if _, err := decode(&model.PlayerPartner{Partners: raw}); err == nil {
+			t.Fatalf("decode must reject %s", raw)
+		}
+	}
+}

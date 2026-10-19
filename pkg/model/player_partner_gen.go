@@ -6,33 +6,20 @@ package model
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"game_study/pkg/flush"
 )
 
 // PlayerPartner player_partner 表
 type PlayerPartner struct {
-	Id        int64     `db:"id"`
-	PlayerId  int64     `db:"player_id"`
-	PartnerId int32     `db:"partner_id"`
-	Star      int32     `db:"star"`
-	Level     int32     `db:"level"`
-	Exp       int32     `db:"exp"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	PlayerId int64  `db:"player_id"`
+	Partners string `db:"partners"`
 }
 
 // PlayerPartner 列名
 const (
-	ColPlayerPartnerId        = "id"
-	ColPlayerPartnerPlayerId  = "player_id"
-	ColPlayerPartnerPartnerId = "partner_id"
-	ColPlayerPartnerStar      = "star"
-	ColPlayerPartnerLevel     = "level"
-	ColPlayerPartnerExp       = "exp"
-	ColPlayerPartnerCreatedAt = "created_at"
-	ColPlayerPartnerUpdatedAt = "updated_at"
+	ColPlayerPartnerPlayerId = "player_id"
+	ColPlayerPartnerPartners = "partners"
 )
 
 // TableName 表名
@@ -40,26 +27,20 @@ func (m *PlayerPartner) TableName() string { return "player_partner" }
 
 // PlayerPartnerColumns 全部列（扫描用）
 var PlayerPartnerColumns = []string{
-	ColPlayerPartnerId,
 	ColPlayerPartnerPlayerId,
-	ColPlayerPartnerPartnerId,
-	ColPlayerPartnerStar,
-	ColPlayerPartnerLevel,
-	ColPlayerPartnerExp,
-	ColPlayerPartnerCreatedAt,
-	ColPlayerPartnerUpdatedAt,
+	ColPlayerPartnerPartners,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerPartner(ctx context.Context, db Querier, m *PlayerPartner) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_partner (id,player_id,partner_id,star,level,exp) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp)
+	return db.ExecContext(ctx, "INSERT INTO player_partner (player_id,partners) VALUES (?,?)", m.PlayerId, m.Partners)
 }
 
 // FindPlayerPartnerByPK 按主键查询
-func FindPlayerPartnerByPK(ctx context.Context, db Querier, Id int64) (*PlayerPartner, error) {
+func FindPlayerPartnerByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerPartner, error) {
 	var m PlayerPartner
-	query := "SELECT id,player_id,partner_id,star,level,exp,created_at,updated_at FROM player_partner WHERE id = ?"
-	row := db.QueryRowContext(ctx, query, Id)
+	query := "SELECT player_id,partners FROM player_partner WHERE player_id = ?"
+	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanPlayerPartner(&m, row); err != nil {
 		return nil, err
 	}
@@ -67,31 +48,31 @@ func FindPlayerPartnerByPK(ctx context.Context, db Querier, Id int64) (*PlayerPa
 }
 
 func scanPlayerPartner(m *PlayerPartner, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.PlayerId, &m.PartnerId, &m.Star, &m.Level, &m.Exp, &m.CreatedAt, &m.UpdatedAt)
+	return sc.Scan(&m.PlayerId, &m.Partners)
 }
 
 // UpdatePlayerPartnerByPK 按主键更新（幂等）
 func UpdatePlayerPartnerByPK(ctx context.Context, db Querier, m *PlayerPartner) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_partner SET player_id = ?, partner_id = ?, star = ?, level = ?, exp = ? WHERE id = ?", m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_partner SET partners = ? WHERE player_id = ?", m.Partners, m.PlayerId)
 }
 
 // UpsertPlayerPartnerByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerPartnerByPK(ctx context.Context, db Querier, m *PlayerPartner) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_partner (id,player_id,partner_id,star,level,exp) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), partner_id = VALUES(partner_id), star = VALUES(star), level = VALUES(level), exp = VALUES(exp)", m.Id, m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp)
+	return db.ExecContext(ctx, "INSERT INTO player_partner (player_id,partners) VALUES (?,?) ON DUPLICATE KEY UPDATE partners = VALUES(partners)", m.PlayerId, m.Partners)
 }
 
 // DeletePlayerPartnerByPK 按主键删除
-func DeletePlayerPartnerByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
-	return db.ExecContext(ctx, "DELETE FROM player_partner WHERE id = ?", Id)
+func DeletePlayerPartnerByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM player_partner WHERE player_id = ?", PlayerId)
 }
 
 // upsertPlayerPartnerCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertPlayerPartnerCols = []string{"player_id", "partner_id", "star", "level", "exp"}
+var upsertPlayerPartnerCols = []string{"player_id", "partners"}
 
 // UpsertPlayerPartnerBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertPlayerPartnerBatch(ctx context.Context, tx *sql.Tx, rows []PlayerPartner) error {
 	return flush.UpsertBatch(ctx, tx, "player_partner", upsertPlayerPartnerCols, rows, func(m PlayerPartner) []any {
-		return []any{m.PlayerId, m.PartnerId, m.Star, m.Level, m.Exp}
+		return []any{m.PlayerId, m.Partners}
 	})
 }
 
@@ -102,7 +83,7 @@ func DeletePlayerPartnerByPlayer(ctx context.Context, tx *sql.Tx, playerID int64
 
 // ListPlayerPartnerByPlayer 按玩家列出全部行（冷启动读取用）
 func ListPlayerPartnerByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerPartner, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id,player_id,partner_id,star,level,exp,created_at,updated_at FROM player_partner WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,partners FROM player_partner WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,4 +97,10 @@ func ListPlayerPartnerByPlayer(ctx context.Context, db Querier, playerID int64) 
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// PlayerPartnerFlat partner 模块的单行状态表适配（sql 注释 @flat:partner 生成）
+var PlayerPartnerFlat = flush.FlatOps[PlayerPartner]{
+	Upsert: UpsertPlayerPartnerBatch,
+	Load:   FindPlayerPartnerByPK,
 }

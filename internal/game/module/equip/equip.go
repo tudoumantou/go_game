@@ -121,7 +121,7 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	if err != nil {
 		return err
 	}
-	ctx.State.ClearBonus()
+	// 不清空加成：玩家层已在 LoginAll 前统一清空，这里只叠加自己的部分。
 	for _, e := range d.Equips {
 		if !e.Equipped {
 			continue

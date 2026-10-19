@@ -1,7 +1,61 @@
-// 游戏业务协议：伙伴模块（partner.xml 升星 partner_star.xml；player_partner 表）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
+// 伙伴（6900-6999）：激活 → 升星 → 上阵/下阵。
+//
+// 伙伴以配置 ID 唯一持有（同一伙伴不重复获得）；上阵位数固定 3。
+// 属性加成只由「已上阵伙伴」提供，登录与上下阵时按状态重算。
 syntax = "proto3";
 
 package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message PartnerEntry {
+  int32 partner_id = 1;
+  string name      = 2;
+  int32 quality    = 3;
+  int32 star       = 4;  // 0 表示未拥有
+  bool  on_field   = 5;
+  int64 atk_bonus  = 6;  // 该伙伴上阵时提供的攻击加成（未拥有为 0）
+}
+
+// @msg 6901
+message PartnerListReq {}
+
+// @msg 6902
+message PartnerListResp {
+  int32 code = 1;
+  repeated PartnerEntry partners = 2;
+  int32 field_limit = 3; // 上阵位数
+}
+
+// @msg 6903
+message PartnerActivateReq {
+  int32 partner_id = 1;
+}
+
+// @msg 6904
+message PartnerActivateResp {
+  int32 code = 1;
+}
+
+// @msg 6905
+message PartnerStarUpReq {
+  int32 partner_id = 1;
+}
+
+// @msg 6906
+message PartnerStarUpResp {
+  int32 code = 1;
+  int32 star     = 2; // 升星后的星级
+}
+
+// @msg 6907
+message PartnerFieldReq {
+  int32 partner_id = 1;
+  bool  on         = 2; // true 上阵，false 下阵
+}
+
+// @msg 6908
+message PartnerFieldResp {
+  int32 code   = 1;
+  int64 atk_bonus = 2; // 变更后的总加成（客户端可直接刷新面板）
+}

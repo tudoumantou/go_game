@@ -208,9 +208,11 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 		}
 	}
 
-	// 登录/重连：按等级重算基础属性（基础 + 成长），之后由模块叠加装备等加成。
-	// 顺序不能反：装备的 OnLogin 会 ClearBonus，先重算基础才不会把成长清掉。
+	// 登录/重连：按等级重算基础属性（基础 + 成长），清空旧加成，再由各模块叠加。
+	// ClearBonus 放在这里而不是某个模块里：模块注册顺序会变，
+	// 「谁先登录谁清」会让后注册的模块加成被前一个清掉。
 	a.state.RecalcAttrs()
+	a.state.ClearBonus()
 
 	mctx := a.moduleCtx(ctx)
 	if err := a.registry.LoginAll(mctx); err != nil {

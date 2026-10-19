@@ -23,6 +23,7 @@ import (
 	"game_study/internal/game/module/item"
 	"game_study/internal/game/module/loginreward"
 	"game_study/internal/game/module/mail"
+	"game_study/internal/game/module/partner"
 	"game_study/internal/game/module/profile"
 	"game_study/internal/game/module/quest"
 	rankmodule "game_study/internal/game/module/rank"
@@ -246,6 +247,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(rankmodule.New(rankQuerier{cli: s.centerCli}, s.logger))
 		// 好友：关系直写 MySQL 事务（双人状态不适合放单玩家快照），缓存只用于在线展示。
 		s.modules.Register(friend.New(s.database, s.presence, s.logger))
+		// 伙伴：状态进快照，激活/升星与金币消耗同一份 CAS 提交。
+		s.modules.Register(partner.New(s.logger))
 	}
 
 	// ④ Write-Behind flusher
