@@ -20,7 +20,7 @@ crypto:                        # RSA+AES 配置
 
 rpc:                           # gRPC 客户端（连游戏服）
   etcd_endpoints: ["etcd:2379"]
-  service_prefix: "/game_study/game"
+  service_prefix: "/services"      # 与 registry/etcd 注册路径一致
   channel_per_target: 16       # 每目标 Channel 数
   max_streams_per_channel: 2000
   dial_timeout: 3s

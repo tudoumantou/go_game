@@ -58,6 +58,9 @@ services:
     ports: ["127.0.0.1:9092:9092", "127.0.0.1:9093:9093"]
     environment:
       KAFKA_NODE_ID: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_PROCESS_ROLES: "controller,broker"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9094"
       # 双 listener：INTERNAL 供 compose 内服务（kafka:9092），EXTERNAL 供宿主机/本地测试（localhost:9093）
