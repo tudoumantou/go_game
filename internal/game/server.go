@@ -45,6 +45,7 @@ import (
 	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	gatev1 "game_study/pkg/pb/gate/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
 
 	"google.golang.org/protobuf/proto"
@@ -609,6 +610,8 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 const (
 	msgIDEnterGame  uint32 = 1010
 	msgIDCreateRole uint32 = 1020
+	// msgIDKickNotify 与网关 common.MsgIDKickNotify 保持一致：10。
+	msgIDKickNotify uint32 = 10
 )
 
 // OnBind 实现 rpc.StreamHandler：按 account_id 查角色，有角色才拉起 Actor。
@@ -634,19 +637,54 @@ func (s *Server) OnBind(ctx context.Context, sessionID uint64, accountID, player
 }
 
 // bindPlayer 拉起玩家 Actor 并绑定会话。
+//
+// 顶号规则（R3.1）：同一角色只允许一个权威会话。新会话绑定成功后主动踢掉旧会话，
+// 旧连接收到 KickNotify 后断开，其迟到的 UNBIND 会被 Actor 的会话身份校验忽略。
 func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int64) error {
+	// 跨服权威归属：先原子占用在线状态，别的节点正持有时拒绝绑定。
+	// 同节点旧会话（重连）视为成功，由下面的顶号逻辑处理。
+	if s.presence != nil {
+		ok, owner, err := s.presence.TrySetOnline(ctx, playerID, s.cfg.Server.Name, onlineTTL)
+		switch {
+		case err != nil:
+			s.logger.Warn("presence claim failed; bind continues", "player_id", playerID, "err", err)
+		case !ok && owner != s.cfg.Server.Name:
+			return fmt.Errorf("player %d is online on node %s", playerID, owner)
+		}
+	}
+
 	s.mu.Lock()
+	old := s.players2sess[playerID]
 	s.sessions[sessionID] = playerID
 	s.players2sess[playerID] = sessionID
 	accountID := s.accounts[sessionID]
 	s.mu.Unlock()
 
-	s.markOnline(ctx, playerID)
+	if old != 0 && old != sessionID {
+		s.kickSession(old, "login_elsewhere")
+	}
 	if err := s.bindActor(ctx, sessionID, playerID); err != nil {
 		return err
 	}
-	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID, "account_id", accountID)
+	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID, "account_id", accountID, "replaced", old)
 	return nil
+}
+
+// kickSession 通知旧会话下线；客户端收到 KickNotify 后断开，触发 OnUnbind。
+//
+// 推不出去不算失败：旧会话可能已经断开，此时 OnUnbind 迟早会到，
+// Actor 的会话身份校验保证它不会影响新会话。
+func (s *Server) kickSession(sessionID uint64, reason string) {
+	body, err := proto.Marshal(&gatev1.KickNotify{Reason: reason})
+	if err != nil {
+		return
+	}
+	if err := s.sendToClient(sessionID, msgIDKickNotify, body); err != nil {
+		s.logger.Info("kick stale session failed; waiting for stale unbind",
+			"session_id", sessionID, "reason", reason, "err", err)
+		return
+	}
+	s.logger.Info("stale session kicked", "session_id", sessionID, "reason", reason)
 }
 
 // ensureActor 确保玩家 Actor 已创建并与当前会话绑定。
@@ -707,11 +745,22 @@ func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	playerID := s.sessions[sessionID]
 	delete(s.sessions, sessionID)
 	delete(s.accounts, sessionID)
-	if playerID != 0 && s.players2sess[playerID] == sessionID {
-		delete(s.players2sess, playerID)
+	stale := false
+	if playerID != 0 {
+		if s.players2sess[playerID] == sessionID {
+			delete(s.players2sess, playerID)
+		} else {
+			stale = true // 该会话已被新会话顶号
+		}
 	}
 	s.mu.Unlock()
 	if playerID == 0 {
+		return nil
+	}
+	if stale {
+		// 旧连接被顶号后才断开：不能解绑 Actor，也不能清在线归属——
+		// 否则会把仍在线的权威会话打成离线，其它节点还能趁机抢占。
+		s.logger.Info("stale session unbind ignored", "player_id", playerID, "session_id", sessionID)
 		return nil
 	}
 	if pid, ok := s.players.Get(playerID); ok {

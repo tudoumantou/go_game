@@ -275,6 +275,13 @@ func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 	if !a.online {
 		return
 	}
+	// 会话身份校验：旧连接的延迟 UNBIND 不能把已经顶号的新会话解绑。
+	// 没有这层校验时，玩家在另一台设备登录后，旧连接断线会把新连接踢成离线。
+	if msg.SessionID != a.sessionID {
+		a.logger.Info("ignore stale unbind",
+			"player_id", a.playerID, "current_session", a.sessionID, "stale_session", msg.SessionID)
+		return
+	}
 	mctx := a.moduleCtx(ctx)
 	if err := a.registry.LogoutAll(mctx); err != nil {
 		a.logger.Warn("module logout failed", "err", err)

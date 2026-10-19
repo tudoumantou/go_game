@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"game_study/internal/common/constant"
 	"game_study/internal/gateway/backend"
 	"game_study/internal/gateway/conn"
 	"game_study/internal/gateway/router"
@@ -21,14 +22,14 @@ import (
 	"game_study/pkg/crypto"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
-	gameetcd "game_study/pkg/registry/etcd"
 	netpkg "game_study/pkg/net"
+	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 	resolver "game_study/pkg/rpc/resolver"
 
 	internalv2 "game_study/pkg/pb/internalv2"
-	"google.golang.org/grpc"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
 )
 
 // Server 网关服（组装层入口，职责见设计文档 3.1 目录树）
@@ -239,6 +240,14 @@ func (s *Server) deliverToClient(sessionID uint64, msgID uint32, body []byte) {
 	}
 	if err := sess.Send(uint16(msgID), body); err != nil {
 		s.logger.Warn("downlink send failed", "session_id", sessionID, "msg_id", msgID, "err", err)
+	}
+	// 踢下线：发出通知后主动断开，不依赖客户端配合（R3.1）。
+	// 先 Send 再 Close，保证客户端能收到原因；断连会触发 OnUnbind，
+	// 游戏服按会话身份校验忽略迟到的解绑请求。
+	if msgID == uint32(constant.MsgIDKickNotify) {
+		s.logger.Info("session kicked by game server", "session_id", sessionID)
+		s.sessMgr.Remove(sess)
+		sess.Close(nil)
 	}
 }
 

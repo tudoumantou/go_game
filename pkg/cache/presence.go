@@ -27,6 +27,45 @@ func (p *Presence) SetOnline(ctx context.Context, playerID int64, nodeID string,
 	return p.client.Set(ctx, OnlineKey(playerID), nodeID, ttl).Err()
 }
 
+// tryOnlineScript 原子占位：旧值存在且属于其它节点时拒绝，否则写入本节点。
+//
+// 用 GET + SET 的管道做不到「判断与写入」原子，两台游戏服同时登录同一角色时
+// 会双双成功、各自认为是权威会话。这里用 Lua 把两步合成一次执行。
+var tryOnlineScript = redis.NewScript(`
+local cur = redis.call('GET', KEYS[1])
+if cur and cur ~= ARGV[1] then
+  return {0, cur}
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+return {1, ARGV[1]}
+`)
+
+// TrySetOnline 原子占用在线归属。
+//
+// 返回 ok=false 时 owner 是当前持有该角色的节点；同节点重连（旧会话未过期）
+// 视为成功，允许本节点顶掉自己的旧连接。
+func (p *Presence) TrySetOnline(ctx context.Context, playerID int64, nodeID string, ttl time.Duration) (ok bool, owner string, err error) {
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	res, err := tryOnlineScript.Run(ctx, p.client, []string{OnlineKey(playerID)}, nodeID, ttl.Milliseconds()).Slice()
+	if err != nil {
+		return false, "", err
+	}
+	if len(res) != 2 {
+		return false, "", fmt.Errorf("unexpected presence result: %v", res)
+	}
+	// ok 由 0/1 表示；owner 可能是 string 或 []byte（不同客户端实现）。
+	code, _ := res[0].(int64)
+	switch v := res[1].(type) {
+	case string:
+		owner = v
+	case []byte:
+		owner = string(v)
+	}
+	return code == 1, owner, nil
+}
+
 // RefreshOnline 续期在线状态。
 func (p *Presence) RefreshOnline(ctx context.Context, playerID int64, ttl time.Duration) error {
 	if ttl <= 0 {
