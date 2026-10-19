@@ -3,6 +3,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -60,9 +61,18 @@ func TestMailboxBackpressure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
-	// 塞满 + 溢出
+	// 塞满 + 溢出：满队列必须显式返回 ErrMailboxFull，不允许 panic 或静默丢弃。
+	rejected := 0
 	for i := 0; i < 20; i++ {
-		_ = sys.Send(pid, i)
+		if err := sys.Send(pid, i); err != nil {
+			if !errors.Is(err, ErrMailboxFull) && !errors.Is(err, ErrActorGone) {
+				t.Fatalf("unexpected send error: %v", err)
+			}
+			rejected++
+		}
+	}
+	if rejected == 0 {
+		t.Log("本轮未被拒绝（分片已消费部分消息），背压契约由 mailbox 单测覆盖")
 	}
 	close(blockCh)
 }

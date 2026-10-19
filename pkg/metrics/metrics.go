@@ -195,14 +195,14 @@ var (
 	actorProcessed  *prometheus.CounterVec
 	actorLatency    *prometheus.HistogramVec
 	actorPanic      *prometheus.CounterVec
-	actorDropped    *prometheus.CounterVec
+	actorRejected   *prometheus.CounterVec
 	actorCountGauge prometheus.Gauge
 )
 
 func registerActor() {
 	actorMailbox = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "actor", Name: "mailbox_depth",
-		Help: "Actor 信箱当前积压消息数（有界 4096，满则丢最旧）",
+		Help: "Actor 信箱当前积压消息数（有界；满时拒绝新消息，不丢弃旧消息）",
 	}, []string{"service", "shard"})
 	actorProcessed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: Namespace, Subsystem: "actor", Name: "processed_total",
@@ -221,11 +221,11 @@ func registerActor() {
 		Namespace: Namespace, Subsystem: "actor", Name: "count",
 		Help: "存活 Actor 数",
 	})
-	actorDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
-		Namespace: Namespace, Subsystem: "actor", Name: "dropped_total",
-		Help: "信箱满时丢弃的最旧消息数（背压代价，>0 说明 Actor 处理不过来）",
+	actorRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "actor", Name: "rejected_total",
+		Help: "信箱满时被拒绝的新消息数（背压；调用方收到 ErrMailboxFull 并自行重试/降级）",
 	}, []string{"service"})
-	registry.MustRegister(actorMailbox, actorProcessed, actorLatency, actorPanic, actorDropped, actorCountGauge)
+	registry.MustRegister(actorMailbox, actorProcessed, actorLatency, actorPanic, actorRejected, actorCountGauge)
 }
 
 // ActorMailbox 设置某分片信箱深度（只在分片循环里低频调用，避免锁竞争）。
@@ -264,13 +264,13 @@ func ActorPanicInc() {
 	actorPanic.WithLabelValues(Service()).Inc()
 }
 
-// ActorDroppedAdd 信箱丢弃消息计数（背压）。
-func ActorDroppedAdd(n int64) {
+// ActorRejectedAdd 信箱背压拒绝计数（满队列拒绝新消息，旧消息保留）。
+func ActorRejectedAdd(n int64) {
 	if !enabled.Load() {
 		return
 	}
 	if n > 0 {
-		actorDropped.WithLabelValues(Service()).Add(float64(n))
+		actorRejected.WithLabelValues(Service()).Add(float64(n))
 	}
 }
 

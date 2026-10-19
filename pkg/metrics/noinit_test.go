@@ -54,7 +54,7 @@ func runAllMetricCalls() {
 	ActorProcessed(true)
 	ActorObserve(time.Millisecond)
 	ActorPanicInc()
-	ActorDroppedAdd(2)
+	ActorRejectedAdd(2)
 	ActorCountAdd(1)
 	ActorCountAdd(-1)
 

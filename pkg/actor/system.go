@@ -3,6 +3,7 @@ package actor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"runtime/debug"
@@ -146,8 +147,8 @@ type shard struct {
 	// 改为「有消息立即唤醒 + ticker 兜底」，延迟降到微秒级。
 	wake chan struct{}
 
-	// lastDropped 上次上报时的累计丢弃数（只由分片循环 goroutine 读写，无需加锁）
-	lastDropped int64
+	// lastRejected 上次上报时的累计拒绝数（只由分片循环 goroutine 读写，无需加锁）
+	lastRejected int64
 }
 
 func newShard(index int, sys *System) *shard {
@@ -174,7 +175,7 @@ func (sh *shard) deliver(id string, env envelope) error {
 	cell, ok := sh.cells[id]
 	sh.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("actor %s not found", id)
+		return fmt.Errorf("%w: %s", ErrActorGone, id)
 	}
 	if err := cell.mbox.push(env); err != nil {
 		return err
@@ -216,17 +217,7 @@ func (sh *shard) run(ctx context.Context, wg *sync.WaitGroup) {
 		default:
 		}
 
-		processed := 0
-		for _, cell := range sh.allCells() {
-			for processed < 100 { // 每轮单 Actor 最多处理 100 条，防饿死
-				env, ok := cell.mbox.pop()
-				if !ok {
-					break
-				}
-				sh.process(cell, env)
-				processed++
-			}
-		}
+		processed := sh.drain(100)
 		// 指标：每轮更新一次信箱深度（避免每条消息打点带来的锁竞争）
 		sh.reportDepth()
 		if processed == 0 {
@@ -242,6 +233,26 @@ func (sh *shard) run(ctx context.Context, wg *sync.WaitGroup) {
 	}
 }
 
+// drain 处理一轮消息；budget 是**每个 Actor** 的上限，不是整分片的共享额度。
+//
+// 共享额度会让第一个繁忙 Actor 吃光 100 条，同分片其他 Actor 本轮一条都处理不到，
+// 在高负载下表现为长期饥饿（P99 抖动）。按 Actor 分配预算后，每个 Actor
+// 每轮至少有机会前进 budget 条，轮转顺序由 allCells 决定。
+func (sh *shard) drain(budget int) int {
+	processed := 0
+	for _, cell := range sh.allCells() {
+		for n := 0; n < budget; n++ {
+			env, ok := cell.mbox.pop()
+			if !ok {
+				break
+			}
+			sh.process(cell, env)
+			processed++
+		}
+	}
+	return processed
+}
+
 // reportDepth 上报本分片信箱积压（20.3 告警项：Actor 队列积压）。
 func (sh *shard) reportDepth() {
 	if !metrics.Enabled() {
@@ -250,17 +261,17 @@ func (sh *shard) reportDepth() {
 	sh.mu.RLock()
 	cells := sh.cells
 	total := 0
-	var dropped int64
+	var rejected int64
 	for _, c := range cells {
 		total += c.mbox.len()
-		dropped += c.mbox.droppedCount()
+		rejected += c.mbox.rejectedCount()
 	}
 	sh.mu.RUnlock()
 	metrics.ActorMailbox(sh.index, total)
-	// 只上报增量：记录上次累计值，本次差值即为新增丢弃
-	if delta := dropped - sh.lastDropped; delta > 0 {
-		metrics.ActorDroppedAdd(delta)
-		sh.lastDropped = dropped
+	// 只上报增量：记录上次累计值，本次差值即为新增拒绝
+	if delta := rejected - sh.lastRejected; delta > 0 {
+		metrics.ActorRejectedAdd(delta)
+		sh.lastRejected = rejected
 	}
 }
 
@@ -307,10 +318,14 @@ func (sh *shard) process(cell *actorCell, env envelope) {
 }
 
 type timerEntry struct {
-	fireAt time.Time
-	target *PID
-	msg    any
+	fireAt   time.Time
+	target   *PID
+	msg      any
+	attempts int // 已因信箱满重试的次数（上限 timerRetryLimit）
 }
+
+// timerRetryLimit 信箱满时定时消息的最大重试次数。
+const timerRetryLimit = 3
 
 func (s *System) timerLoop(ctx context.Context) {
 	defer s.timerWg.Done()
@@ -344,6 +359,21 @@ func (s *System) fireTimers() {
 	s.timerMu.Unlock()
 
 	for _, t := range fired {
-		_ = s.Send(t.target, t.msg)
+		if err := s.Send(t.target, t.msg); err != nil {
+			// 信箱满：保留任务稍后重试，避免超时/结算类定时消息被静默丢弃。
+			if errors.Is(err, ErrMailboxFull) && t.attempts < timerRetryLimit {
+				t.attempts++
+				t.fireAt = now.Add(100 * time.Millisecond)
+				s.timerMu.Lock()
+				s.timers = append(s.timers, t)
+				s.timerMu.Unlock()
+				continue
+			}
+			// 目标已终止或重试耗尽：明确记录，不再静默。
+			if s.logger != nil {
+				s.logger.Error("actor timer delivery failed",
+					"target", t.target.ID, "attempts", t.attempts, "err", err)
+			}
+		}
 	}
 }

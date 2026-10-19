@@ -492,7 +492,11 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 	if !ok {
 		return nil
 	}
-	_ = s.actorSys.Send(pid, &player.SaveMsg{})
+	// 投递失败（信箱满/Actor 已终止）必须返回给 flusher：flusher 会把该玩家
+	// 重新标脏、下轮重试，而不是当成本次已保存。
+	if err := s.actorSys.Send(pid, &player.SaveMsg{}); err != nil {
+		return fmt.Errorf("player %d save: %w", playerID, err)
+	}
 	return nil
 }
 
@@ -606,7 +610,12 @@ func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 		return nil
 	}
 	if pid, ok := s.players.Get(playerID); ok {
-		_ = s.actorSys.Send(pid, &player.UnbindMsg{SessionID: sessionID})
+		if err := s.actorSys.Send(pid, &player.UnbindMsg{SessionID: sessionID}); err != nil {
+			// 解绑消息被拒（信箱满/Actor 已终止）：脏数据仍在 flusher 队列里会周期性落库，
+			// 但这里要明确记录，不能静默吞掉。
+			s.logger.Warn("unbind message rejected",
+				"player_id", playerID, "session_id", sessionID, "err", err)
+		}
 	}
 	if s.presence != nil {
 		if node, online := s.presence.IsOnline(ctx, playerID); online && node == s.cfg.Server.Name {

@@ -63,10 +63,10 @@ func TestInitRegisters(t *testing.T) {
 		t.Fatalf("ActorMailbox: expect 42, got %v", v)
 	}
 	ActorPanicInc()
-	ActorDroppedAdd(3)
-	ActorDroppedAdd(0) // 0 不应改变计数
-	if v := testutil.ToFloat64(actorDropped.WithLabelValues("unit-test")); v != 3 {
-		t.Fatalf("ActorDroppedAdd: expect 3, got %v", v)
+	ActorRejectedAdd(3)
+	ActorRejectedAdd(0) // 0 不应改变计数
+	if v := testutil.ToFloat64(actorRejected.WithLabelValues("unit-test")); v != 3 {
+		t.Fatalf("ActorRejectedAdd: expect 3, got %v", v)
 	}
 
 	// Flusher

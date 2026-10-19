@@ -5,7 +5,7 @@ BIN     := bin
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test test-integration lint fmt vet dev run-all \
+.PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test test-race test-integration lint fmt vet dev run-all \
         monitoring smoke loadtest bench drill-crash drill-suite clean
 
 help: ## 查看全部命令
@@ -34,8 +34,11 @@ db-seed: ## sql/seed → 初始数据（道具/等级等安全表 + 测试账号
 build: ## 交叉编译五服务及独立 flusher → bin/
 	./scripts/build.sh
 
-test: ## 单测 + 集成（test/integration，testcontainers 起真实中间件）
+test: ## 单元测试（纯逻辑，无外部依赖；集成测试见 test-integration）
 	$(GO) test ./...
+
+test-race: ## 竞态检测（Actor / 落库 / 玩家核心包）
+	$(GO) test -race ./pkg/actor ./pkg/flush ./internal/game/player
 
 lint: ## golangci-lint + buf lint + gen 一致性检查
 	./scripts/lint.sh
