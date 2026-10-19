@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"game_study/pkg/actor"
-	gamev1 "game_study/pkg/pb/game/v1"
 	gatev1 "game_study/pkg/pb/gate/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -82,7 +81,7 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 	}
 	a.bufferReplies = false
 	if err != nil {
-		if canRollbackMessage(ctx.Message()) {
+		if a.canRollbackMessage(ctx.Message()) {
 			a.setState(previous)
 			a.cacheReload = true
 		} else {
@@ -107,15 +106,19 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 	}
 }
 
-func canRollbackMessage(message any) bool {
+// canRollbackMessage 判断请求失败后能否丢弃内存改动。
+//
+// 协议号到「可回滚」的映射由模块自己声明（module.RollbackAware），
+// 玩家层不再硬编码任何具体玩法：新增玩法不需要改这个文件。
+func (a *Actor) canRollbackMessage(message any) bool {
 	switch msg := message.(type) {
 	case *GrantItemsMsg:
 		return true // 与资产同快照的 BizID 负责幂等重放。
 	case *PacketMsg:
-		switch msg.MsgID {
-		case 6601, 6603, 3003, 2001:
-			return true
+		if a.registry == nil {
+			return false
 		}
+		return a.registry.IsRollbackable(msg.MsgID)
 	}
 	return false
 }
@@ -161,20 +164,15 @@ func (a *Actor) cacheFailure(ctx *actor.Context, err error) {
 	case *BindMsg:
 		_ = ctx.Respond(&BindResult{Code: 1, Err: err.Error()})
 	case *PacketMsg:
-		var response proto.Message
-		var id uint32
-		switch msg.MsgID {
-		case 6601:
-			id = 6602
-			response = &gamev1.SigninInfoResp{Code: 1}
-		case 6603:
-			id = 6604
-			response = &gamev1.SigninClaimResp{Code: 1}
-		default:
-			id = 20
-			response = &gatev1.ErrorNotify{Code: 1005, Msg: "缓存暂不可用，请重试", Context: fmt.Sprintf("related_msg_id=%d", msg.MsgID)}
+		// 模块实现 CacheFailureAware 时由它给出带错误码的业务响应；
+		// 否则退回网关通用错误，避免把协议号写死在玩家层。
+		if a.registry != nil {
+			if id, body, ok := a.registry.CacheFailureReply(msg.MsgID); ok {
+				_ = a.send(id, body)
+				return
+			}
 		}
-		body, _ := proto.Marshal(response)
-		_ = a.send(id, body)
+		body, _ := proto.Marshal(&gatev1.ErrorNotify{Code: 1005, Msg: "缓存暂不可用，请重试", Context: fmt.Sprintf("related_msg_id=%d", msg.MsgID)})
+		_ = a.send(20, body)
 	}
 }

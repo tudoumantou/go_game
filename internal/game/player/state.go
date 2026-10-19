@@ -2,6 +2,7 @@
 package player
 
 import (
+	"encoding/json"
 	"sync"
 
 	"game_study/internal/game/module"
@@ -16,10 +17,10 @@ type Attr = writebehind.Attr
 type State struct {
 	playerID      int64
 	profile       module.Profile
-	attr          Attr            // 基础属性（落库）
-	bonus         Attr            // 装备等加成（登录时按已穿装备重算，不落库）
-	items         map[int32]int64 // item_id -> count
-	signin        *writebehind.SigninData
+	attr          Attr                       // 基础属性（落库）
+	bonus         Attr                       // 装备等加成（登录时按已穿装备重算，不落库）
+	items         map[int32]int64            // item_id -> count
+	ext           map[string]json.RawMessage // 模块私有状态（键 = writebehind.Persister.Name）
 	appliedGrants map[string]bool
 
 	dirty      map[string]bool // module -> dirty 标记
@@ -39,9 +40,36 @@ func NewState(playerID int64) *State {
 	return &State{
 		playerID:   playerID,
 		items:      make(map[int32]int64),
+		ext:        make(map[string]json.RawMessage),
 		dirty:      make(map[string]bool),
 		dirtyItems: make(map[int32]bool),
 	}
+}
+
+// Ext 返回模块私有状态的副本；未设置过时返回 nil。
+func (s *State) Ext(name string) json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	raw := s.ext[name]
+	if raw == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
+}
+
+// SetExt 覆盖模块私有状态并标脏；raw 为 nil 表示清除该模块状态。
+//
+// 模块不需要自己序列化整个玩家：只提交自己那一段，框架负责搬运。
+func (s *State) SetExt(name string, raw json.RawMessage) {
+	s.mu.Lock()
+	if raw == nil {
+		delete(s.ext, name)
+	} else {
+		s.ext[name] = append(json.RawMessage(nil), raw...)
+	}
+	s.dirty[name] = true
+	s.mu.Unlock()
+	s.notifyDirty()
 }
 
 // PlayerID 返回玩家 ID。

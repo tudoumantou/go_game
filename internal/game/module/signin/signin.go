@@ -42,6 +42,30 @@ func New(repo *Repo, logger *log.Logger, clock ...func() time.Time) *Module {
 
 func (*Module) Name() string     { return "signin" }
 func (*Module) MsgIDs() []uint32 { return []uint32{MsgInfoReq, MsgClaimReq} }
+
+// Rollbackable 签到请求只改内存且可幂等重放，写缓存失败时可以丢弃本次改动。
+func (*Module) Rollbackable(msgID uint32) bool { return msgID == MsgInfoReq || msgID == MsgClaimReq }
+
+// CacheFailureReply 缓存不可用时返回带系统错误码的业务响应，
+// 让客户端能按自己熟悉的协议号处理，而不是收一个通用错误通知。
+func (*Module) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
+	var out proto.Message
+	var id uint32
+	switch msgID {
+	case MsgInfoReq:
+		id, out = MsgInfoResp, &gamev1.SigninInfoResp{Code: codeSystem}
+	case MsgClaimReq:
+		id, out = MsgClaimResp, &gamev1.SigninClaimResp{Code: codeSystem}
+	default:
+		return 0, nil, false
+	}
+	raw, err := proto.Marshal(out)
+	if err != nil {
+		return 0, nil, false
+	}
+	return id, raw, true
+}
+
 func (*Module) Init(*module.Context) error {
 	for day := int32(1); day <= 7; day++ {
 		if _, err := rewardsForDay(day, gamedata.SigninRewardCfgList); err != nil {
@@ -67,8 +91,8 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 	if err := proto.Unmarshal(body, req); err != nil {
 		return m.failure(ctx, msgID, err)
 	}
-	state, ok := ctx.State.(module.SigninState)
-	if m.repo == nil || !ok || !ctx.CacheEnabled {
+	state := ctx.State
+	if m.repo == nil || state == nil || !ctx.CacheEnabled {
 		return m.failure(ctx, msgID, fmt.Errorf("signin repository unavailable"))
 	}
 	today := businessDay(m.now()) // 每个请求只采样一次，防止处理途中跨零点。

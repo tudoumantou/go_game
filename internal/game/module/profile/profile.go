@@ -43,6 +43,9 @@ func (m *Module) Name() string { return "profile" }
 // MsgIDs 实现 module.Module。
 func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDPlayerInfoReq} }
 
+// Rollbackable 玩家信息查询只读，写缓存失败时可直接回滚内存。
+func (*Module) Rollbackable(uint32) bool { return true }
+
 // Init 实现 module.Module。
 func (m *Module) Init(ctx *module.Context) error { return nil }
 

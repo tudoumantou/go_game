@@ -1,13 +1,23 @@
 package signin
 
 import (
+	"encoding/json"
 	"fmt"
+
 	"game_study/internal/game/module"
-	"game_study/pkg/writebehind"
 )
 
+// stateAccess 是签到需要的最小状态能力。
+//
+// 刻意不依赖整个 module.PlayerState：模块只用到「读自己那段、写自己那段」，
+// 窄接口让单测可以用几行内存实现，也约束模块不去碰别人的数据。
+type stateAccess interface {
+	Ext(name string) json.RawMessage
+	SetExt(name string, raw json.RawMessage)
+}
+
 // Repo 是签到的 Actor 状态访问器，不持有 MySQL 或 Redis 客户端。
-// 持久化由玩家统一缓存提交和独立 writebehind 进程负责。
+// 持久化由玩家统一缓存提交和独立 writebehind 进程负责（见 persist.go）。
 type Repo struct{}
 
 func NewRepo() *Repo { return &Repo{} }
@@ -18,8 +28,34 @@ type view struct {
 	Claims map[int64][]module.ItemGrant
 }
 
-func (*Repo) Load(state module.SigninState, today int64) (*view, error) {
-	data := state.SigninData()
+// read 解码当前签到状态；从未签到过时返回 nil。
+func read(state stateAccess) (*Data, error) {
+	raw := state.Ext(stateKey)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var d Data
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return nil, fmt.Errorf("decode signin state: %w", err)
+	}
+	return &d, nil
+}
+
+// write 把签到状态写回模块私有槽位（会标脏并触发落库）。
+func write(state stateAccess, d *Data) error {
+	raw, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Errorf("encode signin state: %w", err)
+	}
+	state.SetExt(stateKey, raw)
+	return nil
+}
+
+func (*Repo) Load(state stateAccess, today int64) (*view, error) {
+	data, err := read(state)
+	if err != nil {
+		return nil, err
+	}
 	if data == nil {
 		return &view{Start: today, Day: 1, Claims: make(map[int64][]module.ItemGrant)}, nil
 	}
@@ -36,10 +72,14 @@ func (*Repo) Load(state module.SigninState, today int64) (*view, error) {
 	return &view{Start: start, Day: day, Claims: claims}, nil
 }
 
-func (*Repo) Claim(state module.SigninState, today int64, grants []module.ItemGrant) ([]module.ItemGrant, bool, error) {
-	data := state.SigninData()
+// Claim 只在内存里登记领取事实；返回 already=true 时 grants 是持久化的历史快照。
+func (*Repo) Claim(state stateAccess, today int64, grants []module.ItemGrant) ([]module.ItemGrant, bool, error) {
+	data, err := read(state)
+	if err != nil {
+		return nil, false, err
+	}
 	if data == nil {
-		data = &writebehind.SigninData{AnchorDay: today, Claims: make(map[int64][]module.ItemGrant)}
+		data = &Data{AnchorDay: today, Claims: make(map[int64][]module.ItemGrant)}
 	}
 	if today < data.AnchorDay {
 		return nil, false, fmt.Errorf("business date precedes signin anchor")
@@ -51,6 +91,8 @@ func (*Repo) Claim(state module.SigninState, today int64, grants []module.ItemGr
 		data.Claims = make(map[int64][]module.ItemGrant)
 	}
 	data.Claims[today] = append([]module.ItemGrant(nil), grants...)
-	state.SetSigninData(data)
+	if err := write(state, data); err != nil {
+		return nil, false, err
+	}
 	return grants, false, nil
 }

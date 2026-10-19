@@ -14,6 +14,10 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/writebehind"
+
+	// 落库进程不导入业务模块，靠这里注册各模块的 Persister，
+	// 否则框架会拒绝写入未注册的模块状态（防静默丢数据）。
+	_ "game_study/internal/game/module/register"
 )
 
 func main() {

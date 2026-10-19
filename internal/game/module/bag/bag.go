@@ -44,6 +44,9 @@ func New(logger *log.Logger) *Module {
 func (m *Module) Name() string { return "bag" }
 
 // MsgIDs 实现 module.Module。
+// Rollbackable 背包列表只读；使用道具会改资产，按不可回滚处理。
+func (*Module) Rollbackable(msgID uint32) bool { return msgID == msgIDBagListReq }
+
 func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDUseItemReq, msgIDBagListReq} }
 
 // Init 实现 module.Module。

@@ -4,6 +4,7 @@ package module
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"game_study/pkg/actor"
@@ -27,6 +28,9 @@ type PlayerState interface {
 	AddItem(itemID int32, count int64)
 	RemoveItem(itemID int32, count int64) bool
 	MarkDirty(module string)
+	// Ext 读取模块私有状态；SetExt 覆盖并标脏。键必须是 writebehind.Persister.Name()。
+	Ext(name string) json.RawMessage
+	SetExt(name string, raw json.RawMessage)
 }
 
 // Sender 下行发送能力（由游戏服组装层实现，写回网关）。
@@ -34,12 +38,6 @@ type Sender func(msgID uint32, body []byte) error
 
 // ItemGrant 一次原子发奖中的道具增量。
 type ItemGrant = writebehind.ItemGrant
-
-// SigninState 是可选的玩家业务状态能力；查询/领取只访问所属 Actor。
-type SigninState interface {
-	SigninData() *writebehind.SigninData
-	SetSigninData(*writebehind.SigninData)
-}
 
 // AddExpFunc 增加经验并按配置连续升级，返回是否升级与当前等级。
 type AddExpFunc func(n int64) (levelUp bool, level int32)
@@ -122,6 +120,22 @@ type EventAware interface {
 	OnEvent(ctx *Context, evt Event)
 }
 
+// RollbackAware 可选接口：声明某个请求在写缓存失败后能否丢弃内存改动并重新加载。
+//
+// 返回 true 的前提是「重放该请求不会产生第二次副作用」：要么只读，要么有业务幂等键。
+// 未实现该接口的模块按不可回滚处理（保守），失败时保留待提交快照而不是丢弃改动。
+type RollbackAware interface {
+	Rollbackable(msgID uint32) bool
+}
+
+// CacheFailureAware 可选接口：缓存不可用时给客户端一个有意义的错误响应。
+//
+// 未实现时由网关层统一回通用错误通知；实现了就由模块自己决定响应协议号与错误码，
+// 避免在玩家层硬编码各模块的协议号。
+type CacheFailureAware interface {
+	CacheFailureReply(msgID uint32) (respID uint32, body []byte, ok bool)
+}
+
 // Registry 模块注册表（含 msgID 路由索引）。
 type Registry struct {
 	modules []Module
@@ -158,6 +172,32 @@ func (r *Registry) Dispatch(ctx *Context, msgID uint32, body []byte) error {
 		return fmt.Errorf("%w: %d", ErrNoRoute, msgID)
 	}
 	return m.OnMessage(ctx, msgID, body)
+}
+
+// IsRollbackable 查询某协议失败后能否回滚内存（未注册的协议一律不可回滚）。
+func (r *Registry) IsRollbackable(msgID uint32) bool {
+	m, ok := r.route[msgID]
+	if !ok {
+		return false
+	}
+	rb, ok := m.(RollbackAware)
+	if !ok {
+		return false
+	}
+	return rb.Rollbackable(msgID)
+}
+
+// CacheFailureReply 取得模块自定义的缓存不可用响应（未实现时返回 false）。
+func (r *Registry) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
+	m, ok := r.route[msgID]
+	if !ok {
+		return 0, nil, false
+	}
+	ca, ok := m.(CacheFailureAware)
+	if !ok {
+		return 0, nil, false
+	}
+	return ca.CacheFailureReply(msgID)
 }
 
 // DispatchEvent 把事件分发给所有 EventAware 模块。

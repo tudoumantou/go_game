@@ -36,7 +36,7 @@ func (r *Repository) CommitItems(ctx context.Context, state *State, grants []mod
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var id int64
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM player WHERE id = ? FOR UPDATE`, state.PlayerID()).Scan(&id); err != nil {
 		return err
@@ -67,7 +67,7 @@ func (r *Repository) ReloadItems(ctx context.Context, state *State) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var id int64
 	if err := tx.QueryRowContext(ctx, `SELECT id FROM player WHERE id = ? FOR UPDATE`, state.PlayerID()).Scan(&id); err != nil {
 		return err

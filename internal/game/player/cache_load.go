@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"game_study/pkg/writebehind"
 )
@@ -33,7 +34,7 @@ func (r *Repository) loadColdSnapshot(ctx context.Context, id int64) (writebehin
 	if err != nil {
 		return writebehind.Record{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	out := writebehind.Record{State: writebehind.Snapshot{PlayerID: id, Items: make(map[int32]int64)}}
 	var receipts sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT version, applied_grants FROM player_writebehind WHERE player_id = ?`, id).Scan(&out.Version, &receipts)
@@ -72,40 +73,33 @@ func (r *Repository) loadColdSnapshot(ctx context.Context, id int64) (writebehin
 	if err != nil {
 		return out, err
 	}
-	var anchor int64
-	err = tx.QueryRowContext(ctx, `SELECT anchor_day FROM player_signin WHERE player_id = ?`, id).Scan(&anchor)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	// 模块私有表由各自的 Persister 读取，框架不再内建任何玩法的 SQL。
+	if err := loadModuleStates(ctx, tx, &out.State); err != nil {
 		return out, err
-	}
-	if err == nil {
-		data := &writebehind.SigninData{AnchorDay: anchor, Claims: make(map[int64][]writebehind.ItemGrant)}
-		rows, err := tx.QueryContext(ctx, `SELECT sign_day, rewards FROM signin_claim WHERE player_id = ?`, id)
-		if err != nil {
-			return out, err
-		}
-		for rows.Next() {
-			var day int64
-			var raw string
-			if err := rows.Scan(&day, &raw); err != nil {
-				rows.Close()
-				return out, err
-			}
-			var items []writebehind.ItemGrant
-			if err := json.Unmarshal([]byte(raw), &items); err != nil {
-				rows.Close()
-				return out, err
-			}
-			data.Claims[day] = items
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return out, err
-		}
-		out.State.Signin = data
 	}
 	if err := out.State.Validate(); err != nil {
 		return out, err
 	}
 	return out, tx.Commit()
+}
+
+// loadModuleStates 按注册表遍历各模块的冷启动读取。
+//
+// 顺序由 writebehind.Persisters() 保证稳定（按名字排序）；新增玩法只要注册
+// Persister，就会自动被这里读到，不需要修改本文件。
+func loadModuleStates(ctx context.Context, tx *sql.Tx, state *writebehind.Snapshot) error {
+	for _, p := range writebehind.Persisters() {
+		raw, err := p.Load(ctx, tx, state.PlayerID)
+		if err != nil {
+			return fmt.Errorf("load module %q: %w", p.Name(), err)
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		if state.Ext == nil {
+			state.Ext = make(map[string]json.RawMessage, 1)
+		}
+		state.Ext[p.Name()] = raw
+	}
+	return nil
 }

@@ -243,7 +243,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 				if first.Code != 1 {
 					t.Fatalf("failed cache write replied success: %v", first)
 				}
-				if a.state.GetItemCount(1001) != 10 || a.state.SigninData() != nil {
+				if a.state.GetItemCount(1001) != 10 || len(a.state.Ext("signin")) != 0 {
 					t.Fatal("failed cache update leaked memory")
 				}
 			}

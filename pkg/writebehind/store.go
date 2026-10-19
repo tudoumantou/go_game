@@ -97,6 +97,9 @@ func (s *Store) Load(ctx context.Context, id int64) (Record, error) {
 	if state.PlayerID != id {
 		return Record{}, fmt.Errorf("cached player mismatch")
 	}
+	// 旧版把签到内建在 Snapshot 里，这里原地迁移成 Ext["signin"]；
+	// 下一次 Commit 会用新格式覆盖 Redis，无需停机刷数据。
+	state.migrateLegacy()
 	if err := state.Validate(); err != nil {
 		return Record{}, err
 	}

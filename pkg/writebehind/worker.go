@@ -108,7 +108,7 @@ func (w *Worker) Persist(ctx context.Context, records []Record) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	marks := make([]string, len(records))
 	args := make([]any, len(records))
 	seeds := make([]string, len(records))
@@ -204,9 +204,10 @@ func persistSnapshots(ctx context.Context, tx *sql.Tx, records []Record) error {
 	}
 	attrs := make([][]any, 0, len(records))
 	items := make([][]any, 0)
-	anchors := make([][]any, 0)
-	claims := make([][]any, 0)
 	fences := make([][]any, 0, len(records))
+	// 模块私有状态按 Ext 键分组，交给各自的 Persister 合批写入。
+	// 框架不再认识任何具体玩法的表名，新增玩法只需实现并注册 Persister。
+	extGroups := make(map[string][]ModuleRow)
 	for _, r := range records {
 		s := r.State
 		a := s.Attr
@@ -221,21 +222,8 @@ func persistSnapshots(ctx context.Context, tx *sql.Tx, records []Record) error {
 				items = append(items, []any{s.PlayerID, int32(id), n})
 			}
 		}
-		if s.Signin != nil {
-			anchors = append(anchors, []any{s.PlayerID, s.Signin.AnchorDay})
-			days := make([]int64, 0, len(s.Signin.Claims))
-			for day := range s.Signin.Claims {
-				days = append(days, day)
-			}
-			sort.Slice(days, func(i, j int) bool { return days[i] < days[j] })
-			for _, day := range days {
-				raw, err := json.Marshal(s.Signin.Claims[day])
-				if err != nil {
-					return err
-				}
-				start := s.Signin.AnchorDay + (day-s.Signin.AnchorDay)/7*7
-				claims = append(claims, []any{s.PlayerID, day, start, int32(day - start + 1), string(raw)})
-			}
+		for name, raw := range s.Ext {
+			extGroups[name] = append(extGroups[name], ModuleRow{PlayerID: s.PlayerID, Data: raw})
 		}
 		receipts, err := json.Marshal(s.AppliedGrants)
 		if err != nil {
@@ -263,11 +251,21 @@ func persistSnapshots(ctx context.Context, tx *sql.Tx, records []Record) error {
 	if err := upsert(ctx, tx, "player_item", []string{"player_id", "item_id", "count"}, items); err != nil {
 		return err
 	}
-	if err := upsert(ctx, tx, "player_signin", []string{"player_id", "anchor_day"}, anchors); err != nil {
-		return err
+	// 模块扩展落库：顺序按名字固定，便于复现与断言。
+	// 模块未注册 Persister 时立即报错 —— 宁可整批回滚，也不静默丢数据。
+	names := make([]string, 0, len(extGroups))
+	for name := range extGroups {
+		names = append(names, name)
 	}
-	if err := upsert(ctx, tx, "signin_claim", []string{"player_id", "sign_day", "cycle_start_day", "day_index", "rewards"}, claims); err != nil {
-		return err
+	sort.Strings(names)
+	for _, name := range names {
+		p, ok := LookupPersister(name)
+		if !ok {
+			return fmt.Errorf("no persister registered for module %q", name)
+		}
+		if err := p.PersistBatch(ctx, tx, extGroups[name]); err != nil {
+			return fmt.Errorf("module %q: %w", name, err)
+		}
 	}
 	return upsert(ctx, tx, "player_writebehind", []string{"player_id", "version", "applied_grants"}, fences)
 }

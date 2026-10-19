@@ -1,35 +1,27 @@
 package player
 
-import "game_study/pkg/writebehind"
+import (
+	"encoding/json"
 
-func cloneSignin(data *writebehind.SigninData) *writebehind.SigninData {
-	if data == nil {
+	"game_study/pkg/writebehind"
+)
+
+// cloneExt 深拷贝模块私有状态，避免 Actor 回滚时与快照共享底层数组。
+func cloneExt(src map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(src) == 0 {
 		return nil
 	}
-	out := &writebehind.SigninData{AnchorDay: data.AnchorDay, Claims: make(map[int64][]writebehind.ItemGrant, len(data.Claims))}
-	for day, items := range data.Claims {
-		out.Claims[day] = append([]writebehind.ItemGrant(nil), items...)
+	out := make(map[string]json.RawMessage, len(src))
+	for name, raw := range src {
+		out[name] = append(json.RawMessage(nil), raw...)
 	}
 	return out
-}
-
-func (s *State) SigninData() *writebehind.SigninData {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return cloneSignin(s.signin)
-}
-func (s *State) SetSigninData(data *writebehind.SigninData) {
-	s.mu.Lock()
-	s.signin = cloneSignin(data)
-	s.dirty["signin"] = true
-	s.mu.Unlock()
-	s.notifyDirty()
 }
 
 func (s *State) snapshot() writebehind.Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := writebehind.Snapshot{PlayerID: s.playerID, Profile: s.profile, Attr: s.attr, Items: make(map[int32]int64, len(s.items)), Signin: cloneSignin(s.signin)}
+	out := writebehind.Snapshot{PlayerID: s.playerID, Profile: s.profile, Attr: s.attr, Items: make(map[int32]int64, len(s.items)), Ext: cloneExt(s.ext)}
 	for id, count := range s.items {
 		out.Items[id] = count
 	}
@@ -46,7 +38,10 @@ func stateFromSnapshot(snapshot writebehind.Snapshot) *State {
 	s := NewState(snapshot.PlayerID)
 	s.profile = snapshot.Profile
 	s.attr = snapshot.Attr
-	s.signin = cloneSignin(snapshot.Signin)
+	s.ext = cloneExt(snapshot.Ext)
+	if s.ext == nil {
+		s.ext = make(map[string]json.RawMessage)
+	}
 	if snapshot.AppliedGrants != nil {
 		s.appliedGrants = make(map[string]bool, len(snapshot.AppliedGrants))
 		for key, v := range snapshot.AppliedGrants {
