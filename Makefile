@@ -5,7 +5,7 @@ BIN     := bin
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db keygen db-init db-seed build test test-race test-integration lint fmt vet dev run-all \
+.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db keygen db-init db-migrate db-seed build test test-race test-integration lint fmt vet dev run-all \
         monitoring smoke loadtest bench drill-crash drill-suite clean
 
 help: ## 查看全部命令
@@ -40,6 +40,9 @@ gen-db: ## DDL → pkg/model（覆盖 *_gen.go，仅新建 *_model.go）
 
 keygen: ## 生成网关握手 RSA 密钥对（输出 deploy/keys，私钥不入库）
 	$(GO) run ./tools/keygen -out deploy/keys
+
+db-migrate: ## 已有库增量迁移（ARGS='--status' 只看状态，ARGS='--baseline' 标记基线）
+	@./scripts/db-migrate.sh $(ARGS)
 
 db-init: ## DDL → MySQL 建表（首次部署）
 	./scripts/db-init.sh

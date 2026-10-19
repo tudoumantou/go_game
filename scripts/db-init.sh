@@ -11,11 +11,21 @@ MYSQL_PASSWORD="${MYSQL_PASSWORD:-game_study}"
 MYSQL_DATABASE="${MYSQL_DATABASE:-game_study}"
 
 export MYSQL_PWD="$MYSQL_PASSWORD"
-MYSQL=(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE")
+# MYSQL_DOCKER=<容器名>：无本机 mysql 客户端时走 docker exec。
+if [[ -n "${MYSQL_DOCKER:-}" ]]; then
+  MYSQL=(docker exec -i -e MYSQL_PWD="$MYSQL_PASSWORD" "$MYSQL_DOCKER" mysql -u"$MYSQL_USER" "$MYSQL_DATABASE")
+else
+  MYSQL=(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u"$MYSQL_USER" "$MYSQL_DATABASE")
+fi
 
 echo "==> 建库（如不存在）"
-mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" \
-  -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+if [[ -n "${MYSQL_DOCKER:-}" ]]; then
+  docker exec -i -e MYSQL_PWD="$MYSQL_PASSWORD" "$MYSQL_DOCKER" mysql -u"$MYSQL_USER" \
+    -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+else
+  mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" \
+    -e "CREATE DATABASE IF NOT EXISTS \`$MYSQL_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+fi
 
 # 按月分表：建当前月 + 下个月的 login_log（12.3 表清单注释）
 CUR_MONTH="$(date +%Y%m)"
@@ -27,6 +37,7 @@ for f in sql/schema/*.sql; do
   "${MYSQL[@]}" < "$f"
 done
 
+echo "==> 提示：新库完成后执行 make db-migrate ARGS=--baseline 标记迁移基线"
 echo "==> login_log 按月分表: login_log_$CUR_MONTH / login_log_$NEXT_MONTH"
 for m in "$CUR_MONTH" "$NEXT_MONTH"; do
   "${MYSQL[@]}" -e "CREATE TABLE IF NOT EXISTS \`login_log_$m\` LIKE \`login_log\`;"

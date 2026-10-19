@@ -348,6 +348,17 @@ func (c *Client) TakeMail(mailID int64) (*gamev1.MailTakeAttachmentResp, error) 
 	return resp, nil
 }
 
+// RankList 榜单查询（6701/6702）。
+//
+// 中心服不可用时服务端回 code 6702 而不是空榜——调用方必须区分这两种情况。
+func (c *Client) RankList(rankType string) (*gamev1.RankListResp, error) {
+	resp := &gamev1.RankListResp{}
+	if err := c.call(codec.MsgRankListReq, &gamev1.RankListReq{RankType: rankType}, codec.MsgRankListResp, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // ---------------- B1 等级 / 任务 ----------------
 
 // QuestList 任务列表（7101/7102）。

@@ -305,7 +305,20 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("use item code=%d remain=%d (base %d)", use.Code, use.RemainCount, diamondBase)
 	}
 
-	// ⑪ 优雅关闭
+	// ⑪ 榜单查询：本用例没有启动中心服，必须回「暂不可用」（6702）而不是空榜。
+	// 空榜会让玩家误以为自己没有成绩，是列表类协议最容易做错的语义（R8.1/R11.1）。
+	rank, err := r.RankList("arena_score")
+	if err != nil {
+		t.Fatalf("rank list: %v", err)
+	}
+	if rank.Code != 6702 {
+		t.Fatalf("rank code = %d, want 6702 (center not running)", rank.Code)
+	}
+	if len(rank.Entries) != 0 {
+		t.Fatalf("unavailable must not return entries: %+v", rank.Entries)
+	}
+
+	// ⑫ 优雅关闭
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	_ = gwSrv.Shutdown(shutdownCtx)
