@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // FriendApply friend_apply 表
@@ -40,12 +42,12 @@ var FriendApplyColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertFriendApply(ctx context.Context, db *sql.DB, m *FriendApply) (sql.Result, error) {
+func InsertFriendApply(ctx context.Context, db Querier, m *FriendApply) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO friend_apply (id,from_id,to_id,status) VALUES (?,?,?,?)", m.Id, m.FromId, m.ToId, m.Status)
 }
 
 // FindFriendApplyByPK 按主键查询
-func FindFriendApplyByPK(ctx context.Context, db *sql.DB, Id int64) (*FriendApply, error) {
+func FindFriendApplyByPK(ctx context.Context, db Querier, Id int64) (*FriendApply, error) {
 	var m FriendApply
 	query := "SELECT id,from_id,to_id,status,created_at FROM friend_apply WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -60,16 +62,27 @@ func scanFriendApply(m *FriendApply, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateFriendApplyByPK 按主键更新（幂等）
-func UpdateFriendApplyByPK(ctx context.Context, db *sql.DB, m *FriendApply) (sql.Result, error) {
+func UpdateFriendApplyByPK(ctx context.Context, db Querier, m *FriendApply) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE friend_apply SET from_id = ?, to_id = ?, status = ? WHERE id = ?", m.FromId, m.ToId, m.Status, m.Id)
 }
 
 // UpsertFriendApplyByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertFriendApplyByPK(ctx context.Context, db *sql.DB, m *FriendApply) (sql.Result, error) {
+func UpsertFriendApplyByPK(ctx context.Context, db Querier, m *FriendApply) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO friend_apply (id,from_id,to_id,status) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE from_id = VALUES(from_id), to_id = VALUES(to_id), status = VALUES(status)", m.Id, m.FromId, m.ToId, m.Status)
 }
 
 // DeleteFriendApplyByPK 按主键删除
-func DeleteFriendApplyByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteFriendApplyByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM friend_apply WHERE id = ?", Id)
 }
+
+// upsertFriendApplyCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertFriendApplyCols = []string{"from_id", "to_id", "status"}
+
+// UpsertFriendApplyBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertFriendApplyBatch(ctx context.Context, tx *sql.Tx, rows []FriendApply) error {
+	return flush.UpsertBatch(ctx, tx, "friend_apply", upsertFriendApplyCols, rows, func(m FriendApply) []any {
+		return []any{m.FromId, m.ToId, m.Status}
+	})
+}
+

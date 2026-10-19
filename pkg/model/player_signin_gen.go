@@ -6,6 +6,8 @@ package model
 import (
 	"context"
 	"database/sql"
+
+	"game_study/pkg/flush"
 )
 
 // PlayerSignin player_signin 表
@@ -30,12 +32,12 @@ var PlayerSigninColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertPlayerSignin(ctx context.Context, db *sql.DB, m *PlayerSignin) (sql.Result, error) {
+func InsertPlayerSignin(ctx context.Context, db Querier, m *PlayerSignin) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_signin (player_id,anchor_day) VALUES (?,?)", m.PlayerId, m.AnchorDay)
 }
 
 // FindPlayerSigninByPK 按主键查询
-func FindPlayerSigninByPK(ctx context.Context, db *sql.DB, PlayerId int64) (*PlayerSignin, error) {
+func FindPlayerSigninByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerSignin, error) {
 	var m PlayerSignin
 	query := "SELECT player_id,anchor_day FROM player_signin WHERE player_id = ?"
 	row := db.QueryRowContext(ctx, query, PlayerId)
@@ -50,16 +52,49 @@ func scanPlayerSignin(m *PlayerSignin, sc interface{ Scan(...any) error }) error
 }
 
 // UpdatePlayerSigninByPK 按主键更新（幂等）
-func UpdatePlayerSigninByPK(ctx context.Context, db *sql.DB, m *PlayerSignin) (sql.Result, error) {
+func UpdatePlayerSigninByPK(ctx context.Context, db Querier, m *PlayerSignin) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE player_signin SET anchor_day = ? WHERE player_id = ?", m.AnchorDay, m.PlayerId)
 }
 
 // UpsertPlayerSigninByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertPlayerSigninByPK(ctx context.Context, db *sql.DB, m *PlayerSignin) (sql.Result, error) {
+func UpsertPlayerSigninByPK(ctx context.Context, db Querier, m *PlayerSignin) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_signin (player_id,anchor_day) VALUES (?,?) ON DUPLICATE KEY UPDATE anchor_day = VALUES(anchor_day)", m.PlayerId, m.AnchorDay)
 }
 
 // DeletePlayerSigninByPK 按主键删除
-func DeletePlayerSigninByPK(ctx context.Context, db *sql.DB, PlayerId int64) (sql.Result, error) {
+func DeletePlayerSigninByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM player_signin WHERE player_id = ?", PlayerId)
+}
+
+// upsertPlayerSigninCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertPlayerSigninCols = []string{"player_id", "anchor_day"}
+
+// UpsertPlayerSigninBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertPlayerSigninBatch(ctx context.Context, tx *sql.Tx, rows []PlayerSignin) error {
+	return flush.UpsertBatch(ctx, tx, "player_signin", upsertPlayerSigninCols, rows, func(m PlayerSignin) []any {
+		return []any{m.PlayerId, m.AnchorDay}
+	})
+}
+
+// DeletePlayerSigninByPlayer 删除该玩家全部行（整包替换落库用）
+func DeletePlayerSigninByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "player_signin", "player_id", playerID)
+}
+
+// ListPlayerSigninByPlayer 按玩家列出全部行（冷启动读取用）
+func ListPlayerSigninByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerSignin, error) {
+	rows, err := db.QueryContext(ctx, "SELECT player_id,anchor_day FROM player_signin WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PlayerSignin
+	for rows.Next() {
+		var m PlayerSignin
+		if err := scanPlayerSignin(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

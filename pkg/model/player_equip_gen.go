@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // PlayerEquip player_equip 表
@@ -49,12 +51,12 @@ var PlayerEquipColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertPlayerEquip(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
+func InsertPlayerEquip(ctx context.Context, db Querier, m *PlayerEquip) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality,equipped) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped)
 }
 
 // FindPlayerEquipByPK 按主键查询
-func FindPlayerEquipByPK(ctx context.Context, db *sql.DB, Id int64) (*PlayerEquip, error) {
+func FindPlayerEquipByPK(ctx context.Context, db Querier, Id int64) (*PlayerEquip, error) {
 	var m PlayerEquip
 	query := "SELECT id,player_id,equip_id,enhance_level,quality,equipped,created_at,updated_at FROM player_equip WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -69,16 +71,49 @@ func scanPlayerEquip(m *PlayerEquip, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdatePlayerEquipByPK 按主键更新（幂等）
-func UpdatePlayerEquipByPK(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
+func UpdatePlayerEquipByPK(ctx context.Context, db Querier, m *PlayerEquip) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE player_equip SET player_id = ?, equip_id = ?, enhance_level = ?, quality = ?, equipped = ? WHERE id = ?", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped, m.Id)
 }
 
 // UpsertPlayerEquipByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertPlayerEquipByPK(ctx context.Context, db *sql.DB, m *PlayerEquip) (sql.Result, error) {
+func UpsertPlayerEquipByPK(ctx context.Context, db Querier, m *PlayerEquip) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality,equipped) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), equip_id = VALUES(equip_id), enhance_level = VALUES(enhance_level), quality = VALUES(quality), equipped = VALUES(equipped)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped)
 }
 
 // DeletePlayerEquipByPK 按主键删除
-func DeletePlayerEquipByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeletePlayerEquipByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM player_equip WHERE id = ?", Id)
+}
+
+// upsertPlayerEquipCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertPlayerEquipCols = []string{"player_id", "equip_id", "enhance_level", "quality", "equipped"}
+
+// UpsertPlayerEquipBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertPlayerEquipBatch(ctx context.Context, tx *sql.Tx, rows []PlayerEquip) error {
+	return flush.UpsertBatch(ctx, tx, "player_equip", upsertPlayerEquipCols, rows, func(m PlayerEquip) []any {
+		return []any{m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped}
+	})
+}
+
+// DeletePlayerEquipByPlayer 删除该玩家全部行（整包替换落库用）
+func DeletePlayerEquipByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "player_equip", "player_id", playerID)
+}
+
+// ListPlayerEquipByPlayer 按玩家列出全部行（冷启动读取用）
+func ListPlayerEquipByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerEquip, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,player_id,equip_id,enhance_level,quality,equipped,created_at,updated_at FROM player_equip WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PlayerEquip
+	for rows.Next() {
+		var m PlayerEquip
+		if err := scanPlayerEquip(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

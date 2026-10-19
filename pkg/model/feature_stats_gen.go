@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // FeatureStats feature_stats 表
@@ -46,12 +48,12 @@ var FeatureStatsColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertFeatureStats(ctx context.Context, db *sql.DB, m *FeatureStats) (sql.Result, error) {
+func InsertFeatureStats(ctx context.Context, db Querier, m *FeatureStats) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO feature_stats (id,group_id,feature,window_start,window_end,value) VALUES (?,?,?,?,?,?)", m.Id, m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value)
 }
 
 // FindFeatureStatsByPK 按主键查询
-func FindFeatureStatsByPK(ctx context.Context, db *sql.DB, Id int64) (*FeatureStats, error) {
+func FindFeatureStatsByPK(ctx context.Context, db Querier, Id int64) (*FeatureStats, error) {
 	var m FeatureStats
 	query := "SELECT id,group_id,feature,window_start,window_end,value,updated_at FROM feature_stats WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -66,16 +68,27 @@ func scanFeatureStats(m *FeatureStats, sc interface{ Scan(...any) error }) error
 }
 
 // UpdateFeatureStatsByPK 按主键更新（幂等）
-func UpdateFeatureStatsByPK(ctx context.Context, db *sql.DB, m *FeatureStats) (sql.Result, error) {
+func UpdateFeatureStatsByPK(ctx context.Context, db Querier, m *FeatureStats) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE feature_stats SET group_id = ?, feature = ?, window_start = ?, window_end = ?, value = ? WHERE id = ?", m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value, m.Id)
 }
 
 // UpsertFeatureStatsByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertFeatureStatsByPK(ctx context.Context, db *sql.DB, m *FeatureStats) (sql.Result, error) {
+func UpsertFeatureStatsByPK(ctx context.Context, db Querier, m *FeatureStats) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO feature_stats (id,group_id,feature,window_start,window_end,value) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE group_id = VALUES(group_id), feature = VALUES(feature), window_start = VALUES(window_start), window_end = VALUES(window_end), value = VALUES(value)", m.Id, m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value)
 }
 
 // DeleteFeatureStatsByPK 按主键删除
-func DeleteFeatureStatsByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteFeatureStatsByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM feature_stats WHERE id = ?", Id)
 }
+
+// upsertFeatureStatsCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertFeatureStatsCols = []string{"group_id", "feature", "window_start", "window_end", "value"}
+
+// UpsertFeatureStatsBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertFeatureStatsBatch(ctx context.Context, tx *sql.Tx, rows []FeatureStats) error {
+	return flush.UpsertBatch(ctx, tx, "feature_stats", upsertFeatureStatsCols, rows, func(m FeatureStats) []any {
+		return []any{m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value}
+	})
+}
+

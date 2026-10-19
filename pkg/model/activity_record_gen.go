@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // ActivityRecord activity_record 表
@@ -49,12 +51,12 @@ var ActivityRecordColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertActivityRecord(ctx context.Context, db *sql.DB, m *ActivityRecord) (sql.Result, error) {
+func InsertActivityRecord(ctx context.Context, db Querier, m *ActivityRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO activity_record (id,player_id,activity_id,progress,reward_mask,joined_at) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt)
 }
 
 // FindActivityRecordByPK 按主键查询
-func FindActivityRecordByPK(ctx context.Context, db *sql.DB, Id int64) (*ActivityRecord, error) {
+func FindActivityRecordByPK(ctx context.Context, db Querier, Id int64) (*ActivityRecord, error) {
 	var m ActivityRecord
 	query := "SELECT id,player_id,activity_id,progress,reward_mask,joined_at,created_at,updated_at FROM activity_record WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -69,16 +71,49 @@ func scanActivityRecord(m *ActivityRecord, sc interface{ Scan(...any) error }) e
 }
 
 // UpdateActivityRecordByPK 按主键更新（幂等）
-func UpdateActivityRecordByPK(ctx context.Context, db *sql.DB, m *ActivityRecord) (sql.Result, error) {
+func UpdateActivityRecordByPK(ctx context.Context, db Querier, m *ActivityRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE activity_record SET player_id = ?, activity_id = ?, progress = ?, reward_mask = ?, joined_at = ? WHERE id = ?", m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt, m.Id)
 }
 
 // UpsertActivityRecordByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertActivityRecordByPK(ctx context.Context, db *sql.DB, m *ActivityRecord) (sql.Result, error) {
+func UpsertActivityRecordByPK(ctx context.Context, db Querier, m *ActivityRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO activity_record (id,player_id,activity_id,progress,reward_mask,joined_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), activity_id = VALUES(activity_id), progress = VALUES(progress), reward_mask = VALUES(reward_mask), joined_at = VALUES(joined_at)", m.Id, m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt)
 }
 
 // DeleteActivityRecordByPK 按主键删除
-func DeleteActivityRecordByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteActivityRecordByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM activity_record WHERE id = ?", Id)
+}
+
+// upsertActivityRecordCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertActivityRecordCols = []string{"player_id", "activity_id", "progress", "reward_mask", "joined_at"}
+
+// UpsertActivityRecordBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertActivityRecordBatch(ctx context.Context, tx *sql.Tx, rows []ActivityRecord) error {
+	return flush.UpsertBatch(ctx, tx, "activity_record", upsertActivityRecordCols, rows, func(m ActivityRecord) []any {
+		return []any{m.PlayerId, m.ActivityId, m.Progress, m.RewardMask, m.JoinedAt}
+	})
+}
+
+// DeleteActivityRecordByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteActivityRecordByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "activity_record", "player_id", playerID)
+}
+
+// ListActivityRecordByPlayer 按玩家列出全部行（冷启动读取用）
+func ListActivityRecordByPlayer(ctx context.Context, db Querier, playerID int64) ([]ActivityRecord, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,player_id,activity_id,progress,reward_mask,joined_at,created_at,updated_at FROM activity_record WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ActivityRecord
+	for rows.Next() {
+		var m ActivityRecord
+		if err := scanActivityRecord(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

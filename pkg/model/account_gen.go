@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // Account account 表
@@ -52,12 +54,12 @@ var AccountColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertAccount(ctx context.Context, db *sql.DB, m *Account) (sql.Result, error) {
+func InsertAccount(ctx context.Context, db Querier, m *Account) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO account (id,account,password_hash,salt,status,device,last_login_at) VALUES (?,?,?,?,?,?,?)", m.Id, m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt)
 }
 
 // FindAccountByPK 按主键查询
-func FindAccountByPK(ctx context.Context, db *sql.DB, Id int64) (*Account, error) {
+func FindAccountByPK(ctx context.Context, db Querier, Id int64) (*Account, error) {
 	var m Account
 	query := "SELECT id,account,password_hash,salt,status,device,created_at,updated_at,last_login_at FROM account WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -72,16 +74,27 @@ func scanAccount(m *Account, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateAccountByPK 按主键更新（幂等）
-func UpdateAccountByPK(ctx context.Context, db *sql.DB, m *Account) (sql.Result, error) {
+func UpdateAccountByPK(ctx context.Context, db Querier, m *Account) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE account SET account = ?, password_hash = ?, salt = ?, status = ?, device = ?, last_login_at = ? WHERE id = ?", m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt, m.Id)
 }
 
 // UpsertAccountByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertAccountByPK(ctx context.Context, db *sql.DB, m *Account) (sql.Result, error) {
+func UpsertAccountByPK(ctx context.Context, db Querier, m *Account) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO account (id,account,password_hash,salt,status,device,last_login_at) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account = VALUES(account), password_hash = VALUES(password_hash), salt = VALUES(salt), status = VALUES(status), device = VALUES(device), last_login_at = VALUES(last_login_at)", m.Id, m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt)
 }
 
 // DeleteAccountByPK 按主键删除
-func DeleteAccountByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteAccountByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM account WHERE id = ?", Id)
 }
+
+// upsertAccountCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertAccountCols = []string{"account", "password_hash", "salt", "status", "device", "last_login_at"}
+
+// UpsertAccountBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertAccountBatch(ctx context.Context, tx *sql.Tx, rows []Account) error {
+	return flush.UpsertBatch(ctx, tx, "account", upsertAccountCols, rows, func(m Account) []any {
+		return []any{m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt}
+	})
+}
+

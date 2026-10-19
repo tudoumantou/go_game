@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // ChatRecord chat_record 表
@@ -49,12 +51,12 @@ var ChatRecordColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertChatRecord(ctx context.Context, db *sql.DB, m *ChatRecord) (sql.Result, error) {
+func InsertChatRecord(ctx context.Context, db Querier, m *ChatRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO chat_record (id,owner_id,peer_id,msg_id,direction,channel,content) VALUES (?,?,?,?,?,?,?)", m.Id, m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content)
 }
 
 // FindChatRecordByPK 按主键查询
-func FindChatRecordByPK(ctx context.Context, db *sql.DB, Id int64) (*ChatRecord, error) {
+func FindChatRecordByPK(ctx context.Context, db Querier, Id int64) (*ChatRecord, error) {
 	var m ChatRecord
 	query := "SELECT id,owner_id,peer_id,msg_id,direction,channel,content,created_at FROM chat_record WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -69,16 +71,27 @@ func scanChatRecord(m *ChatRecord, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateChatRecordByPK 按主键更新（幂等）
-func UpdateChatRecordByPK(ctx context.Context, db *sql.DB, m *ChatRecord) (sql.Result, error) {
+func UpdateChatRecordByPK(ctx context.Context, db Querier, m *ChatRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE chat_record SET owner_id = ?, peer_id = ?, msg_id = ?, direction = ?, channel = ?, content = ? WHERE id = ?", m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content, m.Id)
 }
 
 // UpsertChatRecordByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertChatRecordByPK(ctx context.Context, db *sql.DB, m *ChatRecord) (sql.Result, error) {
+func UpsertChatRecordByPK(ctx context.Context, db Querier, m *ChatRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO chat_record (id,owner_id,peer_id,msg_id,direction,channel,content) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE owner_id = VALUES(owner_id), peer_id = VALUES(peer_id), msg_id = VALUES(msg_id), direction = VALUES(direction), channel = VALUES(channel), content = VALUES(content)", m.Id, m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content)
 }
 
 // DeleteChatRecordByPK 按主键删除
-func DeleteChatRecordByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteChatRecordByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM chat_record WHERE id = ?", Id)
 }
+
+// upsertChatRecordCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertChatRecordCols = []string{"owner_id", "peer_id", "msg_id", "direction", "channel", "content"}
+
+// UpsertChatRecordBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertChatRecordBatch(ctx context.Context, tx *sql.Tx, rows []ChatRecord) error {
+	return flush.UpsertBatch(ctx, tx, "chat_record", upsertChatRecordCols, rows, func(m ChatRecord) []any {
+		return []any{m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content}
+	})
+}
+

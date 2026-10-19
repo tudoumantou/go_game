@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // CopyRecord copy_record 表
@@ -49,12 +51,12 @@ var CopyRecordColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertCopyRecord(ctx context.Context, db *sql.DB, m *CopyRecord) (sql.Result, error) {
+func InsertCopyRecord(ctx context.Context, db Querier, m *CopyRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO copy_record (id,player_id,copy_id,star,pass_count,first_pass) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass)
 }
 
 // FindCopyRecordByPK 按主键查询
-func FindCopyRecordByPK(ctx context.Context, db *sql.DB, Id int64) (*CopyRecord, error) {
+func FindCopyRecordByPK(ctx context.Context, db Querier, Id int64) (*CopyRecord, error) {
 	var m CopyRecord
 	query := "SELECT id,player_id,copy_id,star,pass_count,first_pass,created_at,updated_at FROM copy_record WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -69,16 +71,49 @@ func scanCopyRecord(m *CopyRecord, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateCopyRecordByPK 按主键更新（幂等）
-func UpdateCopyRecordByPK(ctx context.Context, db *sql.DB, m *CopyRecord) (sql.Result, error) {
+func UpdateCopyRecordByPK(ctx context.Context, db Querier, m *CopyRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE copy_record SET player_id = ?, copy_id = ?, star = ?, pass_count = ?, first_pass = ? WHERE id = ?", m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass, m.Id)
 }
 
 // UpsertCopyRecordByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertCopyRecordByPK(ctx context.Context, db *sql.DB, m *CopyRecord) (sql.Result, error) {
+func UpsertCopyRecordByPK(ctx context.Context, db Querier, m *CopyRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO copy_record (id,player_id,copy_id,star,pass_count,first_pass) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), copy_id = VALUES(copy_id), star = VALUES(star), pass_count = VALUES(pass_count), first_pass = VALUES(first_pass)", m.Id, m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass)
 }
 
 // DeleteCopyRecordByPK 按主键删除
-func DeleteCopyRecordByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteCopyRecordByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM copy_record WHERE id = ?", Id)
+}
+
+// upsertCopyRecordCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertCopyRecordCols = []string{"player_id", "copy_id", "star", "pass_count", "first_pass"}
+
+// UpsertCopyRecordBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertCopyRecordBatch(ctx context.Context, tx *sql.Tx, rows []CopyRecord) error {
+	return flush.UpsertBatch(ctx, tx, "copy_record", upsertCopyRecordCols, rows, func(m CopyRecord) []any {
+		return []any{m.PlayerId, m.CopyId, m.Star, m.PassCount, m.FirstPass}
+	})
+}
+
+// DeleteCopyRecordByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteCopyRecordByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "copy_record", "player_id", playerID)
+}
+
+// ListCopyRecordByPlayer 按玩家列出全部行（冷启动读取用）
+func ListCopyRecordByPlayer(ctx context.Context, db Querier, playerID int64) ([]CopyRecord, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,player_id,copy_id,star,pass_count,first_pass,created_at,updated_at FROM copy_record WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []CopyRecord
+	for rows.Next() {
+		var m CopyRecord
+		if err := scanCopyRecord(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // RechargeRecord recharge_record 表
@@ -46,12 +48,12 @@ var RechargeRecordColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertRechargeRecord(ctx context.Context, db *sql.DB, m *RechargeRecord) (sql.Result, error) {
+func InsertRechargeRecord(ctx context.Context, db Querier, m *RechargeRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO recharge_record (id,order_id,player_id,product_id,amount_fen,channel) VALUES (?,?,?,?,?,?)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel)
 }
 
 // FindRechargeRecordByPK 按主键查询
-func FindRechargeRecordByPK(ctx context.Context, db *sql.DB, Id int64) (*RechargeRecord, error) {
+func FindRechargeRecordByPK(ctx context.Context, db Querier, Id int64) (*RechargeRecord, error) {
 	var m RechargeRecord
 	query := "SELECT id,order_id,player_id,product_id,amount_fen,channel,created_at FROM recharge_record WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -66,16 +68,49 @@ func scanRechargeRecord(m *RechargeRecord, sc interface{ Scan(...any) error }) e
 }
 
 // UpdateRechargeRecordByPK 按主键更新（幂等）
-func UpdateRechargeRecordByPK(ctx context.Context, db *sql.DB, m *RechargeRecord) (sql.Result, error) {
+func UpdateRechargeRecordByPK(ctx context.Context, db Querier, m *RechargeRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE recharge_record SET order_id = ?, player_id = ?, product_id = ?, amount_fen = ?, channel = ? WHERE id = ?", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Id)
 }
 
 // UpsertRechargeRecordByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertRechargeRecordByPK(ctx context.Context, db *sql.DB, m *RechargeRecord) (sql.Result, error) {
+func UpsertRechargeRecordByPK(ctx context.Context, db Querier, m *RechargeRecord) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO recharge_record (id,order_id,player_id,product_id,amount_fen,channel) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE order_id = VALUES(order_id), player_id = VALUES(player_id), product_id = VALUES(product_id), amount_fen = VALUES(amount_fen), channel = VALUES(channel)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel)
 }
 
 // DeleteRechargeRecordByPK 按主键删除
-func DeleteRechargeRecordByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteRechargeRecordByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM recharge_record WHERE id = ?", Id)
+}
+
+// upsertRechargeRecordCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertRechargeRecordCols = []string{"order_id", "player_id", "product_id", "amount_fen", "channel"}
+
+// UpsertRechargeRecordBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertRechargeRecordBatch(ctx context.Context, tx *sql.Tx, rows []RechargeRecord) error {
+	return flush.UpsertBatch(ctx, tx, "recharge_record", upsertRechargeRecordCols, rows, func(m RechargeRecord) []any {
+		return []any{m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel}
+	})
+}
+
+// DeleteRechargeRecordByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteRechargeRecordByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "recharge_record", "player_id", playerID)
+}
+
+// ListRechargeRecordByPlayer 按玩家列出全部行（冷启动读取用）
+func ListRechargeRecordByPlayer(ctx context.Context, db Querier, playerID int64) ([]RechargeRecord, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,order_id,player_id,product_id,amount_fen,channel,created_at FROM recharge_record WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RechargeRecord
+	for rows.Next() {
+		var m RechargeRecord
+		if err := scanRechargeRecord(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

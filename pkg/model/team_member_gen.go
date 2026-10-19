@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // TeamMember team_member 表
@@ -40,12 +42,12 @@ var TeamMemberColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertTeamMember(ctx context.Context, db *sql.DB, m *TeamMember) (sql.Result, error) {
+func InsertTeamMember(ctx context.Context, db Querier, m *TeamMember) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO team_member (id,team_id,player_id,ready) VALUES (?,?,?,?)", m.Id, m.TeamId, m.PlayerId, m.Ready)
 }
 
 // FindTeamMemberByPK 按主键查询
-func FindTeamMemberByPK(ctx context.Context, db *sql.DB, Id int64) (*TeamMember, error) {
+func FindTeamMemberByPK(ctx context.Context, db Querier, Id int64) (*TeamMember, error) {
 	var m TeamMember
 	query := "SELECT id,team_id,player_id,ready,joined_at FROM team_member WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -60,16 +62,49 @@ func scanTeamMember(m *TeamMember, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateTeamMemberByPK 按主键更新（幂等）
-func UpdateTeamMemberByPK(ctx context.Context, db *sql.DB, m *TeamMember) (sql.Result, error) {
+func UpdateTeamMemberByPK(ctx context.Context, db Querier, m *TeamMember) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE team_member SET team_id = ?, player_id = ?, ready = ? WHERE id = ?", m.TeamId, m.PlayerId, m.Ready, m.Id)
 }
 
 // UpsertTeamMemberByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertTeamMemberByPK(ctx context.Context, db *sql.DB, m *TeamMember) (sql.Result, error) {
+func UpsertTeamMemberByPK(ctx context.Context, db Querier, m *TeamMember) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO team_member (id,team_id,player_id,ready) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE team_id = VALUES(team_id), player_id = VALUES(player_id), ready = VALUES(ready)", m.Id, m.TeamId, m.PlayerId, m.Ready)
 }
 
 // DeleteTeamMemberByPK 按主键删除
-func DeleteTeamMemberByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteTeamMemberByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM team_member WHERE id = ?", Id)
+}
+
+// upsertTeamMemberCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertTeamMemberCols = []string{"team_id", "player_id", "ready"}
+
+// UpsertTeamMemberBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertTeamMemberBatch(ctx context.Context, tx *sql.Tx, rows []TeamMember) error {
+	return flush.UpsertBatch(ctx, tx, "team_member", upsertTeamMemberCols, rows, func(m TeamMember) []any {
+		return []any{m.TeamId, m.PlayerId, m.Ready}
+	})
+}
+
+// DeleteTeamMemberByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteTeamMemberByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "team_member", "player_id", playerID)
+}
+
+// ListTeamMemberByPlayer 按玩家列出全部行（冷启动读取用）
+func ListTeamMemberByPlayer(ctx context.Context, db Querier, playerID int64) ([]TeamMember, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,team_id,player_id,ready,joined_at FROM team_member WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []TeamMember
+	for rows.Next() {
+		var m TeamMember
+		if err := scanTeamMember(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

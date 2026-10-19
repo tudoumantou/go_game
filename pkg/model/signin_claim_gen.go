@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // SigninClaim signin_claim 表
@@ -46,12 +48,12 @@ var SigninClaimColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertSigninClaim(ctx context.Context, db *sql.DB, m *SigninClaim) (sql.Result, error) {
+func InsertSigninClaim(ctx context.Context, db Querier, m *SigninClaim) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO signin_claim (id,player_id,sign_day,cycle_start_day,day_index,rewards) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.SignDay, m.CycleStartDay, m.DayIndex, m.Rewards)
 }
 
 // FindSigninClaimByPK 按主键查询
-func FindSigninClaimByPK(ctx context.Context, db *sql.DB, Id int64) (*SigninClaim, error) {
+func FindSigninClaimByPK(ctx context.Context, db Querier, Id int64) (*SigninClaim, error) {
 	var m SigninClaim
 	query := "SELECT id,player_id,sign_day,cycle_start_day,day_index,rewards,created_at FROM signin_claim WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -66,16 +68,49 @@ func scanSigninClaim(m *SigninClaim, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateSigninClaimByPK 按主键更新（幂等）
-func UpdateSigninClaimByPK(ctx context.Context, db *sql.DB, m *SigninClaim) (sql.Result, error) {
+func UpdateSigninClaimByPK(ctx context.Context, db Querier, m *SigninClaim) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE signin_claim SET player_id = ?, sign_day = ?, cycle_start_day = ?, day_index = ?, rewards = ? WHERE id = ?", m.PlayerId, m.SignDay, m.CycleStartDay, m.DayIndex, m.Rewards, m.Id)
 }
 
 // UpsertSigninClaimByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertSigninClaimByPK(ctx context.Context, db *sql.DB, m *SigninClaim) (sql.Result, error) {
+func UpsertSigninClaimByPK(ctx context.Context, db Querier, m *SigninClaim) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO signin_claim (id,player_id,sign_day,cycle_start_day,day_index,rewards) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), sign_day = VALUES(sign_day), cycle_start_day = VALUES(cycle_start_day), day_index = VALUES(day_index), rewards = VALUES(rewards)", m.Id, m.PlayerId, m.SignDay, m.CycleStartDay, m.DayIndex, m.Rewards)
 }
 
 // DeleteSigninClaimByPK 按主键删除
-func DeleteSigninClaimByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteSigninClaimByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM signin_claim WHERE id = ?", Id)
+}
+
+// upsertSigninClaimCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertSigninClaimCols = []string{"player_id", "sign_day", "cycle_start_day", "day_index", "rewards"}
+
+// UpsertSigninClaimBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertSigninClaimBatch(ctx context.Context, tx *sql.Tx, rows []SigninClaim) error {
+	return flush.UpsertBatch(ctx, tx, "signin_claim", upsertSigninClaimCols, rows, func(m SigninClaim) []any {
+		return []any{m.PlayerId, m.SignDay, m.CycleStartDay, m.DayIndex, m.Rewards}
+	})
+}
+
+// DeleteSigninClaimByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteSigninClaimByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "signin_claim", "player_id", playerID)
+}
+
+// ListSigninClaimByPlayer 按玩家列出全部行（冷启动读取用）
+func ListSigninClaimByPlayer(ctx context.Context, db Querier, playerID int64) ([]SigninClaim, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,player_id,sign_day,cycle_start_day,day_index,rewards,created_at FROM signin_claim WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []SigninClaim
+	for rows.Next() {
+		var m SigninClaim
+		if err := scanSigninClaim(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

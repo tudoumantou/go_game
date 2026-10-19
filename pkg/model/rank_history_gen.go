@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // RankHistory rank_history 表
@@ -49,12 +51,12 @@ var RankHistoryColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertRankHistory(ctx context.Context, db *sql.DB, m *RankHistory) (sql.Result, error) {
+func InsertRankHistory(ctx context.Context, db Querier, m *RankHistory) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO rank_history (id,group_id,rank_type,season,player_id,score,rank_no) VALUES (?,?,?,?,?,?,?)", m.Id, m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo)
 }
 
 // FindRankHistoryByPK 按主键查询
-func FindRankHistoryByPK(ctx context.Context, db *sql.DB, Id int64) (*RankHistory, error) {
+func FindRankHistoryByPK(ctx context.Context, db Querier, Id int64) (*RankHistory, error) {
 	var m RankHistory
 	query := "SELECT id,group_id,rank_type,season,player_id,score,rank_no,snapshot_at FROM rank_history WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -69,16 +71,49 @@ func scanRankHistory(m *RankHistory, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateRankHistoryByPK 按主键更新（幂等）
-func UpdateRankHistoryByPK(ctx context.Context, db *sql.DB, m *RankHistory) (sql.Result, error) {
+func UpdateRankHistoryByPK(ctx context.Context, db Querier, m *RankHistory) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE rank_history SET group_id = ?, rank_type = ?, season = ?, player_id = ?, score = ?, rank_no = ? WHERE id = ?", m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo, m.Id)
 }
 
 // UpsertRankHistoryByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertRankHistoryByPK(ctx context.Context, db *sql.DB, m *RankHistory) (sql.Result, error) {
+func UpsertRankHistoryByPK(ctx context.Context, db Querier, m *RankHistory) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO rank_history (id,group_id,rank_type,season,player_id,score,rank_no) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE group_id = VALUES(group_id), rank_type = VALUES(rank_type), season = VALUES(season), player_id = VALUES(player_id), score = VALUES(score), rank_no = VALUES(rank_no)", m.Id, m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo)
 }
 
 // DeleteRankHistoryByPK 按主键删除
-func DeleteRankHistoryByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteRankHistoryByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM rank_history WHERE id = ?", Id)
+}
+
+// upsertRankHistoryCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertRankHistoryCols = []string{"group_id", "rank_type", "season", "player_id", "score", "rank_no"}
+
+// UpsertRankHistoryBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertRankHistoryBatch(ctx context.Context, tx *sql.Tx, rows []RankHistory) error {
+	return flush.UpsertBatch(ctx, tx, "rank_history", upsertRankHistoryCols, rows, func(m RankHistory) []any {
+		return []any{m.GroupId, m.RankType, m.Season, m.PlayerId, m.Score, m.RankNo}
+	})
+}
+
+// DeleteRankHistoryByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteRankHistoryByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "rank_history", "player_id", playerID)
+}
+
+// ListRankHistoryByPlayer 按玩家列出全部行（冷启动读取用）
+func ListRankHistoryByPlayer(ctx context.Context, db Querier, playerID int64) ([]RankHistory, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,group_id,rank_type,season,player_id,score,rank_no,snapshot_at FROM rank_history WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RankHistory
+	for rows.Next() {
+		var m RankHistory
+		if err := scanRankHistory(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

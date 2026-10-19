@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // PlayerAttr player_attr 表
@@ -52,12 +54,12 @@ var PlayerAttrColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertPlayerAttr(ctx context.Context, db *sql.DB, m *PlayerAttr) (sql.Result, error) {
+func InsertPlayerAttr(ctx context.Context, db Querier, m *PlayerAttr) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_attr (player_id,career,hp,mp,atk,def,spd) VALUES (?,?,?,?,?,?,?)", m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd)
 }
 
 // FindPlayerAttrByPK 按主键查询
-func FindPlayerAttrByPK(ctx context.Context, db *sql.DB, PlayerId int64) (*PlayerAttr, error) {
+func FindPlayerAttrByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerAttr, error) {
 	var m PlayerAttr
 	query := "SELECT player_id,career,hp,mp,atk,def,spd,created_at,updated_at FROM player_attr WHERE player_id = ?"
 	row := db.QueryRowContext(ctx, query, PlayerId)
@@ -72,16 +74,49 @@ func scanPlayerAttr(m *PlayerAttr, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdatePlayerAttrByPK 按主键更新（幂等）
-func UpdatePlayerAttrByPK(ctx context.Context, db *sql.DB, m *PlayerAttr) (sql.Result, error) {
+func UpdatePlayerAttrByPK(ctx context.Context, db Querier, m *PlayerAttr) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE player_attr SET career = ?, hp = ?, mp = ?, atk = ?, def = ?, spd = ? WHERE player_id = ?", m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd, m.PlayerId)
 }
 
 // UpsertPlayerAttrByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertPlayerAttrByPK(ctx context.Context, db *sql.DB, m *PlayerAttr) (sql.Result, error) {
+func UpsertPlayerAttrByPK(ctx context.Context, db Querier, m *PlayerAttr) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_attr (player_id,career,hp,mp,atk,def,spd) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE career = VALUES(career), hp = VALUES(hp), mp = VALUES(mp), atk = VALUES(atk), def = VALUES(def), spd = VALUES(spd)", m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd)
 }
 
 // DeletePlayerAttrByPK 按主键删除
-func DeletePlayerAttrByPK(ctx context.Context, db *sql.DB, PlayerId int64) (sql.Result, error) {
+func DeletePlayerAttrByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM player_attr WHERE player_id = ?", PlayerId)
+}
+
+// upsertPlayerAttrCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertPlayerAttrCols = []string{"player_id", "career", "hp", "mp", "atk", "def", "spd"}
+
+// UpsertPlayerAttrBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertPlayerAttrBatch(ctx context.Context, tx *sql.Tx, rows []PlayerAttr) error {
+	return flush.UpsertBatch(ctx, tx, "player_attr", upsertPlayerAttrCols, rows, func(m PlayerAttr) []any {
+		return []any{m.PlayerId, m.Career, m.Hp, m.Mp, m.Atk, m.Def, m.Spd}
+	})
+}
+
+// DeletePlayerAttrByPlayer 删除该玩家全部行（整包替换落库用）
+func DeletePlayerAttrByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "player_attr", "player_id", playerID)
+}
+
+// ListPlayerAttrByPlayer 按玩家列出全部行（冷启动读取用）
+func ListPlayerAttrByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerAttr, error) {
+	rows, err := db.QueryContext(ctx, "SELECT player_id,career,hp,mp,atk,def,spd,created_at,updated_at FROM player_attr WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PlayerAttr
+	for rows.Next() {
+		var m PlayerAttr
+		if err := scanPlayerAttr(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

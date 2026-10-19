@@ -6,6 +6,8 @@ package model
 import (
 	"context"
 	"database/sql"
+
+	"game_study/pkg/flush"
 )
 
 // PlayerWritebehind player_writebehind 表
@@ -33,12 +35,12 @@ var PlayerWritebehindColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertPlayerWritebehind(ctx context.Context, db *sql.DB, m *PlayerWritebehind) (sql.Result, error) {
+func InsertPlayerWritebehind(ctx context.Context, db Querier, m *PlayerWritebehind) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_writebehind (player_id,version,applied_grants) VALUES (?,?,?)", m.PlayerId, m.Version, m.AppliedGrants)
 }
 
 // FindPlayerWritebehindByPK 按主键查询
-func FindPlayerWritebehindByPK(ctx context.Context, db *sql.DB, PlayerId int64) (*PlayerWritebehind, error) {
+func FindPlayerWritebehindByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerWritebehind, error) {
 	var m PlayerWritebehind
 	query := "SELECT player_id,version,applied_grants FROM player_writebehind WHERE player_id = ?"
 	row := db.QueryRowContext(ctx, query, PlayerId)
@@ -53,16 +55,49 @@ func scanPlayerWritebehind(m *PlayerWritebehind, sc interface{ Scan(...any) erro
 }
 
 // UpdatePlayerWritebehindByPK 按主键更新（幂等）
-func UpdatePlayerWritebehindByPK(ctx context.Context, db *sql.DB, m *PlayerWritebehind) (sql.Result, error) {
+func UpdatePlayerWritebehindByPK(ctx context.Context, db Querier, m *PlayerWritebehind) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE player_writebehind SET version = ?, applied_grants = ? WHERE player_id = ?", m.Version, m.AppliedGrants, m.PlayerId)
 }
 
 // UpsertPlayerWritebehindByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertPlayerWritebehindByPK(ctx context.Context, db *sql.DB, m *PlayerWritebehind) (sql.Result, error) {
+func UpsertPlayerWritebehindByPK(ctx context.Context, db Querier, m *PlayerWritebehind) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player_writebehind (player_id,version,applied_grants) VALUES (?,?,?) ON DUPLICATE KEY UPDATE version = VALUES(version), applied_grants = VALUES(applied_grants)", m.PlayerId, m.Version, m.AppliedGrants)
 }
 
 // DeletePlayerWritebehindByPK 按主键删除
-func DeletePlayerWritebehindByPK(ctx context.Context, db *sql.DB, PlayerId int64) (sql.Result, error) {
+func DeletePlayerWritebehindByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM player_writebehind WHERE player_id = ?", PlayerId)
+}
+
+// upsertPlayerWritebehindCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertPlayerWritebehindCols = []string{"player_id", "version", "applied_grants"}
+
+// UpsertPlayerWritebehindBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertPlayerWritebehindBatch(ctx context.Context, tx *sql.Tx, rows []PlayerWritebehind) error {
+	return flush.UpsertBatch(ctx, tx, "player_writebehind", upsertPlayerWritebehindCols, rows, func(m PlayerWritebehind) []any {
+		return []any{m.PlayerId, m.Version, m.AppliedGrants}
+	})
+}
+
+// DeletePlayerWritebehindByPlayer 删除该玩家全部行（整包替换落库用）
+func DeletePlayerWritebehindByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "player_writebehind", "player_id", playerID)
+}
+
+// ListPlayerWritebehindByPlayer 按玩家列出全部行（冷启动读取用）
+func ListPlayerWritebehindByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerWritebehind, error) {
+	rows, err := db.QueryContext(ctx, "SELECT player_id,version,applied_grants FROM player_writebehind WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []PlayerWritebehind
+	for rows.Next() {
+		var m PlayerWritebehind
+		if err := scanPlayerWritebehind(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

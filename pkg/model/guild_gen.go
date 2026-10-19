@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // Guild guild 表
@@ -52,12 +54,12 @@ var GuildColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertGuild(ctx context.Context, db *sql.DB, m *Guild) (sql.Result, error) {
+func InsertGuild(ctx context.Context, db Querier, m *Guild) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO guild (id,name,leader_id,level,exp,notice,member_count) VALUES (?,?,?,?,?,?,?)", m.Id, m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount)
 }
 
 // FindGuildByPK 按主键查询
-func FindGuildByPK(ctx context.Context, db *sql.DB, Id int64) (*Guild, error) {
+func FindGuildByPK(ctx context.Context, db Querier, Id int64) (*Guild, error) {
 	var m Guild
 	query := "SELECT id,name,leader_id,level,exp,notice,member_count,created_at,updated_at FROM guild WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -72,16 +74,27 @@ func scanGuild(m *Guild, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateGuildByPK 按主键更新（幂等）
-func UpdateGuildByPK(ctx context.Context, db *sql.DB, m *Guild) (sql.Result, error) {
+func UpdateGuildByPK(ctx context.Context, db Querier, m *Guild) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE guild SET name = ?, leader_id = ?, level = ?, exp = ?, notice = ?, member_count = ? WHERE id = ?", m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount, m.Id)
 }
 
 // UpsertGuildByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertGuildByPK(ctx context.Context, db *sql.DB, m *Guild) (sql.Result, error) {
+func UpsertGuildByPK(ctx context.Context, db Querier, m *Guild) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO guild (id,name,leader_id,level,exp,notice,member_count) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE name = VALUES(name), leader_id = VALUES(leader_id), level = VALUES(level), exp = VALUES(exp), notice = VALUES(notice), member_count = VALUES(member_count)", m.Id, m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount)
 }
 
 // DeleteGuildByPK 按主键删除
-func DeleteGuildByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteGuildByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM guild WHERE id = ?", Id)
 }
+
+// upsertGuildCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertGuildCols = []string{"name", "leader_id", "level", "exp", "notice", "member_count"}
+
+// UpsertGuildBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertGuildBatch(ctx context.Context, tx *sql.Tx, rows []Guild) error {
+	return flush.UpsertBatch(ctx, tx, "guild", upsertGuildCols, rows, func(m Guild) []any {
+		return []any{m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount}
+	})
+}
+

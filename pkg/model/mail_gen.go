@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // Mail mail 表
@@ -55,12 +57,12 @@ var MailColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertMail(ctx context.Context, db *sql.DB, m *Mail) (sql.Result, error) {
+func InsertMail(ctx context.Context, db Querier, m *Mail) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO mail (id,player_id,template_id,title,content,channel,status,expire_at) VALUES (?,?,?,?,?,?,?,?)", m.Id, m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt)
 }
 
 // FindMailByPK 按主键查询
-func FindMailByPK(ctx context.Context, db *sql.DB, Id int64) (*Mail, error) {
+func FindMailByPK(ctx context.Context, db Querier, Id int64) (*Mail, error) {
 	var m Mail
 	query := "SELECT id,player_id,template_id,title,content,channel,status,expire_at,created_at,updated_at FROM mail WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -75,16 +77,49 @@ func scanMail(m *Mail, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateMailByPK 按主键更新（幂等）
-func UpdateMailByPK(ctx context.Context, db *sql.DB, m *Mail) (sql.Result, error) {
+func UpdateMailByPK(ctx context.Context, db Querier, m *Mail) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE mail SET player_id = ?, template_id = ?, title = ?, content = ?, channel = ?, status = ?, expire_at = ? WHERE id = ?", m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt, m.Id)
 }
 
 // UpsertMailByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertMailByPK(ctx context.Context, db *sql.DB, m *Mail) (sql.Result, error) {
+func UpsertMailByPK(ctx context.Context, db Querier, m *Mail) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO mail (id,player_id,template_id,title,content,channel,status,expire_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), template_id = VALUES(template_id), title = VALUES(title), content = VALUES(content), channel = VALUES(channel), status = VALUES(status), expire_at = VALUES(expire_at)", m.Id, m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt)
 }
 
 // DeleteMailByPK 按主键删除
-func DeleteMailByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteMailByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM mail WHERE id = ?", Id)
+}
+
+// upsertMailCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertMailCols = []string{"player_id", "template_id", "title", "content", "channel", "status", "expire_at"}
+
+// UpsertMailBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertMailBatch(ctx context.Context, tx *sql.Tx, rows []Mail) error {
+	return flush.UpsertBatch(ctx, tx, "mail", upsertMailCols, rows, func(m Mail) []any {
+		return []any{m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, m.ExpireAt}
+	})
+}
+
+// DeleteMailByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteMailByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "mail", "player_id", playerID)
+}
+
+// ListMailByPlayer 按玩家列出全部行（冷启动读取用）
+func ListMailByPlayer(ctx context.Context, db Querier, playerID int64) ([]Mail, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,player_id,template_id,title,content,channel,status,expire_at,created_at,updated_at FROM mail WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Mail
+	for rows.Next() {
+		var m Mail
+		if err := scanMail(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

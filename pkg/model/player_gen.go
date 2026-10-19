@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // Player player 表
@@ -52,12 +54,12 @@ var PlayerColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertPlayer(ctx context.Context, db *sql.DB, m *Player) (sql.Result, error) {
+func InsertPlayer(ctx context.Context, db Querier, m *Player) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player (id,account_id,name,level,exp,coin,scene_id) VALUES (?,?,?,?,?,?,?)", m.Id, m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId)
 }
 
 // FindPlayerByPK 按主键查询
-func FindPlayerByPK(ctx context.Context, db *sql.DB, Id int64) (*Player, error) {
+func FindPlayerByPK(ctx context.Context, db Querier, Id int64) (*Player, error) {
 	var m Player
 	query := "SELECT id,account_id,name,level,exp,coin,scene_id,created_at,updated_at FROM player WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -72,16 +74,27 @@ func scanPlayer(m *Player, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdatePlayerByPK 按主键更新（幂等）
-func UpdatePlayerByPK(ctx context.Context, db *sql.DB, m *Player) (sql.Result, error) {
+func UpdatePlayerByPK(ctx context.Context, db Querier, m *Player) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE player SET account_id = ?, name = ?, level = ?, exp = ?, coin = ?, scene_id = ? WHERE id = ?", m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId, m.Id)
 }
 
 // UpsertPlayerByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertPlayerByPK(ctx context.Context, db *sql.DB, m *Player) (sql.Result, error) {
+func UpsertPlayerByPK(ctx context.Context, db Querier, m *Player) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO player (id,account_id,name,level,exp,coin,scene_id) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE account_id = VALUES(account_id), name = VALUES(name), level = VALUES(level), exp = VALUES(exp), coin = VALUES(coin), scene_id = VALUES(scene_id)", m.Id, m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId)
 }
 
 // DeletePlayerByPK 按主键删除
-func DeletePlayerByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeletePlayerByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM player WHERE id = ?", Id)
 }
+
+// upsertPlayerCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertPlayerCols = []string{"account_id", "name", "level", "exp", "coin", "scene_id"}
+
+// UpsertPlayerBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertPlayerBatch(ctx context.Context, tx *sql.Tx, rows []Player) error {
+	return flush.UpsertBatch(ctx, tx, "player", upsertPlayerCols, rows, func(m Player) []any {
+		return []any{m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId}
+	})
+}
+

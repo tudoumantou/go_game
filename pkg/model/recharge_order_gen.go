@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // RechargeOrder recharge_order 表
@@ -58,12 +60,12 @@ var RechargeOrderColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertRechargeOrder(ctx context.Context, db *sql.DB, m *RechargeOrder) (sql.Result, error) {
+func InsertRechargeOrder(ctx context.Context, db Querier, m *RechargeOrder) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO recharge_order (id,order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at) VALUES (?,?,?,?,?,?,?,?,?)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt)
 }
 
 // FindRechargeOrderByPK 按主键查询
-func FindRechargeOrderByPK(ctx context.Context, db *sql.DB, Id int64) (*RechargeOrder, error) {
+func FindRechargeOrderByPK(ctx context.Context, db Querier, Id int64) (*RechargeOrder, error) {
 	var m RechargeOrder
 	query := "SELECT id,order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at,created_at,updated_at FROM recharge_order WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -78,16 +80,49 @@ func scanRechargeOrder(m *RechargeOrder, sc interface{ Scan(...any) error }) err
 }
 
 // UpdateRechargeOrderByPK 按主键更新（幂等）
-func UpdateRechargeOrderByPK(ctx context.Context, db *sql.DB, m *RechargeOrder) (sql.Result, error) {
+func UpdateRechargeOrderByPK(ctx context.Context, db Querier, m *RechargeOrder) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE recharge_order SET order_id = ?, player_id = ?, product_id = ?, amount_fen = ?, channel = ?, status = ?, paid_at = ?, delivered_at = ? WHERE id = ?", m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt, m.Id)
 }
 
 // UpsertRechargeOrderByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertRechargeOrderByPK(ctx context.Context, db *sql.DB, m *RechargeOrder) (sql.Result, error) {
+func UpsertRechargeOrderByPK(ctx context.Context, db Querier, m *RechargeOrder) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO recharge_order (id,order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at) VALUES (?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE order_id = VALUES(order_id), player_id = VALUES(player_id), product_id = VALUES(product_id), amount_fen = VALUES(amount_fen), channel = VALUES(channel), status = VALUES(status), paid_at = VALUES(paid_at), delivered_at = VALUES(delivered_at)", m.Id, m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt)
 }
 
 // DeleteRechargeOrderByPK 按主键删除
-func DeleteRechargeOrderByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteRechargeOrderByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM recharge_order WHERE id = ?", Id)
+}
+
+// upsertRechargeOrderCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertRechargeOrderCols = []string{"order_id", "player_id", "product_id", "amount_fen", "channel", "status", "paid_at", "delivered_at"}
+
+// UpsertRechargeOrderBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertRechargeOrderBatch(ctx context.Context, tx *sql.Tx, rows []RechargeOrder) error {
+	return flush.UpsertBatch(ctx, tx, "recharge_order", upsertRechargeOrderCols, rows, func(m RechargeOrder) []any {
+		return []any{m.OrderId, m.PlayerId, m.ProductId, m.AmountFen, m.Channel, m.Status, m.PaidAt, m.DeliveredAt}
+	})
+}
+
+// DeleteRechargeOrderByPlayer 删除该玩家全部行（整包替换落库用）
+func DeleteRechargeOrderByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) error {
+	return flush.DeleteByPlayer(ctx, tx, "recharge_order", "player_id", playerID)
+}
+
+// ListRechargeOrderByPlayer 按玩家列出全部行（冷启动读取用）
+func ListRechargeOrderByPlayer(ctx context.Context, db Querier, playerID int64) ([]RechargeOrder, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,order_id,player_id,product_id,amount_fen,channel,status,paid_at,delivered_at,created_at,updated_at FROM recharge_order WHERE player_id = ?", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []RechargeOrder
+	for rows.Next() {
+		var m RechargeOrder
+		if err := scanRechargeOrder(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

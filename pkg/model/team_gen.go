@@ -7,6 +7,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"game_study/pkg/flush"
 )
 
 // Team team 表
@@ -43,12 +45,12 @@ var TeamColumns = []string{
 }
 
 // Insert 插入（自增列由数据库生成）
-func InsertTeam(ctx context.Context, db *sql.DB, m *Team) (sql.Result, error) {
+func InsertTeam(ctx context.Context, db Querier, m *Team) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO team (id,leader_id,copy_id,status) VALUES (?,?,?,?)", m.Id, m.LeaderId, m.CopyId, m.Status)
 }
 
 // FindTeamByPK 按主键查询
-func FindTeamByPK(ctx context.Context, db *sql.DB, Id int64) (*Team, error) {
+func FindTeamByPK(ctx context.Context, db Querier, Id int64) (*Team, error) {
 	var m Team
 	query := "SELECT id,leader_id,copy_id,status,created_at,updated_at FROM team WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
@@ -63,16 +65,27 @@ func scanTeam(m *Team, sc interface{ Scan(...any) error }) error {
 }
 
 // UpdateTeamByPK 按主键更新（幂等）
-func UpdateTeamByPK(ctx context.Context, db *sql.DB, m *Team) (sql.Result, error) {
+func UpdateTeamByPK(ctx context.Context, db Querier, m *Team) (sql.Result, error) {
 	return db.ExecContext(ctx, "UPDATE team SET leader_id = ?, copy_id = ?, status = ? WHERE id = ?", m.LeaderId, m.CopyId, m.Status, m.Id)
 }
 
 // UpsertTeamByPK 插入或更新（落库幂等，18.2 防线②）
-func UpsertTeamByPK(ctx context.Context, db *sql.DB, m *Team) (sql.Result, error) {
+func UpsertTeamByPK(ctx context.Context, db Querier, m *Team) (sql.Result, error) {
 	return db.ExecContext(ctx, "INSERT INTO team (id,leader_id,copy_id,status) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE leader_id = VALUES(leader_id), copy_id = VALUES(copy_id), status = VALUES(status)", m.Id, m.LeaderId, m.CopyId, m.Status)
 }
 
 // DeleteTeamByPK 按主键删除
-func DeleteTeamByPK(ctx context.Context, db *sql.DB, Id int64) (sql.Result, error) {
+func DeleteTeamByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM team WHERE id = ?", Id)
 }
+
+// upsertTeamCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
+var upsertTeamCols = []string{"leader_id", "copy_id", "status"}
+
+// UpsertTeamBatch 事务内批量插入或更新（Write-Behind 落库用）
+func UpsertTeamBatch(ctx context.Context, tx *sql.Tx, rows []Team) error {
+	return flush.UpsertBatch(ctx, tx, "team", upsertTeamCols, rows, func(m Team) []any {
+		return []any{m.LeaderId, m.CopyId, m.Status}
+	})
+}
+
