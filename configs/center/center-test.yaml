@@ -31,6 +31,9 @@ stats:
   snapshot_interval: 5m
   mysql_shard: 10              # 统计落库分片
 
+kafka:
+  brokers: ["${KAFKA_BROKERS}"]
+
 relay_kafka:                   # 中心服集群间中转
   brokers: ["198.51.100.51:9092", "198.51.100.52:9092", "198.51.100.53:9092"]
   topic: "center.relay"

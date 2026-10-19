@@ -24,12 +24,21 @@ report:
 
 rank:
   snapshot_interval: 5m        # 排行榜快照间隔
-  archive_cron: "0 0 * * *"    # 赛季归档（leader 执行）
+  archive_cron: "0 0 * * *"    # 保留字段；实际由「赛季到期」判定（archive.Service）
+  season_days: 30              # 赛季长度；到期由 leader 归档并切赛季
+  archive_top_n: 1000          # 归档前 N 名
+  rank_types: [arena_score]    # 需要归档的榜单
+  reward_top: 0                # 前 N 名发赛季奖励（0 = 不发）
+  reward_item_id: 1001
+  reward_count: 500
 
 stats:
   aggregate_windows: [1m, 5m, 1h, 1d]
   snapshot_interval: 5m
   mysql_shard: 10              # 统计落库分片
+
+kafka:                         # 归档奖励邮件（gs.mail）的发送通道
+  brokers: ["${KAFKA_BROKERS}"]
 
 relay_kafka:                   # 中心服集群间中转
   brokers: ["${KAFKA_BROKERS}"]

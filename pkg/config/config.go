@@ -173,8 +173,14 @@ type ReportConfig struct {
 }
 
 type RankConfig struct {
-	SnapshotInterval string `yaml:"snapshot_interval"`
-	ArchiveCron      string `yaml:"archive_cron"`
+	SnapshotInterval string   `yaml:"snapshot_interval"`
+	ArchiveCron      string   `yaml:"archive_cron"`  // 保留：调度已改为「赛季到期」判定，见 archive.Service
+	SeasonDays       int      `yaml:"season_days"`   // 赛季长度（天），默认 30
+	TopN             int      `yaml:"archive_top_n"` // 归档前 N 名，默认 1000
+	RankTypes        []string `yaml:"rank_types"`    // 需要归档的榜单
+	RewardTop        int      `yaml:"reward_top"`    // 前 N 名发赛季奖励，0 = 不发
+	RewardItemID     int32    `yaml:"reward_item_id"`
+	RewardCount      int64    `yaml:"reward_count"`
 }
 
 type StatsConfig struct {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"time"
 
+	"game_study/internal/center/archive"
 	"game_study/internal/center/leader"
 	"game_study/internal/center/match"
 	"game_study/internal/center/rank"
@@ -24,8 +25,10 @@ import (
 	"game_study/internal/center/stats"
 	"game_study/pkg/cache"
 	"game_study/pkg/config"
+	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
+	pkgmq "game_study/pkg/mq"
 	rpcpkg "game_study/pkg/rpc"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -48,6 +51,11 @@ type Server struct {
 	centerRPC *centerRPC.Server
 	rpcServer *rpcpkg.Server
 	redisCli  redis.UniversalClient
+	// database 中心服 MySQL：赛季状态、归档任务、rank_history、feature_stats
+	database *db.DB
+	// producer 归档奖励邮件（gs.mail）；未配置 Kafka 时为空，归档仍继续，只是不发奖
+	producer   *pkgmq.Producer
+	archiveSvc *archive.Service
 
 	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
 	relayBridge *relay.Bridge
@@ -153,7 +161,37 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Info("cross-instance relay disabled (no kafka brokers), single-instance mode")
 	}
 
-	// ⑥ 选主（9.6）：leader 负责赛季归档、全服活动调度等有主任务
+	// ⑥ 赛季归档与统计落库（R8.3/R8.4）：只有 leader 执行，依赖 MySQL
+	if s.cfg.MySQL.DSN != "" {
+		database, err := db.New(db.Config{
+			DSN:     s.cfg.MySQL.DSN,
+			MaxOpen: s.cfg.MySQL.MaxOpenConns,
+			MaxIdle: s.cfg.MySQL.MaxIdleConns,
+		})
+		if err != nil {
+			return fmt.Errorf("center mysql: %w", err)
+		}
+		s.database = database
+
+		if len(s.cfg.Kafka.Brokers) > 0 {
+			s.producer = pkgmq.NewProducer(pkgmq.Config{Brokers: s.cfg.Kafka.Brokers})
+		}
+		s.archiveSvc = archive.New(database, s.rankSvc, s.statsSvc, s.producer, archive.Config{
+			SeasonDays:   s.cfg.Rank.SeasonDays,
+			RankTypes:    s.cfg.Rank.RankTypes,
+			TopN:         int64(s.cfg.Rank.TopN),
+			RewardTop:    s.cfg.Rank.RewardTop,
+			RewardItemID: s.cfg.Rank.RewardItemID,
+			RewardCount:  s.cfg.Rank.RewardCount,
+			GroupID:      s.groupID,
+			StatsEnabled: s.statsSvc != nil,
+		}, s.logger)
+		go s.archiveSvc.Run(ctx, s.IsLeader)
+	} else {
+		s.logger.Warn("mysql not configured, season archive and stats persistence disabled")
+	}
+
+	// ⑦ 选主（9.6）：leader 负责赛季归档、全服活动调度等有主任务
 	s.startElection(ctx)
 
 	// ⑦ 后台任务：心跳巡检 + 匹配 sweep + 中转重试 + 统计快照 + 指标
@@ -481,7 +519,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// ④ 停指标
+	// ④ 归档与统计落库：Run 随 ctx 退出；这里确保 producer 缓冲已刷出
+	if s.producer != nil {
+		_ = s.producer.Flush(ctx)
+		s.producer.Close()
+	}
+	if s.database != nil {
+		_ = s.database.Close()
+	}
+
+	// ⑤ 停指标
 	if s.metricsSrv != nil {
 		_ = s.metricsSrv.Stop(ctx)
 	}
