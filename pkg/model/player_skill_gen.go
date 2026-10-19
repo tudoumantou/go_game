@@ -6,29 +6,20 @@ package model
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"game_study/pkg/flush"
 )
 
 // PlayerSkill player_skill 表
 type PlayerSkill struct {
-	Id int64 `db:"id"`
 	PlayerId int64 `db:"player_id"`
-	SkillId int32 `db:"skill_id"`
-	Level int32 `db:"level"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Skills string `db:"skills"`
 }
 
 // PlayerSkill 列名
 const (
-	ColPlayerSkillId = "id"
 	ColPlayerSkillPlayerId = "player_id"
-	ColPlayerSkillSkillId = "skill_id"
-	ColPlayerSkillLevel = "level"
-	ColPlayerSkillCreatedAt = "created_at"
-	ColPlayerSkillUpdatedAt = "updated_at"
+	ColPlayerSkillSkills = "skills"
 )
 
 // TableName 表名
@@ -36,24 +27,20 @@ func (m *PlayerSkill) TableName() string { return "player_skill" }
 
 // PlayerSkillColumns 全部列（扫描用）
 var PlayerSkillColumns = []string{
-	ColPlayerSkillId,
 	ColPlayerSkillPlayerId,
-	ColPlayerSkillSkillId,
-	ColPlayerSkillLevel,
-	ColPlayerSkillCreatedAt,
-	ColPlayerSkillUpdatedAt,
+	ColPlayerSkillSkills,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerSkill(ctx context.Context, db Querier, m *PlayerSkill) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_skill (id,player_id,skill_id,level) VALUES (?,?,?,?)", m.Id, m.PlayerId, m.SkillId, m.Level)
+	return db.ExecContext(ctx, "INSERT INTO player_skill (player_id,skills) VALUES (?,?)", m.PlayerId, m.Skills)
 }
 
 // FindPlayerSkillByPK 按主键查询
-func FindPlayerSkillByPK(ctx context.Context, db Querier, Id int64) (*PlayerSkill, error) {
+func FindPlayerSkillByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerSkill, error) {
 	var m PlayerSkill
-	query := "SELECT id,player_id,skill_id,level,created_at,updated_at FROM player_skill WHERE id = ?"
-	row := db.QueryRowContext(ctx, query, Id)
+	query := "SELECT player_id,skills FROM player_skill WHERE player_id = ?"
+	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanPlayerSkill(&m, row); err != nil {
 		return nil, err
 	}
@@ -61,31 +48,31 @@ func FindPlayerSkillByPK(ctx context.Context, db Querier, Id int64) (*PlayerSkil
 }
 
 func scanPlayerSkill(m *PlayerSkill, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.PlayerId, &m.SkillId, &m.Level, &m.CreatedAt, &m.UpdatedAt)
+	return sc.Scan(&m.PlayerId, &m.Skills)
 }
 
 // UpdatePlayerSkillByPK 按主键更新（幂等）
 func UpdatePlayerSkillByPK(ctx context.Context, db Querier, m *PlayerSkill) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_skill SET player_id = ?, skill_id = ?, level = ? WHERE id = ?", m.PlayerId, m.SkillId, m.Level, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_skill SET skills = ? WHERE player_id = ?", m.Skills, m.PlayerId)
 }
 
 // UpsertPlayerSkillByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerSkillByPK(ctx context.Context, db Querier, m *PlayerSkill) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_skill (id,player_id,skill_id,level) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), skill_id = VALUES(skill_id), level = VALUES(level)", m.Id, m.PlayerId, m.SkillId, m.Level)
+	return db.ExecContext(ctx, "INSERT INTO player_skill (player_id,skills) VALUES (?,?) ON DUPLICATE KEY UPDATE skills = VALUES(skills)", m.PlayerId, m.Skills)
 }
 
 // DeletePlayerSkillByPK 按主键删除
-func DeletePlayerSkillByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
-	return db.ExecContext(ctx, "DELETE FROM player_skill WHERE id = ?", Id)
+func DeletePlayerSkillByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM player_skill WHERE player_id = ?", PlayerId)
 }
 
 // upsertPlayerSkillCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertPlayerSkillCols = []string{"player_id", "skill_id", "level"}
+var upsertPlayerSkillCols = []string{"player_id", "skills"}
 
 // UpsertPlayerSkillBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertPlayerSkillBatch(ctx context.Context, tx *sql.Tx, rows []PlayerSkill) error {
 	return flush.UpsertBatch(ctx, tx, "player_skill", upsertPlayerSkillCols, rows, func(m PlayerSkill) []any {
-		return []any{m.PlayerId, m.SkillId, m.Level}
+		return []any{m.PlayerId, m.Skills}
 	})
 }
 
@@ -96,7 +83,7 @@ func DeletePlayerSkillByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) 
 
 // ListPlayerSkillByPlayer 按玩家列出全部行（冷启动读取用）
 func ListPlayerSkillByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerSkill, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id,player_id,skill_id,level,created_at,updated_at FROM player_skill WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,skills FROM player_skill WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -110,4 +97,10 @@ func ListPlayerSkillByPlayer(ctx context.Context, db Querier, playerID int64) ([
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// PlayerSkillFlat skill 模块的单行状态表适配（sql 注释 @flat:skill 生成）
+var PlayerSkillFlat = flush.FlatOps[PlayerSkill]{
+	Upsert: UpsertPlayerSkillBatch,
+	Load:   FindPlayerSkillByPK,
 }

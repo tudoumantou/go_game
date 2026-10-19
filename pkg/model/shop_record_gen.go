@@ -6,33 +6,20 @@ package model
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"game_study/pkg/flush"
 )
 
 // ShopRecord shop_record 表
 type ShopRecord struct {
-	Id int64 `db:"id"`
 	PlayerId int64 `db:"player_id"`
-	ShopId int32 `db:"shop_id"`
-	GoodsId int32 `db:"goods_id"`
-	BuyCount int32 `db:"buy_count"`
-	RefreshedAt sql.NullTime `db:"refreshed_at"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Bought string `db:"bought"`
 }
 
 // ShopRecord 列名
 const (
-	ColShopRecordId = "id"
 	ColShopRecordPlayerId = "player_id"
-	ColShopRecordShopId = "shop_id"
-	ColShopRecordGoodsId = "goods_id"
-	ColShopRecordBuyCount = "buy_count"
-	ColShopRecordRefreshedAt = "refreshed_at"
-	ColShopRecordCreatedAt = "created_at"
-	ColShopRecordUpdatedAt = "updated_at"
+	ColShopRecordBought = "bought"
 )
 
 // TableName 表名
@@ -40,26 +27,20 @@ func (m *ShopRecord) TableName() string { return "shop_record" }
 
 // ShopRecordColumns 全部列（扫描用）
 var ShopRecordColumns = []string{
-	ColShopRecordId,
 	ColShopRecordPlayerId,
-	ColShopRecordShopId,
-	ColShopRecordGoodsId,
-	ColShopRecordBuyCount,
-	ColShopRecordRefreshedAt,
-	ColShopRecordCreatedAt,
-	ColShopRecordUpdatedAt,
+	ColShopRecordBought,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertShopRecord(ctx context.Context, db Querier, m *ShopRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO shop_record (id,player_id,shop_id,goods_id,buy_count,refreshed_at) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt)
+	return db.ExecContext(ctx, "INSERT INTO shop_record (player_id,bought) VALUES (?,?)", m.PlayerId, m.Bought)
 }
 
 // FindShopRecordByPK 按主键查询
-func FindShopRecordByPK(ctx context.Context, db Querier, Id int64) (*ShopRecord, error) {
+func FindShopRecordByPK(ctx context.Context, db Querier, PlayerId int64) (*ShopRecord, error) {
 	var m ShopRecord
-	query := "SELECT id,player_id,shop_id,goods_id,buy_count,refreshed_at,created_at,updated_at FROM shop_record WHERE id = ?"
-	row := db.QueryRowContext(ctx, query, Id)
+	query := "SELECT player_id,bought FROM shop_record WHERE player_id = ?"
+	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanShopRecord(&m, row); err != nil {
 		return nil, err
 	}
@@ -67,31 +48,31 @@ func FindShopRecordByPK(ctx context.Context, db Querier, Id int64) (*ShopRecord,
 }
 
 func scanShopRecord(m *ShopRecord, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.PlayerId, &m.ShopId, &m.GoodsId, &m.BuyCount, &m.RefreshedAt, &m.CreatedAt, &m.UpdatedAt)
+	return sc.Scan(&m.PlayerId, &m.Bought)
 }
 
 // UpdateShopRecordByPK 按主键更新（幂等）
 func UpdateShopRecordByPK(ctx context.Context, db Querier, m *ShopRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE shop_record SET player_id = ?, shop_id = ?, goods_id = ?, buy_count = ?, refreshed_at = ? WHERE id = ?", m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE shop_record SET bought = ? WHERE player_id = ?", m.Bought, m.PlayerId)
 }
 
 // UpsertShopRecordByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertShopRecordByPK(ctx context.Context, db Querier, m *ShopRecord) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO shop_record (id,player_id,shop_id,goods_id,buy_count,refreshed_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), shop_id = VALUES(shop_id), goods_id = VALUES(goods_id), buy_count = VALUES(buy_count), refreshed_at = VALUES(refreshed_at)", m.Id, m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt)
+	return db.ExecContext(ctx, "INSERT INTO shop_record (player_id,bought) VALUES (?,?) ON DUPLICATE KEY UPDATE bought = VALUES(bought)", m.PlayerId, m.Bought)
 }
 
 // DeleteShopRecordByPK 按主键删除
-func DeleteShopRecordByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
-	return db.ExecContext(ctx, "DELETE FROM shop_record WHERE id = ?", Id)
+func DeleteShopRecordByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM shop_record WHERE player_id = ?", PlayerId)
 }
 
 // upsertShopRecordCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertShopRecordCols = []string{"player_id", "shop_id", "goods_id", "buy_count", "refreshed_at"}
+var upsertShopRecordCols = []string{"player_id", "bought"}
 
 // UpsertShopRecordBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertShopRecordBatch(ctx context.Context, tx *sql.Tx, rows []ShopRecord) error {
 	return flush.UpsertBatch(ctx, tx, "shop_record", upsertShopRecordCols, rows, func(m ShopRecord) []any {
-		return []any{m.PlayerId, m.ShopId, m.GoodsId, m.BuyCount, m.RefreshedAt}
+		return []any{m.PlayerId, m.Bought}
 	})
 }
 
@@ -102,7 +83,7 @@ func DeleteShopRecordByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) e
 
 // ListShopRecordByPlayer 按玩家列出全部行（冷启动读取用）
 func ListShopRecordByPlayer(ctx context.Context, db Querier, playerID int64) ([]ShopRecord, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id,player_id,shop_id,goods_id,buy_count,refreshed_at,created_at,updated_at FROM shop_record WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,bought FROM shop_record WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,4 +97,10 @@ func ListShopRecordByPlayer(ctx context.Context, db Querier, playerID int64) ([]
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ShopRecordFlat shop 模块的单行状态表适配（sql 注释 @flat:shop 生成）
+var ShopRecordFlat = flush.FlatOps[ShopRecord]{
+	Upsert: UpsertShopRecordBatch,
+	Load:   FindShopRecordByPK,
 }

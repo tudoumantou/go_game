@@ -6,31 +6,20 @@ package model
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"game_study/pkg/flush"
 )
 
 // PlayerQuest player_quest 表
 type PlayerQuest struct {
-	Id int64 `db:"id"`
 	PlayerId int64 `db:"player_id"`
-	QuestId int32 `db:"quest_id"`
-	Status int32 `db:"status"`
-	Progress int32 `db:"progress"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Quests string `db:"quests"`
 }
 
 // PlayerQuest 列名
 const (
-	ColPlayerQuestId = "id"
 	ColPlayerQuestPlayerId = "player_id"
-	ColPlayerQuestQuestId = "quest_id"
-	ColPlayerQuestStatus = "status"
-	ColPlayerQuestProgress = "progress"
-	ColPlayerQuestCreatedAt = "created_at"
-	ColPlayerQuestUpdatedAt = "updated_at"
+	ColPlayerQuestQuests = "quests"
 )
 
 // TableName 表名
@@ -38,25 +27,20 @@ func (m *PlayerQuest) TableName() string { return "player_quest" }
 
 // PlayerQuestColumns 全部列（扫描用）
 var PlayerQuestColumns = []string{
-	ColPlayerQuestId,
 	ColPlayerQuestPlayerId,
-	ColPlayerQuestQuestId,
-	ColPlayerQuestStatus,
-	ColPlayerQuestProgress,
-	ColPlayerQuestCreatedAt,
-	ColPlayerQuestUpdatedAt,
+	ColPlayerQuestQuests,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerQuest(ctx context.Context, db Querier, m *PlayerQuest) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_quest (id,player_id,quest_id,status,progress) VALUES (?,?,?,?,?)", m.Id, m.PlayerId, m.QuestId, m.Status, m.Progress)
+	return db.ExecContext(ctx, "INSERT INTO player_quest (player_id,quests) VALUES (?,?)", m.PlayerId, m.Quests)
 }
 
 // FindPlayerQuestByPK 按主键查询
-func FindPlayerQuestByPK(ctx context.Context, db Querier, Id int64) (*PlayerQuest, error) {
+func FindPlayerQuestByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerQuest, error) {
 	var m PlayerQuest
-	query := "SELECT id,player_id,quest_id,status,progress,created_at,updated_at FROM player_quest WHERE id = ?"
-	row := db.QueryRowContext(ctx, query, Id)
+	query := "SELECT player_id,quests FROM player_quest WHERE player_id = ?"
+	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanPlayerQuest(&m, row); err != nil {
 		return nil, err
 	}
@@ -64,31 +48,31 @@ func FindPlayerQuestByPK(ctx context.Context, db Querier, Id int64) (*PlayerQues
 }
 
 func scanPlayerQuest(m *PlayerQuest, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.PlayerId, &m.QuestId, &m.Status, &m.Progress, &m.CreatedAt, &m.UpdatedAt)
+	return sc.Scan(&m.PlayerId, &m.Quests)
 }
 
 // UpdatePlayerQuestByPK 按主键更新（幂等）
 func UpdatePlayerQuestByPK(ctx context.Context, db Querier, m *PlayerQuest) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_quest SET player_id = ?, quest_id = ?, status = ?, progress = ? WHERE id = ?", m.PlayerId, m.QuestId, m.Status, m.Progress, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_quest SET quests = ? WHERE player_id = ?", m.Quests, m.PlayerId)
 }
 
 // UpsertPlayerQuestByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerQuestByPK(ctx context.Context, db Querier, m *PlayerQuest) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_quest (id,player_id,quest_id,status,progress) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), quest_id = VALUES(quest_id), status = VALUES(status), progress = VALUES(progress)", m.Id, m.PlayerId, m.QuestId, m.Status, m.Progress)
+	return db.ExecContext(ctx, "INSERT INTO player_quest (player_id,quests) VALUES (?,?) ON DUPLICATE KEY UPDATE quests = VALUES(quests)", m.PlayerId, m.Quests)
 }
 
 // DeletePlayerQuestByPK 按主键删除
-func DeletePlayerQuestByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
-	return db.ExecContext(ctx, "DELETE FROM player_quest WHERE id = ?", Id)
+func DeletePlayerQuestByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM player_quest WHERE player_id = ?", PlayerId)
 }
 
 // upsertPlayerQuestCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertPlayerQuestCols = []string{"player_id", "quest_id", "status", "progress"}
+var upsertPlayerQuestCols = []string{"player_id", "quests"}
 
 // UpsertPlayerQuestBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertPlayerQuestBatch(ctx context.Context, tx *sql.Tx, rows []PlayerQuest) error {
 	return flush.UpsertBatch(ctx, tx, "player_quest", upsertPlayerQuestCols, rows, func(m PlayerQuest) []any {
-		return []any{m.PlayerId, m.QuestId, m.Status, m.Progress}
+		return []any{m.PlayerId, m.Quests}
 	})
 }
 
@@ -99,7 +83,7 @@ func DeletePlayerQuestByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) 
 
 // ListPlayerQuestByPlayer 按玩家列出全部行（冷启动读取用）
 func ListPlayerQuestByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerQuest, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id,player_id,quest_id,status,progress,created_at,updated_at FROM player_quest WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,quests FROM player_quest WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -113,4 +97,10 @@ func ListPlayerQuestByPlayer(ctx context.Context, db Querier, playerID int64) ([
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// PlayerQuestFlat quest 模块的单行状态表适配（sql 注释 @flat:quest 生成）
+var PlayerQuestFlat = flush.FlatOps[PlayerQuest]{
+	Upsert: UpsertPlayerQuestBatch,
+	Load:   FindPlayerQuestByPK,
 }

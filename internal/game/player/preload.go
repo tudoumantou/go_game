@@ -20,8 +20,8 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
 	"game_study/pkg/metrics"
+	"game_study/pkg/model"
 )
 
 // DefaultPreloadTimeout 预加载超时（12.6.2 第 4 条：超时则登录失败，避免半成品 Actor 上线）。
@@ -29,11 +29,11 @@ const DefaultPreloadTimeout = 5 * time.Second
 
 // Prefetch 预加载结果（一次并行拉取的全部数据）。
 type Prefetch struct {
-	Player     *model.Player
-	Attr       *model.PlayerAttr
-	Items      map[int32]int64
-	EquipList  []module.EquipSnapshot
-	ActList    []module.ActivitySnapshot
+	Player    *model.Player
+	Attr      *model.PlayerAttr
+	Items     map[int32]int64
+	EquipList []module.EquipSnapshot
+	ActList   []module.ActivitySnapshot
 }
 
 // Equips 实现 module.PrefetchSource。
@@ -69,12 +69,10 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 
 	// 并行拉取：5 个查询并发，耗时 ≈ max(单表耗时)
 	var (
-		wg         sync.WaitGroup
-		playerErr  error
-		attrErr    error
-		itemsErr   error
-		equipErr   error
-		actErr     error
+		wg        sync.WaitGroup
+		playerErr error
+		attrErr   error
+		itemsErr  error
 	)
 
 	wg.Add(5)
@@ -115,26 +113,6 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 		pf.Items = items
 	}()
 
-	go func() {
-		defer wg.Done()
-		equips, err := p.queryEquips(ctx, playerID)
-		if err != nil {
-			equipErr = err
-			return
-		}
-		pf.EquipList = equips
-	}()
-
-	go func() {
-		defer wg.Done()
-		acts, err := p.queryActivities(ctx, playerID)
-		if err != nil {
-			actErr = err
-			return
-		}
-		pf.ActList = acts
-	}()
-
 	wg.Wait()
 
 	// 记录耗时（20.1：登录 P99 < 2s）
@@ -151,15 +129,7 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 	if itemsErr != nil {
 		return nil, nil, itemsErr
 	}
-	// 装备/活动失败不阻断登录（Tier-2 数据，模块可降级查库）
-	if equipErr != nil {
-		p.logger.Warn("preload equips failed, module will fallback", "player_id", playerID, "err", equipErr)
-		pf.EquipList = nil
-	}
-	if actErr != nil {
-		p.logger.Warn("preload activities failed, module will fallback", "player_id", playerID, "err", actErr)
-		pf.ActList = nil
-	}
+	// 装备与活动状态已随玩家快照（Ext）加载，不再单独查库。
 
 	return assembleState(playerID, pf), pf, nil
 }
@@ -212,48 +182,6 @@ func (p *Preloader) queryItems(ctx context.Context, playerID int64) (map[int32]i
 			return nil, err
 		}
 		out[itemID] = int64(count)
-	}
-	return out, rows.Err()
-}
-
-func (p *Preloader) queryEquips(ctx context.Context, playerID int64) ([]module.EquipSnapshot, error) {
-	const q = `SELECT id, equip_id, enhance_level, quality, equipped
-	           FROM player_equip WHERE player_id = ? ORDER BY id`
-	rows, err := p.db.DB.QueryContext(ctx, q, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("query equips: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []module.EquipSnapshot
-	for rows.Next() {
-		var e module.EquipSnapshot
-		var equipped int8
-		if err := rows.Scan(&e.UID, &e.EquipID, &e.EnhanceLevel, &e.Quality, &equipped); err != nil {
-			return nil, err
-		}
-		e.Equipped = equipped == 1
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
-func (p *Preloader) queryActivities(ctx context.Context, playerID int64) ([]module.ActivitySnapshot, error) {
-	const q = `SELECT activity_id, progress, reward_mask
-	           FROM activity_record WHERE player_id = ?`
-	rows, err := p.db.DB.QueryContext(ctx, q, playerID)
-	if err != nil {
-		return nil, fmt.Errorf("query activities: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var out []module.ActivitySnapshot
-	for rows.Next() {
-		var a module.ActivitySnapshot
-		if err := rows.Scan(&a.ActivityID, &a.Progress, &a.RewardMask); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
 	}
 	return out, rows.Err()
 }

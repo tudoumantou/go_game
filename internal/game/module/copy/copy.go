@@ -1,20 +1,25 @@
 // internal/game/module/copy/copy.go —— 副本模块（6301-6304）
+//
+// 副本进度（星级 / 通关次数 / 首通）放在玩家快照 Ext["copy"]：结算、首通奖励
+// 与经验在同一次 Redis CAS 提交，失败整批回滚（契约见 docs/R2.1-缓存原子变更契约.md）。
 package copy
 
 import (
 	"context"
-	"database/sql"
-	"errors"
+	"encoding/json"
 	"fmt"
 
 	"game_study/internal/game/module"
-	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
+	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
 )
+
+const stateKey = "copy"
 
 // 协议号（4.9：6301/6302 列表，6303/6304 结算）。
 const (
@@ -26,106 +31,58 @@ const (
 
 // 业务码（4.10）。
 const (
-	codeOK            int32 = 0
-	codeCopyNotExist  int32 = 6301
+	codeOK             int32 = 0
+	codeCopyNotExist   int32 = 6301
 	codeLevelNotEnough int32 = 6302
 )
 
-// Record 副本记录。
+// Record 单个副本的通关记录。
 type Record struct {
-	CopyID    int32
-	Star      int32
-	PassCount int32
-	FirstPass bool
+	Star      int32 `json:"star"`
+	PassCount int32 `json:"pass_count"`
+	FirstPass bool  `json:"first_pass"`
 }
 
-// Repo 副本仓储。
-type Repo struct {
-	db *db.DB
+// Data 是副本模块的私有状态：copy_id -> 通关记录。
+type Data struct {
+	Records map[int32]Record `json:"records"`
 }
 
-// NewRepo 创建仓储。
-func NewRepo(database *db.DB) *Repo { return &Repo{db: database} }
+// init 注册持久化：copy_record 主键为 (player_id)。
+func init() {
+	writebehind.RegisterFlat[model.CopyRecord](stateKey, model.CopyRecordFlat, validate)
+}
 
-// ListByPlayer 查询玩家全部副本记录。
-func (r *Repo) ListByPlayer(ctx context.Context, playerID int64) (map[int32]*Record, error) {
-	const q = `SELECT copy_id, star, pass_count, first_pass FROM copy_record WHERE player_id = ?`
-	rows, err := r.db.QueryContext(ctx, q, playerID)
+// validate 落库前校验：星级 0-3、次数非负。
+func validate(row *model.CopyRecord) error {
+	d, err := decode(row)
 	if err != nil {
-		return nil, fmt.Errorf("list copy_record: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	out := make(map[int32]*Record)
-	for rows.Next() {
-		var rec Record
-		if err := rows.Scan(&rec.CopyID, &rec.Star, &rec.PassCount, &rec.FirstPass); err != nil {
-			return nil, err
-		}
-		out[rec.CopyID] = &rec
-	}
-	return out, rows.Err()
-}
-
-// Settle 通关结算落库（事务 + FOR UPDATE：首通判定与计数原子）。
-// 返回是否首通。cb 在事务内被调用（用于同事务内发奖，P6 简化为事务外发奖，
-// 故此处仅返回计算所需信息）。
-func (r *Repo) Settle(ctx context.Context, playerID int64, copyID, star int32) (firstPass bool, err error) {
-	err = r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var bestStar, passCount int32
-		var first int8
-		q := `SELECT star, pass_count, first_pass FROM copy_record
-		      WHERE player_id = ? AND copy_id = ? FOR UPDATE`
-		serr := tx.QueryRowContext(ctx, q, playerID, copyID).Scan(&bestStar, &passCount, &first)
-		switch {
-		case errors.Is(serr, sql.ErrNoRows):
-			// 首次进入该副本：直接首通
-			firstPass = true
-			_, err := tx.ExecContext(ctx,
-				`INSERT INTO copy_record (player_id, copy_id, star, pass_count, first_pass)
-				 VALUES (?, ?, ?, 1, 1)`, playerID, copyID, star)
-			return err
-		case serr != nil:
-			return serr
-		}
-		firstPass = first == 0
-		if star > bestStar {
-			bestStar = star
-		}
-		// first_pass 一旦置 1 不再回退（首通奖终身一次）
-		newFirst := int8(0)
-		if firstPass {
-			newFirst = 1
-		}
-		_, err := tx.ExecContext(ctx,
-			`UPDATE copy_record SET star = ?, pass_count = pass_count + 1,
-			        first_pass = GREATEST(first_pass, ?)
-			 WHERE player_id = ? AND copy_id = ?`,
-			bestStar, newFirst, playerID, copyID)
 		return err
-	})
-	return firstPass, err
+	}
+	for id, rec := range d.Records {
+		if id <= 0 || rec.Star < 0 || rec.Star > 3 || rec.PassCount < 0 {
+			return fmt.Errorf("invalid copy %d record %+v", id, rec)
+		}
+	}
+	return nil
 }
 
 // Module 副本模块。
 type Module struct {
-	repo   *Repo
 	logger *log.Logger
 }
 
 // New 创建副本模块。
-func New(repo *Repo, logger *log.Logger) *Module { return &Module{repo: repo, logger: logger} }
+func New(logger *log.Logger) *Module { return &Module{logger: logger} }
 
 // Name 实现 module.Module。
-func (m *Module) Name() string { return "copy" }
+func (m *Module) Name() string { return stateKey }
 
 // MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 {
-	return []uint32{msgIDListReq, msgIDSettleReq}
-}
+func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDSettleReq} }
 
 // Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
+func (m *Module) Init(*module.Context) error { return nil }
 
 // OnMessage 实现 module.Module。
 func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
@@ -139,45 +96,39 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 	}
 }
 
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
+// OnSave 实现 module.Module：状态随快照提交。
+func (m *Module) OnSave(context.Context) error { return nil }
 
 // OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
+func (m *Module) OnLogin(*module.Context) error { return nil }
 
 // OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error { return nil }
+func (m *Module) OnLogout(*module.Context) error { return nil }
 
-// onList 副本列表（全部配置 + 玩家记录）。
+// onList 副本列表（等级不足仍下发，结算时强校验）。
 func (m *Module) onList(ctx *module.Context) error {
 	resp := &gamev1.CopyListResp{Code: codeOK}
-	var recs map[int32]*Record
-	if m.repo != nil {
-		var err error
-		recs, err = m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID())
-		if err != nil {
-			return err
-		}
+	d, err := load(ctx.State)
+	if err != nil {
+		return err
 	}
-	level := ctx.State.Profile().Level
 	for _, cfg := range gamedata.CopyCfgList {
-		// 等级不足仍下发（客户端置灰展示），结算时强校验
 		entry := &gamev1.CopyEntry{
 			CopyId:   int32(cfg.Id),
 			Name:     cfg.Col1,
 			MinLevel: int32(cfg.Col2),
 		}
-		if rec, ok := recs[int32(cfg.Id)]; ok {
+		if rec, ok := d.Records[int32(cfg.Id)]; ok {
 			entry.BestStar = rec.Star
 			entry.PassCount = rec.PassCount
 		}
 		resp.Copies = append(resp.Copies, entry)
 	}
-	_ = level
-	return m.reply(ctx, msgIDListResp, resp)
+	return reply(ctx, msgIDListResp, resp)
 }
 
-// onSettle 通关结算（首通发奖：exp + 首通道具）。
+// onSettle 通关结算：星级取历史最佳，首通发放掉落并写经验。
+// 结算事实、首通奖励与经验都在同一条消息内，随同一份快照提交。
 func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 	var req gamev1.CopySettleReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -188,11 +139,11 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 	cfg, ok := gamedata.GetCopyCfg(int64(req.CopyId))
 	if !ok {
 		resp.Code = codeCopyNotExist
-		return m.reply(ctx, msgIDSettleResp, resp)
+		return reply(ctx, msgIDSettleResp, resp)
 	}
 	if ctx.State.Profile().Level < int32(cfg.Col2) {
 		resp.Code = codeLevelNotEnough
-		return m.reply(ctx, msgIDSettleResp, resp)
+		return reply(ctx, msgIDSettleResp, resp)
 	}
 	star := req.Star
 	if star < 1 {
@@ -201,19 +152,24 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 	if star > 3 {
 		star = 3
 	}
-	if m.repo == nil {
-		resp.Code = codeOK
-		return m.reply(ctx, msgIDSettleResp, resp)
-	}
 
-	firstPass, err := m.repo.Settle(context.Background(), ctx.State.PlayerID(), req.CopyId, star)
+	d, err := load(ctx.State)
 	if err != nil {
 		return err
 	}
+	rec := d.Records[req.CopyId]
+	firstPass := !rec.FirstPass
+	if rec.Star < star {
+		rec.Star = star
+	}
+	rec.PassCount++
+	rec.FirstPass = true
+	d.Records[req.CopyId] = rec
+
 	resp.Code = codeOK
 	resp.FirstPass = firstPass
 
-	// 通关经验：等级门槛 * 50（P7 接 copy.xml 掉落列）
+	// 通关经验：等级门槛 * 50
 	expGain := cfg.Col2 * 50
 	if cfg.Col2 <= 0 {
 		expGain = 50
@@ -245,7 +201,10 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 		}
 	}
 
-	if err := m.reply(ctx, msgIDSettleResp, resp); err != nil {
+	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
+		return err
+	}
+	if err := reply(ctx, msgIDSettleResp, resp); err != nil {
 		return err
 	}
 	if ctx.AddExp != nil {
@@ -258,7 +217,43 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 	return nil
 }
 
-func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
+// load 读取副本状态；从未通关返回空结构。
+func load(state writebehind.ExtState) (*Data, error) {
+	row, err := writebehind.LoadExt[model.CopyRecord](state, stateKey)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return &Data{Records: map[int32]Record{}}, nil
+	}
+	return decode(row)
+}
+
+func decode(row *model.CopyRecord) (*Data, error) {
+	d := &Data{Records: map[int32]Record{}}
+	if row.Records != "" {
+		if err := json.Unmarshal([]byte(row.Records), &d.Records); err != nil {
+			return nil, fmt.Errorf("decode copy state: %w", err)
+		}
+	}
+	if d.Records == nil {
+		d.Records = map[int32]Record{}
+	}
+	return d, nil
+}
+
+func save(state writebehind.ExtState, playerID int64, d *Data) error {
+	raw, err := json.Marshal(d.Records)
+	if err != nil {
+		return fmt.Errorf("encode copy state: %w", err)
+	}
+	return writebehind.SaveExt(state, stateKey, &model.CopyRecord{
+		PlayerId: playerID,
+		Records:  string(raw),
+	})
+}
+
+func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {
 		return err

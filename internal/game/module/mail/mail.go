@@ -125,65 +125,100 @@ func (r *Repo) UnreadCount(ctx context.Context, playerID int64) (int64, error) {
 	return n, nil
 }
 
-// TakeAttachments 领取附件（事务 + 行锁）：
-//  1. 校验邮件归属与状态（5001/5002/5003）
-//  2. 附件 claimed 0→1，mail.status → 2
-//  3. 返回附件明细供发奖
-func (r *Repo) TakeAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error) {
-	var result []Attachment
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var ownerID int64
-		var status int32
-		err := tx.QueryRowContext(ctx,
-			`SELECT player_id, status FROM mail WHERE id = ? FOR UPDATE`, mailID).Scan(&ownerID, &status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrMailNotExist
+// FindAttachments 只读附件：校验归属与有无附件，不写库。
+//
+// 领取事实由玩家快照的业务键 mail:<id> 保证（A 类幂等），因此这里不再用
+// 「SQL 先标记已领」——那条路径在 Redis 提交失败时会丢奖励（R2.2）。
+func (r *Repo) FindAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error) {
+	var ownerID int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT player_id FROM mail WHERE id = ?`, mailID).Scan(&ownerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrMailNotExist
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ownerID != playerID {
+		return nil, ErrMailNotExist
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT item_id, count FROM mail_attachment WHERE mail_id = ? AND claimed = 0`, mailID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Attachment
+	for rows.Next() {
+		var a Attachment
+		if err := rows.Scan(&a.ItemID, &a.Count); err != nil {
+			return nil, err
 		}
-		if err != nil {
-			return err
-		}
-		if ownerID != playerID {
-			return ErrMailNotExist
-		}
-		if status == 2 {
-			return ErrAlreadyTaken
-		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, ErrNoAttachment
+	}
+	return out, nil
+}
 
-		rows, err := tx.QueryContext(ctx,
-			`SELECT item_id, count FROM mail_attachment WHERE mail_id = ? AND claimed = 0 FOR UPDATE`, mailID)
-		if err != nil {
-			return err
-		}
-		for rows.Next() {
-			var a Attachment
-			if err := rows.Scan(&a.ItemID, &a.Count); err != nil {
-				_ = rows.Close()
-				return err
-			}
-			result = append(result, a)
-		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close()
-			return err
-		}
-		_ = rows.Close()
-
-		if len(result) == 0 {
-			return ErrNoAttachment
-		}
+// MarkTaken 尽力把附件标记为已领，只用于列表展示与排查。
+// 失败不影响正确性：重复领取由快照里的业务键拦截。
+func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
+	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE mail_attachment SET claimed = 1 WHERE mail_id = ? AND claimed = 0`, mailID); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE mail SET status = 2 WHERE id = ?`, mailID); err != nil {
+		_, err := tx.ExecContext(ctx, `UPDATE mail SET status = 2 WHERE id = ?`, mailID)
+		return err
+	})
+}
+
+// DeliverOffline 离线发放：以 biz_id 幂等写一封带附件的系统邮件。
+//
+// 用于玩家不在线时的 Tier-1 发放（充值到账等）：邮件与附件在同一 SQL 事务里
+// 落库，biz_id 唯一键保证重投不会重复建单。返回 true 表示本次新建。
+func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (bool, error) {
+	if bizID == "" {
+		return false, fmt.Errorf("offline delivery requires biz_id")
+	}
+	created := false
+	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`INSERT IGNORE INTO mail (player_id, template_id, title, content, channel, biz_id)
+			 VALUES (?, 0, ?, ?, 0, ?)`, playerID, title, content, bizID)
+		if err != nil {
 			return err
 		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil // 已发放过
+		}
+		mailID, err := res.LastInsertId()
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO mail_attachment (mail_id, item_id, count) VALUES (?, ?, ?)`,
+				mailID, it.ItemID, it.Count); err != nil {
+				return err
+			}
+		}
+		created = true
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return false, err
 	}
-	return result, nil
+	return created, nil
 }
 
 // Module 邮件模块。
@@ -195,6 +230,14 @@ type Module struct {
 // New 创建邮件模块。
 func New(repo *Repo, logger *log.Logger) *Module {
 	return &Module{repo: repo, logger: logger}
+}
+
+// DeliverOffline 供充值等 Tier-1 发放使用：玩家离线时以 biz_id 幂等写系统邮件。
+func (m *Module) DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (bool, error) {
+	if m.repo == nil {
+		return false, fmt.Errorf("mail repository unavailable")
+	}
+	return m.repo.DeliverOffline(ctx, playerID, bizID, title, content, items)
 }
 
 // Name 实现 module.Module。
@@ -292,6 +335,9 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onTake 领取附件（幂等：重复领取回 5002）。
+//
+// 领取事实 = 快照里的业务键 mail:<id>，与道具同一次 CAS 提交；
+// SQL 的 claimed/status 只是尽力更新，标记失败也不会重复发奖。
 func (m *Module) onTake(ctx *module.Context, body []byte) error {
 	var req gamev1.MailTakeAttachmentReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -304,13 +350,19 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 		return m.replyTake(ctx, resp)
 	}
 
-	atts, err := m.repo.TakeAttachments(context.Background(), ctx.State.PlayerID(), req.MailId)
+	// 已领过直接返回 5002：SQL 的 claimed 只是展示，权威事实在快照业务键上。
+	// 先查键再查附件，否则 MarkTaken 生效后重复请求会拿到 5003（无附件）而不是 5002。
+	key := fmt.Sprintf("mail:%d", req.MailId)
+	if ctx.State.HasBiz(key) {
+		resp.Code = codeMailTaken
+		return m.replyTake(ctx, resp)
+	}
+
+	atts, err := m.repo.FindAttachments(context.Background(), ctx.State.PlayerID(), req.MailId)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrMailNotExist):
 			resp.Code = codeMailNotExist
-		case errors.Is(err, ErrAlreadyTaken):
-			resp.Code = codeMailTaken
 		case errors.Is(err, ErrNoAttachment):
 			resp.Code = codeNoAttachment
 		default:
@@ -319,10 +371,27 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 		return m.replyTake(ctx, resp)
 	}
 
-	// 发奖（同 Actor 内直接改内存，安全）
+	applied, err := ctx.ApplyOnce(key, func() error {
+		for _, a := range atts {
+			ctx.State.AddItem(a.ItemID, int64(a.Count))
+		}
+		ctx.State.MarkDirty("bag")
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if !applied {
+		resp.Code = codeMailTaken
+		return m.replyTake(ctx, resp)
+	}
+	if err := m.repo.MarkTaken(context.Background(), req.MailId); err != nil {
+		// 不是错误：快照才是权威，标记只影响列表展示。
+		m.logger.Warn("mail mark taken failed", "mail_id", req.MailId, "err", err)
+	}
+
 	changes := make([]*gamev1.ItemChange, 0, len(atts))
 	for _, a := range atts {
-		ctx.State.AddItem(a.ItemID, int64(a.Count))
 		changes = append(changes, &gamev1.ItemChange{
 			ItemUid: int64(a.ItemID),
 			ItemId:  a.ItemID,
@@ -330,7 +399,6 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 			Change:  1,
 		})
 	}
-	ctx.State.MarkDirty("bag")
 
 	resp.Code = codeOK
 	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {

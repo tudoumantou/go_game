@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/game/module/mail"
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
@@ -112,6 +113,24 @@ func (d *memDeduper) Forget(ctx context.Context, topic, bizID string) error {
 	return nil
 }
 
+// fakeMail 记录离线发放，验证 Tier-1 兜底。
+type fakeMail struct {
+	delivered []string
+	fail      error
+}
+
+func (f *fakeMail) Deliver(_ context.Context, msg *pkgmq.MailMsg) (int64, error) {
+	return msg.MailID, nil
+}
+
+func (f *fakeMail) DeliverOffline(_ context.Context, _ int64, bizID, _, _ string, _ []mail.Attachment) (bool, error) {
+	if f.fail != nil {
+		return false, f.fail
+	}
+	f.delivered = append(f.delivered, bizID)
+	return true, nil
+}
+
 func setupConsumer(t *testing.T, presence *memPresence, deduper *memDeduper) (*RechargeConsumer, *captureActor) {
 	t.Helper()
 	sys := actor.NewSystem(actor.Config{ShardCount: 4, MailboxSize: 64})
@@ -133,6 +152,7 @@ func setupConsumer(t *testing.T, presence *memPresence, deduper *memDeduper) (*R
 		Presence: presence,
 		Players:  &fakeRouter{pid: pid},
 		Sys:      sys,
+		Mail:     &fakeMail{},
 		Logger:   log.New("test"),
 		NodeID:   "game-1",
 	}
@@ -189,11 +209,14 @@ func TestRechargeSkipOtherNode(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 	if grants, _ := act.snapshot(); grants != 0 {
-		t.Fatalf("should skip on other node, grants = %d", grants)
+		t.Fatalf("should not grant on other node, grants = %d", grants)
 	}
-	// 关键：跳过时不占用幂等键，切回本服后仍能处理
+	// 关键：异服改走离线发放（biz_id 幂等），不占在线幂等键
+	if fm, ok := c.deps.Mail.(*fakeMail); !ok || len(fm.delivered) != 1 || fm.delivered[0] != "O1002" {
+		t.Fatalf("offline delivery not recorded: %+v", c.deps.Mail)
+	}
 	if deduper.seen[pkgmq.IdemKey(pkgmq.TopicRechargeOrder, "O1002")] {
-		t.Fatalf("skip on other node must not set idem key")
+		t.Fatalf("offline path must not set online idem key")
 	}
 
 	presence.node[1001] = "game-1"
@@ -214,7 +237,11 @@ func TestRechargeSkipOffline(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 	if grants, _ := act.snapshot(); grants != 0 {
-		t.Fatalf("offline player should be skipped")
+		t.Fatalf("offline player must not be granted in actor")
+	}
+	fm, ok := c.deps.Mail.(*fakeMail)
+	if !ok || len(fm.delivered) != 1 || fm.delivered[0] != "O1003" {
+		t.Fatalf("offline delivery not recorded: %+v", fm)
 	}
 }
 

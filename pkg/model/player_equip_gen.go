@@ -6,33 +6,20 @@ package model
 import (
 	"context"
 	"database/sql"
-	"time"
 
 	"game_study/pkg/flush"
 )
 
 // PlayerEquip player_equip 表
 type PlayerEquip struct {
-	Id int64 `db:"id"`
 	PlayerId int64 `db:"player_id"`
-	EquipId int32 `db:"equip_id"`
-	EnhanceLevel int32 `db:"enhance_level"`
-	Quality int32 `db:"quality"`
-	Equipped int32 `db:"equipped"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Equips string `db:"equips"`
 }
 
 // PlayerEquip 列名
 const (
-	ColPlayerEquipId = "id"
 	ColPlayerEquipPlayerId = "player_id"
-	ColPlayerEquipEquipId = "equip_id"
-	ColPlayerEquipEnhanceLevel = "enhance_level"
-	ColPlayerEquipQuality = "quality"
-	ColPlayerEquipEquipped = "equipped"
-	ColPlayerEquipCreatedAt = "created_at"
-	ColPlayerEquipUpdatedAt = "updated_at"
+	ColPlayerEquipEquips = "equips"
 )
 
 // TableName 表名
@@ -40,26 +27,20 @@ func (m *PlayerEquip) TableName() string { return "player_equip" }
 
 // PlayerEquipColumns 全部列（扫描用）
 var PlayerEquipColumns = []string{
-	ColPlayerEquipId,
 	ColPlayerEquipPlayerId,
-	ColPlayerEquipEquipId,
-	ColPlayerEquipEnhanceLevel,
-	ColPlayerEquipQuality,
-	ColPlayerEquipEquipped,
-	ColPlayerEquipCreatedAt,
-	ColPlayerEquipUpdatedAt,
+	ColPlayerEquipEquips,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerEquip(ctx context.Context, db Querier, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality,equipped) VALUES (?,?,?,?,?,?)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped)
+	return db.ExecContext(ctx, "INSERT INTO player_equip (player_id,equips) VALUES (?,?)", m.PlayerId, m.Equips)
 }
 
 // FindPlayerEquipByPK 按主键查询
-func FindPlayerEquipByPK(ctx context.Context, db Querier, Id int64) (*PlayerEquip, error) {
+func FindPlayerEquipByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerEquip, error) {
 	var m PlayerEquip
-	query := "SELECT id,player_id,equip_id,enhance_level,quality,equipped,created_at,updated_at FROM player_equip WHERE id = ?"
-	row := db.QueryRowContext(ctx, query, Id)
+	query := "SELECT player_id,equips FROM player_equip WHERE player_id = ?"
+	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanPlayerEquip(&m, row); err != nil {
 		return nil, err
 	}
@@ -67,31 +48,31 @@ func FindPlayerEquipByPK(ctx context.Context, db Querier, Id int64) (*PlayerEqui
 }
 
 func scanPlayerEquip(m *PlayerEquip, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.PlayerId, &m.EquipId, &m.EnhanceLevel, &m.Quality, &m.Equipped, &m.CreatedAt, &m.UpdatedAt)
+	return sc.Scan(&m.PlayerId, &m.Equips)
 }
 
 // UpdatePlayerEquipByPK 按主键更新（幂等）
 func UpdatePlayerEquipByPK(ctx context.Context, db Querier, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_equip SET player_id = ?, equip_id = ?, enhance_level = ?, quality = ?, equipped = ? WHERE id = ?", m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped, m.Id)
+	return db.ExecContext(ctx, "UPDATE player_equip SET equips = ? WHERE player_id = ?", m.Equips, m.PlayerId)
 }
 
 // UpsertPlayerEquipByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerEquipByPK(ctx context.Context, db Querier, m *PlayerEquip) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_equip (id,player_id,equip_id,enhance_level,quality,equipped) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE player_id = VALUES(player_id), equip_id = VALUES(equip_id), enhance_level = VALUES(enhance_level), quality = VALUES(quality), equipped = VALUES(equipped)", m.Id, m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped)
+	return db.ExecContext(ctx, "INSERT INTO player_equip (player_id,equips) VALUES (?,?) ON DUPLICATE KEY UPDATE equips = VALUES(equips)", m.PlayerId, m.Equips)
 }
 
 // DeletePlayerEquipByPK 按主键删除
-func DeletePlayerEquipByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
-	return db.ExecContext(ctx, "DELETE FROM player_equip WHERE id = ?", Id)
+func DeletePlayerEquipByPK(ctx context.Context, db Querier, PlayerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM player_equip WHERE player_id = ?", PlayerId)
 }
 
 // upsertPlayerEquipCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertPlayerEquipCols = []string{"player_id", "equip_id", "enhance_level", "quality", "equipped"}
+var upsertPlayerEquipCols = []string{"player_id", "equips"}
 
 // UpsertPlayerEquipBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertPlayerEquipBatch(ctx context.Context, tx *sql.Tx, rows []PlayerEquip) error {
 	return flush.UpsertBatch(ctx, tx, "player_equip", upsertPlayerEquipCols, rows, func(m PlayerEquip) []any {
-		return []any{m.PlayerId, m.EquipId, m.EnhanceLevel, m.Quality, m.Equipped}
+		return []any{m.PlayerId, m.Equips}
 	})
 }
 
@@ -102,7 +83,7 @@ func DeletePlayerEquipByPlayer(ctx context.Context, tx *sql.Tx, playerID int64) 
 
 // ListPlayerEquipByPlayer 按玩家列出全部行（冷启动读取用）
 func ListPlayerEquipByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerEquip, error) {
-	rows, err := db.QueryContext(ctx, "SELECT id,player_id,equip_id,enhance_level,quality,equipped,created_at,updated_at FROM player_equip WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,equips FROM player_equip WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -116,4 +97,10 @@ func ListPlayerEquipByPlayer(ctx context.Context, db Querier, playerID int64) ([
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// PlayerEquipFlat equip 模块的单行状态表适配（sql 注释 @flat:equip 生成）
+var PlayerEquipFlat = flush.FlatOps[PlayerEquip]{
+	Upsert: UpsertPlayerEquipBatch,
+	Load:   FindPlayerEquipByPK,
 }

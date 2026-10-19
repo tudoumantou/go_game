@@ -219,18 +219,14 @@ func (s *Server) Start(ctx context.Context) error {
 		chatMod = chat.New(chat.NewRepo(s.database), chatMessenger{srv: s}, s.logger)
 		s.modules.Register(mailMod)
 		s.modules.Register(chatMod)
-		s.modules.Register(quest.New(quest.NewRepo(s.database), s.logger))
-		equipRepo := equip.NewRepo(s.database)
-		if s.idTable != nil {
-			equipRepo.SetIDTable(s.idTable)
-		}
-		s.modules.Register(equip.New(equipRepo, s.logger))
-		s.modules.Register(skill.New(skill.NewRepo(s.database), s.logger))
+		s.modules.Register(quest.New(s.logger))
+		s.modules.Register(equip.New(s.logger))
+		s.modules.Register(skill.New(s.logger))
 		s.modules.Register(guild.New(guild.NewRepo(s.database), s.logger))
 		s.modules.Register(team.New(team.NewRepo(s.database), s.logger))
-		s.modules.Register(copy.New(copy.NewRepo(s.database), s.logger))
-		s.modules.Register(shop.New(shop.NewRepo(s.database), s.logger))
-		s.modules.Register(activity.New(activity.NewRepo(s.database), s.logger))
+		s.modules.Register(copy.New(s.logger))
+		s.modules.Register(shop.New(s.logger))
+		s.modules.Register(activity.New(s.logger))
 		s.modules.Register(signin.New(s.logger))
 	}
 

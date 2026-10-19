@@ -1,96 +1,87 @@
 // internal/game/module/shop/shop.go —— 商店模块（6401-6404）
+//
+// 本周期购买次数放在玩家快照 Ext["shop"]：扣费、发货与次数累加在同一次
+// Redis CAS 提交，失败整批回滚（契约见 docs/R2.1-缓存原子变更契约.md）。
 package shop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"game_study/internal/game/module"
-	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
+	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
 )
 
+const stateKey = "shop"
+
 // 协议号（4.9：6401/6402 列表，6403/6404 购买）。
 const (
-	msgIDListReq uint32 = 6401
+	msgIDListReq  uint32 = 6401
 	msgIDListResp uint32 = 6402
-	msgIDBuyReq  uint32 = 6403
-	msgIDBuyResp uint32 = 6404
+	msgIDBuyReq   uint32 = 6403
+	msgIDBuyResp  uint32 = 6404
 )
 
 // 业务码（4.10）。
 const (
-	codeOK          int32 = 0
-	codeGoodsNotExist int32 = 6401
+	codeOK               int32 = 0
+	codeGoodsNotExist    int32 = 6401
 	codeDiamondNotEnough int32 = 6402
-	codeLimitExceeded int32 = 6403
+	codeLimitExceeded    int32 = 6403
 )
 
-// 货币道具 ID（钻石）。
 const itemDiamond int32 = 1001
 
 // defaultShopID 默认商店（P6 单商店：shop.xml 仅一条，P7 支持多商店页签）。
 const defaultShopID int32 = 1
 
-// Repo 商店仓储。
-type Repo struct {
-	db *db.DB
+// Data 是商店模块的私有状态： "shopID:goodsID" -> 本周期已购次数。
+type Data struct {
+	Bought map[string]int32 `json:"bought"`
 }
 
-// NewRepo 创建仓储。
-func NewRepo(database *db.DB) *Repo { return &Repo{db: database} }
+// init 注册持久化：shop_record 主键为 (player_id)。
+func init() {
+	writebehind.RegisterFlat[model.ShopRecord](stateKey, model.ShopRecordFlat, validate)
+}
 
-// BoughtMap 查询玩家在指定商店各商品已购次数。
-func (r *Repo) BoughtMap(ctx context.Context, playerID int64, shopID int32) (map[int32]int32, error) {
-	const q = `SELECT goods_id, buy_count FROM shop_record WHERE player_id = ? AND shop_id = ?`
-	rows, err := r.db.QueryContext(ctx, q, playerID, shopID)
+// validate 落库前校验：次数非负。
+func validate(row *model.ShopRecord) error {
+	d, err := decode(row)
 	if err != nil {
-		return nil, fmt.Errorf("list shop_record: %w", err)
+		return err
 	}
-	defer func() { _ = rows.Close() }()
-
-	out := make(map[int32]int32)
-	for rows.Next() {
-		var goodsID, count int32
-		if err := rows.Scan(&goodsID, &count); err != nil {
-			return nil, err
+	for key, n := range d.Bought {
+		if key == "" || n < 0 {
+			return fmt.Errorf("invalid shop record %q = %d", key, n)
 		}
-		out[goodsID] = count
-	}
-	return out, rows.Err()
-}
-
-// IncrBuy 增加已购次数（uk_player_goods 幂等累加）。
-func (r *Repo) IncrBuy(ctx context.Context, playerID int64, shopID, goodsID, delta int32) error {
-	const q = `INSERT INTO shop_record (player_id, shop_id, goods_id, buy_count) VALUES (?, ?, ?, ?)
-	           ON DUPLICATE KEY UPDATE buy_count = buy_count + VALUES(buy_count)`
-	if _, err := r.db.ExecContext(ctx, q, playerID, shopID, goodsID, delta); err != nil {
-		return fmt.Errorf("incr shop_record: %w", err)
 	}
 	return nil
 }
 
 // Module 商店模块。
 type Module struct {
-	repo   *Repo
 	logger *log.Logger
 }
 
 // New 创建商店模块。
-func New(repo *Repo, logger *log.Logger) *Module { return &Module{repo: repo, logger: logger} }
+func New(logger *log.Logger) *Module { return &Module{logger: logger} }
 
 // Name 实现 module.Module。
-func (m *Module) Name() string { return "shop" }
+func (m *Module) Name() string { return stateKey }
 
 // MsgIDs 实现 module.Module。
 func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDBuyReq} }
 
 // Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
+func (m *Module) Init(*module.Context) error { return nil }
 
 // OnMessage 实现 module.Module。
 func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
@@ -104,25 +95,21 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 	}
 }
 
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
+// OnSave 实现 module.Module：次数随快照提交。
+func (m *Module) OnSave(context.Context) error { return nil }
 
 // OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
+func (m *Module) OnLogin(*module.Context) error { return nil }
 
 // OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error { return nil }
+func (m *Module) OnLogout(*module.Context) error { return nil }
 
 // onList 商店列表（商品 + 本周期已购 / 限购）。
 func (m *Module) onList(ctx *module.Context) error {
 	resp := &gamev1.ShopListResp{Code: codeOK}
-	bought := map[int32]int32{}
-	if m.repo != nil {
-		var err error
-		bought, err = m.repo.BoughtMap(context.Background(), ctx.State.PlayerID(), defaultShopID)
-		if err != nil {
-			return err
-		}
+	d, err := load(ctx.State)
+	if err != nil {
+		return err
 	}
 	for _, cfg := range gamedata.ShopGoodsCfgList {
 		resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
@@ -130,14 +117,14 @@ func (m *Module) onList(ctx *module.Context) error {
 			ItemId:  int32(cfg.Col2),
 			Price:   int32(cfg.Col3),
 			Count:   int32(cfg.Col4),
-			Bought:  bought[int32(cfg.Id)],
+			Bought:  d.Bought[goodsKey(defaultShopID, int32(cfg.Id))],
 			Limit:   0, // P6 不限购，P7 接 shop.xml 限购列
 		})
 	}
-	return m.reply(ctx, msgIDListResp, resp)
+	return reply(ctx, msgIDListResp, resp)
 }
 
-// onBuy 购买（钻石扣减 → 发道具 → 已购 +1）。
+// onBuy 购买：扣费、发货与次数累加同一次快照提交。
 func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 	var req gamev1.ShopBuyReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -148,13 +135,12 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 	cfg, ok := gamedata.GetShopGoodsCfg(int64(req.GoodsId))
 	if !ok {
 		resp.Code = codeGoodsNotExist
-		return m.reply(ctx, msgIDBuyResp, resp)
+		return reply(ctx, msgIDBuyResp, resp)
 	}
 	count := int64(req.Count)
 	if count <= 0 {
 		count = 1
 	}
-	// 单次购买上限，防溢出（配置数量 * 次数）
 	if count > 999 {
 		count = 999
 	}
@@ -162,34 +148,31 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 	price := int64(cfg.Col3) * count
 	if ctx.State.GetItemCount(itemDiamond) < price {
 		resp.Code = codeDiamondNotEnough
-		return m.reply(ctx, msgIDBuyResp, resp)
+		return reply(ctx, msgIDBuyResp, resp)
 	}
 	if !ctx.State.RemoveItem(itemDiamond, price) {
 		resp.Code = codeDiamondNotEnough
-		return m.reply(ctx, msgIDBuyResp, resp)
+		return reply(ctx, msgIDBuyResp, resp)
 	}
 
 	itemID := int32(cfg.Col2)
 	gain := int64(cfg.Col4) * count
 	ctx.State.AddItem(itemID, gain)
-	ctx.State.MarkDirty(m.Name())
 	ctx.State.MarkDirty("bag")
 
-	bought := int32(count)
-	if m.repo != nil {
-		// 落库失败不回滚内存（Write-Behind 语义：内存为真，落库重试）
-		if err := m.repo.IncrBuy(context.Background(), ctx.State.PlayerID(), defaultShopID, req.GoodsId, int32(count)); err != nil {
-			m.logger.Warn("shop record incr failed", "player_id", ctx.State.PlayerID(),
-				"goods_id", req.GoodsId, "err", err)
-		}
-		if cur, err := m.repo.BoughtMap(context.Background(), ctx.State.PlayerID(), defaultShopID); err == nil {
-			bought = cur[req.GoodsId]
-		}
+	d, err := load(ctx.State)
+	if err != nil {
+		return err
+	}
+	key := goodsKey(defaultShopID, req.GoodsId)
+	d.Bought[key] += int32(count)
+	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
+		return err
 	}
 
 	resp.Code = codeOK
-	resp.Bought = bought
-	if err := m.reply(ctx, msgIDBuyResp, resp); err != nil {
+	resp.Bought = d.Bought[key]
+	if err := reply(ctx, msgIDBuyResp, resp); err != nil {
 		return err
 	}
 	// 背包增量推送（钻石扣减 + 道具增加）
@@ -207,7 +190,48 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 	return nil
 }
 
-func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
+// goodsKey 组合商店与商品 ID，作为快照内的稳定键。
+func goodsKey(shopID, goodsID int32) string {
+	return fmt.Sprintf("%d:%d", shopID, goodsID)
+}
+
+// load 读取购买次数；从未购买返回空结构。
+func load(state writebehind.ExtState) (*Data, error) {
+	row, err := writebehind.LoadExt[model.ShopRecord](state, stateKey)
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
+		return &Data{Bought: map[string]int32{}}, nil
+	}
+	return decode(row)
+}
+
+func decode(row *model.ShopRecord) (*Data, error) {
+	d := &Data{Bought: map[string]int32{}}
+	if row.Bought != "" {
+		if err := json.Unmarshal([]byte(row.Bought), &d.Bought); err != nil {
+			return nil, fmt.Errorf("decode shop state: %w", err)
+		}
+	}
+	if d.Bought == nil {
+		d.Bought = map[string]int32{}
+	}
+	return d, nil
+}
+
+func save(state writebehind.ExtState, playerID int64, d *Data) error {
+	raw, err := json.Marshal(d.Bought)
+	if err != nil {
+		return fmt.Errorf("encode shop state: %w", err)
+	}
+	return writebehind.SaveExt(state, stateKey, &model.ShopRecord{
+		PlayerId: playerID,
+		Bought:   string(raw),
+	})
+}
+
+func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {
 		return err

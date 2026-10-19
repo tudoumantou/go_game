@@ -28,6 +28,15 @@ type PlayerRouter interface {
 // 编译期断言：*player.Manager 实现 PlayerRouter。
 var _ PlayerRouter = (*player.Manager)(nil)
 
+// Mailer 邮件模块能力（*mail.Module 实现；测试可注入内存实现）。
+//
+// Deliver 投递 Kafka 邮件；DeliverOffline 用于 Tier-1 发放（充值到账）在玩家
+// 离线或不在本服时落一封 biz_id 幂等的邮件，保证奖励不因不在线而丢。
+type Mailer interface {
+	Deliver(ctx context.Context, msg *pkgmq.MailMsg) (int64, error)
+	DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []mail.Attachment) (bool, error)
+}
+
 // Deps 消费者共享依赖。
 type Deps struct {
 	Deduper  pkgmq.Deduper
@@ -35,7 +44,7 @@ type Deps struct {
 	Players  PlayerRouter
 	Sys      *actor.System
 	Producer *pkgmq.Producer
-	Mail     *mail.Module
+	Mail     Mailer
 	Chat     *chat.Module
 	Logger   *log.Logger
 	NodeID   string // 本节点 ID（在线状态归属判定）
