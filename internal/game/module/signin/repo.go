@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/writebehind"
 )
 
 // stateAccess 是签到需要的最小状态能力。
@@ -30,22 +31,14 @@ type view struct {
 
 // read 解码当前签到状态；从未签到过时返回 nil。
 func read(state stateAccess) (*Data, error) {
-	raw := state.Ext(stateKey)
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var d Data
-	if err := json.Unmarshal(raw, &d); err != nil {
-		return nil, fmt.Errorf("decode signin state: %w", err)
-	}
-	return &d, nil
+	return writebehind.Decode[Data](state.Ext(stateKey))
 }
 
 // write 把签到状态写回模块私有槽位（会标脏并触发落库）。
 func write(state stateAccess, d *Data) error {
-	raw, err := json.Marshal(d)
+	raw, err := writebehind.Encode(d)
 	if err != nil {
-		return fmt.Errorf("encode signin state: %w", err)
+		return err
 	}
 	state.SetExt(stateKey, raw)
 	return nil
