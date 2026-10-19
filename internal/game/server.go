@@ -212,7 +212,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(copy.New(copy.NewRepo(s.database), s.logger))
 		s.modules.Register(shop.New(shop.NewRepo(s.database), s.logger))
 		s.modules.Register(activity.New(activity.NewRepo(s.database), s.logger))
-		s.modules.Register(signin.New(signin.NewRepo(), s.logger))
+		s.modules.Register(signin.New(s.logger))
 	}
 
 	// ④ Write-Behind flusher

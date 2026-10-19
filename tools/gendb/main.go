@@ -539,7 +539,7 @@ func quotedList(items []string) string {
 
 // playerColumn 判断该表能否「按玩家整包处理」：存在名为 player_id 的列。
 //
-// 注意不要求它是首列：signin_claim 这类流水的首列是自增 id，玩家维度在第二列。
+// 注意不要求它是首列：player_item 这类实体表的首列是自增 id，玩家维度在第二列。
 // 没有玩家维度的表（account / guild / team）不生成 ByPlayer 函数。
 func playerColumn(t table) string {
 	for _, c := range t.Columns {

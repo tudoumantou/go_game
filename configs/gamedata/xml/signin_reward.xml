@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 示例奖励，正式数值由策划调整。day=周期日，重复 day 可配置多种奖励。 -->
+<!-- 示例奖励，正式数值由策划调整。day=周几（1=周一…7=周日），重复 day 可配置多种奖励。 -->
 <root>
   <row id="1" day="1" item_id="1001" count="100" />
   <row id="2" day="2" item_id="1001" count="200" />

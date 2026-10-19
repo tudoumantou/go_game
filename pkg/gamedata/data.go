@@ -13,7 +13,7 @@ import (
 var rawXML embed.FS
 
 // Version 全部 XML 内容哈希（启动打印，GM 核对线上配置版本）
-const Version = "797821d0b2127b13"
+const Version = "b96a91050f8a8362"
 
 // RawXML 读取原始 XML 内容（不存在返回 nil）
 func RawXML(name string) []byte {

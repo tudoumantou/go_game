@@ -118,7 +118,7 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	repo.SetCache(writebehind.NewStore(rdb))
 	logger := log.New("bind-test", log.WithLevel("error"))
 	registry := module.NewRegistry()
-	registry.Register(signin.New(signin.NewRepo(), logger))
+	registry.Register(signin.New(logger))
 	replies := make(chan uint64, 1)
 	a := NewActor(7, registry, logger, repo, nil, func(session uint64, id uint32, _ []byte) error {
 		if id == 6604 {
@@ -187,7 +187,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			repo.SetCache(store)
 			logger := log.New("cache-test", log.WithLevel("error"))
 			registry := module.NewRegistry()
-			registry.Register(signin.New(signin.NewRepo(), logger))
+			registry.Register(signin.New(logger))
 			replies := make(chan *gamev1.SigninClaimResp, 8)
 			a := NewActor(7, registry, logger, repo, nil, func(_ uint64, id uint32, body []byte) error {
 				if id == 6604 {

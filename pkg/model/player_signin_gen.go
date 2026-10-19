@@ -13,13 +13,15 @@ import (
 // PlayerSignin player_signin 表
 type PlayerSignin struct {
 	PlayerId int64 `db:"player_id"`
-	AnchorDay int64 `db:"anchor_day"`
+	ClaimedDays string `db:"claimed_days"`
+	ClaimedRewards string `db:"claimed_rewards"`
 }
 
 // PlayerSignin 列名
 const (
 	ColPlayerSigninPlayerId = "player_id"
-	ColPlayerSigninAnchorDay = "anchor_day"
+	ColPlayerSigninClaimedDays = "claimed_days"
+	ColPlayerSigninClaimedRewards = "claimed_rewards"
 )
 
 // TableName 表名
@@ -28,18 +30,19 @@ func (m *PlayerSignin) TableName() string { return "player_signin" }
 // PlayerSigninColumns 全部列（扫描用）
 var PlayerSigninColumns = []string{
 	ColPlayerSigninPlayerId,
-	ColPlayerSigninAnchorDay,
+	ColPlayerSigninClaimedDays,
+	ColPlayerSigninClaimedRewards,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertPlayerSignin(ctx context.Context, db Querier, m *PlayerSignin) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_signin (player_id,anchor_day) VALUES (?,?)", m.PlayerId, m.AnchorDay)
+	return db.ExecContext(ctx, "INSERT INTO player_signin (player_id,claimed_days,claimed_rewards) VALUES (?,?,?)", m.PlayerId, m.ClaimedDays, m.ClaimedRewards)
 }
 
 // FindPlayerSigninByPK 按主键查询
 func FindPlayerSigninByPK(ctx context.Context, db Querier, PlayerId int64) (*PlayerSignin, error) {
 	var m PlayerSignin
-	query := "SELECT player_id,anchor_day FROM player_signin WHERE player_id = ?"
+	query := "SELECT player_id,claimed_days,claimed_rewards FROM player_signin WHERE player_id = ?"
 	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanPlayerSignin(&m, row); err != nil {
 		return nil, err
@@ -48,17 +51,17 @@ func FindPlayerSigninByPK(ctx context.Context, db Querier, PlayerId int64) (*Pla
 }
 
 func scanPlayerSignin(m *PlayerSignin, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.PlayerId, &m.AnchorDay)
+	return sc.Scan(&m.PlayerId, &m.ClaimedDays, &m.ClaimedRewards)
 }
 
 // UpdatePlayerSigninByPK 按主键更新（幂等）
 func UpdatePlayerSigninByPK(ctx context.Context, db Querier, m *PlayerSignin) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE player_signin SET anchor_day = ? WHERE player_id = ?", m.AnchorDay, m.PlayerId)
+	return db.ExecContext(ctx, "UPDATE player_signin SET claimed_days = ?, claimed_rewards = ? WHERE player_id = ?", m.ClaimedDays, m.ClaimedRewards, m.PlayerId)
 }
 
 // UpsertPlayerSigninByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertPlayerSigninByPK(ctx context.Context, db Querier, m *PlayerSignin) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO player_signin (player_id,anchor_day) VALUES (?,?) ON DUPLICATE KEY UPDATE anchor_day = VALUES(anchor_day)", m.PlayerId, m.AnchorDay)
+	return db.ExecContext(ctx, "INSERT INTO player_signin (player_id,claimed_days,claimed_rewards) VALUES (?,?,?) ON DUPLICATE KEY UPDATE claimed_days = VALUES(claimed_days), claimed_rewards = VALUES(claimed_rewards)", m.PlayerId, m.ClaimedDays, m.ClaimedRewards)
 }
 
 // DeletePlayerSigninByPK 按主键删除
@@ -67,12 +70,12 @@ func DeletePlayerSigninByPK(ctx context.Context, db Querier, PlayerId int64) (sq
 }
 
 // upsertPlayerSigninCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertPlayerSigninCols = []string{"player_id", "anchor_day"}
+var upsertPlayerSigninCols = []string{"player_id", "claimed_days", "claimed_rewards"}
 
 // UpsertPlayerSigninBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertPlayerSigninBatch(ctx context.Context, tx *sql.Tx, rows []PlayerSignin) error {
 	return flush.UpsertBatch(ctx, tx, "player_signin", upsertPlayerSigninCols, rows, func(m PlayerSignin) []any {
-		return []any{m.PlayerId, m.AnchorDay}
+		return []any{m.PlayerId, m.ClaimedDays, m.ClaimedRewards}
 	})
 }
 
@@ -83,7 +86,7 @@ func DeletePlayerSigninByPlayer(ctx context.Context, tx *sql.Tx, playerID int64)
 
 // ListPlayerSigninByPlayer 按玩家列出全部行（冷启动读取用）
 func ListPlayerSigninByPlayer(ctx context.Context, db Querier, playerID int64) ([]PlayerSignin, error) {
-	rows, err := db.QueryContext(ctx, "SELECT player_id,anchor_day FROM player_signin WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,claimed_days,claimed_rewards FROM player_signin WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -97,4 +100,10 @@ func ListPlayerSigninByPlayer(ctx context.Context, db Querier, playerID int64) (
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// PlayerSigninFlat signin 模块的单行状态表适配（sql 注释 @flat:signin 生成）
+var PlayerSigninFlat = flush.FlatOps[PlayerSignin]{
+	Upsert: UpsertPlayerSigninBatch,
+	Load:   FindPlayerSigninByPK,
 }

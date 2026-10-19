@@ -8,6 +8,6 @@
 package register
 
 import (
-	// 七日签到：player_signin / signin_claim。
+	// 七日签到：单表 player_signin，@flat 生成 FlatOps。
 	_ "game_study/internal/game/module/signin"
 )
