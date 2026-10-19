@@ -130,7 +130,8 @@ func TestSnapshotWritesRedis(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 
-	// 快照应写入 stats:g1:arena，含各窗口字段
+	// 快照按实例写一个字段，字段值是该实例各窗口的 JSON（R8.4：
+	// 多实例各写各的字段，读取时求和，不再互相覆盖）。
 	key := "stats:g1:arena"
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer func() { _ = rdb.Close() }()
@@ -138,16 +139,17 @@ func TestSnapshotWritesRedis(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hgetall: %v", err)
 	}
-	if len(vals) != 4 {
-		t.Fatalf("expect 4 window fields, got %d: %v", len(vals), vals)
+	if len(vals) != 1 {
+		t.Fatalf("expect 1 instance field, got %d: %v", len(vals), vals)
 	}
+	merged := s.MergedMetrics(context.Background(), "g1", "arena")
 	for _, w := range []string{Window1m, Window5m, Window1h, Window1d} {
-		if _, ok := vals[w]; !ok {
-			t.Fatalf("snapshot missing window %s: %v", w, vals)
+		if _, ok := merged[w]; !ok {
+			t.Fatalf("snapshot missing window %s: %v", w, merged)
 		}
 	}
-	if vals[Window1h] != "7" {
-		t.Fatalf("1h snapshot: want 7, got %s", vals[Window1h])
+	if merged[Window1h] != 7 {
+		t.Fatalf("1h snapshot: want 7, got %d", merged[Window1h])
 	}
 }
 
