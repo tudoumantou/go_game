@@ -69,6 +69,7 @@ type Server struct {
 	flusher  *flush.Flusher
 
 	redis      *cache.Client
+	cacheStore *writebehind.Store // Redis 权威快照 + 脏队列
 	presence   *cache.Presence
 	producer   *pkgmq.Producer
 	consumers  *gamemq.Group
@@ -142,7 +143,8 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		s.redis = redisClient
 		if s.repo != nil {
-			s.repo.SetCache(writebehind.NewStore(redisClient.GetClient()))
+			s.cacheStore = writebehind.NewStore(redisClient.GetClient())
+			s.repo.SetCache(s.cacheStore)
 		}
 		s.presence = cache.NewPresence(redisClient.GetClient())
 		deduper = cache.NewRedisDeduper(redisClient.GetClient())
@@ -230,10 +232,33 @@ func (s *Server) Start(ctx context.Context) error {
 	}, s.persistPlayer, s.logger)
 	s.flusher.Start(ctx)
 
+	// 缓存权威状态下，脏队列的唯一消费者是 writebehind worker。
+	// 进程内默认起一个，避免「忘了部署 cmd/flusher 就永远不落库」；
+	// 部署了独立 flusher 时可关闭（版本栅栏保证两者并行也安全）。
+	if s.repo.CacheEnabled() {
+		if s.cfg.Flush.DisableInlineWritebehind {
+			s.logger.Info("inline writebehind disabled; rely on standalone flusher")
+		} else if s.database != nil {
+			interval, err := config.ParseDuration(s.cfg.Flush.Interval)
+			if err != nil {
+				return fmt.Errorf("flush interval: %w", err)
+			}
+			worker := writebehind.NewWorker(s.cacheStore, s.database.DB, s.cfg.Flush.BatchRows)
+			go func() {
+				if err := worker.Run(ctx, interval, func(err error) {
+					s.logger.Warn("writebehind flush failed; Redis task retained", "err", err)
+				}); err != nil {
+					s.logger.Warn("writebehind worker stopped", "err", err)
+				}
+			}()
+			s.logger.Info("inline writebehind started", "interval", interval.String(), "partitions", writebehind.Partitions)
+		}
+	}
+
 	var onDirty func(int64) = s.flusher.MarkDirty
 	if s.repo.CacheEnabled() {
 		onDirty = nil
-	} // Redis 内的持久队列由独立 flusher 消费。
+	} // Redis 内的持久队列由 writebehind worker 消费。
 	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, onDirty, s.sendToClient)
 	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
 	if s.database != nil {
