@@ -483,7 +483,16 @@ func (s *Server) sendToClient(sessionID uint64, msgID uint32, body []byte) error
 	return s.gameRPC.SendToSession(sessionID, frame)
 }
 
+// saveAckTimeout 等待 Actor 回执真实保存结果的上限。
+//
+// 超时后 flusher 会重新标脏、下轮重试；迟到回执由 Done 的容量 1 + 非阻塞写丢弃，
+// 不会拖住 Actor。
+const saveAckTimeout = 5 * time.Second
+
 // persistPlayer 由 flusher 回调，把单个玩家落库。
+//
+// 返回 nil 的语义是「SQL 已成功」而不是「消息已投递」：以前只 Send 就返回 nil，
+// flusher 会把玩家从脏队列移除，保存失败时数据静默丢失。
 func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 	if s.repo.CacheEnabled() {
 		return nil
@@ -492,12 +501,21 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 	if !ok {
 		return nil
 	}
-	// 投递失败（信箱满/Actor 已终止）必须返回给 flusher：flusher 会把该玩家
-	// 重新标脏、下轮重试，而不是当成本次已保存。
-	if err := s.actorSys.Send(pid, &player.SaveMsg{}); err != nil {
+	done := make(chan error, 1)
+	if err := s.actorSys.Send(pid, &player.SaveMsg{Done: done}); err != nil {
 		return fmt.Errorf("player %d save: %w", playerID, err)
 	}
-	return nil
+	waitCtx, cancel := context.WithTimeout(ctx, saveAckTimeout)
+	defer cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("player %d save: %w", playerID, err)
+		}
+		return nil
+	case <-waitCtx.Done():
+		return fmt.Errorf("player %d save ack: %w", playerID, waitCtx.Err())
+	}
 }
 
 // 会话级协议号（未选角时由组装层直接处理，不进 Actor）。

@@ -32,7 +32,7 @@ import (
 )
 
 // startStorage 起 MySQL + Redis 并初始化 schema，返回 DB、Redis 客户端与 DSN。
-func startStorage(t *testing.T) (*db.DB, *redis.Client) {
+func startStorage(t *testing.T) (*db.DB, *redis.Client, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
@@ -77,12 +77,12 @@ func startStorage(t *testing.T) (*db.DB, *redis.Client) {
 	rdb := redis.NewClient(&redis.Options{Addr: host + ":" + port.Port()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	return database, rdb
+	return database, rdb, dsn
 }
 
 // TestP10IDTable 构建 → 判断 → 同步 → 回源全链路。
 func TestP10IDTable(t *testing.T) {
-	database, rdb := startStorage(t)
+	database, rdb, _ := startStorage(t)
 	ctx := context.Background()
 
 	// 造两个角色（直接插库，绕过 service 以便控制 id）
@@ -198,7 +198,7 @@ func TestP10IDTable(t *testing.T) {
 
 // TestP11IncrementalFlush 道具增量合批落库。
 func TestP11IncrementalFlush(t *testing.T) {
-	database, _ := startStorage(t)
+	database, _, _ := startStorage(t)
 	ctx := context.Background()
 
 	// 造一个角色 + 两格初始道具

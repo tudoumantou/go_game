@@ -3,6 +3,7 @@ package flush
 
 import (
 	"context"
+	"fmt"
 	"hash/crc32"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ type Flusher struct {
 	shards   []*shard
 	logger   *log.Logger
 	interval time.Duration
+	stagger  time.Duration
 	wg       sync.WaitGroup
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -48,10 +50,16 @@ func New(cfg Config, fn PersistFunc, logger *log.Logger) *Flusher {
 	if cfg.Stagger <= 0 {
 		cfg.Stagger = cfg.Interval / time.Duration(cfg.ShardCount)
 	}
+	// stagger 必须小于 interval，否则同一轮里多个分片会挤在同一时刻，
+	// 失去「分散轮询」的意义；配置写错时回退到均分。
+	if cfg.Stagger >= cfg.Interval {
+		cfg.Stagger = cfg.Interval / time.Duration(cfg.ShardCount)
+	}
 	f := &Flusher{
 		shards:   make([]*shard, cfg.ShardCount),
 		logger:   logger,
 		interval: cfg.Interval,
+		stagger:  cfg.Stagger,
 		stopCh:   make(chan struct{}),
 	}
 	for i := range f.shards {
@@ -61,10 +69,13 @@ func New(cfg Config, fn PersistFunc, logger *log.Logger) *Flusher {
 }
 
 // Start 启动所有分片 worker。
+//
+// 偏移使用配置里的 stagger（而不是 interval/分片数硬算）：改配置就能改错峰，
+// 否则配置项永远不生效。
 func (f *Flusher) Start(ctx context.Context) {
 	for i, sh := range f.shards {
 		f.wg.Add(1)
-		go f.runShard(ctx, sh, time.Duration(i)*f.interval/time.Duration(len(f.shards)))
+		go f.runShard(ctx, sh, time.Duration(i)*f.stagger)
 	}
 }
 
@@ -149,15 +160,53 @@ func idBytes(id int64) []byte {
 	}
 }
 
-// FlushAll 立即 flush 全部分片（优雅关闭用）。
+// FlushAll 立即排空全部分片（优雅关闭用）。
+//
+// 单次 flush 只处理一个批次：脏数据超过 batch_rows 时必须继续下一批，
+// 否则关服只落「前 500 个玩家」，其余静默丢失。循环同时带两道保险：
+//   - ctx 到期即停止（停服有总超时，不允许无限等待）；
+//   - 一轮之后脏数据没有减少（持久化持续失败）即停止并返回错误，
+//     避免「失败→重回 dirty→再失败」的死循环。
 func (f *Flusher) FlushAll(ctx context.Context) error {
 	var firstErr error
 	for _, sh := range f.shards {
-		if err := sh.flush(ctx); err != nil && firstErr == nil {
-			firstErr = err
+		for {
+			if err := ctx.Err(); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				break
+			}
+			before := sh.dirtyCount() + sh.deleteCount()
+			if before == 0 {
+				break
+			}
+			if err := sh.flush(ctx); err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				// 失败项已重回 dirty/墓碑队列，留待下次启动补偿；
+				// 本次关服继续重试只会拖长停机时间。
+				break
+			}
+			if sh.dirtyCount()+sh.deleteCount() >= before {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("flush shard %d made no progress (%d pending)", sh.index, before)
+				}
+				break
+			}
 		}
 	}
 	return firstErr
+}
+
+// DirtyCount 当前全部待落库玩家数（关闭前确认排空、测试断言用）。
+func (f *Flusher) DirtyCount() int {
+	total := 0
+	for _, sh := range f.shards {
+		total += sh.dirtyCount()
+	}
+	return total
 }
 
 // Stop 停止 worker。
@@ -171,6 +220,10 @@ type shard struct {
 	fn     PersistFunc
 	delete DeleteFunc
 	batch  int
+
+	// flushMu 串行化「定时 worker」与「关闭时 FlushAll」的并发 flush，
+	// 避免同一玩家在同一时刻被两个 goroutine 重复写库。
+	flushMu sync.Mutex
 
 	mu    sync.Mutex
 	dirty map[int64]struct{}
@@ -245,6 +298,9 @@ func (s *shard) dirtyCount() int {
 }
 
 func (s *shard) flush(ctx context.Context) error {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+
 	// 墓碑优先：先删再写，避免「删了又写回」的中间态
 	if err := s.flushDeletes(ctx); err != nil {
 		return err

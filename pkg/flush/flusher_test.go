@@ -185,3 +185,47 @@ func TestShardIndexStable(t *testing.T) {
 		t.Fatalf("shard index out of range: %d", first)
 	}
 }
+
+// TestFlushAllDrainsAllBatches 关服落库必须排空全部批次，不能只落第一批。
+//
+// 回归背景：FlushAll 曾对每个分片只调一次 flush，脏数据超过 batch_rows 时
+// 其余玩家被静默留在内存里，进程退出即丢失。
+func TestFlushAllDrainsAllBatches(t *testing.T) {
+	var mu sync.Mutex
+	persisted := make(map[int64]int)
+	f := New(Config{ShardCount: 1, Interval: time.Minute, BatchRows: 2}, func(_ context.Context, id int64) error {
+		mu.Lock()
+		persisted[id]++
+		mu.Unlock()
+		return nil
+	}, log.New("test"))
+
+	for i := int64(1); i <= 5; i++ {
+		f.MarkDirty(i)
+	}
+	if err := f.FlushAll(context.Background()); err != nil {
+		t.Fatalf("flush all: %v", err)
+	}
+	if len(persisted) != 5 {
+		t.Fatalf("persisted %d players, want 5", len(persisted))
+	}
+	if got := f.shards[0].dirtyCount(); got != 0 {
+		t.Fatalf("dirty left after FlushAll: %d", got)
+	}
+}
+
+// TestPersistFailureKeepsDirty 保存失败必须保留脏标记，下一轮重试；
+// FlushAll 不能让「持续失败」变成死循环。
+func TestPersistFailureKeepsDirty(t *testing.T) {
+	f := New(Config{ShardCount: 1, Interval: time.Minute, BatchRows: 2}, func(_ context.Context, _ int64) error {
+		return errors.New("db down")
+	}, log.New("test"))
+
+	f.MarkDirty(1)
+	if err := f.FlushAll(context.Background()); err == nil {
+		t.Fatal("FlushAll must report persistence failure")
+	}
+	if got := f.shards[0].dirtyCount(); got != 1 {
+		t.Fatalf("failed player must stay dirty, got %d", got)
+	}
+}

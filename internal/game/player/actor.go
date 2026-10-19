@@ -141,6 +141,12 @@ func (a *Actor) receive(ctx *actor.Context) {
 			if _, ok := ctx.Message().(*UnbindMsg); ok {
 				a.online = false
 				a.sessionID = 0
+				return
+			}
+			// 保存请求必须回执失败：否则调用方只能等到超时，无法区分
+			// 「在途」和「被拒绝」。
+			if msg, ok := ctx.Message().(*SaveMsg); ok {
+				replySave(msg.Done, fmt.Errorf("player %d needs reload; refusing to overwrite", a.playerID))
 			}
 			return
 		default:
@@ -170,7 +176,7 @@ func (a *Actor) receive(ctx *actor.Context) {
 	case *PacketMsg:
 		a.onPacket(ctx, msg)
 	case *SaveMsg:
-		a.onSave(ctx)
+		a.onSave(ctx, msg)
 	case *GrantItemsMsg:
 		a.onGrantItems(ctx, msg)
 	case *PushMsg:
@@ -181,7 +187,13 @@ func (a *Actor) receive(ctx *actor.Context) {
 }
 
 // SaveMsg 触发保存。
-type SaveMsg struct{}
+//
+// Done 可选：调用方应提供容量 1 的通道；Actor 在**真实保存结束**后写入结果
+// （成功 nil，失败 err），调用方据此区分「投递成功」与「已落库」。
+// 回执使用非阻塞发送，调用方超时离开后不会阻塞 Actor。
+type SaveMsg struct {
+	Done chan error
+}
 
 func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	a.sessionID = msg.SessionID
@@ -330,20 +342,45 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 	}
 }
 
-func (a *Actor) onSave(ctx *actor.Context) {
+// onSave 执行保存并回执真实结果；没有 Done 时保持 fire-and-forget。
+func (a *Actor) onSave(ctx *actor.Context, msg *SaveMsg) {
+	replySave(msg.Done, a.savePlayer(ctx))
+}
+
+// savePlayer 真正执行落库，返回第一个错误（模块钩子或 SQL 失败）。
+func (a *Actor) savePlayer(ctx *actor.Context) error {
 	if a.repo.CacheEnabled() {
-		return
-	} // 独立进程从 Redis 队列落库。
-	mctx := a.moduleCtx(ctx)
-	for _, m := range a.registry.All() {
-		if err := m.OnSave(mctx.Actor.Context()); err != nil {
-			a.logger.Warn("module save failed", "module", m.Name(), "err", err)
+		return nil // 缓存权威：落库由 writebehind worker 负责
+	}
+	var firstErr error
+	if a.registry != nil {
+		mctx := a.moduleCtx(ctx)
+		for _, m := range a.registry.All() {
+			if err := m.OnSave(mctx.Actor.Context()); err != nil {
+				a.logger.Warn("module save failed", "module", m.Name(), "err", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
 		}
 	}
 	if a.repo != nil {
 		if err := a.repo.Save(context.Background(), a.state); err != nil {
 			a.logger.Error("save player failed", "err", err)
+			return err // SQL 失败优先于模块钩子错误
 		}
+	}
+	return firstErr
+}
+
+// replySave 向调用方回报保存结果；Done 容量应为 1，非阻塞写避免拖住 Actor。
+func replySave(done chan error, err error) {
+	if done == nil {
+		return
+	}
+	select {
+	case done <- err:
+	default:
 	}
 }
 
