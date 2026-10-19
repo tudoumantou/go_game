@@ -14,12 +14,13 @@ import (
 var rawXML embed.FS
 
 // embeddedVersion 编译期内嵌配置的内容哈希（启动日志与线上核对用）
-const embeddedVersion = "b96a91050f8a8362"
+const embeddedVersion = "555ac31c6ca0e0b3"
 
 // Tables 一份不可变配置快照：热更新整体替换，读取方永远看到自洽的一套表。
 type Tables struct {
 	Version         string // 快照版本（内嵌哈希，或热更新后的派生版本）
 	Activity        ActivityTable
+	ActivityPeriod  ActivityPeriodTable
 	AttrFormula     AttrFormulaTable
 	BagCapacity     BagCapacityTable
 	Battle          BattleTable
@@ -59,6 +60,9 @@ func mustEmbedded() *Tables {
 	t := &Tables{Version: embeddedVersion}
 	var err error
 	if t.Activity, err = newActivityTable(activityRows); err != nil {
+		panic("gamedata: " + err.Error())
+	}
+	if t.ActivityPeriod, err = newActivityPeriodTable(activity_periodRows); err != nil {
 		panic("gamedata: " + err.Error())
 	}
 	if t.AttrFormula, err = newAttrFormulaTable(attr_formulaRows); err != nil {
@@ -163,6 +167,9 @@ func mustEmbedded() *Tables {
 // validate 热更新后的自检：任何一张表为空都视为错误输入。
 func (t *Tables) validate() error {
 	if err := t.Activity.validate("activity"); err != nil {
+		return err
+	}
+	if err := t.ActivityPeriod.validate("activity_period"); err != nil {
 		return err
 	}
 	if err := t.AttrFormula.validate("attr_formula"); err != nil {
@@ -276,6 +283,18 @@ var setters = map[string]func(*Tables, []byte) error{
 			return err
 		}
 		t.Activity = tb
+		return nil
+	},
+	"activity_period": func(t *Tables, raw []byte) error {
+		var rows []ActivityPeriodCfg
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return fmt.Errorf("decode json: %w", err)
+		}
+		tb, err := newActivityPeriodTable(rows)
+		if err != nil {
+			return err
+		}
+		t.ActivityPeriod = tb
 		return nil
 	},
 	"attr_formula": func(t *Tables, raw []byte) error {
@@ -667,6 +686,7 @@ var setters = map[string]func(*Tables, []byte) error{
 // tableNames 表名（稳定顺序，日志与 LoadedTables 用）
 var tableNames = []string{
 	"activity",
+	"activity_period",
 	"attr_formula",
 	"bag_capacity",
 	"battle",

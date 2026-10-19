@@ -94,6 +94,19 @@ type LoginLogMsg struct {
 	At        int64  `json:"at"`     // unix 毫秒
 }
 
+// ActivityScheduleMsg 活动实例调度（gs.activity.schedule）
+//
+// 中心服 leader 在进入新周期时下发；游戏服按 version 幂等应用。
+// 即使一条都没收到，游戏服也能用 pkg/activity.Window 自己算出同一窗口。
+type ActivityScheduleMsg struct {
+	InstanceID string `json:"instance_id"`
+	ActivityID int32  `json:"activity_id"`
+	StartAt    int64  `json:"start_at"`
+	EndAt      int64  `json:"end_at"`
+	Version    int64  `json:"version"`
+	Action     string `json:"action"` // start / end
+}
+
 // MailMsg 邮件投递（gs.mail）
 type MailMsg struct {
 	MailID     int64  `json:"mail_id"`

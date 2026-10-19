@@ -22,6 +22,7 @@ import (
 	"game_study/internal/center/registry"
 	"game_study/internal/center/relay"
 	centerRPC "game_study/internal/center/rpc"
+	"game_study/internal/center/scheduler"
 	"game_study/internal/center/stats"
 	"game_study/pkg/cache"
 	"game_study/pkg/config"
@@ -56,6 +57,7 @@ type Server struct {
 	// producer 归档奖励邮件（gs.mail）；未配置 Kafka 时为空，归档仍继续，只是不发奖
 	producer   *pkgmq.Producer
 	archiveSvc *archive.Service
+	schedSvc   *scheduler.Service
 
 	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
 	relayBridge *relay.Bridge
@@ -189,6 +191,9 @@ func (s *Server) Start(ctx context.Context) error {
 			StatsEnabled: s.statsSvc != nil,
 		}, s.logger)
 		go s.archiveSvc.Run(ctx, s.IsLeader)
+		// 活动实例调度：算当前周期 → 落库 → 下发 gs.activity.schedule（R7.1/R7.2）
+		s.schedSvc = scheduler.New(database, s.producer, s.logger)
+		go s.schedSvc.Run(ctx, s.IsLeader)
 	} else {
 		s.logger.Warn("mysql not configured, season archive and stats persistence disabled")
 	}

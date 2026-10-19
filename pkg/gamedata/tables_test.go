@@ -25,8 +25,8 @@ func TestEmbeddedSnapshot(t *testing.T) {
 	if s.Version == "" {
 		t.Fatal("embedded version must not be empty")
 	}
-	if len(tableNames) != 33 {
-		t.Fatalf("table count = %d, want 33", len(tableNames))
+	if len(tableNames) != 34 {
+		t.Fatalf("table count = %d, want 34", len(tableNames))
 	}
 	// validate 会逐表检查非空与主键唯一，等于把「生成物自洽」变成启动/测试期断言。
 	if err := s.validate(); err != nil {

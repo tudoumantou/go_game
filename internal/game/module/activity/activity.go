@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
@@ -37,6 +38,7 @@ const (
 	codeNotFinished      int32 = 6502
 	codeAlreadyClaimed   int32 = 6503
 	codeBagFull          int32 = 6504
+	codeNotOpen          int32 = 6505 // 活动不在开放期（下发的窗口已过期）
 )
 
 // 奖励道具（P6 固定：钻石 1001）。
@@ -174,6 +176,10 @@ func (m *Module) onList(ctx *module.Context) error {
 		return err
 	}
 	for _, cfg := range gamedata.ActivityCfgList() {
+		// 下发的窗口已过期就不展示：客户端仍会定时刷新，不需要服务端推「活动结束」。
+		if !openNow(int32(cfg.Id), time.Now().Unix()) {
+			continue
+		}
 		entry := &gamev1.ActivityEntry{
 			ActivityId: int32(cfg.Id),
 			Name:       cfg.Col1,
@@ -199,6 +205,11 @@ func (m *Module) onClaim(ctx *module.Context, body []byte) error {
 	cfg, ok := gamedata.GetActivityCfg(int64(req.ActivityId))
 	if !ok {
 		resp.Code = codeActivityNotExist
+		return reply(ctx, msgIDClaimResp, resp)
+	}
+	// 领取同样校验开放期：不能依赖客户端「恰好没收到结束通知」。
+	if !openNow(req.ActivityId, time.Now().Unix()) {
+		resp.Code = codeNotOpen
 		return reply(ctx, msgIDClaimResp, resp)
 	}
 	d, err := load(ctx.State)

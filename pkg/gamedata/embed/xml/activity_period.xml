@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 活动周期（R7.1）：id = 活动 ID，col1 = 每期持续天数。
+     周期自 2020-01-01 00:00（北京时间）起按天数等分，见 pkg/activity。
+     没有配置期的活动不参与调度（客户端仍可在列表看到，但没有开放时间约束）。 -->
+<activity_period>
+    <row id="1" col1="7" />
+    <row id="2" col1="14" />
+</activity_period>

@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 
+	activitymod "game_study/internal/game/module/activity"
 	"game_study/pkg/config"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
@@ -54,6 +55,8 @@ func NewGroup(cfg *config.Config, deps Deps) (*Group, error) {
 		NewRechargeConsumer(mkConsumer(pkgmq.TopicRechargeOrder), deps),
 		NewMailConsumer(mkConsumer(pkgmq.TopicMail), deps),
 		NewChatConsumer(mkConsumer(pkgmq.TopicChatCross), deps),
+		// 活动实例调度：写入进程级注册表，供活动模块校验开放时间
+		NewActivityConsumer(mkConsumer(pkgmq.TopicActivitySchedule), activitymod.DefaultRegistry(), deps.Logger),
 	)
 	// 登录流水用集群共享 group：每实例独立消费会让同一行日志被写多份。
 	if deps.DB != nil {
