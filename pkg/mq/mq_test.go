@@ -76,8 +76,9 @@ func TestNoopDeduperAlwaysFirst(t *testing.T) {
 
 func TestAllTopicsUnique(t *testing.T) {
 	topics := AllTopics()
-	if len(topics) != 9 {
-		t.Fatalf("expect 9 topics, got %d", len(topics))
+	// 断言唯一性与最小规模，不写死条数：新增 topic 不需要改测试。
+	if len(topics) < 9 {
+		t.Fatalf("expect >= 9 topics, got %d", len(topics))
 	}
 	seen := make(map[string]bool, len(topics))
 	for _, tp := range topics {

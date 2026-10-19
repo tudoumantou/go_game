@@ -25,8 +25,12 @@ func TestEmbeddedSnapshot(t *testing.T) {
 	if s.Version == "" {
 		t.Fatal("embedded version must not be empty")
 	}
-	if len(tableNames) != 34 {
-		t.Fatalf("table count = %d, want 34", len(tableNames))
+	// 不写死张数：加表是常态，写死只会让每个新增配置都来改测试。
+	if len(tableNames) < 34 {
+		t.Fatalf("table count = %d, want >= 34", len(tableNames))
+	}
+	if len(LoadedTables()) != len(tableNames) {
+		t.Fatalf("LoadedTables = %d, tableNames = %d", len(LoadedTables()), len(tableNames))
 	}
 	// validate 会逐表检查非空与主键唯一，等于把「生成物自洽」变成启动/测试期断言。
 	if err := s.validate(); err != nil {
