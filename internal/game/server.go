@@ -18,6 +18,7 @@ import (
 	"game_study/internal/game/module/chat"
 	"game_study/internal/game/module/copy"
 	"game_study/internal/game/module/equip"
+	"game_study/internal/game/module/friend"
 	"game_study/internal/game/module/guild"
 	"game_study/internal/game/module/item"
 	"game_study/internal/game/module/loginreward"
@@ -243,6 +244,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(loginreward.New(s.logger))
 		// 榜单查询代理到中心服；未配置中心服时模块回「暂不可用」而不是空榜。
 		s.modules.Register(rankmodule.New(rankQuerier{cli: s.centerCli}, s.logger))
+		// 好友：关系直写 MySQL 事务（双人状态不适合放单玩家快照），缓存只用于在线展示。
+		s.modules.Register(friend.New(s.database, s.presence, s.logger))
 	}
 
 	// ④ Write-Behind flusher

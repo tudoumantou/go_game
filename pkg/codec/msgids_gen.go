@@ -74,6 +74,14 @@ const (
 	MsgSigninClaimResp        uint32 = 6604
 	MsgRankListReq            uint32 = 6701
 	MsgRankListResp           uint32 = 6702
+	MsgFriendListReq          uint32 = 6801
+	MsgFriendListResp         uint32 = 6802
+	MsgFriendApplyReq         uint32 = 6803
+	MsgFriendApplyResp        uint32 = 6804
+	MsgFriendHandleReq        uint32 = 6805
+	MsgFriendHandleResp       uint32 = 6806
+	MsgFriendDeleteReq        uint32 = 6807
+	MsgFriendDeleteResp       uint32 = 6808
 	MsgMailListReq            uint32 = 7001
 	MsgMailListResp           uint32 = 7002
 	MsgMailTakeAttachmentReq  uint32 = 7020
@@ -155,6 +163,14 @@ var msgNames = map[uint32]string{
 	6604: "SigninClaimResp",
 	6701: "RankListReq",
 	6702: "RankListResp",
+	6801: "FriendListReq",
+	6802: "FriendListResp",
+	6803: "FriendApplyReq",
+	6804: "FriendApplyResp",
+	6805: "FriendHandleReq",
+	6806: "FriendHandleResp",
+	6807: "FriendDeleteReq",
+	6808: "FriendDeleteResp",
 	7001: "MailListReq",
 	7002: "MailListResp",
 	7020: "MailTakeAttachmentReq",
@@ -236,6 +252,14 @@ var msgIDs = map[string]uint32{
 	"SigninClaimResp":        6604,
 	"RankListReq":            6701,
 	"RankListResp":           6702,
+	"FriendListReq":          6801,
+	"FriendListResp":         6802,
+	"FriendApplyReq":         6803,
+	"FriendApplyResp":        6804,
+	"FriendHandleReq":        6805,
+	"FriendHandleResp":       6806,
+	"FriendDeleteReq":        6807,
+	"FriendDeleteResp":       6808,
 	"MailListReq":            7001,
 	"MailListResp":           7002,
 	"MailTakeAttachmentReq":  7020,
@@ -261,4 +285,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 77 }
+func MsgCount() int { return 85 }
