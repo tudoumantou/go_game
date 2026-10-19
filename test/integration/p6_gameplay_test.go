@@ -240,6 +240,18 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("attrs unexpected: %+v", info.Attrs)
 	}
 
+	// 登录礼包会在进游戏时先发一笔钻石，这里记录基线，后续按增量断言
+	bagBase, err := r.BagList()
+	if err != nil {
+		t.Fatalf("bag list (baseline): %v", err)
+	}
+	var diamondBase int32
+	for _, it := range bagBase.Items {
+		if it.ItemId == 1001 {
+			diamondBase = it.Count
+		}
+	}
+
 	// ⑦ 造一封带附件的邮件（模拟 Kafka gs.mail 投递结果）
 	mailID := insertTestMail(t, database, roleID)
 
@@ -280,8 +292,8 @@ func TestP6GameplayFlow(t *testing.T) {
 			diamond = it.Count
 		}
 	}
-	if diamond != 50 {
-		t.Fatalf("expect 50 diamonds from mail, got %d (%+v)", diamond, bag.Items)
+	if diamond != diamondBase+50 {
+		t.Fatalf("expect %d diamonds (base %d + mail 50), got %d (%+v)", diamondBase+50, diamondBase, diamond, bag.Items)
 	}
 
 	// ⑩ 使用道具（1001 配置 Col3=1 → 单次上限 1 个）
@@ -289,8 +301,8 @@ func TestP6GameplayFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("use item: %v", err)
 	}
-	if use.Code != 0 || use.RemainCount != 49 {
-		t.Fatalf("use item code=%d remain=%d", use.Code, use.RemainCount)
+	if use.Code != 0 || use.RemainCount != diamondBase+49 {
+		t.Fatalf("use item code=%d remain=%d (base %d)", use.Code, use.RemainCount, diamondBase)
 	}
 
 	// ⑪ 优雅关闭

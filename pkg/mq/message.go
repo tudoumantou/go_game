@@ -11,12 +11,12 @@ import (
 
 // Envelope 消息信封。
 type Envelope struct {
-	BizID     string            `json:"biz_id"`              // 全局幂等键（必填）
-	Topic     string            `json:"topic"`               // 来源 topic（排查用）
-	Key       string            `json:"key,omitempty"`       // 分区键（player_id/order_id）
-	Payload   json.RawMessage   `json:"payload"`             // 业务载荷
-	Headers   map[string]string `json:"headers,omitempty"`   // 扩展头（trace_id 等）
-	CreatedAt int64             `json:"created_at"`          // 生产时间（unix 毫秒）
+	BizID     string            `json:"biz_id"`            // 全局幂等键（必填）
+	Topic     string            `json:"topic"`             // 来源 topic（排查用）
+	Key       string            `json:"key,omitempty"`     // 分区键（player_id/order_id）
+	Payload   json.RawMessage   `json:"payload"`           // 业务载荷
+	Headers   map[string]string `json:"headers,omitempty"` // 扩展头（trace_id 等）
+	CreatedAt int64             `json:"created_at"`        // 生产时间（unix 毫秒）
 }
 
 // NewEnvelope 构造信封并序列化 payload。
@@ -75,9 +75,23 @@ type RechargeOrderMsg struct {
 
 // RechargeDeliveredMsg 发货确认（gs.recharge.delivered）
 type RechargeDeliveredMsg struct {
-	OrderID   string `json:"order_id"`
-	PlayerID  int64  `json:"player_id"`
-	DeliveredAt int64 `json:"delivered_at"` // unix 毫秒
+	OrderID     string `json:"order_id"`
+	PlayerID    int64  `json:"player_id"`
+	DeliveredAt int64  `json:"delivered_at"` // unix 毫秒
+}
+
+// LoginLogMsg 登录流水（gs.login.log）
+//
+// 每条登录尝试一条，消费端直接落 login_log 表，不做业务去重：
+// 流水是事实记录，重复消费只会产生重复行，不影响玩家状态。
+type LoginLogMsg struct {
+	AccountID int64  `json:"account_id"`
+	PlayerID  int64  `json:"player_id"` // 未创角为 0
+	IP        string `json:"ip"`
+	Device    string `json:"device"`
+	Result    int32  `json:"result"` // 0 成功 1 失败
+	Reason    string `json:"reason"` // 失败原因
+	At        int64  `json:"at"`     // unix 毫秒
 }
 
 // MailMsg 邮件投递（gs.mail）
@@ -120,9 +134,9 @@ type RelayCrossMsg struct {
 	RelayID        string `json:"relay_id"`
 	OriginInstance string `json:"origin_instance"`
 	FromNode       string `json:"from_node"`
-	ToNode         string `json:"to_node,omitempty"`      // 点对点目标（与 Broadcast 二选一）
-	Broadcast      bool   `json:"broadcast,omitempty"`    // 组播
-	GroupID        string `json:"group_id,omitempty"`     // 广播时的目标分组
+	ToNode         string `json:"to_node,omitempty"`   // 点对点目标（与 Broadcast 二选一）
+	Broadcast      bool   `json:"broadcast,omitempty"` // 组播
+	GroupID        string `json:"group_id,omitempty"`  // 广播时的目标分组
 	Payload        []byte `json:"payload"`
-	CreatedAt      int64  `json:"created_at"`             // unix 毫秒
+	CreatedAt      int64  `json:"created_at"` // unix 毫秒
 }

@@ -55,6 +55,12 @@ func NewGroup(cfg *config.Config, deps Deps) (*Group, error) {
 		NewMailConsumer(mkConsumer(pkgmq.TopicMail), deps),
 		NewChatConsumer(mkConsumer(pkgmq.TopicChatCross), deps),
 	)
+	// 登录流水用集群共享 group：每实例独立消费会让同一行日志被写多份。
+	if deps.DB != nil {
+		loginLog := pkgmq.NewConsumer(pkgmq.Config{Brokers: cfg.Kafka.Brokers},
+			pkgmq.TopicLoginLog, groupPrefix+"-login-log", producer)
+		g.consumers = append(g.consumers, NewLoginLogConsumer(loginLog, deps.DB, deps.Logger))
+	}
 	return g, nil
 }
 

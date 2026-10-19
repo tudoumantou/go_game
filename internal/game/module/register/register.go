@@ -22,4 +22,6 @@ import (
 	_ "game_study/internal/game/module/shop"
 	// 装备：实例进快照，player_equip 单行。
 	_ "game_study/internal/game/module/equip"
+	// 登录礼包：连续天数进快照，player_login 单行。
+	_ "game_study/internal/game/module/loginreward"
 )

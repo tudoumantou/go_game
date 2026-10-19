@@ -9,6 +9,7 @@ import (
 	"game_study/internal/game/module/mail"
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
+	"game_study/pkg/db"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
 )
@@ -40,6 +41,7 @@ type Mailer interface {
 // Deps 消费者共享依赖。
 type Deps struct {
 	Deduper  pkgmq.Deduper
+	DB       *db.DB
 	Presence Presence
 	Players  PlayerRouter
 	Sys      *actor.System

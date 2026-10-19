@@ -20,6 +20,7 @@ import (
 	"game_study/internal/game/module/equip"
 	"game_study/internal/game/module/guild"
 	"game_study/internal/game/module/item"
+	"game_study/internal/game/module/loginreward"
 	"game_study/internal/game/module/mail"
 	"game_study/internal/game/module/profile"
 	"game_study/internal/game/module/quest"
@@ -229,6 +230,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(shop.New(s.logger))
 		s.modules.Register(activity.New(s.logger))
 		s.modules.Register(signin.New(s.logger))
+		s.modules.Register(loginreward.New(s.logger))
 	}
 
 	// ④ Write-Behind flusher
@@ -291,6 +293,7 @@ func (s *Server) Start(ctx context.Context) error {
 		})
 		group, err := gamemq.NewGroup(s.cfg, gamemq.Deps{
 			Deduper:  deduper,
+			DB:       s.database,
 			Presence: s.presence,
 			Players:  s.players,
 			Sys:      s.actorSys,

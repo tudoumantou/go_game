@@ -114,7 +114,7 @@ func (s *Server) Start(ctx context.Context) error {
 	authSvc := service.NewAuthService(tokenRepo, accountRepo, parseTTL(s.cfg.Token.TTL))
 	dispatchSvc := service.NewDispatchService(s.cfg)
 
-	s.authHandler = handler.NewAuthHandler(authSvc)
+	s.authHandler = handler.NewAuthHandler(authSvc, loginAudit{producer: s.producer, logger: s.logger})
 	s.serverListHandler = handler.NewServerListHandler(dispatchSvc)
 	if rechargeSvc != nil {
 		s.rechargeHandler = handler.NewRechargeHandler(rechargeSvc, s.logger)
