@@ -180,3 +180,92 @@ func TestKeyAndMember(t *testing.T) {
 		t.Fatalf("parseMember mismatch: %d %s", pid, srv)
 	}
 }
+
+// TestWriteDedupByBizID 同一业务键重投只加一次分（R8.2）。
+func TestWriteDedupByBizID(t *testing.T) {
+	s, _ := newTestService(t)
+	rep := &internalv2.RankReport{
+		NodeId:   "game-1",
+		RankType: "arena_score",
+		PlayerId: 5001,
+		Score:    30,
+		BizId:    "battle:9001:5001",
+	}
+	s.Write(rep)
+	s.Write(rep) // 重投
+	s.Write(rep) // 再重投
+
+	if _, score := s.RankOf("arena_score", "s1", 5001); score != 30 {
+		t.Fatalf("score = %d, want 30（重投不能重复加分）", score)
+	}
+
+	// 换一个业务键（新的一场结算）应当继续累加。
+	rep.BizId = "battle:9002:5001"
+	s.Write(rep)
+	if _, score := s.RankOf("arena_score", "s1", 5001); score != 60 {
+		t.Fatalf("score = %d, want 60", score)
+	}
+}
+
+// TestWriteWithoutBizIDAccumulates 无业务键的上报保持「每次都累加」的旧语义。
+func TestWriteWithoutBizIDAccumulates(t *testing.T) {
+	s, _ := newTestService(t)
+	write(s, "game-1", 5002, 10)
+	write(s, "game-1", 5002, 10)
+	if _, score := s.RankOf("arena_score", "s1", 5002); score != 20 {
+		t.Fatalf("score = %d, want 20", score)
+	}
+}
+
+// TestQueryTopMineAround 一次查询同时给出 Top-N、我的名次与周边。
+func TestQueryTopMineAround(t *testing.T) {
+	s, _ := newTestService(t)
+	write(s, "game-1", 1, 100)
+	write(s, "game-1", 2, 200)
+	write(s, "game-1", 3, 300)
+
+	resp := s.Query("arena_score", "", 2, 10, 0)
+	if resp.Season != "s1" {
+		t.Fatalf("season = %q", resp.Season)
+	}
+	if len(resp.Top) != 3 || resp.Top[0].PlayerId != 3 || resp.Top[0].Rank != 1 {
+		t.Fatalf("top = %+v", resp.Top)
+	}
+	if !resp.OnBoard || resp.MyRank != 2 || resp.MyScore != 200 {
+		t.Fatalf("mine = on_board:%v rank:%d score:%d", resp.OnBoard, resp.MyRank, resp.MyScore)
+	}
+	if len(resp.Around) == 0 {
+		t.Fatal("around must contain the player and neighbours")
+	}
+	if resp.UpdatedAt == 0 {
+		t.Fatal("updated_at should be set after a write")
+	}
+}
+
+// TestQueryNotOnBoard 未上榜时 on_board=false、不给周边（没有「周边」可言）。
+func TestQueryNotOnBoard(t *testing.T) {
+	s, _ := newTestService(t)
+	write(s, "game-1", 1, 100)
+
+	resp := s.Query("arena_score", "", 999, 10, 0)
+	if resp.OnBoard || resp.MyRank != 0 || resp.MyScore != 0 {
+		t.Fatalf("unexpected mine: %+v", resp)
+	}
+	if len(resp.Around) != 0 {
+		t.Fatalf("around must be empty when not on board: %+v", resp.Around)
+	}
+	if len(resp.Top) != 1 {
+		t.Fatalf("top should still be returned: %+v", resp.Top)
+	}
+}
+
+// TestQueryTopNCapped 客户端协议上限 100，避免一次拉全服。
+func TestQueryTopNCapped(t *testing.T) {
+	s, _ := newTestService(t)
+	for i := int64(1); i <= 5; i++ {
+		write(s, "game-1", i, i*10)
+	}
+	if got := len(s.Query("arena_score", "", 1, 1000, 0).Top); got != 5 {
+		t.Fatalf("top = %d, want 5（只有 5 条数据）", got)
+	}
+}

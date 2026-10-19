@@ -23,6 +23,7 @@ const (
 )
 
 // 使用道具（消耗/装备/礼包，走 bag 模块）
+// @msg 3001
 type UseItemReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -78,6 +79,7 @@ func (x *UseItemReq) GetCount() int32 {
 	return 0
 }
 
+// @msg 3002
 type UseItemResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -134,6 +136,7 @@ func (x *UseItemResp) GetRemainCount() int32 {
 }
 
 // 背包列表（P6：堆叠模式，item_uid 暂等于 item_id；P7 改实例 UID）
+// @msg 3003
 type BagListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -172,6 +175,7 @@ func (*BagListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_item_proto_rawDescGZIP(), []int{2}
 }
 
+// @msg 3004
 type BagListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -291,6 +295,7 @@ func (x *ItemEntry) GetCount() int32 {
 }
 
 // 背包变动推送（任何增删改后推送，客户端增量刷新）
+// @msg 3010
 type BagChangeNotify struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

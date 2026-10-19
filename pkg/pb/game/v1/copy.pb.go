@@ -101,6 +101,7 @@ func (x *CopyEntry) GetPassCount() int32 {
 	return 0
 }
 
+// @msg 6301
 type CopyListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -139,6 +140,7 @@ func (*CopyListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_copy_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 6302
 type CopyListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -194,6 +196,7 @@ func (x *CopyListResp) GetCopies() []*CopyEntry {
 	return nil
 }
 
+// @msg 6303
 type CopySettleReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -249,6 +252,7 @@ func (x *CopySettleReq) GetStar() int32 {
 	return 0
 }
 
+// @msg 6304
 type CopySettleResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

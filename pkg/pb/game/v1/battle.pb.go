@@ -25,6 +25,7 @@ const (
 )
 
 // 发起匹配（进入跨服竞技场队列）
+// @msg 5002
 type MatchReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -72,6 +73,7 @@ func (x *MatchReq) GetMode() string {
 	return ""
 }
 
+// @msg 5003
 type MatchResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -136,6 +138,7 @@ func (x *MatchResp) GetQueued() int32 {
 }
 
 // 战斗发起通知（匹配完成后由服务端下发）
+// @msg 5001
 type BattleStartNotify struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -208,6 +211,7 @@ func (x *BattleStartNotify) GetTimeoutSec() int64 {
 }
 
 // 客户端战斗操作上报（服务端原样透传给对手，不解析 body）
+// @msg 5021
 type BattleOpReport struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -272,6 +276,7 @@ func (x *BattleOpReport) GetBody() []byte {
 }
 
 // 战斗事件透传推送（对手操作/房间事件，服务端不解析）
+// @msg 5020
 type BattleSyncNotify struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -344,6 +349,7 @@ func (x *BattleSyncNotify) GetBody() []byte {
 }
 
 // 客户端上报战斗结论（服务端：令牌校验 + 幂等 + 奖励存在性复核）
+// @msg 5010
 type BattleResultReport struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -424,6 +430,7 @@ func (x *BattleResultReport) GetFinishedAt() int64 {
 }
 
 // 战斗结算回执（服务端实际下发奖励，权威）
+// @msg 5011
 type BattleSettleNotify struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

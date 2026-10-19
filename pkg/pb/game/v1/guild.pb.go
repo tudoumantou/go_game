@@ -22,6 +22,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// @msg 6101
 type GuildInfoReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -60,6 +61,7 @@ func (*GuildInfoReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_guild_proto_rawDescGZIP(), []int{0}
 }
 
+// @msg 6102
 type GuildInfoResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -147,6 +149,7 @@ func (x *GuildInfoResp) GetIsLeader() bool {
 	return false
 }
 
+// @msg 6103
 type GuildCreateReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -194,6 +197,7 @@ func (x *GuildCreateReq) GetName() string {
 	return ""
 }
 
+// @msg 6104
 type GuildCreateResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -249,6 +253,7 @@ func (x *GuildCreateResp) GetGuildId() int64 {
 	return 0
 }
 
+// @msg 6105
 type GuildJoinReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -296,6 +301,7 @@ func (x *GuildJoinReq) GetGuildId() int64 {
 	return 0
 }
 
+// @msg 6106
 type GuildJoinResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -343,6 +349,7 @@ func (x *GuildJoinResp) GetCode() int32 {
 	return 0
 }
 
+// @msg 6107
 type GuildQuitReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -381,6 +388,7 @@ func (*GuildQuitReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_guild_proto_rawDescGZIP(), []int{6}
 }
 
+// @msg 6108
 type GuildQuitResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

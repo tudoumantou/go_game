@@ -274,8 +274,8 @@ func (c *Client) SendRelay(relayID, toNode string, broadcast bool, groupID strin
 	})
 }
 
-// SendRank 上报排行分数。
-func (c *Client) SendRank(rankType string, playerID, score int64, season string) error {
+// SendRank 上报排行分数；bizID 非空时中心服按它去重（同一次结算重投不重复加分）。
+func (c *Client) SendRank(rankType string, playerID, score int64, season, bizID string) error {
 	return c.Send(&internalv2.NodeReport{
 		Body: &internalv2.NodeReport_Rank{Rank: &internalv2.RankReport{
 			NodeId:   c.selfID,
@@ -283,7 +283,28 @@ func (c *Client) SendRank(rankType string, playerID, score int64, season string)
 			PlayerId: playerID,
 			Score:    score,
 			Season:   season,
+			BizId:    bizID,
 		}},
+	})
+}
+
+// QueryRank 查询榜单（Top-N + 我的名次 + 周边）。
+//
+// 未与中心服建连时返回错误，调用方回「榜单稍后重试」，而不是空榜
+// （空榜会让玩家误以为自己没有成绩）。
+func (c *Client) QueryRank(ctx context.Context, rankType string, playerID int64, topN int32) (*internalv2.QueryRankResp, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+	if conn == nil {
+		return nil, fmt.Errorf("center not connected")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return internalv2.NewCenterServiceClient(conn).QueryRank(ctx, &internalv2.QueryRankReq{
+		RankType:       rankType,
+		TopN:           topN,
+		AroundPlayerId: playerID,
 	})
 }
 

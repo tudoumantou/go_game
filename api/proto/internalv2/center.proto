@@ -13,6 +13,8 @@ service CenterService {
   // GM/运营查询（Unary）
   rpc QueryGlobalRank(QueryRankReq) returns (stream RankEntry);
   rpc QueryFeatureStats(QueryStatsReq) returns (QueryStatsResp);
+  // 玩家榜单一屏查询：Top-N + 我的名次 + 周边，一次往返（游戏服代理客户端请求）
+  rpc QueryRank(QueryRankReq) returns (QueryRankResp);
 }
 
 message NodeReport {
@@ -63,6 +65,9 @@ message RankReport {
   string season    = 5;
   // scope 榜单作用域："global"（默认，全服总榜）或 "group:{gid}"（分组榜）
   string scope     = 6;
+  // biz_id 上报业务唯一键（如 battle:{room_id}）。中心服按它去重：
+  // 同一次结算重投不会重复加分；空表示上报方不承诺幂等（仍会累加）。
+  string biz_id    = 7;
 }
 
 message RankNotify {
@@ -153,6 +158,17 @@ message RankEntry {
   string name      = 2;
   int64  score     = 3;
   int64  rank      = 4;
+}
+
+message QueryRankResp {
+  int32  code    = 1; // 0 成功；1 榜单不可用
+  string season  = 2;
+  repeated RankEntry top    = 3;
+  repeated RankEntry around = 4;
+  bool   on_board = 5;
+  int64  my_rank  = 6;
+  int64  my_score = 7;
+  int64  updated_at = 8; // unix 秒，0 = 从未写入
 }
 
 message QueryStatsReq {

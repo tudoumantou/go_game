@@ -109,6 +109,7 @@ func (x *ActivityEntry) GetClaimed() bool {
 	return false
 }
 
+// @msg 6501
 type ActivityListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -147,6 +148,7 @@ func (*ActivityListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_activity_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 6502
 type ActivityListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -202,6 +204,7 @@ func (x *ActivityListResp) GetActivities() []*ActivityEntry {
 	return nil
 }
 
+// @msg 6503
 type ActivityClaimReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -249,6 +252,7 @@ func (x *ActivityClaimReq) GetActivityId() int32 {
 	return 0
 }
 
+// @msg 6504
 type ActivityClaimResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

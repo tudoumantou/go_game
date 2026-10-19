@@ -23,6 +23,7 @@ const (
 )
 
 // 发送聊天（私聊/世界聊；跨服私聊经 Kafka 扇出，见 17.3）
+// @msg 6001
 type ChatSendReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -94,6 +95,7 @@ func (x *ChatSendReq) GetLocalId() string {
 	return ""
 }
 
+// @msg 6002
 type ChatSendResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -158,6 +160,7 @@ func (x *ChatSendResp) GetSentAt() int64 {
 }
 
 // 收到消息（含跨服扇出投递）
+// @msg 6010
 type ChatMessageNotify struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -254,6 +257,7 @@ func (x *ChatMessageNotify) GetSentAt() int64 {
 }
 
 // 拉聊天历史（近期 200 条以共享 Redis 双端历史为权威，更早读 MySQL 归档）
+// @msg 6020
 type ChatHistoryReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -317,6 +321,7 @@ func (x *ChatHistoryReq) GetLimit() int32 {
 	return 0
 }
 
+// @msg 6021
 type ChatHistoryResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

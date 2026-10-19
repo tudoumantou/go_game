@@ -85,6 +85,7 @@ func (x *SkillEntry) GetLevel() int32 {
 	return 0
 }
 
+// @msg 3201
 type SkillListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -123,6 +124,7 @@ func (*SkillListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_skill_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 3202
 type SkillListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -178,6 +180,7 @@ func (x *SkillListResp) GetSkills() []*SkillEntry {
 	return nil
 }
 
+// @msg 3203
 type SkillLearnReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -225,6 +228,7 @@ func (x *SkillLearnReq) GetSkillId() int32 {
 	return 0
 }
 
+// @msg 3204
 type SkillLearnResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -272,6 +276,7 @@ func (x *SkillLearnResp) GetCode() int32 {
 	return 0
 }
 
+// @msg 3205
 type SkillUpgradeReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -319,6 +324,7 @@ func (x *SkillUpgradeReq) GetSkillId() int32 {
 	return 0
 }
 
+// @msg 3206
 type SkillUpgradeResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

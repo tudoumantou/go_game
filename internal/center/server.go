@@ -121,6 +121,7 @@ func (s *Server) Start(ctx context.Context) error {
 	s.centerRPC = centerRPC.NewServer(s.reg, s, s.logger)
 	if s.rankSvc != nil {
 		s.centerRPC.SetRankQuerier(s.rankSvc)
+		s.centerRPC.SetRankSearcher(s.rankSvc)
 	}
 	if s.statsSvc != nil {
 		s.centerRPC.SetStatsQuerier(s.statsSvc)

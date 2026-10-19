@@ -23,6 +23,7 @@ const (
 )
 
 // 邮件列表（摘要）
+// @msg 7001
 type MailListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -61,6 +62,7 @@ func (*MailListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_mail_proto_rawDescGZIP(), []int{0}
 }
 
+// @msg 7002
 type MailListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -276,6 +278,7 @@ func (x *MailNewNotify) GetHasAttachment() bool {
 }
 
 // 领取附件（幂等：重复领取返回 5002）
+// @msg 7020
 type MailTakeAttachmentReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -323,6 +326,7 @@ func (x *MailTakeAttachmentReq) GetMailId() int64 {
 	return 0
 }
 
+// @msg 7021
 type MailTakeAttachmentResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

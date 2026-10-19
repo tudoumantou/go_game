@@ -109,6 +109,7 @@ func (x *ShopGoods) GetLimit() int32 {
 	return 0
 }
 
+// @msg 6401
 type ShopListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -147,6 +148,7 @@ func (*ShopListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_shop_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 6402
 type ShopListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -202,6 +204,7 @@ func (x *ShopListResp) GetGoods() []*ShopGoods {
 	return nil
 }
 
+// @msg 6403
 type ShopBuyReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -257,6 +260,7 @@ func (x *ShopBuyReq) GetCount() int32 {
 	return 0
 }
 
+// @msg 6404
 type ShopBuyResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

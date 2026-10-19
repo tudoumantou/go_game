@@ -23,6 +23,7 @@ const (
 )
 
 // 任务列表
+// @msg 7101
 type QuestListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -61,6 +62,7 @@ func (*QuestListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_quest_proto_rawDescGZIP(), []int{0}
 }
 
+// @msg 7102
 type QuestListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -196,6 +198,7 @@ func (x *QuestEntry) GetTarget() int32 {
 }
 
 // 接取任务
+// @msg 7103
 type QuestAcceptReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -243,6 +246,7 @@ func (x *QuestAcceptReq) GetQuestId() int32 {
 	return 0
 }
 
+// @msg 7104
 type QuestAcceptResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -291,6 +295,7 @@ func (x *QuestAcceptResp) GetCode() int32 {
 }
 
 // 领奖
+// @msg 7105
 type QuestClaimReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -338,6 +343,7 @@ func (x *QuestClaimReq) GetQuestId() int32 {
 	return 0
 }
 
+// @msg 7106
 type QuestClaimResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

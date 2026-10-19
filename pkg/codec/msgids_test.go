@@ -72,6 +72,8 @@ var wireBaseline = map[string]uint32{
 	"SigninInfoResp":         6602,
 	"SigninClaimReq":         6603,
 	"SigninClaimResp":        6604,
+	"RankListReq":            6701,
+	"RankListResp":           6702,
 	"MailListReq":            7001,
 	"MailListResp":           7002,
 	"MailTakeAttachmentReq":  7020,

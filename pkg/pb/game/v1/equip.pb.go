@@ -101,6 +101,7 @@ func (x *EquipEntry) GetEquipped() bool {
 	return false
 }
 
+// @msg 3101
 type EquipListReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -139,6 +140,7 @@ func (*EquipListReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_equip_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 3102
 type EquipListResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -194,6 +196,7 @@ func (x *EquipListResp) GetEquips() []*EquipEntry {
 	return nil
 }
 
+// @msg 3103
 type EquipWearReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -241,6 +244,7 @@ func (x *EquipWearReq) GetUid() int64 {
 	return 0
 }
 
+// @msg 3104
 type EquipWearResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -296,6 +300,7 @@ func (x *EquipWearResp) GetAttrs() []*AttrPair {
 	return nil
 }
 
+// @msg 3105
 type EquipTakeOffReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -343,6 +348,7 @@ func (x *EquipTakeOffReq) GetUid() int64 {
 	return 0
 }
 
+// @msg 3106
 type EquipTakeOffResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

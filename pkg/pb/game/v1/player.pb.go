@@ -23,6 +23,7 @@ const (
 )
 
 // 进入游戏：role_id=0 表示尚无角色，返回 2003 引导创角
+// @msg 1010
 type EnterGameReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -134,6 +135,7 @@ func (x *EnterGameResp) GetServerTime() string {
 }
 
 // 创角（职业取 career.xml，随机名库 create_name.xml）
+// @msg 1020
 type CreateRoleReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -245,6 +247,7 @@ func (x *CreateRoleResp) GetRoleId() int64 {
 }
 
 // 玩家信息（进游戏后主动拉一次全量）
+// @msg 2001
 type PlayerInfoReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -283,6 +286,7 @@ func (*PlayerInfoReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_player_proto_rawDescGZIP(), []int{4}
 }
 
+// @msg 2002
 type PlayerInfoResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

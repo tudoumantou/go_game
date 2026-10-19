@@ -72,6 +72,8 @@ const (
 	MsgSigninInfoResp         uint32 = 6602
 	MsgSigninClaimReq         uint32 = 6603
 	MsgSigninClaimResp        uint32 = 6604
+	MsgRankListReq            uint32 = 6701
+	MsgRankListResp           uint32 = 6702
 	MsgMailListReq            uint32 = 7001
 	MsgMailListResp           uint32 = 7002
 	MsgMailTakeAttachmentReq  uint32 = 7020
@@ -151,6 +153,8 @@ var msgNames = map[uint32]string{
 	6602: "SigninInfoResp",
 	6603: "SigninClaimReq",
 	6604: "SigninClaimResp",
+	6701: "RankListReq",
+	6702: "RankListResp",
 	7001: "MailListReq",
 	7002: "MailListResp",
 	7020: "MailTakeAttachmentReq",
@@ -230,6 +234,8 @@ var msgIDs = map[string]uint32{
 	"SigninInfoResp":         6602,
 	"SigninClaimReq":         6603,
 	"SigninClaimResp":        6604,
+	"RankListReq":            6701,
+	"RankListResp":           6702,
 	"MailListReq":            7001,
 	"MailListResp":           7002,
 	"MailTakeAttachmentReq":  7020,
@@ -255,4 +261,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 75 }
+func MsgCount() int { return 77 }

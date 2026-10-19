@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"game_study/pkg/log"
 
@@ -63,8 +64,8 @@ func (s *Service) SetSeason(season string) {
 // 这与「竞技场胜负加减分」一致；若要上报绝对值（如公会战力），
 // 需新增 `absolute` 标志位区分，P14 暂不引入。
 //
-// 幂等性：上报走 Report 流且节点侧保证不重复发送；重复发送会导致重复累加，
-// 因此游戏服侧必须只在结算成功后上报一次。
+// 幂等性：带 biz_id 的上报按业务键去重（Redis SETNX），同一次结算重投不会重复加分；
+// 不带 biz_id 的上报无法判重，只能依赖上报方不重发。
 func (s *Service) Write(rep *internalv2.RankReport) {
 	if rep == nil || rep.PlayerId == 0 {
 		return
@@ -85,10 +86,30 @@ func (s *Service) Write(rep *internalv2.RankReport) {
 	key := Key(scope, season, type_)
 	member := Member(rep.PlayerId, rep.NodeId)
 
+	// 业务键去重：Redis 失败时宁可不加分，也不冒重复加分的风险
+	// （重复加分无法自动修正，少加一次可以由运营补偿）。
+	if rep.BizId != "" {
+		dctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ok, err := s.rdb.SetNX(dctx, dedupKey(rep.BizId), 1, dedupTTL).Result()
+		cancel()
+		if err != nil {
+			s.logger.Warn("rank dedup failed, drop report", "biz_id", rep.BizId, "err", err)
+			return
+		}
+		if !ok {
+			return // 同一次结算已处理过
+		}
+	}
+
 	ctx := context.Background()
 	if err := s.rdb.ZIncrBy(ctx, key, float64(rep.Score), member).Err(); err != nil {
 		s.logger.Warn("rank zincrby failed", "key", key, "player", rep.PlayerId, "err", err)
+		return
 	}
+	// 更新时间只在真正加分后写，客户端据此展示「榜单最近变动」。
+	uctx, ucancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_ = s.rdb.Set(uctx, updatedKey(scope, season, type_), time.Now().Unix(), dedupTTL).Err()
+	ucancel()
 }
 
 // TopN 取前 N 名。
@@ -288,4 +309,49 @@ func parseMember(member string) (int64, string) {
 // SortEntries 按名次升序排序（归档/展示统一用）。
 func SortEntries(list []*internalv2.RankEntry) {
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Rank < list[j].Rank })
+}
+
+// dedupTTL 业务键与更新时间键的保留期：覆盖一次赛季周期即可。
+const dedupTTL = 30 * 24 * time.Hour
+
+func dedupKey(bizID string) string { return "rank:dedup:" + bizID }
+
+func updatedKey(scope, season, rankType string) string {
+	return "rank:updated:" + scope + ":" + season + ":" + rankType
+}
+
+// Query 一次返回 Top-N、我的名次与周边，供游戏服代理客户端查询。
+//
+// season 为空用当前赛季；未上榜时 on_board=false，且 around 为空（没有「周边」可言）。
+func (s *Service) Query(rankType, season string, playerID int64, topN, aroundN int32) *internalv2.QueryRankResp {
+	if season == "" {
+		season = s.currentSeason
+	}
+	if topN <= 0 {
+		topN = 50
+	}
+	if topN > 100 {
+		topN = 100 // 客户端协议上限，避免一次拉全服
+	}
+	if aroundN <= 0 {
+		aroundN = 11
+	}
+
+	resp := &internalv2.QueryRankResp{
+		Season: season,
+		Top:    s.TopN(rankType, season, topN),
+	}
+	if playerID != 0 {
+		rankNo, score := s.RankOf(rankType, season, playerID)
+		if rankNo > 0 {
+			resp.OnBoard = true
+			resp.MyRank = rankNo
+			resp.MyScore = score
+			resp.Around = s.Around(rankType, season, playerID, aroundN)
+		}
+	}
+	if ts, err := s.rdb.Get(context.Background(), updatedKey(ScopeGlobal, season, rankType)).Int64(); err == nil {
+		resp.UpdatedAt = ts
+	}
+	return resp
 }

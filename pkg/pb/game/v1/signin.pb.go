@@ -78,6 +78,7 @@ func (x *SigninReward) GetCount() int64 {
 	return 0
 }
 
+// @msg 6601
 type SigninInfoReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -116,6 +117,7 @@ func (*SigninInfoReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_signin_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 6602
 type SigninInfoResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -195,6 +197,7 @@ func (x *SigninInfoResp) GetClaimedRewards() map[int32]int64 {
 	return nil
 }
 
+// @msg 6603
 type SigninClaimReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -233,6 +236,7 @@ func (*SigninClaimReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_signin_proto_rawDescGZIP(), []int{3}
 }
 
+// @msg 6604
 type SigninClaimResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

@@ -93,6 +93,7 @@ func (x *TeamMemberInfo) GetIsLeader() bool {
 	return false
 }
 
+// @msg 6201
 type TeamInfoReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -131,6 +132,7 @@ func (*TeamInfoReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_team_proto_rawDescGZIP(), []int{1}
 }
 
+// @msg 6202
 type TeamInfoResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -202,6 +204,7 @@ func (x *TeamInfoResp) GetMembers() []*TeamMemberInfo {
 	return nil
 }
 
+// @msg 6203
 type TeamCreateReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -249,6 +252,7 @@ func (x *TeamCreateReq) GetCopyId() int32 {
 	return 0
 }
 
+// @msg 6204
 type TeamCreateResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -304,6 +308,7 @@ func (x *TeamCreateResp) GetTeamId() int64 {
 	return 0
 }
 
+// @msg 6205
 type TeamJoinReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -351,6 +356,7 @@ func (x *TeamJoinReq) GetTeamId() int64 {
 	return 0
 }
 
+// @msg 6206
 type TeamJoinResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -398,6 +404,7 @@ func (x *TeamJoinResp) GetCode() int32 {
 	return 0
 }
 
+// @msg 6207
 type TeamLeaveReq struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -436,6 +443,7 @@ func (*TeamLeaveReq) Descriptor() ([]byte, []int) {
 	return file_game_v1_team_proto_rawDescGZIP(), []int{7}
 }
 
+// @msg 6208
 type TeamLeaveResp struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

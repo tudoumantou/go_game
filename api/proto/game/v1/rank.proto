@@ -1,0 +1,35 @@
+// 排行榜查询（6700-6799）：客户端只看当前赛季的 Top-N 与自己/周边名次。
+//
+// 榜单数据在中心服 Redis ZSet，本协议只做查询；分数变更由战斗结算上报，
+// 客户端主动刷新即可拿到最新名次（推送通知见 rank_update_notify 的说明）。
+syntax = "proto3";
+
+package game_study.game.v1;
+
+option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+message RankEntry {
+  int64  player_id = 1;
+  string name      = 2;
+  int64  score     = 3;
+  int64  rank      = 4;
+}
+
+// @msg 6701
+message RankListReq {
+  // 榜单类型，空 = arena_score。类型由配置/运营约定，客户端不臆造。
+  string rank_type = 1;
+}
+
+// @msg 6702
+message RankListResp {
+  int32  code      = 1; // 0 成功；6701 榜单不可用
+  string rank_type = 2;
+  string season    = 3;
+  repeated RankEntry entries = 4; // Top-N（默认 50，上限 100）
+  bool   on_board  = 5;           // false 表示未上榜（my_rank/my_score 无意义）
+  int64  my_rank   = 6;
+  int64  my_score  = 7;
+  repeated RankEntry around = 8;  // 我的周边（含自己，前后各 5 名）
+  int64  updated_at = 9;          // 榜单最近写入时间（unix 秒）；0 表示未写入过
+}

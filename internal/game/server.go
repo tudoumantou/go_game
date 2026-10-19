@@ -24,6 +24,7 @@ import (
 	"game_study/internal/game/module/mail"
 	"game_study/internal/game/module/profile"
 	"game_study/internal/game/module/quest"
+	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/module/shop"
 	"game_study/internal/game/module/signin"
 	"game_study/internal/game/module/skill"
@@ -232,6 +233,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.modules.Register(activity.New(s.logger))
 		s.modules.Register(signin.New(s.logger))
 		s.modules.Register(loginreward.New(s.logger))
+		// 榜单查询代理到中心服；未配置中心服时模块回「暂不可用」而不是空榜。
+		s.modules.Register(rankmodule.New(rankQuerier{cli: s.centerCli}, s.logger))
 	}
 
 	// ④ Write-Behind flusher
@@ -1039,11 +1042,42 @@ type rankReporter struct {
 }
 
 // ReportArenaScore 实现 battle.RankReporter。
-func (r rankReporter) ReportArenaScore(playerID int64, score int64) error {
+func (r rankReporter) ReportArenaScore(playerID int64, score int64, bizID string) error {
 	if r.cli == nil {
 		return fmt.Errorf("center client not configured")
 	}
-	return r.cli.SendRank("arena_score", playerID, score, "")
+	return r.cli.SendRank("arena_score", playerID, score, "", bizID)
+}
+
+// rankQuerier 把中心服客户端适配为 rank 模块的查询接口。
+type rankQuerier struct{ cli *gamecenter.Client }
+
+// Query 实现 rank.Querier；中心服回非 0 code 视为查询失败（不要当成空榜）。
+func (q rankQuerier) Query(ctx context.Context, rankType string, playerID int64, topN int32) (*rankmodule.Result, error) {
+	if q.cli == nil {
+		return nil, fmt.Errorf("center client not configured")
+	}
+	res, err := q.cli.QueryRank(ctx, rankType, playerID, topN)
+	if err != nil {
+		return nil, err
+	}
+	if res.GetCode() != 0 {
+		return nil, fmt.Errorf("center rank code %d", res.GetCode())
+	}
+	out := &rankmodule.Result{
+		Season:    res.GetSeason(),
+		OnBoard:   res.GetOnBoard(),
+		MyRank:    res.GetMyRank(),
+		MyScore:   res.GetMyScore(),
+		UpdatedAt: res.GetUpdatedAt(),
+	}
+	for _, e := range res.GetTop() {
+		out.Entries = append(out.Entries, rankmodule.Entry{PlayerID: e.GetPlayerId(), Score: e.GetScore(), Rank: e.GetRank()})
+	}
+	for _, e := range res.GetAround() {
+		out.Around = append(out.Around, rankmodule.Entry{PlayerID: e.GetPlayerId(), Score: e.GetScore(), Rank: e.GetRank()})
+	}
+	return out, nil
 }
 
 // buildIDTables 后台构建 ID 表（12.5.1）。

@@ -25,6 +25,7 @@ const (
 	CenterService_Report_FullMethodName            = "/game_study.internal.v2.CenterService/Report"
 	CenterService_QueryGlobalRank_FullMethodName   = "/game_study.internal.v2.CenterService/QueryGlobalRank"
 	CenterService_QueryFeatureStats_FullMethodName = "/game_study.internal.v2.CenterService/QueryFeatureStats"
+	CenterService_QueryRank_FullMethodName         = "/game_study.internal.v2.CenterService/QueryRank"
 )
 
 // CenterServiceClient is the client API for CenterService service.
@@ -36,6 +37,8 @@ type CenterServiceClient interface {
 	// GM/运营查询（Unary）
 	QueryGlobalRank(ctx context.Context, in *QueryRankReq, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RankEntry], error)
 	QueryFeatureStats(ctx context.Context, in *QueryStatsReq, opts ...grpc.CallOption) (*QueryStatsResp, error)
+	// 玩家榜单一屏查询：Top-N + 我的名次 + 周边，一次往返（游戏服代理客户端请求）
+	QueryRank(ctx context.Context, in *QueryRankReq, opts ...grpc.CallOption) (*QueryRankResp, error)
 }
 
 type centerServiceClient struct {
@@ -88,6 +91,16 @@ func (c *centerServiceClient) QueryFeatureStats(ctx context.Context, in *QuerySt
 	return out, nil
 }
 
+func (c *centerServiceClient) QueryRank(ctx context.Context, in *QueryRankReq, opts ...grpc.CallOption) (*QueryRankResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(QueryRankResp)
+	err := c.cc.Invoke(ctx, CenterService_QueryRank_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CenterServiceServer is the server API for CenterService service.
 // All implementations must embed UnimplementedCenterServiceServer
 // for forward compatibility.
@@ -97,6 +110,8 @@ type CenterServiceServer interface {
 	// GM/运营查询（Unary）
 	QueryGlobalRank(*QueryRankReq, grpc.ServerStreamingServer[RankEntry]) error
 	QueryFeatureStats(context.Context, *QueryStatsReq) (*QueryStatsResp, error)
+	// 玩家榜单一屏查询：Top-N + 我的名次 + 周边，一次往返（游戏服代理客户端请求）
+	QueryRank(context.Context, *QueryRankReq) (*QueryRankResp, error)
 	mustEmbedUnimplementedCenterServiceServer()
 }
 
@@ -115,6 +130,9 @@ func (UnimplementedCenterServiceServer) QueryGlobalRank(*QueryRankReq, grpc.Serv
 }
 func (UnimplementedCenterServiceServer) QueryFeatureStats(context.Context, *QueryStatsReq) (*QueryStatsResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method QueryFeatureStats not implemented")
+}
+func (UnimplementedCenterServiceServer) QueryRank(context.Context, *QueryRankReq) (*QueryRankResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method QueryRank not implemented")
 }
 func (UnimplementedCenterServiceServer) mustEmbedUnimplementedCenterServiceServer() {}
 func (UnimplementedCenterServiceServer) testEmbeddedByValue()                       {}
@@ -173,6 +191,24 @@ func _CenterService_QueryFeatureStats_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CenterService_QueryRank_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(QueryRankReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CenterServiceServer).QueryRank(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CenterService_QueryRank_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CenterServiceServer).QueryRank(ctx, req.(*QueryRankReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CenterService_ServiceDesc is the grpc.ServiceDesc for CenterService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -183,6 +219,10 @@ var CenterService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryFeatureStats",
 			Handler:    _CenterService_QueryFeatureStats_Handler,
+		},
+		{
+			MethodName: "QueryRank",
+			Handler:    _CenterService_QueryRank_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

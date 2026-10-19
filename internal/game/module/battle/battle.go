@@ -87,8 +87,9 @@ type CenterMatcher interface {
 
 // RankReporter 排行分上报（P14：战斗结算后写全服榜）。
 type RankReporter interface {
-	// ReportArenaScore 上报竞技场积分（delta 为增减量，中心服负责累加/覆盖）。
-	ReportArenaScore(playerID int64, score int64) error
+	// ReportArenaScore 上报竞技场积分（delta 为增减量，中心服负责累加）。
+	// bizID 是本次结算的唯一键：中心服按它去重，同一次结算重投不会重复加分。
+	ReportArenaScore(playerID int64, score int64, bizID string) error
 }
 
 // Pusher 向在线玩家推送（由组装层实现，跨 Actor 安全）。
@@ -523,7 +524,9 @@ func (m *Module) OnBattleResult(res *internalv2.BattleResult) {
 			delta = 0
 		}
 		if delta != 0 {
-			if err := m.ranker.ReportArenaScore(res.PlayerId, delta); err != nil {
+			// 房间 + 玩家唯一：同一次结算无论重投几次都只加一次分。
+			bizID := fmt.Sprintf("battle:%d:%d", res.RoomId, res.PlayerId)
+			if err := m.ranker.ReportArenaScore(res.PlayerId, delta, bizID); err != nil {
 				m.logger.Debug("report arena score failed", "player_id", res.PlayerId, "err", err)
 			}
 		}

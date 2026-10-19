@@ -33,6 +33,7 @@ type Server struct {
 
 	// ranking / stats 由 server 侧注入（避免本包依赖 Redis）
 	rankQuery  RankQuerier
+	rankSearch RankSearcher
 	statsQuery StatsQuerier
 }
 
@@ -40,6 +41,14 @@ type Server struct {
 type RankQuerier interface {
 	TopN(rankType, season string, n int32) []*internalv2.RankEntry
 	Around(rankType, season string, playerID int64, n int32) []*internalv2.RankEntry
+}
+
+// RankSearcher 玩家侧组合查询（*rank.Service 实现，server 注入）。
+//
+// 单独一个接口而不是扩 RankQuerier：GM 查询与玩家查询的返回形状不同，
+// 拆开后现有实现与测试不受影响。
+type RankSearcher interface {
+	Query(rankType, season string, playerID int64, topN, aroundN int32) *internalv2.QueryRankResp
 }
 
 // StatsQuerier 统计查询（server 注入）。
@@ -54,6 +63,9 @@ func NewServer(reg *registry.Registry, h Handler, logger *log.Logger) *Server {
 
 // SetRankQuerier 注入排行榜查询实现。
 func (s *Server) SetRankQuerier(q RankQuerier) { s.rankQuery = q }
+
+// SetRankSearcher 注入玩家侧榜单查询实现。
+func (s *Server) SetRankSearcher(q RankSearcher) { s.rankSearch = q }
 
 // SetStatsQuerier 注入统计查询实现。
 func (s *Server) SetStatsQuerier(q StatsQuerier) { s.statsQuery = q }
@@ -191,6 +203,20 @@ func (s *Server) QueryGlobalRank(req *internalv2.QueryRankReq, stream internalv2
 		}
 	}
 	return nil
+}
+
+// QueryRank 实现玩家榜单一屏查询（游戏服代理客户端请求）。
+//
+// 与 QueryGlobalRank 的区别：一次返回 Top-N + 我的名次 + 周边，客户端只需一个往返。
+func (s *Server) QueryRank(_ context.Context, req *internalv2.QueryRankReq) (*internalv2.QueryRankResp, error) {
+	if s.rankSearch == nil {
+		return &internalv2.QueryRankResp{Code: 1}, nil
+	}
+	resp := s.rankSearch.Query(req.GetRankType(), req.GetSeason(), req.GetAroundPlayerId(), req.GetTopN(), 0)
+	if resp == nil {
+		return &internalv2.QueryRankResp{Code: 1}, nil
+	}
+	return resp, nil
 }
 
 // QueryFeatureStats 实现 GM 查询。
