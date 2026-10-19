@@ -268,7 +268,19 @@ func (s *Server) forwardPacket(sess *session.Session, msgID uint32, body []byte)
 			},
 		},
 	}
-	return s.backend.Send(sess.NumID(), frame)
+	if err := s.backend.Send(sess.NumID(), frame); err != nil {
+		// 后端实例下线时，流已断开：把「这次请求失败」升级为「关闭客户端连接」。
+		// 客户端重连后由 resolver 选到存活实例——否则客户端会对着一条死连接反复超时。
+		s.logger.Info("backend send failed, closing client connection",
+			"session_id", sess.NumID(), "target", target, "err", err)
+		s.backend.CloseSession(sess.NumID())
+		s.sessMu.Lock()
+		delete(s.sessGame, sess.NumID())
+		s.sessMu.Unlock()
+		sess.Close(err)
+		return err
+	}
+	return nil
 }
 
 func (s *Server) onAccept(raw net.Conn) {

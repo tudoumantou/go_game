@@ -409,6 +409,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			return nil
 		}
 		s.etcdCancel()
+		// 摘注册后立刻通知在线会话：让客户端主动重连，而不是等请求超时。
+		if n := s.kickAllSessions("server maintenance, please reconnect"); n > 0 {
+			s.logger.Info("shutdown: notified sessions to reconnect", "count", n)
+		}
 
 		// 网关靠 etcd watch 感知节点下线，需要一点时间重建连接池，
 		// 这段等待保证「新连接」不再路由到本实例。
@@ -701,6 +705,26 @@ func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int6
 	}
 	s.logger.Info("session bound", "session_id", sessionID, "player_id", playerID, "account_id", accountID, "replaced", old)
 	return nil
+}
+
+// kickAllSessions 关闭前通知所有在线会话重连。
+//
+// 有状态实例下线时，绑定在本实例的会话无法迁移（Actor 状态在内存），
+// 服务端能做的是**尽早明确告知**：客户端收到 KickNotify 后立即重连到
+// 其它实例，而不是让后续请求一个个超时。网关转发 KickNotify 后会断开连接。
+//
+// 返回通知数量（推送失败也计入，只是日志不同）。
+func (s *Server) kickAllSessions(reason string) int {
+	s.mu.RLock()
+	ids := make([]uint64, 0, len(s.sessions))
+	for sid := range s.sessions {
+		ids = append(ids, sid)
+	}
+	s.mu.RUnlock()
+	for _, sid := range ids {
+		s.kickSession(sid, reason)
+	}
+	return len(ids)
 }
 
 // kickSession 通知旧会话下线；客户端收到 KickNotify 后断开，触发 OnUnbind。
