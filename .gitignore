@@ -1,6 +1,8 @@
 # 构建产物
 /bin/
 /loadtest
+/gendb
+/gendata
 /reports/
 /deploy/volumes/
 /volumes/
