@@ -19,3 +19,6 @@ coverage.txt
 .idea/
 .vscode/
 *.log
+
+# GitHub 凭证（严禁入库）
+.git-credentials
