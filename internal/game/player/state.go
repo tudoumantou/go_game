@@ -75,6 +75,27 @@ func (s *State) SetExt(name string, raw json.RawMessage) {
 // PlayerID 返回玩家 ID。
 func (s *State) PlayerID() int64 { return s.playerID }
 
+// ClaimBiz 占用业务唯一键，返回 false 表示该键已应用过（幂等命中）。
+//
+// 只在玩家 Actor 内单线程调用，与其它状态改动一样不加锁。键会随快照 CAS
+// 并落库到 player_writebehind.applied_grants，进程重启或 Redis 丢失后仍有效。
+func (s *State) ClaimBiz(key string) bool {
+	if key == "" {
+		return true
+	}
+	if s.appliedGrants == nil {
+		s.appliedGrants = make(map[string]bool, 4)
+	}
+	if s.appliedGrants[key] {
+		return false
+	}
+	s.appliedGrants[key] = true
+	return true
+}
+
+// HasBiz 查询业务键是否已应用。
+func (s *State) HasBiz(key string) bool { return s.appliedGrants[key] }
+
 // Profile 返回角色基础信息副本。
 func (s *State) Profile() module.Profile {
 	s.mu.RLock()

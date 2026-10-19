@@ -31,6 +31,11 @@ type PlayerState interface {
 	// Ext 读取模块私有状态；SetExt 覆盖并标脏。键必须是 writebehind.Persister.Name()。
 	Ext(name string) json.RawMessage
 	SetExt(name string, raw json.RawMessage)
+	// ClaimBiz 占用业务唯一键；返回 false 表示该键已应用过（幂等命中）。
+	// 键随快照一起 CAS 并落库到 player_writebehind.applied_grants，重启后仍有效。
+	ClaimBiz(key string) bool
+	// HasBiz 只读查询业务键是否已应用。
+	HasBiz(key string) bool
 }
 
 // Sender 下行发送能力（由游戏服组装层实现，写回网关）。
@@ -95,6 +100,31 @@ func (c *Context) Reply(msgID uint32, body []byte) error {
 		return nil
 	}
 	return c.Send(msgID, body)
+}
+
+// ApplyOnce 幂等执行业务：key 已应用过则跳过 fn，返回 applied=false。
+//
+// 适用场景是「不可重复生效」的投递类业务（充值回调、Kafka 重投、离线补偿）。
+// 键在 fn 成功后才占用 —— 一次配置错误或校验失败不能把业务键永久占死。
+//
+// 键、资产、模块状态最终都在同一次快照 CAS 里提交：Redis 失败则三者一起回滚，
+// 不会出现「领取事实已记、奖励没到账」。主动领取类业务（任务/活动/副本）不需要
+// 键，用业务状态里的「已领取」事实做幂等即可，避免 applied_grants 无限膨胀。
+func (c *Context) ApplyOnce(key string, fn func() error) (applied bool, err error) {
+	if c.State == nil {
+		return false, fmt.Errorf("module context without player state")
+	}
+	if key == "" {
+		return true, fn()
+	}
+	if c.State.HasBiz(key) {
+		return false, nil
+	}
+	if err := fn(); err != nil {
+		return false, err
+	}
+	c.State.ClaimBiz(key)
+	return true, nil
 }
 
 // Module 业务功能模块统一接口（每个功能 = Init/OnMessage/OnSave/OnLogin/OnLogout）。

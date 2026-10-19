@@ -16,10 +16,11 @@ type fakeState struct {
 	items map[int32]int64
 	ext   map[string]json.RawMessage
 	dirty []string
+	biz   map[string]bool
 }
 
 func newFakeState(id int64) *fakeState {
-	return &fakeState{id: id, items: map[int32]int64{}, ext: map[string]json.RawMessage{}}
+	return &fakeState{id: id, items: map[int32]int64{}, ext: map[string]json.RawMessage{}, biz: map[string]bool{}}
 }
 
 func (f *fakeState) PlayerID() int64                 { return f.id }
@@ -37,6 +38,14 @@ func (f *fakeState) Ext(name string) json.RawMessage { return f.ext[name] }
 func (f *fakeState) SetExt(name string, raw json.RawMessage) {
 	f.ext[name] = raw
 }
+func (f *fakeState) ClaimBiz(key string) bool {
+	if f.biz[key] {
+		return false
+	}
+	f.biz[key] = true
+	return true
+}
+func (f *fakeState) HasBiz(key string) bool { return f.biz[key] }
 func (f *fakeState) RemoveItem(id int32, count int64) bool {
 	if f.items[id] < count {
 		return false
