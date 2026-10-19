@@ -73,10 +73,10 @@ func (m *Module) MsgIDs() []uint32 { return nil }
 
 // Init 启动期校验配置可用。
 func (m *Module) Init(*module.Context) error {
-	if len(gamedata.LoginRewardCfgList) == 0 {
+	if len(gamedata.LoginRewardCfgList()) == 0 {
 		return fmt.Errorf("login_reward.xml is empty")
 	}
-	for _, cfg := range gamedata.LoginRewardCfgList {
+	for _, cfg := range gamedata.LoginRewardCfgList() {
 		if cfg.Col1 <= 0 {
 			return fmt.Errorf("invalid login reward day %d", cfg.Col1)
 		}
@@ -160,8 +160,8 @@ func (m *Module) OnLogout(*module.Context) error { return nil }
 
 // rewardForStreak 取连续第 streak 天的奖励；超过最大档按最后一档发。
 func rewardForStreak(streak int32) ([]module.ItemGrant, error) {
-	cfgs := make([]gamedata.LoginRewardCfg, len(gamedata.LoginRewardCfgList))
-	copy(cfgs, gamedata.LoginRewardCfgList)
+	cfgs := make([]gamedata.LoginRewardCfg, len(gamedata.LoginRewardCfgList()))
+	copy(cfgs, gamedata.LoginRewardCfgList())
 	sort.Slice(cfgs, func(i, j int) bool { return cfgs[i].Col1 < cfgs[j].Col1 })
 	if len(cfgs) == 0 {
 		return nil, fmt.Errorf("login_reward.xml is empty")

@@ -12,14 +12,14 @@ import (
 
 // ActivityRecord activity_record 表
 type ActivityRecord struct {
-	PlayerId int64 `db:"player_id"`
-	Records string `db:"records"`
+	PlayerId int64  `db:"player_id"`
+	Records  string `db:"records"`
 }
 
 // ActivityRecord 列名
 const (
 	ColActivityRecordPlayerId = "player_id"
-	ColActivityRecordRecords = "records"
+	ColActivityRecordRecords  = "records"
 )
 
 // TableName 表名

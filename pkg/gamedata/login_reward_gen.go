@@ -5,27 +5,28 @@ package gamedata
 
 // LoginRewardCfg login_reward.xml 配置项
 type LoginRewardCfg struct {
-	Id int64 `json:"id"`
-	Col1 int64 `json:"col1"`
+	Id   int64  `json:"id"`
+	Col1 int64  `json:"col1"`
 	Col2 string `json:"col2"`
 }
 
-// LoginRewardCfgList 全量配置（启动时加载，只读）
-var LoginRewardCfgList = []LoginRewardCfg{
+// LoginRewardTable login_reward.xml 的只读视图，随快照整体替换，不做原地修改
+type LoginRewardTable = table[LoginRewardCfg]
+
+func newLoginRewardTable(list []LoginRewardCfg) (LoginRewardTable, error) {
+	return newTable(list, func(c *LoginRewardCfg) int64 { return c.Id })
+}
+
+// login_rewardRows 内嵌快照的行数据
+var login_rewardRows = []LoginRewardCfg{
 	{Id: 1, Col1: 1, Col2: "1001,100"},
 	{Id: 2, Col1: 2, Col2: "1002,5"},
 }
 
-var login_rewardCfgByID = func() map[int64]*LoginRewardCfg {
-	m := make(map[int64]*LoginRewardCfg, len(LoginRewardCfgList))
-	for i := range LoginRewardCfgList {
-		m[LoginRewardCfgList[i].Id] = &LoginRewardCfgList[i]
-	}
-	return m
-}()
+// LoginRewardCfgList 当前快照的全量行（等价于 Cur().LoginReward.List()）
+func LoginRewardCfgList() []LoginRewardCfg { return Cur().LoginReward.List() }
 
-// GetLoginRewardCfg 按 ID 查询配置
+// GetLoginRewardCfg 按 ID 查询当前快照
 func GetLoginRewardCfg(id int64) (*LoginRewardCfg, bool) {
-	c, ok := login_rewardCfgByID[id]
-	return c, ok
+	return Cur().LoginReward.Get(id)
 }

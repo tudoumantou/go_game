@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -23,12 +24,12 @@ const stateKey = "equip"
 
 // 协议号（4.9：3101/3102 列表，3103/3104 穿戴，3105/3106 脱下）。
 const (
-	msgIDListReq     uint32 = 3101
-	msgIDListResp    uint32 = 3102
-	msgIDWearReq     uint32 = 3103
-	msgIDWearResp    uint32 = 3104
-	msgIDTakeOffReq  uint32 = 3105
-	msgIDTakeOffResp uint32 = 3106
+	msgIDListReq     = codec.MsgEquipListReq
+	msgIDListResp    = codec.MsgEquipListResp
+	msgIDWearReq     = codec.MsgEquipWearReq
+	msgIDWearResp    = codec.MsgEquipWearResp
+	msgIDTakeOffReq  = codec.MsgEquipTakeOffReq
+	msgIDTakeOffResp = codec.MsgEquipTakeOffResp
 )
 
 // 业务码（4.10）。
@@ -264,7 +265,7 @@ func findEquip(d *Data, uid int64) int {
 // sameSlotEquipIDs 返回同部位的全部装备配置 ID。
 func sameSlotEquipIDs(slot string) []int32 {
 	var out []int32
-	for _, cfg := range gamedata.EquipCfgList {
+	for _, cfg := range gamedata.EquipCfgList() {
 		if cfg.Col3 == slot {
 			out = append(out, int32(cfg.Id))
 		}

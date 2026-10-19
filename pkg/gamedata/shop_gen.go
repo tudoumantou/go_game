@@ -5,25 +5,26 @@ package gamedata
 
 // ShopCfg shop.xml 配置项
 type ShopCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
 }
 
-// ShopCfgList 全量配置（启动时加载，只读）
-var ShopCfgList = []ShopCfg{
+// ShopTable shop.xml 的只读视图，随快照整体替换，不做原地修改
+type ShopTable = table[ShopCfg]
+
+func newShopTable(list []ShopCfg) (ShopTable, error) {
+	return newTable(list, func(c *ShopCfg) int64 { return c.Id })
+}
+
+// shopRows 内嵌快照的行数据
+var shopRows = []ShopCfg{
 	{Id: 1, Col1: "道具商店"},
 }
 
-var shopCfgByID = func() map[int64]*ShopCfg {
-	m := make(map[int64]*ShopCfg, len(ShopCfgList))
-	for i := range ShopCfgList {
-		m[ShopCfgList[i].Id] = &ShopCfgList[i]
-	}
-	return m
-}()
+// ShopCfgList 当前快照的全量行（等价于 Cur().Shop.List()）
+func ShopCfgList() []ShopCfg { return Cur().Shop.List() }
 
-// GetShopCfg 按 ID 查询配置
+// GetShopCfg 按 ID 查询当前快照
 func GetShopCfg(id int64) (*ShopCfg, bool) {
-	c, ok := shopCfgByID[id]
-	return c, ok
+	return Cur().Shop.Get(id)
 }

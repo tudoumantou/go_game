@@ -5,27 +5,28 @@ package gamedata
 
 // CareerCfg career.xml 配置项
 type CareerCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
+	Col2 int64  `json:"col2"`
 }
 
-// CareerCfgList 全量配置（启动时加载，只读）
-var CareerCfgList = []CareerCfg{
+// CareerTable career.xml 的只读视图，随快照整体替换，不做原地修改
+type CareerTable = table[CareerCfg]
+
+func newCareerTable(list []CareerCfg) (CareerTable, error) {
+	return newTable(list, func(c *CareerCfg) int64 { return c.Id })
+}
+
+// careerRows 内嵌快照的行数据
+var careerRows = []CareerCfg{
 	{Id: 1, Col1: "战士", Col2: 1001},
 	{Id: 2, Col1: "法师", Col2: 2001},
 }
 
-var careerCfgByID = func() map[int64]*CareerCfg {
-	m := make(map[int64]*CareerCfg, len(CareerCfgList))
-	for i := range CareerCfgList {
-		m[CareerCfgList[i].Id] = &CareerCfgList[i]
-	}
-	return m
-}()
+// CareerCfgList 当前快照的全量行（等价于 Cur().Career.List()）
+func CareerCfgList() []CareerCfg { return Cur().Career.List() }
 
-// GetCareerCfg 按 ID 查询配置
+// GetCareerCfg 按 ID 查询当前快照
 func GetCareerCfg(id int64) (*CareerCfg, bool) {
-	c, ok := careerCfgByID[id]
-	return c, ok
+	return Cur().Career.Get(id)
 }

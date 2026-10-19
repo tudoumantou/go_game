@@ -1,6 +1,8 @@
 // pkg/codec/packet.go —— 外层包编解码
 // 客户端 ↔ 网关物理包格式（设计文档 4.2）：
-//   Length(2B) | MsgID(2B) | Seq(4B) | AES-GCM Body
+//
+//	Length(2B) | MsgID(2B) | Seq(4B) | AES-GCM Body
+//
 // Length = 2 + 4 + len(Body)（不含 Length 自身）。
 package codec
 

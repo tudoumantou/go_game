@@ -5,25 +5,26 @@ package gamedata
 
 // TeamCfg team.xml 配置项
 type TeamCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 }
 
-// TeamCfgList 全量配置（启动时加载，只读）
-var TeamCfgList = []TeamCfg{
+// TeamTable team.xml 的只读视图，随快照整体替换，不做原地修改
+type TeamTable = table[TeamCfg]
+
+func newTeamTable(list []TeamCfg) (TeamTable, error) {
+	return newTable(list, func(c *TeamCfg) int64 { return c.Id })
+}
+
+// teamRows 内嵌快照的行数据
+var teamRows = []TeamCfg{
 	{Id: 1, Col1: 5},
 }
 
-var teamCfgByID = func() map[int64]*TeamCfg {
-	m := make(map[int64]*TeamCfg, len(TeamCfgList))
-	for i := range TeamCfgList {
-		m[TeamCfgList[i].Id] = &TeamCfgList[i]
-	}
-	return m
-}()
+// TeamCfgList 当前快照的全量行（等价于 Cur().Team.List()）
+func TeamCfgList() []TeamCfg { return Cur().Team.List() }
 
-// GetTeamCfg 按 ID 查询配置
+// GetTeamCfg 按 ID 查询当前快照
 func GetTeamCfg(id int64) (*TeamCfg, bool) {
-	c, ok := teamCfgByID[id]
-	return c, ok
+	return Cur().Team.Get(id)
 }

@@ -13,20 +13,20 @@ import (
 
 // Team team 表
 type Team struct {
-	Id int64 `db:"id"`
-	LeaderId int64 `db:"leader_id"`
-	CopyId int32 `db:"copy_id"`
-	Status int32 `db:"status"`
+	Id        int64     `db:"id"`
+	LeaderId  int64     `db:"leader_id"`
+	CopyId    int32     `db:"copy_id"`
+	Status    int32     `db:"status"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
 // Team 列名
 const (
-	ColTeamId = "id"
-	ColTeamLeaderId = "leader_id"
-	ColTeamCopyId = "copy_id"
-	ColTeamStatus = "status"
+	ColTeamId        = "id"
+	ColTeamLeaderId  = "leader_id"
+	ColTeamCopyId    = "copy_id"
+	ColTeamStatus    = "status"
 	ColTeamCreatedAt = "created_at"
 	ColTeamUpdatedAt = "updated_at"
 )
@@ -88,4 +88,3 @@ func UpsertTeamBatch(ctx context.Context, tx *sql.Tx, rows []Team) error {
 		return []any{m.LeaderId, m.CopyId, m.Status}
 	})
 }
-

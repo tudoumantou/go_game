@@ -5,25 +5,26 @@ package gamedata
 
 // FriendCfg friend.xml 配置项
 type FriendCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 }
 
-// FriendCfgList 全量配置（启动时加载，只读）
-var FriendCfgList = []FriendCfg{
+// FriendTable friend.xml 的只读视图，随快照整体替换，不做原地修改
+type FriendTable = table[FriendCfg]
+
+func newFriendTable(list []FriendCfg) (FriendTable, error) {
+	return newTable(list, func(c *FriendCfg) int64 { return c.Id })
+}
+
+// friendRows 内嵌快照的行数据
+var friendRows = []FriendCfg{
 	{Id: 1, Col1: 50},
 }
 
-var friendCfgByID = func() map[int64]*FriendCfg {
-	m := make(map[int64]*FriendCfg, len(FriendCfgList))
-	for i := range FriendCfgList {
-		m[FriendCfgList[i].Id] = &FriendCfgList[i]
-	}
-	return m
-}()
+// FriendCfgList 当前快照的全量行（等价于 Cur().Friend.List()）
+func FriendCfgList() []FriendCfg { return Cur().Friend.List() }
 
-// GetFriendCfg 按 ID 查询配置
+// GetFriendCfg 按 ID 查询当前快照
 func GetFriendCfg(id int64) (*FriendCfg, bool) {
-	c, ok := friendCfgByID[id]
-	return c, ok
+	return Cur().Friend.Get(id)
 }

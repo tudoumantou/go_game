@@ -13,28 +13,28 @@ import (
 
 // Account account 表
 type Account struct {
-	Id int64 `db:"id"`
-	Account string `db:"account"`
-	PasswordHash string `db:"password_hash"`
-	Salt string `db:"salt"`
-	Status int32 `db:"status"`
-	Device string `db:"device"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
-	LastLoginAt sql.NullTime `db:"last_login_at"`
+	Id           int64        `db:"id"`
+	Account      string       `db:"account"`
+	PasswordHash string       `db:"password_hash"`
+	Salt         string       `db:"salt"`
+	Status       int32        `db:"status"`
+	Device       string       `db:"device"`
+	CreatedAt    time.Time    `db:"created_at"`
+	UpdatedAt    time.Time    `db:"updated_at"`
+	LastLoginAt  sql.NullTime `db:"last_login_at"`
 }
 
 // Account 列名
 const (
-	ColAccountId = "id"
-	ColAccountAccount = "account"
+	ColAccountId           = "id"
+	ColAccountAccount      = "account"
 	ColAccountPasswordHash = "password_hash"
-	ColAccountSalt = "salt"
-	ColAccountStatus = "status"
-	ColAccountDevice = "device"
-	ColAccountCreatedAt = "created_at"
-	ColAccountUpdatedAt = "updated_at"
-	ColAccountLastLoginAt = "last_login_at"
+	ColAccountSalt         = "salt"
+	ColAccountStatus       = "status"
+	ColAccountDevice       = "device"
+	ColAccountCreatedAt    = "created_at"
+	ColAccountUpdatedAt    = "updated_at"
+	ColAccountLastLoginAt  = "last_login_at"
 )
 
 // TableName 表名
@@ -97,4 +97,3 @@ func UpsertAccountBatch(ctx context.Context, tx *sql.Tx, rows []Account) error {
 		return []any{m.Account, m.PasswordHash, m.Salt, m.Status, m.Device, m.LastLoginAt}
 	})
 }
-

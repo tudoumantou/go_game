@@ -6,8 +6,10 @@ package game_study.game.v1;
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
 // 任务列表
+// @msg 7101
 message QuestListReq {} // MsgID: 7101
 
+// @msg 7102
 message QuestListResp { // MsgID: 7102
   int32 code = 1;
   repeated QuestEntry quests = 2;
@@ -22,19 +24,23 @@ message QuestEntry {
 }
 
 // 接取任务
+// @msg 7103
 message QuestAcceptReq { // MsgID: 7103
   int32 quest_id = 1;
 }
 
+// @msg 7104
 message QuestAcceptResp { // MsgID: 7104
   int32 code = 1; // 7101 任务不存在 / 7102 已接取
 }
 
 // 领奖
+// @msg 7105
 message QuestClaimReq { // MsgID: 7105
   int32 quest_id = 1;
 }
 
+// @msg 7106
 message QuestClaimResp { // MsgID: 7106
   int32 code = 1; // 7101 不存在 / 7103 未完成 / 7104 已领奖
   int64 exp_gain = 2;

@@ -60,10 +60,10 @@ func newCtx(st *fakeState) *module.Context {
 
 func firstActivity(t *testing.T) gamedata.ActivityCfg {
 	t.Helper()
-	if len(gamedata.ActivityCfgList) == 0 {
+	if len(gamedata.ActivityCfgList()) == 0 {
 		t.Fatal("activity config is empty")
 	}
-	return gamedata.ActivityCfgList[0]
+	return gamedata.ActivityCfgList()[0]
 }
 
 // TestClaimOnce 达标领奖一次，重复领取不再发放。

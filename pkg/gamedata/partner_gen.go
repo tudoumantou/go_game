@@ -5,28 +5,29 @@ package gamedata
 
 // PartnerCfg partner.xml 配置项
 type PartnerCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
 }
 
-// PartnerCfgList 全量配置（启动时加载，只读）
-var PartnerCfgList = []PartnerCfg{
+// PartnerTable partner.xml 的只读视图，随快照整体替换，不做原地修改
+type PartnerTable = table[PartnerCfg]
+
+func newPartnerTable(list []PartnerCfg) (PartnerTable, error) {
+	return newTable(list, func(c *PartnerCfg) int64 { return c.Id })
+}
+
+// partnerRows 内嵌快照的行数据
+var partnerRows = []PartnerCfg{
 	{Id: 1, Col1: "小精灵", Col2: 1, Col3: 500},
 	{Id: 2, Col1: "火元素", Col2: 2, Col3: 800},
 }
 
-var partnerCfgByID = func() map[int64]*PartnerCfg {
-	m := make(map[int64]*PartnerCfg, len(PartnerCfgList))
-	for i := range PartnerCfgList {
-		m[PartnerCfgList[i].Id] = &PartnerCfgList[i]
-	}
-	return m
-}()
+// PartnerCfgList 当前快照的全量行（等价于 Cur().Partner.List()）
+func PartnerCfgList() []PartnerCfg { return Cur().Partner.List() }
 
-// GetPartnerCfg 按 ID 查询配置
+// GetPartnerCfg 按 ID 查询当前快照
 func GetPartnerCfg(id int64) (*PartnerCfg, bool) {
-	c, ok := partnerCfgByID[id]
-	return c, ok
+	return Cur().Partner.Get(id)
 }

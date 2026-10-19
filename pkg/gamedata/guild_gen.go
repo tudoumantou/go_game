@@ -5,26 +5,27 @@ package gamedata
 
 // GuildCfg guild.xml 配置项
 type GuildCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// GuildCfgList 全量配置（启动时加载，只读）
-var GuildCfgList = []GuildCfg{
+// GuildTable guild.xml 的只读视图，随快照整体替换，不做原地修改
+type GuildTable = table[GuildCfg]
+
+func newGuildTable(list []GuildCfg) (GuildTable, error) {
+	return newTable(list, func(c *GuildCfg) int64 { return c.Id })
+}
+
+// guildRows 内嵌快照的行数据
+var guildRows = []GuildCfg{
 	{Id: 1, Col1: 1, Col2: 20},
 }
 
-var guildCfgByID = func() map[int64]*GuildCfg {
-	m := make(map[int64]*GuildCfg, len(GuildCfgList))
-	for i := range GuildCfgList {
-		m[GuildCfgList[i].Id] = &GuildCfgList[i]
-	}
-	return m
-}()
+// GuildCfgList 当前快照的全量行（等价于 Cur().Guild.List()）
+func GuildCfgList() []GuildCfg { return Cur().Guild.List() }
 
-// GetGuildCfg 按 ID 查询配置
+// GetGuildCfg 按 ID 查询当前快照
 func GetGuildCfg(id int64) (*GuildCfg, bool) {
-	c, ok := guildCfgByID[id]
-	return c, ok
+	return Cur().Guild.Get(id)
 }

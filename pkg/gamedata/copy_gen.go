@@ -5,28 +5,29 @@ package gamedata
 
 // CopyCfg copy.xml 配置项
 type CopyCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
 }
 
-// CopyCfgList 全量配置（启动时加载，只读）
-var CopyCfgList = []CopyCfg{
+// CopyTable copy.xml 的只读视图，随快照整体替换，不做原地修改
+type CopyTable = table[CopyCfg]
+
+func newCopyTable(list []CopyCfg) (CopyTable, error) {
+	return newTable(list, func(c *CopyCfg) int64 { return c.Id })
+}
+
+// copyRows 内嵌快照的行数据
+var copyRows = []CopyCfg{
 	{Id: 1, Col1: "新手副本", Col2: 1, Col3: 2},
 	{Id: 2, Col1: "深渊试炼", Col2: 10, Col3: 5},
 }
 
-var copyCfgByID = func() map[int64]*CopyCfg {
-	m := make(map[int64]*CopyCfg, len(CopyCfgList))
-	for i := range CopyCfgList {
-		m[CopyCfgList[i].Id] = &CopyCfgList[i]
-	}
-	return m
-}()
+// CopyCfgList 当前快照的全量行（等价于 Cur().Copy.List()）
+func CopyCfgList() []CopyCfg { return Cur().Copy.List() }
 
-// GetCopyCfg 按 ID 查询配置
+// GetCopyCfg 按 ID 查询当前快照
 func GetCopyCfg(id int64) (*CopyCfg, bool) {
-	c, ok := copyCfgByID[id]
-	return c, ok
+	return Cur().Copy.Get(id)
 }

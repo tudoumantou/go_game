@@ -13,19 +13,19 @@ import (
 
 // FriendApply friend_apply 表
 type FriendApply struct {
-	Id int64 `db:"id"`
-	FromId int64 `db:"from_id"`
-	ToId int64 `db:"to_id"`
-	Status int32 `db:"status"`
+	Id        int64     `db:"id"`
+	FromId    int64     `db:"from_id"`
+	ToId      int64     `db:"to_id"`
+	Status    int32     `db:"status"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
 // FriendApply 列名
 const (
-	ColFriendApplyId = "id"
-	ColFriendApplyFromId = "from_id"
-	ColFriendApplyToId = "to_id"
-	ColFriendApplyStatus = "status"
+	ColFriendApplyId        = "id"
+	ColFriendApplyFromId    = "from_id"
+	ColFriendApplyToId      = "to_id"
+	ColFriendApplyStatus    = "status"
 	ColFriendApplyCreatedAt = "created_at"
 )
 
@@ -85,4 +85,3 @@ func UpsertFriendApplyBatch(ctx context.Context, tx *sql.Tx, rows []FriendApply)
 		return []any{m.FromId, m.ToId, m.Status}
 	})
 }
-

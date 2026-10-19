@@ -8,10 +8,12 @@ package game_study.game.v1;
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
 // 发起匹配（进入跨服竞技场队列）
+// @msg 5002
 message MatchReq { // MsgID: 5002
   string mode = 1; // 玩法模式（arena/guild_war/copy），空则默认 arena
 }
 
+// @msg 5003
 message MatchResp { // MsgID: 5003
   int32  code   = 1; // 0 已入队；6001 已在队列/战斗中；6004 玩法未开放
   string mode   = 2;
@@ -19,6 +21,7 @@ message MatchResp { // MsgID: 5003
 }
 
 // 战斗发起通知（匹配完成后由服务端下发）
+// @msg 5001
 message BattleStartNotify { // MsgID: 5001 [Push]
   uint64 room_id      = 1; // 房间号
   string battle_token = 2; // 准入令牌（结果上报须回带）
@@ -27,6 +30,7 @@ message BattleStartNotify { // MsgID: 5001 [Push]
 }
 
 // 客户端战斗操作上报（服务端原样透传给对手，不解析 body）
+// @msg 5021
 message BattleOpReport { // MsgID: 5021
   uint64 room_id = 1;
   uint32 msg_id  = 2; // 客户端自定义战斗消息号
@@ -34,6 +38,7 @@ message BattleOpReport { // MsgID: 5021
 }
 
 // 战斗事件透传推送（对手操作/房间事件，服务端不解析）
+// @msg 5020
 message BattleSyncNotify { // MsgID: 5020 [Push]
   uint64 room_id   = 1;
   int64  player_id = 2; // 事件来源玩家
@@ -42,6 +47,7 @@ message BattleSyncNotify { // MsgID: 5020 [Push]
 }
 
 // 客户端上报战斗结论（服务端：令牌校验 + 幂等 + 奖励存在性复核）
+// @msg 5010
 message BattleResultReport { // MsgID: 5010
   uint64 room_id      = 1;
   string battle_token = 2;
@@ -51,6 +57,7 @@ message BattleResultReport { // MsgID: 5010
 }
 
 // 战斗结算回执（服务端实际下发奖励，权威）
+// @msg 5011
 message BattleSettleNotify { // MsgID: 5011 [Push]
   uint64 room_id = 1;
   int32  code    = 2; // 0 成功；6002 令牌无效；6003 已上报

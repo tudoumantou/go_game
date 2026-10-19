@@ -5,26 +5,27 @@ package gamedata
 
 // FriendLimitCfg friend_limit.xml 配置项
 type FriendLimitCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// FriendLimitCfgList 全量配置（启动时加载，只读）
-var FriendLimitCfgList = []FriendLimitCfg{
+// FriendLimitTable friend_limit.xml 的只读视图，随快照整体替换，不做原地修改
+type FriendLimitTable = table[FriendLimitCfg]
+
+func newFriendLimitTable(list []FriendLimitCfg) (FriendLimitTable, error) {
+	return newTable(list, func(c *FriendLimitCfg) int64 { return c.Id })
+}
+
+// friend_limitRows 内嵌快照的行数据
+var friend_limitRows = []FriendLimitCfg{
 	{Id: 1, Col1: 50, Col2: 30},
 }
 
-var friend_limitCfgByID = func() map[int64]*FriendLimitCfg {
-	m := make(map[int64]*FriendLimitCfg, len(FriendLimitCfgList))
-	for i := range FriendLimitCfgList {
-		m[FriendLimitCfgList[i].Id] = &FriendLimitCfgList[i]
-	}
-	return m
-}()
+// FriendLimitCfgList 当前快照的全量行（等价于 Cur().FriendLimit.List()）
+func FriendLimitCfgList() []FriendLimitCfg { return Cur().FriendLimit.List() }
 
-// GetFriendLimitCfg 按 ID 查询配置
+// GetFriendLimitCfg 按 ID 查询当前快照
 func GetFriendLimitCfg(id int64) (*FriendLimitCfg, bool) {
-	c, ok := friend_limitCfgByID[id]
-	return c, ok
+	return Cur().FriendLimit.Get(id)
 }

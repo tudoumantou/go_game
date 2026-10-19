@@ -13,24 +13,24 @@ import (
 
 // FeatureStats feature_stats 表
 type FeatureStats struct {
-	Id int64 `db:"id"`
-	GroupId int32 `db:"group_id"`
-	Feature string `db:"feature"`
+	Id          int64     `db:"id"`
+	GroupId     int32     `db:"group_id"`
+	Feature     string    `db:"feature"`
 	WindowStart time.Time `db:"window_start"`
-	WindowEnd time.Time `db:"window_end"`
-	Value int64 `db:"value"`
-	UpdatedAt time.Time `db:"updated_at"`
+	WindowEnd   time.Time `db:"window_end"`
+	Value       int64     `db:"value"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // FeatureStats 列名
 const (
-	ColFeatureStatsId = "id"
-	ColFeatureStatsGroupId = "group_id"
-	ColFeatureStatsFeature = "feature"
+	ColFeatureStatsId          = "id"
+	ColFeatureStatsGroupId     = "group_id"
+	ColFeatureStatsFeature     = "feature"
 	ColFeatureStatsWindowStart = "window_start"
-	ColFeatureStatsWindowEnd = "window_end"
-	ColFeatureStatsValue = "value"
-	ColFeatureStatsUpdatedAt = "updated_at"
+	ColFeatureStatsWindowEnd   = "window_end"
+	ColFeatureStatsValue       = "value"
+	ColFeatureStatsUpdatedAt   = "updated_at"
 )
 
 // TableName 表名
@@ -91,4 +91,3 @@ func UpsertFeatureStatsBatch(ctx context.Context, tx *sql.Tx, rows []FeatureStat
 		return []any{m.GroupId, m.Feature, m.WindowStart, m.WindowEnd, m.Value}
 	})
 }
-

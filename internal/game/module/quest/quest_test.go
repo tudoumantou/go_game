@@ -74,10 +74,10 @@ func newCtx(st *fakeState) (*module.Context, *[]uint32) {
 
 func firstQuest(t *testing.T) gamedata.QuestCfg {
 	t.Helper()
-	if len(gamedata.QuestCfgList) == 0 {
+	if len(gamedata.QuestCfgList()) == 0 {
 		t.Fatal("quest config is empty")
 	}
-	return gamedata.QuestCfgList[0]
+	return gamedata.QuestCfgList()[0]
 }
 
 // TestAcceptProgressClaim 接取 → 事件推进 → 领奖，状态与奖励都落在快照里。

@@ -6,8 +6,10 @@ package game_study.game.v1;
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
 // 邮件列表（摘要）
+// @msg 7001
 message MailListReq {} // MsgID: 7001
 
+// @msg 7002
 message MailListResp { // MsgID: 7002
   int32        code   = 1;
   repeated MailSummary mails = 2;
@@ -31,10 +33,12 @@ message MailNewNotify { // MsgID: 7010 [Push]
 }
 
 // 领取附件（幂等：重复领取返回 5002）
+// @msg 7020
 message MailTakeAttachmentReq { // MsgID: 7020
   int64 mail_id = 1;
 }
 
+// @msg 7021
 message MailTakeAttachmentResp { // MsgID: 7021
   int32 code    = 1; // 5001 不存在 / 5002 已领取 / 5003 无附件
   bytes rewards = 2; // 奖励明细（道具/货币增量）

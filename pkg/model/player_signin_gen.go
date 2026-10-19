@@ -12,15 +12,15 @@ import (
 
 // PlayerSignin player_signin 表
 type PlayerSignin struct {
-	PlayerId int64 `db:"player_id"`
-	ClaimedDays string `db:"claimed_days"`
+	PlayerId       int64  `db:"player_id"`
+	ClaimedDays    string `db:"claimed_days"`
 	ClaimedRewards string `db:"claimed_rewards"`
 }
 
 // PlayerSignin 列名
 const (
-	ColPlayerSigninPlayerId = "player_id"
-	ColPlayerSigninClaimedDays = "claimed_days"
+	ColPlayerSigninPlayerId       = "player_id"
+	ColPlayerSigninClaimedDays    = "claimed_days"
 	ColPlayerSigninClaimedRewards = "claimed_rewards"
 )
 

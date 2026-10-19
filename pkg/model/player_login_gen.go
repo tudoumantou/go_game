@@ -13,15 +13,15 @@ import (
 // PlayerLogin player_login 表
 type PlayerLogin struct {
 	PlayerId int64 `db:"player_id"`
-	LastDay int64 `db:"last_day"`
-	Streak int32 `db:"streak"`
+	LastDay  int64 `db:"last_day"`
+	Streak   int32 `db:"streak"`
 }
 
 // PlayerLogin 列名
 const (
 	ColPlayerLoginPlayerId = "player_id"
-	ColPlayerLoginLastDay = "last_day"
-	ColPlayerLoginStreak = "streak"
+	ColPlayerLoginLastDay  = "last_day"
+	ColPlayerLoginStreak   = "streak"
 )
 
 // TableName 表名

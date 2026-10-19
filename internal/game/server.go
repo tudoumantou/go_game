@@ -34,6 +34,7 @@ import (
 	"game_study/internal/game/service"
 	"game_study/pkg/actor"
 	"game_study/pkg/cache"
+	"game_study/pkg/codec"
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
@@ -611,8 +612,8 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 
 // 会话级协议号（未选角时由组装层直接处理，不进 Actor）。
 const (
-	msgIDEnterGame  uint32 = 1010
-	msgIDCreateRole uint32 = 1020
+	msgIDEnterGame  = codec.MsgEnterGameReq
+	msgIDCreateRole = codec.MsgCreateRoleReq
 	// msgIDKickNotify 与网关 common.MsgIDKickNotify 保持一致：10。
 	msgIDKickNotify uint32 = 10
 )

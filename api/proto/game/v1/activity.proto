@@ -14,17 +14,21 @@ message ActivityEntry {
   bool   claimed     = 6;
 }
 
+// @msg 6501
 message ActivityListReq {} // MsgID: 6501
 
+// @msg 6502
 message ActivityListResp { // MsgID: 6502
   int32 code = 1;
   repeated ActivityEntry activities = 2;
 }
 
+// @msg 6503
 message ActivityClaimReq { // MsgID: 6503
   int32 activity_id = 1;
 }
 
+// @msg 6504
 message ActivityClaimResp { // MsgID: 6504
   int32 code = 1; // 6501 不存在 / 6502 未完成 / 6503 已领
   bytes rewards = 2;

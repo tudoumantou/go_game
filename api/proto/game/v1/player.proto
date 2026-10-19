@@ -6,6 +6,7 @@ package game_study.game.v1;
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
 // 进入游戏：role_id=0 表示尚无角色，返回 2003 引导创角
+// @msg 1010
 message EnterGameReq { // MsgID: 1010
   int64 role_id = 1;
 }
@@ -17,6 +18,7 @@ message EnterGameResp { // MsgID: 1011
 }
 
 // 创角（职业取 career.xml，随机名库 create_name.xml）
+// @msg 1020
 message CreateRoleReq { // MsgID: 1020
   string name   = 1; // 角色名（唯一性 + 敏感词校验）
   int32  career = 2; // 职业 ID
@@ -28,8 +30,10 @@ message CreateRoleResp { // MsgID: 1021
 }
 
 // 玩家信息（进游戏后主动拉一次全量）
+// @msg 2001
 message PlayerInfoReq {} // MsgID: 2001
 
+// @msg 2002
 message PlayerInfoResp { // MsgID: 2002
   int32  code   = 1;
   int64  role_id = 2;

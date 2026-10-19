@@ -5,27 +5,28 @@ package gamedata
 
 // QuestChainCfg quest_chain.xml 配置项
 type QuestChainCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 	Col3 int64 `json:"col3"`
 }
 
-// QuestChainCfgList 全量配置（启动时加载，只读）
-var QuestChainCfgList = []QuestChainCfg{
+// QuestChainTable quest_chain.xml 的只读视图，随快照整体替换，不做原地修改
+type QuestChainTable = table[QuestChainCfg]
+
+func newQuestChainTable(list []QuestChainCfg) (QuestChainTable, error) {
+	return newTable(list, func(c *QuestChainCfg) int64 { return c.Id })
+}
+
+// quest_chainRows 内嵌快照的行数据
+var quest_chainRows = []QuestChainCfg{
 	{Id: 1, Col1: 1, Col2: 2, Col3: 0},
 }
 
-var quest_chainCfgByID = func() map[int64]*QuestChainCfg {
-	m := make(map[int64]*QuestChainCfg, len(QuestChainCfgList))
-	for i := range QuestChainCfgList {
-		m[QuestChainCfgList[i].Id] = &QuestChainCfgList[i]
-	}
-	return m
-}()
+// QuestChainCfgList 当前快照的全量行（等价于 Cur().QuestChain.List()）
+func QuestChainCfgList() []QuestChainCfg { return Cur().QuestChain.List() }
 
-// GetQuestChainCfg 按 ID 查询配置
+// GetQuestChainCfg 按 ID 查询当前快照
 func GetQuestChainCfg(id int64) (*QuestChainCfg, bool) {
-	c, ok := quest_chainCfgByID[id]
-	return c, ok
+	return Cur().QuestChain.Get(id)
 }

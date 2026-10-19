@@ -5,27 +5,28 @@ package gamedata
 
 // ShopRefreshCfg shop_refresh.xml 配置项
 type ShopRefreshCfg struct {
-	Id int64 `json:"id"`
-	Col1 int64 `json:"col1"`
+	Id   int64  `json:"id"`
+	Col1 int64  `json:"col1"`
 	Col2 string `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col3 int64  `json:"col3"`
 }
 
-// ShopRefreshCfgList 全量配置（启动时加载，只读）
-var ShopRefreshCfgList = []ShopRefreshCfg{
+// ShopRefreshTable shop_refresh.xml 的只读视图，随快照整体替换，不做原地修改
+type ShopRefreshTable = table[ShopRefreshCfg]
+
+func newShopRefreshTable(list []ShopRefreshCfg) (ShopRefreshTable, error) {
+	return newTable(list, func(c *ShopRefreshCfg) int64 { return c.Id })
+}
+
+// shop_refreshRows 内嵌快照的行数据
+var shop_refreshRows = []ShopRefreshCfg{
 	{Id: 1, Col1: 1, Col2: "daily", Col3: 0},
 }
 
-var shop_refreshCfgByID = func() map[int64]*ShopRefreshCfg {
-	m := make(map[int64]*ShopRefreshCfg, len(ShopRefreshCfgList))
-	for i := range ShopRefreshCfgList {
-		m[ShopRefreshCfgList[i].Id] = &ShopRefreshCfgList[i]
-	}
-	return m
-}()
+// ShopRefreshCfgList 当前快照的全量行（等价于 Cur().ShopRefresh.List()）
+func ShopRefreshCfgList() []ShopRefreshCfg { return Cur().ShopRefresh.List() }
 
-// GetShopRefreshCfg 按 ID 查询配置
+// GetShopRefreshCfg 按 ID 查询当前快照
 func GetShopRefreshCfg(id int64) (*ShopRefreshCfg, bool) {
-	c, ok := shop_refreshCfgByID[id]
-	return c, ok
+	return Cur().ShopRefresh.Get(id)
 }

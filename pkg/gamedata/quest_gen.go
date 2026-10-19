@@ -5,28 +5,29 @@ package gamedata
 
 // QuestCfg quest.xml 配置项
 type QuestCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
 	Col2 string `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col3 int64  `json:"col3"`
 }
 
-// QuestCfgList 全量配置（启动时加载，只读）
-var QuestCfgList = []QuestCfg{
+// QuestTable quest.xml 的只读视图，随快照整体替换，不做原地修改
+type QuestTable = table[QuestCfg]
+
+func newQuestTable(list []QuestCfg) (QuestTable, error) {
+	return newTable(list, func(c *QuestCfg) int64 { return c.Id })
+}
+
+// questRows 内嵌快照的行数据
+var questRows = []QuestCfg{
 	{Id: 1, Col1: "击杀 10 只野怪", Col2: "kill", Col3: 10},
 	{Id: 2, Col1: "使用 1 次经验药水", Col2: "use_item", Col3: 1},
 }
 
-var questCfgByID = func() map[int64]*QuestCfg {
-	m := make(map[int64]*QuestCfg, len(QuestCfgList))
-	for i := range QuestCfgList {
-		m[QuestCfgList[i].Id] = &QuestCfgList[i]
-	}
-	return m
-}()
+// QuestCfgList 当前快照的全量行（等价于 Cur().Quest.List()）
+func QuestCfgList() []QuestCfg { return Cur().Quest.List() }
 
-// GetQuestCfg 按 ID 查询配置
+// GetQuestCfg 按 ID 查询当前快照
 func GetQuestCfg(id int64) (*QuestCfg, bool) {
-	c, ok := questCfgByID[id]
-	return c, ok
+	return Cur().Quest.Get(id)
 }

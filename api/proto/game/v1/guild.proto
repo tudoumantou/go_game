@@ -5,8 +5,10 @@ package game_study.game.v1;
 
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
+// @msg 6101
 message GuildInfoReq {} // MsgID: 6101
 
+// @msg 6102
 message GuildInfoResp { // MsgID: 6102
   int32  code         = 1; // 6101 未加入公会
   int64  guild_id     = 2;
@@ -16,25 +18,31 @@ message GuildInfoResp { // MsgID: 6102
   bool   is_leader    = 6;
 }
 
+// @msg 6103
 message GuildCreateReq { // MsgID: 6103
   string name = 1;
 }
 
+// @msg 6104
 message GuildCreateResp { // MsgID: 6104
   int32 code     = 1; // 6102 名字非法 / 6103 重名 / 6104 已加入公会
   int64 guild_id = 2;
 }
 
+// @msg 6105
 message GuildJoinReq { // MsgID: 6105
   int64 guild_id = 1;
 }
 
+// @msg 6106
 message GuildJoinResp { // MsgID: 6106
   int32 code = 1; // 6101 公会不存在 / 6105 人数已满
 }
 
+// @msg 6107
 message GuildQuitReq {} // MsgID: 6107
 
+// @msg 6108
 message GuildQuitResp { // MsgID: 6108
   int32 code = 1;
 }

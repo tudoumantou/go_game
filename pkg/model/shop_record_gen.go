@@ -12,16 +12,16 @@ import (
 
 // ShopRecord shop_record 表
 type ShopRecord struct {
-	PlayerId int64 `db:"player_id"`
-	Day int64 `db:"day"`
-	Bought string `db:"bought"`
+	PlayerId int64  `db:"player_id"`
+	Day      int64  `db:"day"`
+	Bought   string `db:"bought"`
 }
 
 // ShopRecord 列名
 const (
 	ColShopRecordPlayerId = "player_id"
-	ColShopRecordDay = "day"
-	ColShopRecordBought = "bought"
+	ColShopRecordDay      = "day"
+	ColShopRecordBought   = "bought"
 )
 
 // TableName 表名

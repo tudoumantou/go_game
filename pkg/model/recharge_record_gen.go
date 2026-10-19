@@ -13,23 +13,23 @@ import (
 
 // RechargeRecord recharge_record 表
 type RechargeRecord struct {
-	Id int64 `db:"id"`
-	OrderId string `db:"order_id"`
-	PlayerId int64 `db:"player_id"`
-	ProductId int32 `db:"product_id"`
-	AmountFen int32 `db:"amount_fen"`
-	Channel int32 `db:"channel"`
+	Id        int64     `db:"id"`
+	OrderId   string    `db:"order_id"`
+	PlayerId  int64     `db:"player_id"`
+	ProductId int32     `db:"product_id"`
+	AmountFen int32     `db:"amount_fen"`
+	Channel   int32     `db:"channel"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
 // RechargeRecord 列名
 const (
-	ColRechargeRecordId = "id"
-	ColRechargeRecordOrderId = "order_id"
-	ColRechargeRecordPlayerId = "player_id"
+	ColRechargeRecordId        = "id"
+	ColRechargeRecordOrderId   = "order_id"
+	ColRechargeRecordPlayerId  = "player_id"
 	ColRechargeRecordProductId = "product_id"
 	ColRechargeRecordAmountFen = "amount_fen"
-	ColRechargeRecordChannel = "channel"
+	ColRechargeRecordChannel   = "channel"
 	ColRechargeRecordCreatedAt = "created_at"
 )
 

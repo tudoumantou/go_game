@@ -13,21 +13,21 @@ import (
 
 // MailAttachment mail_attachment 表
 type MailAttachment struct {
-	Id int64 `db:"id"`
-	MailId int64 `db:"mail_id"`
-	ItemId int32 `db:"item_id"`
-	Count int32 `db:"count"`
-	Claimed int32 `db:"claimed"`
+	Id        int64     `db:"id"`
+	MailId    int64     `db:"mail_id"`
+	ItemId    int32     `db:"item_id"`
+	Count     int32     `db:"count"`
+	Claimed   int32     `db:"claimed"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
 // MailAttachment 列名
 const (
-	ColMailAttachmentId = "id"
-	ColMailAttachmentMailId = "mail_id"
-	ColMailAttachmentItemId = "item_id"
-	ColMailAttachmentCount = "count"
-	ColMailAttachmentClaimed = "claimed"
+	ColMailAttachmentId        = "id"
+	ColMailAttachmentMailId    = "mail_id"
+	ColMailAttachmentItemId    = "item_id"
+	ColMailAttachmentCount     = "count"
+	ColMailAttachmentClaimed   = "claimed"
 	ColMailAttachmentCreatedAt = "created_at"
 )
 
@@ -88,4 +88,3 @@ func UpsertMailAttachmentBatch(ctx context.Context, tx *sql.Tx, rows []MailAttac
 		return []any{m.MailId, m.ItemId, m.Count, m.Claimed}
 	})
 }
-

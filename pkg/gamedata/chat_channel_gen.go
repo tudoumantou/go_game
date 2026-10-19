@@ -5,29 +5,30 @@ package gamedata
 
 // ChatChannelCfg chat_channel.xml 配置项
 type ChatChannelCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
 }
 
-// ChatChannelCfgList 全量配置（启动时加载，只读）
-var ChatChannelCfgList = []ChatChannelCfg{
+// ChatChannelTable chat_channel.xml 的只读视图，随快照整体替换，不做原地修改
+type ChatChannelTable = table[ChatChannelCfg]
+
+func newChatChannelTable(list []ChatChannelCfg) (ChatChannelTable, error) {
+	return newTable(list, func(c *ChatChannelCfg) int64 { return c.Id })
+}
+
+// chat_channelRows 内嵌快照的行数据
+var chat_channelRows = []ChatChannelCfg{
 	{Id: 1, Col1: "世界", Col2: 0, Col3: 5},
 	{Id: 2, Col1: "私聊", Col2: 0, Col3: 10},
 	{Id: 3, Col1: "公会", Col2: 1, Col3: 5},
 }
 
-var chat_channelCfgByID = func() map[int64]*ChatChannelCfg {
-	m := make(map[int64]*ChatChannelCfg, len(ChatChannelCfgList))
-	for i := range ChatChannelCfgList {
-		m[ChatChannelCfgList[i].Id] = &ChatChannelCfgList[i]
-	}
-	return m
-}()
+// ChatChannelCfgList 当前快照的全量行（等价于 Cur().ChatChannel.List()）
+func ChatChannelCfgList() []ChatChannelCfg { return Cur().ChatChannel.List() }
 
-// GetChatChannelCfg 按 ID 查询配置
+// GetChatChannelCfg 按 ID 查询当前快照
 func GetChatChannelCfg(id int64) (*ChatChannelCfg, bool) {
-	c, ok := chat_channelCfgByID[id]
-	return c, ok
+	return Cur().ChatChannel.Get(id)
 }

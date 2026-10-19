@@ -13,22 +13,22 @@ import (
 
 // PlayerItem player_item 表
 type PlayerItem struct {
-	Id int64 `db:"id"`
-	PlayerId int64 `db:"player_id"`
-	ItemId int32 `db:"item_id"`
-	Count int32 `db:"count"`
-	ExpireAt sql.NullTime `db:"expire_at"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Id        int64        `db:"id"`
+	PlayerId  int64        `db:"player_id"`
+	ItemId    int32        `db:"item_id"`
+	Count     int32        `db:"count"`
+	ExpireAt  sql.NullTime `db:"expire_at"`
+	CreatedAt time.Time    `db:"created_at"`
+	UpdatedAt time.Time    `db:"updated_at"`
 }
 
 // PlayerItem 列名
 const (
-	ColPlayerItemId = "id"
-	ColPlayerItemPlayerId = "player_id"
-	ColPlayerItemItemId = "item_id"
-	ColPlayerItemCount = "count"
-	ColPlayerItemExpireAt = "expire_at"
+	ColPlayerItemId        = "id"
+	ColPlayerItemPlayerId  = "player_id"
+	ColPlayerItemItemId    = "item_id"
+	ColPlayerItemCount     = "count"
+	ColPlayerItemExpireAt  = "expire_at"
 	ColPlayerItemCreatedAt = "created_at"
 	ColPlayerItemUpdatedAt = "updated_at"
 )

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -14,17 +15,17 @@ import (
 
 // 协议号（4.9：2001 拉取 / 2002 响应）。
 const (
-	msgIDPlayerInfoReq  uint32 = 2001
-	msgIDPlayerInfoResp uint32 = 2002
+	msgIDPlayerInfoReq  = codec.MsgPlayerInfoReq
+	msgIDPlayerInfoResp = codec.MsgPlayerInfoResp
 )
 
 // 属性 ID（attr_formula.xml 约定，P6 内置）。
 const (
-	attrHP     int32 = 1
-	attrMP     int32 = 2
-	attrATK    int32 = 3
-	attrDEF    int32 = 4
-	attrSPD    int32 = 5
+	attrHP  int32 = 1
+	attrMP  int32 = 2
+	attrATK int32 = 3
+	attrDEF int32 = 4
+	attrSPD int32 = 5
 )
 
 // Module 玩家信息模块。

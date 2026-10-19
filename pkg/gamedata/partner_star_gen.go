@@ -5,28 +5,29 @@ package gamedata
 
 // PartnerStarCfg partner_star.xml 配置项
 type PartnerStarCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 	Col3 int64 `json:"col3"`
 }
 
-// PartnerStarCfgList 全量配置（启动时加载，只读）
-var PartnerStarCfgList = []PartnerStarCfg{
+// PartnerStarTable partner_star.xml 的只读视图，随快照整体替换，不做原地修改
+type PartnerStarTable = table[PartnerStarCfg]
+
+func newPartnerStarTable(list []PartnerStarCfg) (PartnerStarTable, error) {
+	return newTable(list, func(c *PartnerStarCfg) int64 { return c.Id })
+}
+
+// partner_starRows 内嵌快照的行数据
+var partner_starRows = []PartnerStarCfg{
 	{Id: 1, Col1: 1, Col2: 1, Col3: 100},
 	{Id: 2, Col1: 1, Col2: 2, Col3: 300},
 }
 
-var partner_starCfgByID = func() map[int64]*PartnerStarCfg {
-	m := make(map[int64]*PartnerStarCfg, len(PartnerStarCfgList))
-	for i := range PartnerStarCfgList {
-		m[PartnerStarCfgList[i].Id] = &PartnerStarCfgList[i]
-	}
-	return m
-}()
+// PartnerStarCfgList 当前快照的全量行（等价于 Cur().PartnerStar.List()）
+func PartnerStarCfgList() []PartnerStarCfg { return Cur().PartnerStar.List() }
 
-// GetPartnerStarCfg 按 ID 查询配置
+// GetPartnerStarCfg 按 ID 查询当前快照
 func GetPartnerStarCfg(id int64) (*PartnerStarCfg, bool) {
-	c, ok := partner_starCfgByID[id]
-	return c, ok
+	return Cur().PartnerStar.Get(id)
 }

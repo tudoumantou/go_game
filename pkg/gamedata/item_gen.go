@@ -5,29 +5,30 @@ package gamedata
 
 // ItemCfg item.xml 配置项
 type ItemCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
 }
 
-// ItemCfgList 全量配置（启动时加载，只读）
-var ItemCfgList = []ItemCfg{
+// ItemTable item.xml 的只读视图，随快照整体替换，不做原地修改
+type ItemTable = table[ItemCfg]
+
+func newItemTable(list []ItemCfg) (ItemTable, error) {
+	return newTable(list, func(c *ItemCfg) int64 { return c.Id })
+}
+
+// itemRows 内嵌快照的行数据
+var itemRows = []ItemCfg{
 	{Id: 1001, Col1: "金币", Col2: 999999, Col3: 1},
 	{Id: 1002, Col1: "经验药水", Col2: 99, Col3: 10},
 	{Id: 2001, Col1: "新手剑", Col2: 1, Col3: 1},
 }
 
-var itemCfgByID = func() map[int64]*ItemCfg {
-	m := make(map[int64]*ItemCfg, len(ItemCfgList))
-	for i := range ItemCfgList {
-		m[ItemCfgList[i].Id] = &ItemCfgList[i]
-	}
-	return m
-}()
+// ItemCfgList 当前快照的全量行（等价于 Cur().Item.List()）
+func ItemCfgList() []ItemCfg { return Cur().Item.List() }
 
-// GetItemCfg 按 ID 查询配置
+// GetItemCfg 按 ID 查询当前快照
 func GetItemCfg(id int64) (*ItemCfg, bool) {
-	c, ok := itemCfgByID[id]
-	return c, ok
+	return Cur().Item.Get(id)
 }

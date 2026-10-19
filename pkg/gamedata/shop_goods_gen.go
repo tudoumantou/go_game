@@ -5,28 +5,29 @@ package gamedata
 
 // ShopGoodsCfg shop_goods.xml 配置项
 type ShopGoodsCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 	Col3 int64 `json:"col3"`
 	Col4 int64 `json:"col4"`
 }
 
-// ShopGoodsCfgList 全量配置（启动时加载，只读）
-var ShopGoodsCfgList = []ShopGoodsCfg{
+// ShopGoodsTable shop_goods.xml 的只读视图，随快照整体替换，不做原地修改
+type ShopGoodsTable = table[ShopGoodsCfg]
+
+func newShopGoodsTable(list []ShopGoodsCfg) (ShopGoodsTable, error) {
+	return newTable(list, func(c *ShopGoodsCfg) int64 { return c.Id })
+}
+
+// shop_goodsRows 内嵌快照的行数据
+var shop_goodsRows = []ShopGoodsCfg{
 	{Id: 1, Col1: 1, Col2: 1002, Col3: 10, Col4: 50},
 }
 
-var shop_goodsCfgByID = func() map[int64]*ShopGoodsCfg {
-	m := make(map[int64]*ShopGoodsCfg, len(ShopGoodsCfgList))
-	for i := range ShopGoodsCfgList {
-		m[ShopGoodsCfgList[i].Id] = &ShopGoodsCfgList[i]
-	}
-	return m
-}()
+// ShopGoodsCfgList 当前快照的全量行（等价于 Cur().ShopGoods.List()）
+func ShopGoodsCfgList() []ShopGoodsCfg { return Cur().ShopGoods.List() }
 
-// GetShopGoodsCfg 按 ID 查询配置
+// GetShopGoodsCfg 按 ID 查询当前快照
 func GetShopGoodsCfg(id int64) (*ShopGoodsCfg, bool) {
-	c, ok := shop_goodsCfgByID[id]
-	return c, ok
+	return Cur().ShopGoods.Get(id)
 }

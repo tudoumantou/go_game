@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -24,10 +25,10 @@ const stateKey = "shop"
 
 // 协议号（4.9：6401/6402 列表，6403/6404 购买）。
 const (
-	msgIDListReq  uint32 = 6401
-	msgIDListResp uint32 = 6402
-	msgIDBuyReq   uint32 = 6403
-	msgIDBuyResp  uint32 = 6404
+	msgIDListReq  = codec.MsgShopListReq
+	msgIDListResp = codec.MsgShopListResp
+	msgIDBuyReq   = codec.MsgShopBuyReq
+	msgIDBuyResp  = codec.MsgShopBuyResp
 )
 
 // 业务码（4.10）。
@@ -116,7 +117,7 @@ func (m *Module) onList(ctx *module.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, cfg := range gamedata.ShopGoodsCfgList {
+	for _, cfg := range gamedata.ShopGoodsCfgList() {
 		resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
 			GoodsId: int32(cfg.Id),
 			ItemId:  int32(cfg.Col2),
@@ -233,10 +234,10 @@ func load(state writebehind.ExtState, today int64) (*Data, error) {
 
 // dailyRefresh 商店是否按日刷新（配置缺失视为不刷新）。
 func dailyRefresh() bool {
-	if len(gamedata.ShopRefreshCfgList) == 0 {
+	if len(gamedata.ShopRefreshCfgList()) == 0 {
 		return false
 	}
-	return gamedata.ShopRefreshCfgList[0].Col2 == "daily"
+	return gamedata.ShopRefreshCfgList()[0].Col2 == "daily"
 }
 
 // businessDay 北京时间自然日序号。

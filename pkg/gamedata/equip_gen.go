@@ -5,29 +5,30 @@ package gamedata
 
 // EquipCfg equip.xml 配置项
 type EquipCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
+	Col2 int64  `json:"col2"`
 	Col3 string `json:"col3"`
-	Col4 int64 `json:"col4"`
+	Col4 int64  `json:"col4"`
 }
 
-// EquipCfgList 全量配置（启动时加载，只读）
-var EquipCfgList = []EquipCfg{
+// EquipTable equip.xml 的只读视图，随快照整体替换，不做原地修改
+type EquipTable = table[EquipCfg]
+
+func newEquipTable(list []EquipCfg) (EquipTable, error) {
+	return newTable(list, func(c *EquipCfg) int64 { return c.Id })
+}
+
+// equipRows 内嵌快照的行数据
+var equipRows = []EquipCfg{
 	{Id: 3001, Col1: "新手剑", Col2: 1, Col3: "weapon", Col4: 10},
 	{Id: 3002, Col1: "布衣", Col2: 1, Col3: "armor", Col4: 5},
 }
 
-var equipCfgByID = func() map[int64]*EquipCfg {
-	m := make(map[int64]*EquipCfg, len(EquipCfgList))
-	for i := range EquipCfgList {
-		m[EquipCfgList[i].Id] = &EquipCfgList[i]
-	}
-	return m
-}()
+// EquipCfgList 当前快照的全量行（等价于 Cur().Equip.List()）
+func EquipCfgList() []EquipCfg { return Cur().Equip.List() }
 
-// GetEquipCfg 按 ID 查询配置
+// GetEquipCfg 按 ID 查询当前快照
 func GetEquipCfg(id int64) (*EquipCfg, bool) {
-	c, ok := equipCfgByID[id]
-	return c, ok
+	return Cur().Equip.Get(id)
 }

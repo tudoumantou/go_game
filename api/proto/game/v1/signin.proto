@@ -11,7 +11,9 @@ message SigninReward {
   int64 count = 2;
 }
 
+// @msg 6601
 message SigninInfoReq {} // MsgID: 6601
+// @msg 6602
 message SigninInfoResp { // MsgID: 6602
   int32 code = 1; // 0 成功；1 系统错误。
   int32 today = 2; // 今天周几，1=周一…7=周日。
@@ -20,7 +22,9 @@ message SigninInfoResp { // MsgID: 6602
   map<int32, int64> claimed_rewards = 5; // 本周已领取奖励汇总 {item_id:count}。
 }
 
+// @msg 6603
 message SigninClaimReq {} // MsgID: 6603
+// @msg 6604
 message SigninClaimResp { // MsgID: 6604
   int32 code = 1; // 0 成功（重复请求也成功）；6601 配置错误；6602 背包数量超限；1 系统错误。
   bool already = 2; // 今天已领过，不再发奖。

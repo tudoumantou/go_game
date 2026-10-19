@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -23,10 +24,10 @@ const stateKey = "copy"
 
 // 协议号（4.9：6301/6302 列表，6303/6304 结算）。
 const (
-	msgIDListReq    uint32 = 6301
-	msgIDListResp   uint32 = 6302
-	msgIDSettleReq  uint32 = 6303
-	msgIDSettleResp uint32 = 6304
+	msgIDListReq    = codec.MsgCopyListReq
+	msgIDListResp   = codec.MsgCopyListResp
+	msgIDSettleReq  = codec.MsgCopySettleReq
+	msgIDSettleResp = codec.MsgCopySettleResp
 )
 
 // 业务码（4.10）。
@@ -113,7 +114,7 @@ func (m *Module) onList(ctx *module.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, cfg := range gamedata.CopyCfgList {
+	for _, cfg := range gamedata.CopyCfgList() {
 		entry := &gamev1.CopyEntry{
 			CopyId:   int32(cfg.Id),
 			Name:     cfg.Col1,
@@ -182,7 +183,7 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 	var changes []*gamev1.ItemChange
 	if firstPass {
 		grants := make([]module.ItemGrant, 0, 4)
-		for _, drop := range gamedata.CopyDropCfgList {
+		for _, drop := range gamedata.CopyDropCfgList() {
 			if drop.Col1 != cfg.Id {
 				continue
 			}

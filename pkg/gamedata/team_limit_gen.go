@@ -5,26 +5,27 @@ package gamedata
 
 // TeamLimitCfg team_limit.xml 配置项
 type TeamLimitCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// TeamLimitCfgList 全量配置（启动时加载，只读）
-var TeamLimitCfgList = []TeamLimitCfg{
+// TeamLimitTable team_limit.xml 的只读视图，随快照整体替换，不做原地修改
+type TeamLimitTable = table[TeamLimitCfg]
+
+func newTeamLimitTable(list []TeamLimitCfg) (TeamLimitTable, error) {
+	return newTable(list, func(c *TeamLimitCfg) int64 { return c.Id })
+}
+
+// team_limitRows 内嵌快照的行数据
+var team_limitRows = []TeamLimitCfg{
 	{Id: 1, Col1: 5, Col2: 10},
 }
 
-var team_limitCfgByID = func() map[int64]*TeamLimitCfg {
-	m := make(map[int64]*TeamLimitCfg, len(TeamLimitCfgList))
-	for i := range TeamLimitCfgList {
-		m[TeamLimitCfgList[i].Id] = &TeamLimitCfgList[i]
-	}
-	return m
-}()
+// TeamLimitCfgList 当前快照的全量行（等价于 Cur().TeamLimit.List()）
+func TeamLimitCfgList() []TeamLimitCfg { return Cur().TeamLimit.List() }
 
-// GetTeamLimitCfg 按 ID 查询配置
+// GetTeamLimitCfg 按 ID 查询当前快照
 func GetTeamLimitCfg(id int64) (*TeamLimitCfg, bool) {
-	c, ok := team_limitCfgByID[id]
-	return c, ok
+	return Cur().TeamLimit.Get(id)
 }

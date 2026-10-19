@@ -5,14 +5,21 @@ package gamedata
 
 // SigninRewardCfg signin_reward.xml 配置项
 type SigninRewardCfg struct {
-	Id int64 `json:"id"`
-	Day int64 `json:"day"`
+	Id     int64 `json:"id"`
+	Day    int64 `json:"day"`
 	ItemId int64 `json:"item_id"`
-	Count int64 `json:"count"`
+	Count  int64 `json:"count"`
 }
 
-// SigninRewardCfgList 全量配置（启动时加载，只读）
-var SigninRewardCfgList = []SigninRewardCfg{
+// SigninRewardTable signin_reward.xml 的只读视图，随快照整体替换，不做原地修改
+type SigninRewardTable = table[SigninRewardCfg]
+
+func newSigninRewardTable(list []SigninRewardCfg) (SigninRewardTable, error) {
+	return newTable(list, func(c *SigninRewardCfg) int64 { return c.Id })
+}
+
+// signin_rewardRows 内嵌快照的行数据
+var signin_rewardRows = []SigninRewardCfg{
 	{Id: 1, Day: 1, ItemId: 1001, Count: 100},
 	{Id: 2, Day: 2, ItemId: 1001, Count: 200},
 	{Id: 3, Day: 3, ItemId: 1001, Count: 300},
@@ -23,16 +30,10 @@ var SigninRewardCfgList = []SigninRewardCfg{
 	{Id: 8, Day: 7, ItemId: 1002, Count: 1},
 }
 
-var signin_rewardCfgByID = func() map[int64]*SigninRewardCfg {
-	m := make(map[int64]*SigninRewardCfg, len(SigninRewardCfgList))
-	for i := range SigninRewardCfgList {
-		m[SigninRewardCfgList[i].Id] = &SigninRewardCfgList[i]
-	}
-	return m
-}()
+// SigninRewardCfgList 当前快照的全量行（等价于 Cur().SigninReward.List()）
+func SigninRewardCfgList() []SigninRewardCfg { return Cur().SigninReward.List() }
 
-// GetSigninRewardCfg 按 ID 查询配置
+// GetSigninRewardCfg 按 ID 查询当前快照
 func GetSigninRewardCfg(id int64) (*SigninRewardCfg, bool) {
-	c, ok := signin_rewardCfgByID[id]
-	return c, ok
+	return Cur().SigninReward.Get(id)
 }

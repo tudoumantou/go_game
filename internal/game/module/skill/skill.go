@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -23,12 +24,12 @@ const stateKey = "skill"
 
 // 协议号（4.9：3201/3202 列表，3203/3204 学习，3205/3206 升级）。
 const (
-	msgIDListReq     uint32 = 3201
-	msgIDListResp    uint32 = 3202
-	msgIDLearnReq    uint32 = 3203
-	msgIDLearnResp   uint32 = 3204
-	msgIDUpgradeReq  uint32 = 3205
-	msgIDUpgradeResp uint32 = 3206
+	msgIDListReq     = codec.MsgSkillListReq
+	msgIDListResp    = codec.MsgSkillListResp
+	msgIDLearnReq    = codec.MsgSkillLearnReq
+	msgIDLearnResp   = codec.MsgSkillLearnResp
+	msgIDUpgradeReq  = codec.MsgSkillUpgradeReq
+	msgIDUpgradeResp = codec.MsgSkillUpgradeResp
 )
 
 // 业务码（4.10）。

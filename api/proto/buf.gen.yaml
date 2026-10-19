@@ -10,9 +10,6 @@ plugins:
     out: ../../pkg/pb
     opt: paths=source_relative
 
-  # TODO(P0): MsgID ↔ MessageType 注册表生成器（pkg/codec/registry.go 由 proto 自动产出，
-  #           见设计文档 16.3）。落地方式：tools/protoc-gen-gomsgid 本地插件，
-  #           从消息 option (game_study.msg_id) 或命名约定取号，此处追加：
-  # - plugin: gomsgid
-  #   out: pkg/codec
-  #   opt: paths=source_relative
+  # 消息号注册表不在这里生成：声明方式是 message 上方的 `// @msg <id>` 注解，
+  # 由 `make gen-msgid`（tools/genmsgid）直接读 proto 文本产出 pkg/codec/msgids_gen.go。
+  # 这样生成链路不绑定 protoc 版本，重复号/重名/越界检查也能独立单测。

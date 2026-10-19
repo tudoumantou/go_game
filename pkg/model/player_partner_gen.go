@@ -13,24 +13,24 @@ import (
 
 // PlayerPartner player_partner 表
 type PlayerPartner struct {
-	Id int64 `db:"id"`
-	PlayerId int64 `db:"player_id"`
-	PartnerId int32 `db:"partner_id"`
-	Star int32 `db:"star"`
-	Level int32 `db:"level"`
-	Exp int32 `db:"exp"`
+	Id        int64     `db:"id"`
+	PlayerId  int64     `db:"player_id"`
+	PartnerId int32     `db:"partner_id"`
+	Star      int32     `db:"star"`
+	Level     int32     `db:"level"`
+	Exp       int32     `db:"exp"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
 // PlayerPartner 列名
 const (
-	ColPlayerPartnerId = "id"
-	ColPlayerPartnerPlayerId = "player_id"
+	ColPlayerPartnerId        = "id"
+	ColPlayerPartnerPlayerId  = "player_id"
 	ColPlayerPartnerPartnerId = "partner_id"
-	ColPlayerPartnerStar = "star"
-	ColPlayerPartnerLevel = "level"
-	ColPlayerPartnerExp = "exp"
+	ColPlayerPartnerStar      = "star"
+	ColPlayerPartnerLevel     = "level"
+	ColPlayerPartnerExp       = "exp"
 	ColPlayerPartnerCreatedAt = "created_at"
 	ColPlayerPartnerUpdatedAt = "updated_at"
 )

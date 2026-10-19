@@ -12,14 +12,14 @@ import (
 
 // PlayerQuest player_quest 表
 type PlayerQuest struct {
-	PlayerId int64 `db:"player_id"`
-	Quests string `db:"quests"`
+	PlayerId int64  `db:"player_id"`
+	Quests   string `db:"quests"`
 }
 
 // PlayerQuest 列名
 const (
 	ColPlayerQuestPlayerId = "player_id"
-	ColPlayerQuestQuests = "quests"
+	ColPlayerQuestQuests   = "quests"
 )
 
 // TableName 表名

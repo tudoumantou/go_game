@@ -13,28 +13,28 @@ import (
 
 // Guild guild 表
 type Guild struct {
-	Id int64 `db:"id"`
-	Name string `db:"name"`
-	LeaderId int64 `db:"leader_id"`
-	Level int32 `db:"level"`
-	Exp int32 `db:"exp"`
-	Notice string `db:"notice"`
-	MemberCount int32 `db:"member_count"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Id          int64     `db:"id"`
+	Name        string    `db:"name"`
+	LeaderId    int64     `db:"leader_id"`
+	Level       int32     `db:"level"`
+	Exp         int32     `db:"exp"`
+	Notice      string    `db:"notice"`
+	MemberCount int32     `db:"member_count"`
+	CreatedAt   time.Time `db:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"`
 }
 
 // Guild 列名
 const (
-	ColGuildId = "id"
-	ColGuildName = "name"
-	ColGuildLeaderId = "leader_id"
-	ColGuildLevel = "level"
-	ColGuildExp = "exp"
-	ColGuildNotice = "notice"
+	ColGuildId          = "id"
+	ColGuildName        = "name"
+	ColGuildLeaderId    = "leader_id"
+	ColGuildLevel       = "level"
+	ColGuildExp         = "exp"
+	ColGuildNotice      = "notice"
 	ColGuildMemberCount = "member_count"
-	ColGuildCreatedAt = "created_at"
-	ColGuildUpdatedAt = "updated_at"
+	ColGuildCreatedAt   = "created_at"
+	ColGuildUpdatedAt   = "updated_at"
 )
 
 // TableName 表名
@@ -97,4 +97,3 @@ func UpsertGuildBatch(ctx context.Context, tx *sql.Tx, rows []Guild) error {
 		return []any{m.Name, m.LeaderId, m.Level, m.Exp, m.Notice, m.MemberCount}
 	})
 }
-

@@ -5,26 +5,27 @@ package gamedata
 
 // SceneCfg scene.xml 配置项
 type SceneCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
 }
 
-// SceneCfgList 全量配置（启动时加载，只读）
-var SceneCfgList = []SceneCfg{
+// SceneTable scene.xml 的只读视图，随快照整体替换，不做原地修改
+type SceneTable = table[SceneCfg]
+
+func newSceneTable(list []SceneCfg) (SceneTable, error) {
+	return newTable(list, func(c *SceneCfg) int64 { return c.Id })
+}
+
+// sceneRows 内嵌快照的行数据
+var sceneRows = []SceneCfg{
 	{Id: 1, Col1: "新手村"},
 	{Id: 2, Col1: "竞技场"},
 }
 
-var sceneCfgByID = func() map[int64]*SceneCfg {
-	m := make(map[int64]*SceneCfg, len(SceneCfgList))
-	for i := range SceneCfgList {
-		m[SceneCfgList[i].Id] = &SceneCfgList[i]
-	}
-	return m
-}()
+// SceneCfgList 当前快照的全量行（等价于 Cur().Scene.List()）
+func SceneCfgList() []SceneCfg { return Cur().Scene.List() }
 
-// GetSceneCfg 按 ID 查询配置
+// GetSceneCfg 按 ID 查询当前快照
 func GetSceneCfg(id int64) (*SceneCfg, bool) {
-	c, ok := sceneCfgByID[id]
-	return c, ok
+	return Cur().Scene.Get(id)
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -20,10 +21,10 @@ import (
 
 // 协议号（4.9：7001/7002 列表，7020/7021 领取）。
 const (
-	msgIDMailListReq  uint32 = 7001
-	msgIDMailListResp uint32 = 7002
-	msgIDMailTakeReq  uint32 = 7020
-	msgIDMailTakeResp uint32 = 7021
+	msgIDMailListReq  = codec.MsgMailListReq
+	msgIDMailListResp = codec.MsgMailListResp
+	msgIDMailTakeReq  = codec.MsgMailTakeAttachmentReq
+	msgIDMailTakeResp = codec.MsgMailTakeAttachmentResp
 )
 
 // 业务码（4.10）。

@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -24,12 +25,12 @@ const stateKey = "quest"
 
 // 协议号（4.9：7101/7102 列表，7103/7104 接取，7105/7106 领奖）。
 const (
-	msgIDListReq    uint32 = 7101
-	msgIDListResp   uint32 = 7102
-	msgIDAcceptReq  uint32 = 7103
-	msgIDAcceptResp uint32 = 7104
-	msgIDClaimReq   uint32 = 7105
-	msgIDClaimResp  uint32 = 7106
+	msgIDListReq    = codec.MsgQuestListReq
+	msgIDListResp   = codec.MsgQuestListResp
+	msgIDAcceptReq  = codec.MsgQuestAcceptReq
+	msgIDAcceptResp = codec.MsgQuestAcceptResp
+	msgIDClaimReq   = codec.MsgQuestClaimReq
+	msgIDClaimResp  = codec.MsgQuestClaimResp
 )
 
 // 业务码（4.10）。
@@ -141,7 +142,7 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 		return
 	}
 	changed := false
-	for _, cfg := range gamedata.QuestCfgList {
+	for _, cfg := range gamedata.QuestCfgList() {
 		if cfg.Col2 != evt.Type {
 			continue
 		}
@@ -175,7 +176,7 @@ func (m *Module) onList(ctx *module.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, cfg := range gamedata.QuestCfgList {
+	for _, cfg := range gamedata.QuestCfgList() {
 		entry := &gamev1.QuestEntry{
 			QuestId: int32(cfg.Id),
 			Name:    cfg.Col1,

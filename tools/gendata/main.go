@@ -13,9 +13,13 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"flag"
 	"fmt"
+	"go/format"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -33,14 +37,15 @@ type rowItem struct {
 
 // table 一张配置表（一个 XML 文件）
 type table struct {
-	Name string   // Item（文件名 → CamelCase）
-	File string   // item.xml
+	Name string // Item（文件名 → CamelCase）
+	File string // item.xml
 	Rows []rowItem
 }
 
 func main() {
 	in := flag.String("in", "configs/gamedata/xml", "XML 输入目录")
 	out := flag.String("out", "pkg/gamedata", "Go 代码输出目录")
+	jsonOut := flag.String("json-out", "", "可选：把每张表导出为 <table>.json（热更新格式与模板）")
 	flag.Parse()
 
 	entries, err := os.ReadDir(*in)
@@ -49,36 +54,54 @@ func main() {
 	}
 
 	embedDir := filepath.Join(*out, "embed", "xml")
-	if err := os.MkdirAll(embedDir, 0o755); err != nil {
-		log.Fatalf("mkdir %s: %v", embedDir, err)
-	}
 
 	var tables []table
+	rawXML := make(map[string][]byte, len(entries))
 
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".xml") {
 			continue
 		}
-		rows, err := parseXML(filepath.Join(*in, e.Name()))
+		path := filepath.Join(*in, e.Name())
+		rows, err := parseXML(path)
 		if err != nil {
 			log.Fatalf("parse %s: %v", e.Name(), err)
 		}
-		name := strings.TrimSuffix(e.Name(), ".xml")
-		tables = append(tables, table{
-			Name: upperCamel(name),
-			File: e.Name(),
-			Rows: rows,
-		})
-		// 拷贝 XML 源（embed 输入）
-		raw, err := os.ReadFile(filepath.Join(*in, e.Name()))
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			log.Fatalf("read %s: %v", e.Name(), err)
 		}
-		if err := os.WriteFile(filepath.Join(embedDir, e.Name()), raw, 0o644); err != nil {
-			log.Fatalf("copy %s: %v", e.Name(), err)
-		}
+		rawXML[e.Name()] = raw
+		tables = append(tables, table{
+			Name: upperCamel(strings.TrimSuffix(e.Name(), ".xml")),
+			File: e.Name(),
+			Rows: rows,
+		})
 	}
 	sort.Slice(tables, func(i, j int) bool { return tables[i].File < tables[j].File })
+
+	// 先校验再落盘：任何一项不通过都不产出半套生成物，避免「生成到一半」的中间态。
+	var problems []string
+	for _, t := range tables {
+		problems = append(problems, validateTable(t)...)
+	}
+	problems = append(problems, validateRefs(tables)...)
+	if len(problems) > 0 {
+		fmt.Fprintf(os.Stderr, "配置校验失败（%d 项）：\n", len(problems))
+		for _, p := range problems {
+			fmt.Fprintf(os.Stderr, "  ✗ %s\n", p)
+		}
+		os.Exit(1)
+	}
+
+	if err := os.MkdirAll(embedDir, 0o755); err != nil {
+		log.Fatalf("mkdir %s: %v", embedDir, err)
+	}
+	for name, raw := range rawXML {
+		if err := os.WriteFile(filepath.Join(embedDir, name), raw, 0o644); err != nil {
+			log.Fatalf("copy %s: %v", name, err)
+		}
+	}
 
 	// 逐表生成
 	for _, t := range tables {
@@ -87,6 +110,14 @@ func main() {
 		}
 		fmt.Printf("  %-24s → %s_gen.go（%d 行）\n", t.File, lowerSnake(t.Name), len(t.Rows))
 	}
+	// 热更新格式导出（可选）：与 Cfg 结构体的 json tag 一致，可直接被 gamedata.LoadDir 读回。
+	if *jsonOut != "" {
+		if err := genJSON(*jsonOut, tables); err != nil {
+			log.Fatalf("export json: %v", err)
+		}
+		fmt.Printf("已导出 %d 张表的 JSON → %s\n", len(tables), *jsonOut)
+	}
+
 	// 汇总 data.go（含内容哈希版本号）
 	if err := genData(*out, tables, dirVersion(embedDir)); err != nil {
 		log.Fatalf("gen data.go: %v", err)
@@ -94,7 +125,10 @@ func main() {
 	fmt.Printf("gendata 完成：%d 张表 → %s\n", len(tables), *out)
 }
 
-// parseXML 解析单层属性型 XML（根元素名忽略，取子元素为行）
+// parseXML 解析单层属性型 XML：根元素忽略，其余开始的元素即一行。
+//
+// 用深度判定而不是「元素名是否叫 root」：早期只认 <root>，其他根名（<item>、<quest>）
+// 会被当成数据行，靠后续 <row> 覆盖侥幸跑通；根元素一旦带属性就会多出一行。
 func parseXML(path string) ([]rowItem, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -104,39 +138,44 @@ func parseXML(path string) ([]rowItem, error) {
 
 	dec := xml.NewDecoder(f)
 	var rows []rowItem
-	var inRow bool
-	var cur rowItem
+	depth := 0
+	var cur *rowItem
 
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			break // io.EOF
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if t.Name.Local == "root" {
-				continue
-			}
-			inRow = true
-			cur = rowItem{Vals: map[string]string{}}
-			for _, a := range t.Attr {
-				col := lowerSnake(a.Name.Local)
-				if _, dup := cur.Vals[col]; !dup {
-					cur.Cols = append(cur.Cols, col)
+			depth++
+			switch depth {
+			case 1:
+				// 根元素：只作容器，属性不参与数据。
+			case 2:
+				cur = &rowItem{Vals: map[string]string{}}
+				for _, a := range t.Attr {
+					col := lowerSnake(a.Name.Local)
+					if _, dup := cur.Vals[col]; !dup {
+						cur.Cols = append(cur.Cols, col)
+					}
+					cur.Vals[col] = a.Value
+					if col == "id" {
+						cur.ID = a.Value
+					}
 				}
-				cur.Vals[col] = a.Value
-				if col == "id" {
-					cur.ID = a.Value
-				}
+			default:
+				return nil, fmt.Errorf("不支持嵌套元素 <%s>：配置必须是单层结构（根 → 行）", t.Name.Local)
 			}
 		case xml.EndElement:
-			if inRow && t.Name.Local != "root" {
-				if cur.ID == "" {
-					return nil, fmt.Errorf("%s: 行缺少 id 属性", path)
-				}
-				rows = append(rows, cur)
-				inRow = false
+			if depth == 2 && cur != nil {
+				rows = append(rows, *cur)
+				cur = nil
 			}
+			depth--
 		}
 	}
 	return rows, nil
@@ -175,9 +214,15 @@ func genTable(outDir, name, file string, rows []rowItem) error {
 	}
 	b.WriteString("}\n\n")
 
-	// 列表字面量
-	b.WriteString("// " + name + "CfgList 全量配置（启动时加载，只读）\n")
-	b.WriteString("var " + name + "CfgList = []" + name + "Cfg{\n")
+	// 表视图类型（泛型 table[T] 定义在 tables.go，手写不被覆盖）
+	b.WriteString("// " + name + "Table " + file + " 的只读视图，随快照整体替换，不做原地修改\n")
+	b.WriteString("type " + name + "Table = table[" + name + "Cfg]\n\n")
+	b.WriteString("func new" + name + "Table(list []" + name + "Cfg) (" + name + "Table, error) {\n")
+	b.WriteString("\treturn newTable(list, func(c *" + name + "Cfg) int64 { return c.Id })\n}\n\n")
+
+	// 行数据（私有：外部只能通过快照读，不能改）
+	b.WriteString("// " + lowerSnake(name) + "Rows 内嵌快照的行数据\n")
+	b.WriteString("var " + lowerSnake(name) + "Rows = []" + name + "Cfg{\n")
 	for _, r := range rows {
 		b.WriteString("\t{")
 		parts := make([]string, 0, len(cols))
@@ -189,48 +234,107 @@ func genTable(outDir, name, file string, rows []rowItem) error {
 	}
 	b.WriteString("}\n\n")
 
-	// ByID 索引 + 查询
-	b.WriteString("var " + lowerSnake(name) + "CfgByID = func() map[int64]*" + name + "Cfg {\n")
-	b.WriteString("\tm := make(map[int64]*" + name + "Cfg, len(" + name + "CfgList))\n")
-	b.WriteString("\tfor i := range " + name + "CfgList {\n")
-	b.WriteString("\t\tm[" + name + "CfgList[i].Id] = &" + name + "CfgList[i]\n")
-	b.WriteString("\t}\n\treturn m\n}()\n\n")
-	b.WriteString("// Get" + name + "Cfg 按 ID 查询配置\n")
+	// 兼容旧调用：读到的是「当前快照」，热更新后自动生效
+	b.WriteString("// " + name + "CfgList 当前快照的全量行（等价于 Cur()." + name + ".List()）\n")
+	b.WriteString("func " + name + "CfgList() []" + name + "Cfg { return Cur()." + name + ".List() }\n\n")
+	b.WriteString("// Get" + name + "Cfg 按 ID 查询当前快照\n")
 	b.WriteString("func Get" + name + "Cfg(id int64) (*" + name + "Cfg, bool) {\n")
-	b.WriteString("\tc, ok := " + lowerSnake(name) + "CfgByID[id]\n\treturn c, ok\n}\n")
+	b.WriteString("\treturn Cur()." + name + ".Get(id)\n}\n")
 
 	path := filepath.Join(outDir, lowerSnake(name)+"_gen.go")
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return writeGoFile(path, b.String())
 }
 
 // genData 生成汇总 data.go（含 embed）
 func genData(outDir string, tables []table, version string) error {
 	var b strings.Builder
 	b.WriteString("// Code generated by tools/gendata. DO NOT EDIT.\n")
-	b.WriteString("// 汇总：全部配置表注册 + 原始 XML 内嵌（go:embed，见设计文档 16.1.3）\n\n")
+	b.WriteString("// 汇总：配置快照结构 + 原始 XML 内嵌（go:embed）。\n")
+	b.WriteString("// 快照的通用逻辑（Cur/Replace/LoadDir/Rollback）在 tables.go，手写不覆盖。\n\n")
 	b.WriteString("package gamedata\n\n")
-	b.WriteString("import (\n\t\"embed\"\n\t\"fmt\"\n)\n\n")
-	b.WriteString("// rawXML 内嵌的 XML 源（调试/热重载对比用，见设计文档 16.1.3）\n")
+	b.WriteString("import (\n\t\"embed\"\n\t\"encoding/json\"\n\t\"fmt\"\n)\n\n")
 	b.WriteString("//go:embed embed/xml/*.xml\n")
 	b.WriteString("var rawXML embed.FS\n\n")
-	b.WriteString("// Version 全部 XML 内容哈希（启动打印，GM 核对线上配置版本）\n")
-	b.WriteString("const Version = \"" + version + "\"\n\n")
-	b.WriteString("// RawXML 读取原始 XML 内容（不存在返回 nil）\n")
+	b.WriteString("// embeddedVersion 编译期内嵌配置的内容哈希（启动日志与线上核对用）\n")
+	b.WriteString("const embeddedVersion = \"" + version + "\"\n\n")
+
+	// 快照结构
+	b.WriteString("// Tables 一份不可变配置快照：热更新整体替换，读取方永远看到自洽的一套表。\n")
+	b.WriteString("type Tables struct {\n")
+	b.WriteString("\tVersion string // 快照版本（内嵌哈希，或热更新后的派生版本）\n")
+	for _, t := range tables {
+		b.WriteString("\t" + t.Name + " " + t.Name + "Table\n")
+	}
+	b.WriteString("}\n\n")
+
+	// 构造内嵌快照
+	b.WriteString("// mustEmbedded 用编译期内嵌数据构造快照；主键重复属于生成期就该拦住的错误，这里直接 panic。\n")
+	b.WriteString("func mustEmbedded() *Tables {\n")
+	b.WriteString("\tt := &Tables{Version: embeddedVersion}\n")
+	b.WriteString("\tvar err error\n")
+	for _, t := range tables {
+		b.WriteString("\tif t." + t.Name + ", err = new" + t.Name + "Table(" + lowerSnake(t.Name) + "Rows); err != nil {\n")
+		b.WriteString("\t\tpanic(\"gamedata: \" + err.Error())\n\t}\n")
+	}
+	b.WriteString("\treturn t\n}\n\n")
+
+	// 校验
+	b.WriteString("// validate 热更新后的自检：任何一张表为空都视为错误输入。\n")
+	b.WriteString("func (t *Tables) validate() error {\n")
+	for _, t := range tables {
+		b.WriteString("\tif err := t." + t.Name + ".validate(\"" + strings.TrimSuffix(t.File, ".xml") + "\"); err != nil {\n")
+		b.WriteString("\t\treturn err\n\t}\n")
+	}
+	b.WriteString("\treturn nil\n}\n\n")
+
+	// 按表覆盖的 setter（LoadDir/Replace 用）
+	b.WriteString("// setters 表名 → 覆盖函数；表名与 XML 文件名一致（item.xml → \"item\"）。\n")
+	b.WriteString("var setters = map[string]func(*Tables, []byte) error{\n")
+	for _, t := range tables {
+		name := strings.TrimSuffix(t.File, ".xml")
+		b.WriteString("\t\"" + name + "\": func(t *Tables, raw []byte) error {\n")
+		b.WriteString("\t\tvar rows []" + t.Name + "Cfg\n")
+		b.WriteString("\t\tif err := json.Unmarshal(raw, &rows); err != nil {\n")
+		b.WriteString("\t\t\treturn fmt.Errorf(\"decode json: %w\", err)\n\t\t}\n")
+		b.WriteString("\t\ttb, err := new" + t.Name + "Table(rows)\n")
+		b.WriteString("\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n")
+		b.WriteString("\t\tt." + t.Name + " = tb\n")
+		b.WriteString("\t\treturn nil\n\t},\n")
+	}
+	b.WriteString("}\n\n")
+
+	b.WriteString("// tableNames 表名（稳定顺序，日志与 LoadedTables 用）\n")
+	b.WriteString("var tableNames = []string{\n")
+	for _, t := range tables {
+		b.WriteString("\t\"" + strings.TrimSuffix(t.File, ".xml") + "\",\n")
+	}
+	b.WriteString("}\n\n")
+
+	b.WriteString("// RawXML 读取内嵌的原始 XML（不存在返回 nil）。\n")
+	b.WriteString("// 注意：它读到的是编译期内容，热更新后与运行中的快照不一致，仅用于比对与排障。\n")
 	b.WriteString("func RawXML(name string) []byte {\n")
 	b.WriteString("\tb, err := rawXML.ReadFile(\"embed/xml/\" + name)\n")
 	b.WriteString("\tif err != nil {\n\t\treturn nil\n\t}\n\treturn b\n}\n\n")
 	b.WriteString("// LoadedTables 已加载配置表名（启动自检/日志用）\n")
-	b.WriteString("func LoadedTables() []string {\n\treturn []string{\n")
-	for _, t := range tables {
-		b.WriteString("\t\t\"" + t.File + "\",\n")
-	}
-	b.WriteString("\t}\n}\n\n")
+	b.WriteString("func LoadedTables() []string {\n\treturn append([]string(nil), tableNames...)\n}\n\n")
 	b.WriteString("// Summary 配置规模摘要\n")
 	b.WriteString("func Summary() string {\n")
-	b.WriteString(fmt.Sprintf("\treturn fmt.Sprintf(\"gamedata: %%d tables\", %d)\n", len(tables)))
+	b.WriteString(fmt.Sprintf("\treturn fmt.Sprintf(\"gamedata: %%d tables, version %%s\", len(tableNames), Version())\n"))
 	b.WriteString("}\n")
 	path := filepath.Join(outDir, "data.go")
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return writeGoFile(path, b.String())
+}
+
+// writeGoFile 生成物统一走 gofmt。
+//
+// 不格式化会有两个后果：`make fmt` 会改生成文件，随后 `make gen-check` 必然失败；
+// 而手工拼出来的代码一旦有语法错，只有到 go build 才暴露。format.Source 顺带做语法检查。
+func writeGoFile(path, src string) error {
+	out, err := format.Source([]byte(src))
+	if err != nil {
+		return fmt.Errorf("gofmt %s: %w", filepath.Base(path), err)
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 // inferType 推断列类型：全 int64 / 全 bool / 否则 string
@@ -329,4 +433,50 @@ func dirVersion(dir string) string {
 		h.Write(raw)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+// genJSON 把表导出为 JSON 数组（热更新输入格式）。
+//
+// 列名与类型跟生成的 Cfg 结构体完全一致（json tag = 列名），
+// 因此导出物可直接作为线上热更新的模板：改值 → 下发 → gamedata.LoadDir 读回。
+func genJSON(outDir string, tables []table) error {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return err
+	}
+	for _, t := range tables {
+		rows := make([]map[string]any, 0, len(t.Rows))
+		cols := t.Rows[0].Cols
+		types := make(map[string]string, len(cols))
+		for _, c := range cols {
+			types[c] = inferType(t.Rows, c)
+		}
+		for _, r := range t.Rows {
+			m := make(map[string]any, len(cols))
+			for _, c := range cols {
+				v := r.Vals[c]
+				switch types[c] {
+				case "int64":
+					n, err := strconv.ParseInt(v, 10, 64)
+					if err != nil {
+						n = 0
+					}
+					m[c] = n
+				case "bool":
+					m[c] = v == "true"
+				default:
+					m[c] = v
+				}
+			}
+			rows = append(rows, m)
+		}
+		raw, err := json.MarshalIndent(rows, "", "  ")
+		if err != nil {
+			return err
+		}
+		name := strings.TrimSuffix(t.File, ".xml") + ".json"
+		if err := os.WriteFile(filepath.Join(outDir, name), append(raw, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }

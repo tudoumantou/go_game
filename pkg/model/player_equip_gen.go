@@ -12,14 +12,14 @@ import (
 
 // PlayerEquip player_equip 表
 type PlayerEquip struct {
-	PlayerId int64 `db:"player_id"`
-	Equips string `db:"equips"`
+	PlayerId int64  `db:"player_id"`
+	Equips   string `db:"equips"`
 }
 
 // PlayerEquip 列名
 const (
 	ColPlayerEquipPlayerId = "player_id"
-	ColPlayerEquipEquips = "equips"
+	ColPlayerEquipEquips   = "equips"
 )
 
 // TableName 表名

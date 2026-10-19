@@ -5,29 +5,30 @@ package gamedata
 
 // CopyDropCfg copy_drop.xml 配置项
 type CopyDropCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 	Col3 int64 `json:"col3"`
 	Col4 int64 `json:"col4"`
 }
 
-// CopyDropCfgList 全量配置（启动时加载，只读）
-var CopyDropCfgList = []CopyDropCfg{
+// CopyDropTable copy_drop.xml 的只读视图，随快照整体替换，不做原地修改
+type CopyDropTable = table[CopyDropCfg]
+
+func newCopyDropTable(list []CopyDropCfg) (CopyDropTable, error) {
+	return newTable(list, func(c *CopyDropCfg) int64 { return c.Id })
+}
+
+// copy_dropRows 内嵌快照的行数据
+var copy_dropRows = []CopyDropCfg{
 	{Id: 1, Col1: 1, Col2: 1002, Col3: 3, Col4: 5000},
 	{Id: 2, Col1: 1, Col2: 1001, Col3: 100, Col4: 8000},
 }
 
-var copy_dropCfgByID = func() map[int64]*CopyDropCfg {
-	m := make(map[int64]*CopyDropCfg, len(CopyDropCfgList))
-	for i := range CopyDropCfgList {
-		m[CopyDropCfgList[i].Id] = &CopyDropCfgList[i]
-	}
-	return m
-}()
+// CopyDropCfgList 当前快照的全量行（等价于 Cur().CopyDrop.List()）
+func CopyDropCfgList() []CopyDropCfg { return Cur().CopyDrop.List() }
 
-// GetCopyDropCfg 按 ID 查询配置
+// GetCopyDropCfg 按 ID 查询当前快照
 func GetCopyDropCfg(id int64) (*CopyDropCfg, bool) {
-	c, ok := copy_dropCfgByID[id]
-	return c, ok
+	return Cur().CopyDrop.Get(id)
 }

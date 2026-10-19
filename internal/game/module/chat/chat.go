@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
@@ -19,18 +20,18 @@ import (
 
 // 协议号（4.9：6001/6002 发送，6010 推送，6020/6021 历史）。
 const (
-	msgIDSendReq     uint32 = 6001
-	msgIDSendResp    uint32 = 6002
-	msgIDNotify      uint32 = 6010
-	msgIDHistoryReq  uint32 = 6020
-	msgIDHistoryResp uint32 = 6021
+	msgIDSendReq     = codec.MsgChatSendReq
+	msgIDSendResp    = codec.MsgChatSendResp
+	msgIDNotify      = codec.MsgChatMessageNotify
+	msgIDHistoryReq  = codec.MsgChatHistoryReq
+	msgIDHistoryResp = codec.MsgChatHistoryResp
 )
 
 // 业务码（4.10）。
 const (
-	codeOK           int32 = 0
+	codeOK            int32 = 0
 	codeChannelClosed int32 = 4001
-	codeContentEmpty int32 = 4005
+	codeContentEmpty  int32 = 4005
 )
 
 // 私聊频道。

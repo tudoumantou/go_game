@@ -5,27 +5,28 @@ package gamedata
 
 // EquipEnhanceCfg equip_enhance.xml 配置项
 type EquipEnhanceCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// EquipEnhanceCfgList 全量配置（启动时加载，只读）
-var EquipEnhanceCfgList = []EquipEnhanceCfg{
+// EquipEnhanceTable equip_enhance.xml 的只读视图，随快照整体替换，不做原地修改
+type EquipEnhanceTable = table[EquipEnhanceCfg]
+
+func newEquipEnhanceTable(list []EquipEnhanceCfg) (EquipEnhanceTable, error) {
+	return newTable(list, func(c *EquipEnhanceCfg) int64 { return c.Id })
+}
+
+// equip_enhanceRows 内嵌快照的行数据
+var equip_enhanceRows = []EquipEnhanceCfg{
 	{Id: 1, Col1: 1, Col2: 100},
 	{Id: 2, Col1: 2, Col2: 300},
 }
 
-var equip_enhanceCfgByID = func() map[int64]*EquipEnhanceCfg {
-	m := make(map[int64]*EquipEnhanceCfg, len(EquipEnhanceCfgList))
-	for i := range EquipEnhanceCfgList {
-		m[EquipEnhanceCfgList[i].Id] = &EquipEnhanceCfgList[i]
-	}
-	return m
-}()
+// EquipEnhanceCfgList 当前快照的全量行（等价于 Cur().EquipEnhance.List()）
+func EquipEnhanceCfgList() []EquipEnhanceCfg { return Cur().EquipEnhance.List() }
 
-// GetEquipEnhanceCfg 按 ID 查询配置
+// GetEquipEnhanceCfg 按 ID 查询当前快照
 func GetEquipEnhanceCfg(id int64) (*EquipEnhanceCfg, bool) {
-	c, ok := equip_enhanceCfgByID[id]
-	return c, ok
+	return Cur().EquipEnhance.Get(id)
 }

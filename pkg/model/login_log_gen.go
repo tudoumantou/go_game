@@ -13,25 +13,25 @@ import (
 
 // LoginLog login_log 表
 type LoginLog struct {
-	Id int64 `db:"id"`
-	AccountId int64 `db:"account_id"`
-	PlayerId int64 `db:"player_id"`
-	Ip string `db:"ip"`
-	Device string `db:"device"`
-	Result int32 `db:"result"`
-	Reason string `db:"reason"`
+	Id        int64     `db:"id"`
+	AccountId int64     `db:"account_id"`
+	PlayerId  int64     `db:"player_id"`
+	Ip        string    `db:"ip"`
+	Device    string    `db:"device"`
+	Result    int32     `db:"result"`
+	Reason    string    `db:"reason"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
 // LoginLog 列名
 const (
-	ColLoginLogId = "id"
+	ColLoginLogId        = "id"
 	ColLoginLogAccountId = "account_id"
-	ColLoginLogPlayerId = "player_id"
-	ColLoginLogIp = "ip"
-	ColLoginLogDevice = "device"
-	ColLoginLogResult = "result"
-	ColLoginLogReason = "reason"
+	ColLoginLogPlayerId  = "player_id"
+	ColLoginLogIp        = "ip"
+	ColLoginLogDevice    = "device"
+	ColLoginLogResult    = "result"
+	ColLoginLogReason    = "reason"
 	ColLoginLogCreatedAt = "created_at"
 )
 

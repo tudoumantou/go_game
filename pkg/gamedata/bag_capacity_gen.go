@@ -5,26 +5,27 @@ package gamedata
 
 // BagCapacityCfg bag_capacity.xml 配置项
 type BagCapacityCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// BagCapacityCfgList 全量配置（启动时加载，只读）
-var BagCapacityCfgList = []BagCapacityCfg{
+// BagCapacityTable bag_capacity.xml 的只读视图，随快照整体替换，不做原地修改
+type BagCapacityTable = table[BagCapacityCfg]
+
+func newBagCapacityTable(list []BagCapacityCfg) (BagCapacityTable, error) {
+	return newTable(list, func(c *BagCapacityCfg) int64 { return c.Id })
+}
+
+// bag_capacityRows 内嵌快照的行数据
+var bag_capacityRows = []BagCapacityCfg{
 	{Id: 1, Col1: 60, Col2: 5},
 }
 
-var bag_capacityCfgByID = func() map[int64]*BagCapacityCfg {
-	m := make(map[int64]*BagCapacityCfg, len(BagCapacityCfgList))
-	for i := range BagCapacityCfgList {
-		m[BagCapacityCfgList[i].Id] = &BagCapacityCfgList[i]
-	}
-	return m
-}()
+// BagCapacityCfgList 当前快照的全量行（等价于 Cur().BagCapacity.List()）
+func BagCapacityCfgList() []BagCapacityCfg { return Cur().BagCapacity.List() }
 
-// GetBagCapacityCfg 按 ID 查询配置
+// GetBagCapacityCfg 按 ID 查询当前快照
 func GetBagCapacityCfg(id int64) (*BagCapacityCfg, bool) {
-	c, ok := bag_capacityCfgByID[id]
-	return c, ok
+	return Cur().BagCapacity.Get(id)
 }

@@ -13,25 +13,25 @@ import (
 
 // ChatRecord chat_record 表
 type ChatRecord struct {
-	Id int64 `db:"id"`
-	OwnerId int64 `db:"owner_id"`
-	PeerId int64 `db:"peer_id"`
-	MsgId int64 `db:"msg_id"`
-	Direction int32 `db:"direction"`
-	Channel int32 `db:"channel"`
-	Content string `db:"content"`
+	Id        int64     `db:"id"`
+	OwnerId   int64     `db:"owner_id"`
+	PeerId    int64     `db:"peer_id"`
+	MsgId     int64     `db:"msg_id"`
+	Direction int32     `db:"direction"`
+	Channel   int32     `db:"channel"`
+	Content   string    `db:"content"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
 // ChatRecord 列名
 const (
-	ColChatRecordId = "id"
-	ColChatRecordOwnerId = "owner_id"
-	ColChatRecordPeerId = "peer_id"
-	ColChatRecordMsgId = "msg_id"
+	ColChatRecordId        = "id"
+	ColChatRecordOwnerId   = "owner_id"
+	ColChatRecordPeerId    = "peer_id"
+	ColChatRecordMsgId     = "msg_id"
 	ColChatRecordDirection = "direction"
-	ColChatRecordChannel = "channel"
-	ColChatRecordContent = "content"
+	ColChatRecordChannel   = "channel"
+	ColChatRecordContent   = "content"
 	ColChatRecordCreatedAt = "created_at"
 )
 
@@ -94,4 +94,3 @@ func UpsertChatRecordBatch(ctx context.Context, tx *sql.Tx, rows []ChatRecord) e
 		return []any{m.OwnerId, m.PeerId, m.MsgId, m.Direction, m.Channel, m.Content}
 	})
 }
-

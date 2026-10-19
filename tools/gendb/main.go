@@ -11,6 +11,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/format"
 	"log"
 	"os"
 	"path/filepath"
@@ -77,7 +78,7 @@ func main() {
 	fmt.Printf("gendb 完成：%d 张表 → %s\n", len(tables), *out)
 }
 
-var createTableRe = regexp.MustCompile(`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`+"`"+`\"]?([a-zA-Z0-9_]+)[`+"`"+`\"]?\s*\((.*?)\)\s*(?:ENGINE|COMMENT|DEFAULT|;)`)
+var createTableRe = regexp.MustCompile(`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[` + "`" + `\"]?([a-zA-Z0-9_]+)[` + "`" + `\"]?\s*\((.*?)\)\s*(?:ENGINE|COMMENT|DEFAULT|;)`)
 
 // genQuerier 生成 *sql.DB 与 *sql.Tx 的公共子集。
 //
@@ -99,7 +100,7 @@ import "game_study/pkg/flush"
 // 这里保留类型别名，既有生成代码与业务调用点零改动。
 type Querier = flush.Querier
 `
-	return os.WriteFile(filepath.Join(outDir, "querier_gen.go"), []byte(body), 0o644)
+	return writeGoFile(filepath.Join(outDir, "querier_gen.go"), body)
 }
 
 var (
@@ -389,7 +390,7 @@ func genModel(outDir string, t table) error {
 	}
 
 	path := filepath.Join(outDir, t.Name+"_gen.go")
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return writeGoFile(path, b.String())
 }
 
 func goFieldType(c column) string {
@@ -548,4 +549,14 @@ func playerColumn(t table) string {
 		}
 	}
 	return ""
+}
+
+// writeGoFile 生成物统一走 gofmt：未格式化的生成物会让 `make fmt` 与 `make gen-check` 互相打架，
+// 而 format.Source 同时充当生成代码的语法检查。
+func writeGoFile(path, src string) error {
+	out, err := format.Source([]byte(src))
+	if err != nil {
+		return fmt.Errorf("gofmt %s: %w", filepath.Base(path), err)
+	}
+	return os.WriteFile(path, out, 0o644)
 }

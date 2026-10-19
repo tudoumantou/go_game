@@ -12,14 +12,14 @@ import (
 
 // PlayerSkill player_skill 表
 type PlayerSkill struct {
-	PlayerId int64 `db:"player_id"`
-	Skills string `db:"skills"`
+	PlayerId int64  `db:"player_id"`
+	Skills   string `db:"skills"`
 }
 
 // PlayerSkill 列名
 const (
 	ColPlayerSkillPlayerId = "player_id"
-	ColPlayerSkillSkills = "skills"
+	ColPlayerSkillSkills   = "skills"
 )
 
 // TableName 表名

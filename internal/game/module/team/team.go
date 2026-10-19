@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
@@ -19,14 +20,14 @@ import (
 
 // 协议号（4.9：6201/6202 信息，6203/6204 创建，6205/6206 加入，6207/6208 退出）。
 const (
-	msgIDInfoReq    uint32 = 6201
-	msgIDInfoResp   uint32 = 6202
-	msgIDCreateReq  uint32 = 6203
-	msgIDCreateResp uint32 = 6204
-	msgIDJoinReq    uint32 = 6205
-	msgIDJoinResp   uint32 = 6206
-	msgIDLeaveReq   uint32 = 6207
-	msgIDLeaveResp  uint32 = 6208
+	msgIDInfoReq    = codec.MsgTeamInfoReq
+	msgIDInfoResp   = codec.MsgTeamInfoResp
+	msgIDCreateReq  = codec.MsgTeamCreateReq
+	msgIDCreateResp = codec.MsgTeamCreateResp
+	msgIDJoinReq    = codec.MsgTeamJoinReq
+	msgIDJoinResp   = codec.MsgTeamJoinResp
+	msgIDLeaveReq   = codec.MsgTeamLeaveReq
+	msgIDLeaveResp  = codec.MsgTeamLeaveResp
 )
 
 // 业务码（4.10）。
@@ -40,8 +41,8 @@ const (
 
 // maxMembers 队伍上限（team_limit.xml 第一行 col1；缺配置回退 5）。
 func maxMembers() int {
-	if len(gamedata.TeamLimitCfgList) > 0 {
-		if n := gamedata.TeamLimitCfgList[0].Col1; n > 0 {
+	if len(gamedata.TeamLimitCfgList()) > 0 {
+		if n := gamedata.TeamLimitCfgList()[0].Col1; n > 0 {
 			return int(n)
 		}
 	}

@@ -5,27 +5,28 @@ package gamedata
 
 // MailTemplateCfg mail_template.xml 配置项
 type MailTemplateCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
 	Col2 string `json:"col2"`
 }
 
-// MailTemplateCfgList 全量配置（启动时加载，只读）
-var MailTemplateCfgList = []MailTemplateCfg{
+// MailTemplateTable mail_template.xml 的只读视图，随快照整体替换，不做原地修改
+type MailTemplateTable = table[MailTemplateCfg]
+
+func newMailTemplateTable(list []MailTemplateCfg) (MailTemplateTable, error) {
+	return newTable(list, func(c *MailTemplateCfg) int64 { return c.Id })
+}
+
+// mail_templateRows 内嵌快照的行数据
+var mail_templateRows = []MailTemplateCfg{
 	{Id: 1, Col1: "系统补偿", Col2: "感谢您的等待，请查收附件。"},
 	{Id: 2, Col1: "活动奖励", Col2: "您在活动中获得以下奖励。"},
 }
 
-var mail_templateCfgByID = func() map[int64]*MailTemplateCfg {
-	m := make(map[int64]*MailTemplateCfg, len(MailTemplateCfgList))
-	for i := range MailTemplateCfgList {
-		m[MailTemplateCfgList[i].Id] = &MailTemplateCfgList[i]
-	}
-	return m
-}()
+// MailTemplateCfgList 当前快照的全量行（等价于 Cur().MailTemplate.List()）
+func MailTemplateCfgList() []MailTemplateCfg { return Cur().MailTemplate.List() }
 
-// GetMailTemplateCfg 按 ID 查询配置
+// GetMailTemplateCfg 按 ID 查询当前快照
 func GetMailTemplateCfg(id int64) (*MailTemplateCfg, bool) {
-	c, ok := mail_templateCfgByID[id]
-	return c, ok
+	return Cur().MailTemplate.Get(id)
 }

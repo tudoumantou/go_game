@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -24,13 +25,13 @@ import (
 
 // 协议号（4.9：5001 开始通知，5010/5011 结算，5020/5021 透传，5002/5003 匹配）。
 const (
-	msgIDStartNotify  uint32 = 5001
-	msgIDMatchReq     uint32 = 5002
-	msgIDMatchResp    uint32 = 5003
-	msgIDResultReport uint32 = 5010
-	msgIDSettleNotify uint32 = 5011
-	msgIDSyncNotify   uint32 = 5020
-	msgIDOpReport     uint32 = 5021
+	msgIDStartNotify  = codec.MsgBattleStartNotify
+	msgIDMatchReq     = codec.MsgMatchReq
+	msgIDMatchResp    = codec.MsgMatchResp
+	msgIDResultReport = codec.MsgBattleResultReport
+	msgIDSettleNotify = codec.MsgBattleSettleNotify
+	msgIDSyncNotify   = codec.MsgBattleSyncNotify
+	msgIDOpReport     = codec.MsgBattleOpReport
 )
 
 // 业务码。

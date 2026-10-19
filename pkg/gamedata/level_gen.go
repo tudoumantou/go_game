@@ -5,12 +5,19 @@ package gamedata
 
 // LevelCfg level.xml 配置项
 type LevelCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 }
 
-// LevelCfgList 全量配置（启动时加载，只读）
-var LevelCfgList = []LevelCfg{
+// LevelTable level.xml 的只读视图，随快照整体替换，不做原地修改
+type LevelTable = table[LevelCfg]
+
+func newLevelTable(list []LevelCfg) (LevelTable, error) {
+	return newTable(list, func(c *LevelCfg) int64 { return c.Id })
+}
+
+// levelRows 内嵌快照的行数据
+var levelRows = []LevelCfg{
 	{Id: 1, Col1: 100},
 	{Id: 2, Col1: 300},
 	{Id: 3, Col1: 800},
@@ -18,16 +25,10 @@ var LevelCfgList = []LevelCfg{
 	{Id: 5, Col1: 5000},
 }
 
-var levelCfgByID = func() map[int64]*LevelCfg {
-	m := make(map[int64]*LevelCfg, len(LevelCfgList))
-	for i := range LevelCfgList {
-		m[LevelCfgList[i].Id] = &LevelCfgList[i]
-	}
-	return m
-}()
+// LevelCfgList 当前快照的全量行（等价于 Cur().Level.List()）
+func LevelCfgList() []LevelCfg { return Cur().Level.List() }
 
-// GetLevelCfg 按 ID 查询配置
+// GetLevelCfg 按 ID 查询当前快照
 func GetLevelCfg(id int64) (*LevelCfg, bool) {
-	c, ok := levelCfgByID[id]
-	return c, ok
+	return Cur().Level.Get(id)
 }

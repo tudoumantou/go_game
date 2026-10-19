@@ -13,32 +13,32 @@ import (
 
 // Mail mail 表
 type Mail struct {
-	Id int64 `db:"id"`
-	PlayerId int64 `db:"player_id"`
-	TemplateId int32 `db:"template_id"`
-	Title string `db:"title"`
-	Content string `db:"content"`
-	Channel int32 `db:"channel"`
-	Status int32 `db:"status"`
-	BizId string `db:"biz_id"`
-	ExpireAt sql.NullTime `db:"expire_at"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	Id         int64        `db:"id"`
+	PlayerId   int64        `db:"player_id"`
+	TemplateId int32        `db:"template_id"`
+	Title      string       `db:"title"`
+	Content    string       `db:"content"`
+	Channel    int32        `db:"channel"`
+	Status     int32        `db:"status"`
+	BizId      string       `db:"biz_id"`
+	ExpireAt   sql.NullTime `db:"expire_at"`
+	CreatedAt  time.Time    `db:"created_at"`
+	UpdatedAt  time.Time    `db:"updated_at"`
 }
 
 // Mail 列名
 const (
-	ColMailId = "id"
-	ColMailPlayerId = "player_id"
+	ColMailId         = "id"
+	ColMailPlayerId   = "player_id"
 	ColMailTemplateId = "template_id"
-	ColMailTitle = "title"
-	ColMailContent = "content"
-	ColMailChannel = "channel"
-	ColMailStatus = "status"
-	ColMailBizId = "biz_id"
-	ColMailExpireAt = "expire_at"
-	ColMailCreatedAt = "created_at"
-	ColMailUpdatedAt = "updated_at"
+	ColMailTitle      = "title"
+	ColMailContent    = "content"
+	ColMailChannel    = "channel"
+	ColMailStatus     = "status"
+	ColMailBizId      = "biz_id"
+	ColMailExpireAt   = "expire_at"
+	ColMailCreatedAt  = "created_at"
+	ColMailUpdatedAt  = "updated_at"
 )
 
 // TableName 表名

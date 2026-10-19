@@ -13,26 +13,26 @@ import (
 
 // PlayerAttr player_attr 表
 type PlayerAttr struct {
-	PlayerId int64 `db:"player_id"`
-	Career int32 `db:"career"`
-	Hp int32 `db:"hp"`
-	Mp int32 `db:"mp"`
-	Atk int32 `db:"atk"`
-	Def int32 `db:"def"`
-	Spd int32 `db:"spd"`
+	PlayerId  int64     `db:"player_id"`
+	Career    int32     `db:"career"`
+	Hp        int32     `db:"hp"`
+	Mp        int32     `db:"mp"`
+	Atk       int32     `db:"atk"`
+	Def       int32     `db:"def"`
+	Spd       int32     `db:"spd"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
 // PlayerAttr 列名
 const (
-	ColPlayerAttrPlayerId = "player_id"
-	ColPlayerAttrCareer = "career"
-	ColPlayerAttrHp = "hp"
-	ColPlayerAttrMp = "mp"
-	ColPlayerAttrAtk = "atk"
-	ColPlayerAttrDef = "def"
-	ColPlayerAttrSpd = "spd"
+	ColPlayerAttrPlayerId  = "player_id"
+	ColPlayerAttrCareer    = "career"
+	ColPlayerAttrHp        = "hp"
+	ColPlayerAttrMp        = "mp"
+	ColPlayerAttrAtk       = "atk"
+	ColPlayerAttrDef       = "def"
+	ColPlayerAttrSpd       = "spd"
 	ColPlayerAttrCreatedAt = "created_at"
 	ColPlayerAttrUpdatedAt = "updated_at"
 )

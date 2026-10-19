@@ -13,25 +13,25 @@ import (
 
 // RankHistory rank_history 表
 type RankHistory struct {
-	Id int64 `db:"id"`
-	GroupId int32 `db:"group_id"`
-	RankType int32 `db:"rank_type"`
-	Season int32 `db:"season"`
-	PlayerId int64 `db:"player_id"`
-	Score int64 `db:"score"`
-	RankNo int32 `db:"rank_no"`
+	Id         int64     `db:"id"`
+	GroupId    int32     `db:"group_id"`
+	RankType   int32     `db:"rank_type"`
+	Season     int32     `db:"season"`
+	PlayerId   int64     `db:"player_id"`
+	Score      int64     `db:"score"`
+	RankNo     int32     `db:"rank_no"`
 	SnapshotAt time.Time `db:"snapshot_at"`
 }
 
 // RankHistory 列名
 const (
-	ColRankHistoryId = "id"
-	ColRankHistoryGroupId = "group_id"
-	ColRankHistoryRankType = "rank_type"
-	ColRankHistorySeason = "season"
-	ColRankHistoryPlayerId = "player_id"
-	ColRankHistoryScore = "score"
-	ColRankHistoryRankNo = "rank_no"
+	ColRankHistoryId         = "id"
+	ColRankHistoryGroupId    = "group_id"
+	ColRankHistoryRankType   = "rank_type"
+	ColRankHistorySeason     = "season"
+	ColRankHistoryPlayerId   = "player_id"
+	ColRankHistoryScore      = "score"
+	ColRankHistoryRankNo     = "rank_no"
 	ColRankHistorySnapshotAt = "snapshot_at"
 )
 

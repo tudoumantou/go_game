@@ -13,19 +13,19 @@ import (
 
 // Friend friend 表
 type Friend struct {
-	Id int64 `db:"id"`
-	PlayerId int64 `db:"player_id"`
-	FriendId int64 `db:"friend_id"`
-	Intimacy int32 `db:"intimacy"`
+	Id        int64     `db:"id"`
+	PlayerId  int64     `db:"player_id"`
+	FriendId  int64     `db:"friend_id"`
+	Intimacy  int32     `db:"intimacy"`
 	CreatedAt time.Time `db:"created_at"`
 }
 
 // Friend 列名
 const (
-	ColFriendId = "id"
-	ColFriendPlayerId = "player_id"
-	ColFriendFriendId = "friend_id"
-	ColFriendIntimacy = "intimacy"
+	ColFriendId        = "id"
+	ColFriendPlayerId  = "player_id"
+	ColFriendFriendId  = "friend_id"
+	ColFriendIntimacy  = "intimacy"
 	ColFriendCreatedAt = "created_at"
 )
 

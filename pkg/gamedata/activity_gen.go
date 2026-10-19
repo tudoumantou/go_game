@@ -5,28 +5,29 @@ package gamedata
 
 // ActivityCfg activity.xml 配置项
 type ActivityCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
 	Col2 string `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col3 int64  `json:"col3"`
 }
 
-// ActivityCfgList 全量配置（启动时加载，只读）
-var ActivityCfgList = []ActivityCfg{
+// ActivityTable activity.xml 的只读视图，随快照整体替换，不做原地修改
+type ActivityTable = table[ActivityCfg]
+
+func newActivityTable(list []ActivityCfg) (ActivityTable, error) {
+	return newTable(list, func(c *ActivityCfg) int64 { return c.Id })
+}
+
+// activityRows 内嵌快照的行数据
+var activityRows = []ActivityCfg{
 	{Id: 1, Col1: "登录有礼", Col2: "login", Col3: 7},
 	{Id: 2, Col1: "全服打造", Col2: "server_progress", Col3: 14},
 }
 
-var activityCfgByID = func() map[int64]*ActivityCfg {
-	m := make(map[int64]*ActivityCfg, len(ActivityCfgList))
-	for i := range ActivityCfgList {
-		m[ActivityCfgList[i].Id] = &ActivityCfgList[i]
-	}
-	return m
-}()
+// ActivityCfgList 当前快照的全量行（等价于 Cur().Activity.List()）
+func ActivityCfgList() []ActivityCfg { return Cur().Activity.List() }
 
-// GetActivityCfg 按 ID 查询配置
+// GetActivityCfg 按 ID 查询当前快照
 func GetActivityCfg(id int64) (*ActivityCfg, bool) {
-	c, ok := activityCfgByID[id]
-	return c, ok
+	return Cur().Activity.Get(id)
 }

@@ -12,14 +12,14 @@ import (
 
 // CopyRecord copy_record 表
 type CopyRecord struct {
-	PlayerId int64 `db:"player_id"`
-	Records string `db:"records"`
+	PlayerId int64  `db:"player_id"`
+	Records  string `db:"records"`
 }
 
 // CopyRecord 列名
 const (
 	ColCopyRecordPlayerId = "player_id"
-	ColCopyRecordRecords = "records"
+	ColCopyRecordRecords  = "records"
 )
 
 // TableName 表名

@@ -59,4 +59,3 @@ func TestHandlerRegistry(t *testing.T) {
 		t.Fatalf("handler not called")
 	}
 }
-

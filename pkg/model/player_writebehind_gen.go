@@ -12,15 +12,15 @@ import (
 
 // PlayerWritebehind player_writebehind 表
 type PlayerWritebehind struct {
-	PlayerId int64 `db:"player_id"`
-	Version int64 `db:"version"`
+	PlayerId      int64  `db:"player_id"`
+	Version       int64  `db:"version"`
 	AppliedGrants string `db:"applied_grants"`
 }
 
 // PlayerWritebehind 列名
 const (
-	ColPlayerWritebehindPlayerId = "player_id"
-	ColPlayerWritebehindVersion = "version"
+	ColPlayerWritebehindPlayerId      = "player_id"
+	ColPlayerWritebehindVersion       = "version"
 	ColPlayerWritebehindAppliedGrants = "applied_grants"
 )
 

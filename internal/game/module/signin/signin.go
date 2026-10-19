@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -26,10 +27,10 @@ const (
 	// stateKey 同时是 Ext 槽位键与落库归属的模块名。
 	stateKey = "signin"
 
-	MsgInfoReq   uint32 = 6601
-	MsgInfoResp  uint32 = 6602
-	MsgClaimReq  uint32 = 6603
-	MsgClaimResp uint32 = 6604
+	MsgInfoReq   = codec.MsgSigninInfoReq
+	MsgInfoResp  = codec.MsgSigninInfoResp
+	MsgClaimReq  = codec.MsgSigninClaimReq
+	MsgClaimResp = codec.MsgSigninClaimResp
 
 	codeSystem   int32 = 1
 	codeConfig   int32 = 6601
@@ -310,7 +311,7 @@ func protoRewards(grants []module.ItemGrant) []*gamev1.SigninReward {
 // rewardsForDay 汇总配置里某一天的奖励（同一天可配多种道具）。
 func rewardsForDay(day int32) ([]module.ItemGrant, error) {
 	counts := make(map[int32]int64)
-	for _, cfg := range gamedata.SigninRewardCfgList {
+	for _, cfg := range gamedata.SigninRewardCfgList() {
 		if cfg.Day != int64(day) {
 			continue
 		}

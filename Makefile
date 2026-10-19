@@ -5,16 +5,32 @@ BIN     := bin
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help gen gen-proto gen-data gen-db keygen db-init db-seed build test test-race test-integration lint fmt vet dev run-all \
+.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db keygen db-init db-seed build test test-race test-integration lint fmt vet dev run-all \
         monitoring smoke loadtest bench drill-crash drill-suite clean
 
 help: ## 查看全部命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[32m%-12s\033[0m %s\n", $$1, $$2}'
 
-gen: gen-proto gen-data gen-db ## 一键生成全部代码
+gen: gen-proto gen-msgid gen-data gen-db ## 一键生成全部代码
 
 gen-proto: ## proto → pkg/pb（buf，需先安装 buf）
 	cd api/proto && buf generate
+
+gen-msgid: ## proto 注解 // @msg → pkg/codec/msgids_gen.go（消息号注册表）
+	$(GO) run ./tools/genmsgid
+
+gen-check: ## 校验生成物与源码一致（生成到临时目录逐文件比对，与工作区状态无关）
+	@$(GO) run ./tools/genmsgid -check
+	@set -e; tmp=$$(mktemp -d); trap 'rm -rf $$tmp' EXIT; \
+	 $(GO) run ./tools/gendata -in configs/gamedata/xml -out $$tmp/gamedata >/dev/null; \
+	 $(GO) run ./tools/gendb -in sql/schema -out $$tmp/model >/dev/null; \
+	 for f in $$tmp/gamedata/*_gen.go $$tmp/gamedata/data.go; do \
+	   cmp -s "$$f" "pkg/gamedata/$$(basename $$f)" || { echo "不一致: pkg/gamedata/$$(basename $$f)（运行 make gen）"; exit 1; }; \
+	 done; \
+	 for f in $$tmp/model/*_gen.go; do \
+	   cmp -s "$$f" "pkg/model/$$(basename $$f)" || { echo "不一致: pkg/model/$$(basename $$f)（运行 make gen）"; exit 1; }; \
+	 done; \
+	 echo "生成物一致"
 
 gen-data: ## XML 游戏数据 → pkg/gamedata（全量覆盖 *_gen.go）
 	$(GO) run ./tools/gendata -in configs/gamedata/xml -out pkg/gamedata

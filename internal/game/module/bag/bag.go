@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 
@@ -15,11 +16,11 @@ import (
 
 // 协议号（4.9：3001/3002 使用，3003/3004 列表，3010 推送）。
 const (
-	msgIDUseItemReq  uint32 = 3001
-	msgIDUseItemResp uint32 = 3002
-	msgIDBagListReq  uint32 = 3003
-	msgIDBagListResp uint32 = 3004
-	msgIDBagChange   uint32 = 3010
+	msgIDUseItemReq  = codec.MsgUseItemReq
+	msgIDUseItemResp = codec.MsgUseItemResp
+	msgIDBagListReq  = codec.MsgBagListReq
+	msgIDBagListResp = codec.MsgBagListResp
+	msgIDBagChange   = codec.MsgBagChangeNotify
 )
 
 // 业务码（4.10）。

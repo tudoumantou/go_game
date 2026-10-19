@@ -154,7 +154,7 @@ func (s *State) recalcLocked() {
 	if levels < 0 {
 		levels = 0
 	}
-	for _, cfg := range gamedata.AttrFormulaCfgList {
+	for _, cfg := range gamedata.AttrFormulaCfgList() {
 		delta := cfg.Col3 * levels
 		if delta == 0 {
 			continue
@@ -332,10 +332,10 @@ func (s *State) CanHold(grants []writebehind.ItemGrant) bool {
 
 // capacityFor 按配置计算容量；无配置返回 0（不限制）。
 func capacityFor(level int32) int32 {
-	if len(gamedata.BagCapacityCfgList) == 0 {
+	if len(gamedata.BagCapacityCfgList()) == 0 {
 		return 0
 	}
-	cfg := gamedata.BagCapacityCfgList[0]
+	cfg := gamedata.BagCapacityCfgList()[0]
 	if cfg.Col1 <= 0 {
 		return 0
 	}

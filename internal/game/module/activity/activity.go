@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -23,10 +24,10 @@ const stateKey = "activity"
 
 // 协议号（4.9：6501/6502 列表，6503/6504 领奖）。
 const (
-	msgIDListReq   uint32 = 6501
-	msgIDListResp  uint32 = 6502
-	msgIDClaimReq  uint32 = 6503
-	msgIDClaimResp uint32 = 6504
+	msgIDListReq   = codec.MsgActivityListReq
+	msgIDListResp  = codec.MsgActivityListResp
+	msgIDClaimReq  = codec.MsgActivityClaimReq
+	msgIDClaimResp = codec.MsgActivityClaimResp
 )
 
 // 业务码（4.10）。
@@ -110,7 +111,7 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 		return nil // 状态损坏不阻断登录，后续消息会再次报错
 	}
 	changed := false
-	for _, cfg := range gamedata.ActivityCfgList {
+	for _, cfg := range gamedata.ActivityCfgList() {
 		if cfg.Col2 != "login" {
 			continue
 		}
@@ -141,7 +142,7 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 		return
 	}
 	changed := false
-	for _, cfg := range gamedata.ActivityCfgList {
+	for _, cfg := range gamedata.ActivityCfgList() {
 		if cfg.Col2 != evt.Type {
 			continue
 		}
@@ -172,7 +173,7 @@ func (m *Module) onList(ctx *module.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, cfg := range gamedata.ActivityCfgList {
+	for _, cfg := range gamedata.ActivityCfgList() {
 		entry := &gamev1.ActivityEntry{
 			ActivityId: int32(cfg.Id),
 			Name:       cfg.Col1,

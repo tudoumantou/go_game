@@ -5,27 +5,28 @@ package gamedata
 
 // GuildLevelCfg guild_level.xml 配置项
 type GuildLevelCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// GuildLevelCfgList 全量配置（启动时加载，只读）
-var GuildLevelCfgList = []GuildLevelCfg{
+// GuildLevelTable guild_level.xml 的只读视图，随快照整体替换，不做原地修改
+type GuildLevelTable = table[GuildLevelCfg]
+
+func newGuildLevelTable(list []GuildLevelCfg) (GuildLevelTable, error) {
+	return newTable(list, func(c *GuildLevelCfg) int64 { return c.Id })
+}
+
+// guild_levelRows 内嵌快照的行数据
+var guild_levelRows = []GuildLevelCfg{
 	{Id: 1, Col1: 20, Col2: 1},
 	{Id: 2, Col1: 40, Col2: 2},
 }
 
-var guild_levelCfgByID = func() map[int64]*GuildLevelCfg {
-	m := make(map[int64]*GuildLevelCfg, len(GuildLevelCfgList))
-	for i := range GuildLevelCfgList {
-		m[GuildLevelCfgList[i].Id] = &GuildLevelCfgList[i]
-	}
-	return m
-}()
+// GuildLevelCfgList 当前快照的全量行（等价于 Cur().GuildLevel.List()）
+func GuildLevelCfgList() []GuildLevelCfg { return Cur().GuildLevel.List() }
 
-// GetGuildLevelCfg 按 ID 查询配置
+// GetGuildLevelCfg 按 ID 查询当前快照
 func GetGuildLevelCfg(id int64) (*GuildLevelCfg, bool) {
-	c, ok := guild_levelCfgByID[id]
-	return c, ok
+	return Cur().GuildLevel.Get(id)
 }

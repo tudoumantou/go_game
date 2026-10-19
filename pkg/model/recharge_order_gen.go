@@ -13,32 +13,32 @@ import (
 
 // RechargeOrder recharge_order 表
 type RechargeOrder struct {
-	Id int64 `db:"id"`
-	OrderId string `db:"order_id"`
-	PlayerId int64 `db:"player_id"`
-	ProductId int32 `db:"product_id"`
-	AmountFen int32 `db:"amount_fen"`
-	Channel int32 `db:"channel"`
-	Status int32 `db:"status"`
-	PaidAt sql.NullTime `db:"paid_at"`
+	Id          int64        `db:"id"`
+	OrderId     string       `db:"order_id"`
+	PlayerId    int64        `db:"player_id"`
+	ProductId   int32        `db:"product_id"`
+	AmountFen   int32        `db:"amount_fen"`
+	Channel     int32        `db:"channel"`
+	Status      int32        `db:"status"`
+	PaidAt      sql.NullTime `db:"paid_at"`
 	DeliveredAt sql.NullTime `db:"delivered_at"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	CreatedAt   time.Time    `db:"created_at"`
+	UpdatedAt   time.Time    `db:"updated_at"`
 }
 
 // RechargeOrder 列名
 const (
-	ColRechargeOrderId = "id"
-	ColRechargeOrderOrderId = "order_id"
-	ColRechargeOrderPlayerId = "player_id"
-	ColRechargeOrderProductId = "product_id"
-	ColRechargeOrderAmountFen = "amount_fen"
-	ColRechargeOrderChannel = "channel"
-	ColRechargeOrderStatus = "status"
-	ColRechargeOrderPaidAt = "paid_at"
+	ColRechargeOrderId          = "id"
+	ColRechargeOrderOrderId     = "order_id"
+	ColRechargeOrderPlayerId    = "player_id"
+	ColRechargeOrderProductId   = "product_id"
+	ColRechargeOrderAmountFen   = "amount_fen"
+	ColRechargeOrderChannel     = "channel"
+	ColRechargeOrderStatus      = "status"
+	ColRechargeOrderPaidAt      = "paid_at"
 	ColRechargeOrderDeliveredAt = "delivered_at"
-	ColRechargeOrderCreatedAt = "created_at"
-	ColRechargeOrderUpdatedAt = "updated_at"
+	ColRechargeOrderCreatedAt   = "created_at"
+	ColRechargeOrderUpdatedAt   = "updated_at"
 )
 
 // TableName 表名

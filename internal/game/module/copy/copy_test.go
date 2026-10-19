@@ -66,10 +66,10 @@ func newCtx(st *fakeState) *module.Context {
 
 func firstCopy(t *testing.T) gamedata.CopyCfg {
 	t.Helper()
-	if len(gamedata.CopyCfgList) == 0 {
+	if len(gamedata.CopyCfgList()) == 0 {
 		t.Fatal("copy config is empty")
 	}
-	return gamedata.CopyCfgList[0]
+	return gamedata.CopyCfgList()[0]
 }
 
 // TestSettleFirstPassGrantsOnce 首通发奖一次，重复通关只累加次数。
@@ -84,7 +84,7 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	drops := 0
-	for _, drop := range gamedata.CopyDropCfgList {
+	for _, drop := range gamedata.CopyDropCfgList() {
 		if drop.Col1 == cfg.Id {
 			drops++
 		}
@@ -135,7 +135,7 @@ func TestStarKeepsBest(t *testing.T) {
 // TestLevelGate 等级不足不结算、不发奖。
 func TestLevelGate(t *testing.T) {
 	var cfg gamedata.CopyCfg
-	for _, c := range gamedata.CopyCfgList {
+	for _, c := range gamedata.CopyCfgList() {
 		if c.Col2 > 1 {
 			cfg = c
 			break

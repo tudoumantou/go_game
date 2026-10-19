@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
@@ -20,14 +21,14 @@ import (
 
 // 协议号（4.9：6101/6102 信息，6103/6104 创建，6105/6106 加入，6107/6108 退出）。
 const (
-	msgIDInfoReq    uint32 = 6101
-	msgIDInfoResp   uint32 = 6102
-	msgIDCreateReq  uint32 = 6103
-	msgIDCreateResp uint32 = 6104
-	msgIDJoinReq    uint32 = 6105
-	msgIDJoinResp   uint32 = 6106
-	msgIDQuitReq    uint32 = 6107
-	msgIDQuitResp   uint32 = 6108
+	msgIDInfoReq    = codec.MsgGuildInfoReq
+	msgIDInfoResp   = codec.MsgGuildInfoResp
+	msgIDCreateReq  = codec.MsgGuildCreateReq
+	msgIDCreateResp = codec.MsgGuildCreateResp
+	msgIDJoinReq    = codec.MsgGuildJoinReq
+	msgIDJoinResp   = codec.MsgGuildJoinResp
+	msgIDQuitReq    = codec.MsgGuildQuitReq
+	msgIDQuitResp   = codec.MsgGuildQuitResp
 )
 
 // 业务码（4.10）。
@@ -43,7 +44,7 @@ const (
 // maxMembers 公会人数上限：按 guild_level.xml（col1=人数上限, col2=等级）取当前等级；
 // 缺配置回退 50，避免配置漏项导致公会无法收人。
 func maxMembers(level int32) int {
-	for _, cfg := range gamedata.GuildLevelCfgList {
+	for _, cfg := range gamedata.GuildLevelCfgList() {
 		if int32(cfg.Col2) == level && cfg.Col1 > 0 {
 			return int(cfg.Col1)
 		}

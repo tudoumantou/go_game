@@ -5,26 +5,27 @@ package gamedata
 
 // BattleCfg battle.xml 配置项
 type BattleCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// BattleCfgList 全量配置（启动时加载，只读）
-var BattleCfgList = []BattleCfg{
+// BattleTable battle.xml 的只读视图，随快照整体替换，不做原地修改
+type BattleTable = table[BattleCfg]
+
+func newBattleTable(list []BattleCfg) (BattleTable, error) {
+	return newTable(list, func(c *BattleCfg) int64 { return c.Id })
+}
+
+// battleRows 内嵌快照的行数据
+var battleRows = []BattleCfg{
 	{Id: 1, Col1: 180, Col2: 5000},
 }
 
-var battleCfgByID = func() map[int64]*BattleCfg {
-	m := make(map[int64]*BattleCfg, len(BattleCfgList))
-	for i := range BattleCfgList {
-		m[BattleCfgList[i].Id] = &BattleCfgList[i]
-	}
-	return m
-}()
+// BattleCfgList 当前快照的全量行（等价于 Cur().Battle.List()）
+func BattleCfgList() []BattleCfg { return Cur().Battle.List() }
 
-// GetBattleCfg 按 ID 查询配置
+// GetBattleCfg 按 ID 查询当前快照
 func GetBattleCfg(id int64) (*BattleCfg, bool) {
-	c, ok := battleCfgByID[id]
-	return c, ok
+	return Cur().Battle.Get(id)
 }

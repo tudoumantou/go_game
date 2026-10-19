@@ -6,19 +6,23 @@ package game_study.game.v1;
 option go_package = "game_study/pkg/pb/game/v1;gamev1";
 
 // 使用道具（消耗/装备/礼包，走 bag 模块）
+// @msg 3001
 message UseItemReq { // MsgID: 3001
   int64 item_uid = 1; // 背包实例 UID（非模板 ID）
   int32 count    = 2;
 }
 
+// @msg 3002
 message UseItemResp { // MsgID: 3002
   int32 code         = 1; // 3001 不存在 / 3002 不足 / 3004 不可用
   int32 remain_count = 2; // 使用后剩余数量
 }
 
 // 背包列表（P6：堆叠模式，item_uid 暂等于 item_id；P7 改实例 UID）
+// @msg 3003
 message BagListReq {} // MsgID: 3003
 
+// @msg 3004
 message BagListResp { // MsgID: 3004
   int32 code = 1;
   repeated ItemEntry items = 2;
@@ -31,6 +35,7 @@ message ItemEntry {
 }
 
 // 背包变动推送（任何增删改后推送，客户端增量刷新）
+// @msg 3010
 message BagChangeNotify { // MsgID: 3010 [Push]
   repeated ItemChange changes = 1;
 }

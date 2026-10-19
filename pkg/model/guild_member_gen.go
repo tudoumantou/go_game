@@ -13,22 +13,22 @@ import (
 
 // GuildMember guild_member 表
 type GuildMember struct {
-	Id int64 `db:"id"`
-	GuildId int64 `db:"guild_id"`
-	PlayerId int64 `db:"player_id"`
-	Title int32 `db:"title"`
-	Contributed int32 `db:"contributed"`
-	JoinedAt time.Time `db:"joined_at"`
+	Id          int64     `db:"id"`
+	GuildId     int64     `db:"guild_id"`
+	PlayerId    int64     `db:"player_id"`
+	Title       int32     `db:"title"`
+	Contributed int32     `db:"contributed"`
+	JoinedAt    time.Time `db:"joined_at"`
 }
 
 // GuildMember 列名
 const (
-	ColGuildMemberId = "id"
-	ColGuildMemberGuildId = "guild_id"
-	ColGuildMemberPlayerId = "player_id"
-	ColGuildMemberTitle = "title"
+	ColGuildMemberId          = "id"
+	ColGuildMemberGuildId     = "guild_id"
+	ColGuildMemberPlayerId    = "player_id"
+	ColGuildMemberTitle       = "title"
 	ColGuildMemberContributed = "contributed"
-	ColGuildMemberJoinedAt = "joined_at"
+	ColGuildMemberJoinedAt    = "joined_at"
 )
 
 // TableName 表名

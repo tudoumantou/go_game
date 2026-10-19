@@ -13,19 +13,19 @@ import (
 
 // TeamMember team_member 表
 type TeamMember struct {
-	Id int64 `db:"id"`
-	TeamId int64 `db:"team_id"`
-	PlayerId int64 `db:"player_id"`
-	Ready int32 `db:"ready"`
+	Id       int64     `db:"id"`
+	TeamId   int64     `db:"team_id"`
+	PlayerId int64     `db:"player_id"`
+	Ready    int32     `db:"ready"`
 	JoinedAt time.Time `db:"joined_at"`
 }
 
 // TeamMember 列名
 const (
-	ColTeamMemberId = "id"
-	ColTeamMemberTeamId = "team_id"
+	ColTeamMemberId       = "id"
+	ColTeamMemberTeamId   = "team_id"
 	ColTeamMemberPlayerId = "player_id"
-	ColTeamMemberReady = "ready"
+	ColTeamMemberReady    = "ready"
 	ColTeamMemberJoinedAt = "joined_at"
 )
 

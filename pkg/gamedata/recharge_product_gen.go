@@ -5,29 +5,30 @@ package gamedata
 
 // RechargeProductCfg recharge_product.xml 配置项
 type RechargeProductCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 	Col3 int64 `json:"col3"`
 }
 
-// RechargeProductCfgList 全量配置（启动时加载，只读）
-var RechargeProductCfgList = []RechargeProductCfg{
+// RechargeProductTable recharge_product.xml 的只读视图，随快照整体替换，不做原地修改
+type RechargeProductTable = table[RechargeProductCfg]
+
+func newRechargeProductTable(list []RechargeProductCfg) (RechargeProductTable, error) {
+	return newTable(list, func(c *RechargeProductCfg) int64 { return c.Id })
+}
+
+// recharge_productRows 内嵌快照的行数据
+var recharge_productRows = []RechargeProductCfg{
 	{Id: 1, Col1: 60, Col2: 600, Col3: 6},
 	{Id: 2, Col1: 300, Col2: 3000, Col3: 30},
 	{Id: 3, Col1: 980, Col2: 9800, Col3: 98},
 }
 
-var recharge_productCfgByID = func() map[int64]*RechargeProductCfg {
-	m := make(map[int64]*RechargeProductCfg, len(RechargeProductCfgList))
-	for i := range RechargeProductCfgList {
-		m[RechargeProductCfgList[i].Id] = &RechargeProductCfgList[i]
-	}
-	return m
-}()
+// RechargeProductCfgList 当前快照的全量行（等价于 Cur().RechargeProduct.List()）
+func RechargeProductCfgList() []RechargeProductCfg { return Cur().RechargeProduct.List() }
 
-// GetRechargeProductCfg 按 ID 查询配置
+// GetRechargeProductCfg 按 ID 查询当前快照
 func GetRechargeProductCfg(id int64) (*RechargeProductCfg, bool) {
-	c, ok := recharge_productCfgByID[id]
-	return c, ok
+	return Cur().RechargeProduct.Get(id)
 }

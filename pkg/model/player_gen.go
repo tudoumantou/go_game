@@ -13,26 +13,26 @@ import (
 
 // Player player 表
 type Player struct {
-	Id int64 `db:"id"`
-	AccountId int64 `db:"account_id"`
-	Name string `db:"name"`
-	Level int32 `db:"level"`
-	Exp int64 `db:"exp"`
-	Coin int64 `db:"coin"`
-	SceneId int32 `db:"scene_id"`
+	Id        int64     `db:"id"`
+	AccountId int64     `db:"account_id"`
+	Name      string    `db:"name"`
+	Level     int32     `db:"level"`
+	Exp       int64     `db:"exp"`
+	Coin      int64     `db:"coin"`
+	SceneId   int32     `db:"scene_id"`
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
 // Player 列名
 const (
-	ColPlayerId = "id"
+	ColPlayerId        = "id"
 	ColPlayerAccountId = "account_id"
-	ColPlayerName = "name"
-	ColPlayerLevel = "level"
-	ColPlayerExp = "exp"
-	ColPlayerCoin = "coin"
-	ColPlayerSceneId = "scene_id"
+	ColPlayerName      = "name"
+	ColPlayerLevel     = "level"
+	ColPlayerExp       = "exp"
+	ColPlayerCoin      = "coin"
+	ColPlayerSceneId   = "scene_id"
 	ColPlayerCreatedAt = "created_at"
 	ColPlayerUpdatedAt = "updated_at"
 )
@@ -97,4 +97,3 @@ func UpsertPlayerBatch(ctx context.Context, tx *sql.Tx, rows []Player) error {
 		return []any{m.AccountId, m.Name, m.Level, m.Exp, m.Coin, m.SceneId}
 	})
 }
-

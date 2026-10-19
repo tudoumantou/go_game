@@ -5,28 +5,29 @@ package gamedata
 
 // AttrFormulaCfg attr_formula.xml 配置项
 type AttrFormulaCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
 }
 
-// AttrFormulaCfgList 全量配置（启动时加载，只读）
-var AttrFormulaCfgList = []AttrFormulaCfg{
+// AttrFormulaTable attr_formula.xml 的只读视图，随快照整体替换，不做原地修改
+type AttrFormulaTable = table[AttrFormulaCfg]
+
+func newAttrFormulaTable(list []AttrFormulaCfg) (AttrFormulaTable, error) {
+	return newTable(list, func(c *AttrFormulaCfg) int64 { return c.Id })
+}
+
+// attr_formulaRows 内嵌快照的行数据
+var attr_formulaRows = []AttrFormulaCfg{
 	{Id: 1, Col1: "hp", Col2: 100, Col3: 20},
 	{Id: 2, Col1: "atk", Col2: 10, Col3: 3},
 }
 
-var attr_formulaCfgByID = func() map[int64]*AttrFormulaCfg {
-	m := make(map[int64]*AttrFormulaCfg, len(AttrFormulaCfgList))
-	for i := range AttrFormulaCfgList {
-		m[AttrFormulaCfgList[i].Id] = &AttrFormulaCfgList[i]
-	}
-	return m
-}()
+// AttrFormulaCfgList 当前快照的全量行（等价于 Cur().AttrFormula.List()）
+func AttrFormulaCfgList() []AttrFormulaCfg { return Cur().AttrFormula.List() }
 
-// GetAttrFormulaCfg 按 ID 查询配置
+// GetAttrFormulaCfg 按 ID 查询当前快照
 func GetAttrFormulaCfg(id int64) (*AttrFormulaCfg, bool) {
-	c, ok := attr_formulaCfgByID[id]
-	return c, ok
+	return Cur().AttrFormula.Get(id)
 }

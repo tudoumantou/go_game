@@ -5,27 +5,28 @@ package gamedata
 
 // SkillUpgradeCfg skill_upgrade.xml 配置项
 type SkillUpgradeCfg struct {
-	Id int64 `json:"id"`
+	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
 }
 
-// SkillUpgradeCfgList 全量配置（启动时加载，只读）
-var SkillUpgradeCfgList = []SkillUpgradeCfg{
+// SkillUpgradeTable skill_upgrade.xml 的只读视图，随快照整体替换，不做原地修改
+type SkillUpgradeTable = table[SkillUpgradeCfg]
+
+func newSkillUpgradeTable(list []SkillUpgradeCfg) (SkillUpgradeTable, error) {
+	return newTable(list, func(c *SkillUpgradeCfg) int64 { return c.Id })
+}
+
+// skill_upgradeRows 内嵌快照的行数据
+var skill_upgradeRows = []SkillUpgradeCfg{
 	{Id: 1, Col1: 1, Col2: 100},
 	{Id: 2, Col1: 2, Col2: 300},
 }
 
-var skill_upgradeCfgByID = func() map[int64]*SkillUpgradeCfg {
-	m := make(map[int64]*SkillUpgradeCfg, len(SkillUpgradeCfgList))
-	for i := range SkillUpgradeCfgList {
-		m[SkillUpgradeCfgList[i].Id] = &SkillUpgradeCfgList[i]
-	}
-	return m
-}()
+// SkillUpgradeCfgList 当前快照的全量行（等价于 Cur().SkillUpgrade.List()）
+func SkillUpgradeCfgList() []SkillUpgradeCfg { return Cur().SkillUpgrade.List() }
 
-// GetSkillUpgradeCfg 按 ID 查询配置
+// GetSkillUpgradeCfg 按 ID 查询当前快照
 func GetSkillUpgradeCfg(id int64) (*SkillUpgradeCfg, bool) {
-	c, ok := skill_upgradeCfgByID[id]
-	return c, ok
+	return Cur().SkillUpgrade.Get(id)
 }

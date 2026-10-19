@@ -5,28 +5,29 @@ package gamedata
 
 // SkillCfg skill.xml 配置项
 type SkillCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
-	Col2 int64 `json:"col2"`
-	Col3 int64 `json:"col3"`
+	Col2 int64  `json:"col2"`
+	Col3 int64  `json:"col3"`
 }
 
-// SkillCfgList 全量配置（启动时加载，只读）
-var SkillCfgList = []SkillCfg{
+// SkillTable skill.xml 的只读视图，随快照整体替换，不做原地修改
+type SkillTable = table[SkillCfg]
+
+func newSkillTable(list []SkillCfg) (SkillTable, error) {
+	return newTable(list, func(c *SkillCfg) int64 { return c.Id })
+}
+
+// skillRows 内嵌快照的行数据
+var skillRows = []SkillCfg{
 	{Id: 4001, Col1: "普通攻击", Col2: 1, Col3: 0},
 	{Id: 4002, Col1: "火球术", Col2: 1, Col3: 5},
 }
 
-var skillCfgByID = func() map[int64]*SkillCfg {
-	m := make(map[int64]*SkillCfg, len(SkillCfgList))
-	for i := range SkillCfgList {
-		m[SkillCfgList[i].Id] = &SkillCfgList[i]
-	}
-	return m
-}()
+// SkillCfgList 当前快照的全量行（等价于 Cur().Skill.List()）
+func SkillCfgList() []SkillCfg { return Cur().Skill.List() }
 
-// GetSkillCfg 按 ID 查询配置
+// GetSkillCfg 按 ID 查询当前快照
 func GetSkillCfg(id int64) (*SkillCfg, bool) {
-	c, ok := skillCfgByID[id]
-	return c, ok
+	return Cur().Skill.Get(id)
 }

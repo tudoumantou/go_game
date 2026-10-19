@@ -65,7 +65,7 @@ func newCtx(st *fakeState) *module.Context {
 
 func firstSkill(t *testing.T) gamedata.SkillCfg {
 	t.Helper()
-	for _, cfg := range gamedata.SkillCfgList {
+	for _, cfg := range gamedata.SkillCfgList() {
 		if cfg.Col3 > 0 {
 			return cfg // 带消耗的技能，才能验证扣费
 		}

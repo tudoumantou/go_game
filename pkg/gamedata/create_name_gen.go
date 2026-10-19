@@ -5,27 +5,28 @@ package gamedata
 
 // CreateNameCfg create_name.xml 配置项
 type CreateNameCfg struct {
-	Id int64 `json:"id"`
+	Id   int64  `json:"id"`
 	Col1 string `json:"col1"`
 }
 
-// CreateNameCfgList 全量配置（启动时加载，只读）
-var CreateNameCfgList = []CreateNameCfg{
+// CreateNameTable create_name.xml 的只读视图，随快照整体替换，不做原地修改
+type CreateNameTable = table[CreateNameCfg]
+
+func newCreateNameTable(list []CreateNameCfg) (CreateNameTable, error) {
+	return newTable(list, func(c *CreateNameCfg) int64 { return c.Id })
+}
+
+// create_nameRows 内嵌快照的行数据
+var create_nameRows = []CreateNameCfg{
 	{Id: 1, Col1: "风云"},
 	{Id: 2, Col1: "逐月"},
 	{Id: 3, Col1: "听雷"},
 }
 
-var create_nameCfgByID = func() map[int64]*CreateNameCfg {
-	m := make(map[int64]*CreateNameCfg, len(CreateNameCfgList))
-	for i := range CreateNameCfgList {
-		m[CreateNameCfgList[i].Id] = &CreateNameCfgList[i]
-	}
-	return m
-}()
+// CreateNameCfgList 当前快照的全量行（等价于 Cur().CreateName.List()）
+func CreateNameCfgList() []CreateNameCfg { return Cur().CreateName.List() }
 
-// GetCreateNameCfg 按 ID 查询配置
+// GetCreateNameCfg 按 ID 查询当前快照
 func GetCreateNameCfg(id int64) (*CreateNameCfg, bool) {
-	c, ok := create_nameCfgByID[id]
-	return c, ok
+	return Cur().CreateName.Get(id)
 }
