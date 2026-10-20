@@ -50,7 +50,7 @@ db-init: ## DDL → MySQL 建表（首次部署）
 db-seed: ## sql/seed → 初始数据（道具/等级等安全表 + 测试账号）
 	./scripts/db-seed.sh
 
-build: ## 交叉编译五服务及独立 flusher → bin/
+build: ## 交叉编译六进程（五服务 + map + flusher）→ bin/
 	./scripts/build.sh
 
 test: ## 单元测试（纯逻辑，无外部依赖；集成测试见 test-integration）

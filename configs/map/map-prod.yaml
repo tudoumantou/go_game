@@ -1,0 +1,63 @@
+# configs/map/map-prod.yaml —— 生产地图配置
+#
+# 拓扑按设计文档 5.1 的默认值：5000×5000 格、5×5 场景（每场景 1000×1000 格）、
+# 4×4 广播块（每块 1250×1250 格、块内 25 格一个 AOI cell）、100×100 富饶块。
+# 任何拓扑字段的变更都属于"停世界迁移"，不能热更新。
+server:
+  name: map
+  env: prod
+  grpc_addr: ":9400"
+  http_addr: ":9401"
+
+log:
+  level: info
+
+shutdown:
+  total_timeout: 30s
+
+map:
+  enabled: true
+  world_ids: [1]
+
+  world_width_cells: 5000
+  world_height_cells: 5000
+  scene_cols: 5
+  scene_rows: 5
+  position_units_per_cell: 1000
+
+  aoi_block_cols: 4
+  aoi_block_rows: 4
+  aoi_cell_size: 25
+  rich_block_size: 100
+
+  tick_interval: 1s
+  scene_mailbox_size: 4096
+  scene_control_capacity: 64
+  max_commands_per_turn: 64
+  max_due_events_per_turn: 64
+
+  tx_workers: 4
+  tx_queue_capacity: 256
+  tx_timeout: 2s
+  command_deadline: 3s
+
+  lease_ttl: 15s
+  lease_renew_interval: 3s
+
+  max_view_width: 2560
+  max_view_height: 2560
+  view_pending_bytes: 1048576
+  aoi_payload_limit_bytes: 65536
+
+  max_battle_queue_per_target: 100
+  battle_timeout: 30s
+  refresh_interval: 30m
+  refresh_batch_size: 20
+  resource_position_attempts: 100
+  delivery_retry_min: 1s
+  delivery_retry_max: 60s
+  max_player_receipts: 1000
+
+  march_speed_units_per_sec: 100000
+  capacity_units: 100000
+  collect_rate_milli_per_sec: 2500

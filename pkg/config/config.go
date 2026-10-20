@@ -70,6 +70,13 @@ type Config struct {
 	// 跨服节点
 	Battle   BattleConfig   `yaml:"battle"`
 	XService XServiceConfig `yaml:"xservice"`
+	// 大地图（SLG，世界地图子系统，设计文档 17.1）
+	//
+	// 用值字段而不是指针：与其它段保持一致的「缺段=零值」语义。
+	// 旧配置文件（gateway/game/login 等）不带 map: 段时，
+	// Enabled=false，Validate 跳过地图校验，现有进程完全无感。
+	// 只有 map.enabled=true 的进程（cmd/map）才会执行地图段校验。
+	Map MapConfig `yaml:"map"`
 }
 
 type ServerConfig struct {
@@ -319,6 +326,360 @@ func (c *Config) Validate() error {
 	// actor 分片用 hash(actorID) & shardMask 位掩码寻址（第 7 章），必须 2 的幂。
 	if c.Flush.ShardCount < 0 {
 		return fmt.Errorf("flush.shard_count(%d) 不能为负", c.Flush.ShardCount)
+	}
+	// 地图段只在启用时校验：未启用地图的进程（gateway/game/login…）
+	// 不该因为配置里没有 map 段而启动失败。
+	if c.Map.Enabled {
+		if err := c.Map.Validate(); err != nil {
+			return fmt.Errorf("map: %w", err)
+		}
+	}
+	return nil
+}
+
+// MapConfig 是 SLG 大地图子系统的配置（设计文档 17.1）。
+//
+// 字段分四类：
+//   - 拓扑类（尺寸/网格）：只能在停世界时迁移，不能热更新；
+//   - 调度类（tick/邮箱/预算）：影响吞吐与延迟，改配置需重启场景；
+//   - 事务类（workers/queue/timeout）：I/O 参数；
+//   - 玩法类（采集速率/刷新/战斗队列）：可以按世界覆盖（M2 起）。
+//
+// 时间字段用字符串 + ParseDuration，理由与全项目其它段一致：
+// yaml.v3 对 time.Duration 只认纳秒整数。
+type MapConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// WorldIDs 本进程加载的世界编号。空 = 不加载任何世界（只提供管理面）。
+	WorldIDs []uint64 `yaml:"world_ids"`
+
+	// WorldWidthCells/WorldHeightCells 世界尺寸（格）。
+	WorldWidthCells  int64 `yaml:"world_width_cells"`
+	WorldHeightCells int64 `yaml:"world_height_cells"`
+	// SceneCols/SceneRows 逻辑场景网格。世界尺寸必须能被它整除。
+	SceneCols int32 `yaml:"scene_cols"`
+	SceneRows int32 `yaml:"scene_rows"`
+	// PositionUnitsPerCell 1 格对应的定点单位数（默认 1000）。
+	PositionUnitsPerCell int64 `yaml:"position_units_per_cell"`
+
+	// AOIBlockCols/AOIBlockRows 广播块网格；AOICellSize 块内 cell 边长（格）。
+	AOIBlockCols int32 `yaml:"aoi_block_cols"`
+	AOIBlockRows int32 `yaml:"aoi_block_rows"`
+	AOICellSize  int64 `yaml:"aoi_cell_size"`
+	// RichBlockSize 富饶块边长（格），自身网格编号，不复用场景编号。
+	RichBlockSize int64 `yaml:"rich_block_size"`
+
+	// TickInterval 场景定时唤醒间隔（"1s"）。
+	TickInterval string `yaml:"tick_interval"`
+	// SceneMailboxSize 业务命令邮箱容量，满即拒收。
+	SceneMailboxSize int `yaml:"scene_mailbox_size"`
+	// SceneControlCapacity 控制通道容量，必须大于在途事务数。
+	SceneControlCapacity int `yaml:"scene_control_capacity"`
+	// MaxCommandsPerTurn/MaxDueEventsPerTurn 每轮预算，防热点饿死定时器。
+	MaxCommandsPerTurn  int `yaml:"max_commands_per_turn"`
+	MaxDueEventsPerTurn int `yaml:"max_due_events_per_turn"`
+
+	// TxWorkers 事务工作池大小；TxQueueCapacity 在途事务上限。
+	TxWorkers       int `yaml:"tx_workers"`
+	TxQueueCapacity int `yaml:"tx_queue_capacity"`
+	// TxTimeout 单次提交超时；CommandDeadline 命令端到端超时。
+	// 约束：TxTimeout 必须小于 CommandDeadline（否则命令先超时，
+	// 事务还在跑，会产生"客户端认为失败但实际成功"）。
+	TxTimeout       string `yaml:"tx_timeout"`
+	CommandDeadline string `yaml:"command_deadline"`
+
+	// LeaseTTL/LeaseRenewInterval 世界租约（M2 启用；M1 只做参数校验）。
+	LeaseTTL           string `yaml:"lease_ttl"`
+	LeaseRenewInterval string `yaml:"lease_renew_interval"`
+
+	// MaxViewWidth/MaxViewHeight 单次视野查询上限（格）。
+	MaxViewWidth  int64 `yaml:"max_view_width"`
+	MaxViewHeight int64 `yaml:"max_view_height"`
+	// ViewPendingBytes 单连接投影积压上限（字节）。
+	ViewPendingBytes int64 `yaml:"view_pending_bytes"`
+	// AOIPayloadLimitBytes 单次投影消息上限。
+	AOIPayloadLimitBytes int `yaml:"aoi_payload_limit_bytes"`
+
+	// MaxBattleQueuePerTarget 单目标战斗队列上限。
+	MaxBattleQueuePerTarget int `yaml:"max_battle_queue_per_target"`
+	// BattleTimeout 战斗裁决超时。
+	BattleTimeout string `yaml:"battle_timeout"`
+	// RefreshInterval 富饶块刷新周期。
+	RefreshInterval string `yaml:"refresh_interval"`
+	// RefreshBatchSize 每批刷新对象数；ResourcePositionAttempts 单点选址尝试次数。
+	RefreshBatchSize         int `yaml:"refresh_batch_size"`
+	ResourcePositionAttempts int `yaml:"resource_position_attempts"`
+	// DeliveryRetryMin/Max 交接单重试退避区间。
+	DeliveryRetryMin string `yaml:"delivery_retry_min"`
+	DeliveryRetryMax string `yaml:"delivery_retry_max"`
+	// MaxPlayerReceipts 单玩家保留的命令回执条数上限（防止幂等表无限增长）。
+	MaxPlayerReceipts int64 `yaml:"max_player_receipts"`
+
+	// 玩法规则（M1 内置默认；M2 起由 gamedata 注入）
+	MarchSpeedUnitsPerSec int64 `yaml:"march_speed_units_per_sec"`
+	CapacityUnits         int64 `yaml:"capacity_units"`
+	CollectRateMilli      int64 `yaml:"collect_rate_milli_per_sec"`
+}
+
+// MapDefaults 返回地图段的默认值（用于 cmd/map 在配置缺省时补齐）。
+func MapDefaults() MapConfig {
+	return MapConfig{
+		WorldWidthCells:          5000,
+		WorldHeightCells:         5000,
+		SceneCols:                5,
+		SceneRows:                5,
+		PositionUnitsPerCell:     1000,
+		AOIBlockCols:             4,
+		AOIBlockRows:             4,
+		AOICellSize:              25,
+		RichBlockSize:            100,
+		TickInterval:             "1s",
+		SceneMailboxSize:         4096,
+		SceneControlCapacity:     64,
+		MaxCommandsPerTurn:       64,
+		MaxDueEventsPerTurn:      64,
+		TxWorkers:                4,
+		TxQueueCapacity:          256,
+		TxTimeout:                "2s",
+		CommandDeadline:          "3s",
+		LeaseTTL:                 "15s",
+		LeaseRenewInterval:       "3s",
+		MaxViewWidth:             2560,
+		MaxViewHeight:            2560,
+		ViewPendingBytes:         1048576,
+		AOIPayloadLimitBytes:     65536,
+		MaxBattleQueuePerTarget:  100,
+		BattleTimeout:            "30s",
+		RefreshInterval:          "30m",
+		RefreshBatchSize:         20,
+		ResourcePositionAttempts: 100,
+		DeliveryRetryMin:         "1s",
+		DeliveryRetryMax:         "60s",
+		MaxPlayerReceipts:        1000,
+		MarchSpeedUnitsPerSec:    100000,
+		CapacityUnits:            100000,
+		CollectRateMilli:         2500,
+	}
+}
+
+// ApplyDefaults 用默认值补齐所有零值字段。
+//
+// 只补零值，不覆盖显式配置：这样"配了 0 想要 0"与"没配"无法区分，
+// 但地图参数里没有合法取 0 的语义（尺寸/速率/容量为 0 都是错误配置），
+// 因此补零是安全的。任何非法值仍会在 Validate 中报错。
+func (m *MapConfig) ApplyDefaults() {
+	d := MapDefaults()
+	if m.WorldWidthCells == 0 {
+		m.WorldWidthCells = d.WorldWidthCells
+	}
+	if m.WorldHeightCells == 0 {
+		m.WorldHeightCells = d.WorldHeightCells
+	}
+	if m.SceneCols == 0 {
+		m.SceneCols = d.SceneCols
+	}
+	if m.SceneRows == 0 {
+		m.SceneRows = d.SceneRows
+	}
+	if m.PositionUnitsPerCell == 0 {
+		m.PositionUnitsPerCell = d.PositionUnitsPerCell
+	}
+	if m.AOIBlockCols == 0 {
+		m.AOIBlockCols = d.AOIBlockCols
+	}
+	if m.AOIBlockRows == 0 {
+		m.AOIBlockRows = d.AOIBlockRows
+	}
+	if m.AOICellSize == 0 {
+		m.AOICellSize = d.AOICellSize
+	}
+	if m.RichBlockSize == 0 {
+		m.RichBlockSize = d.RichBlockSize
+	}
+	if m.TickInterval == "" {
+		m.TickInterval = d.TickInterval
+	}
+	if m.SceneMailboxSize == 0 {
+		m.SceneMailboxSize = d.SceneMailboxSize
+	}
+	if m.SceneControlCapacity == 0 {
+		m.SceneControlCapacity = d.SceneControlCapacity
+	}
+	if m.MaxCommandsPerTurn == 0 {
+		m.MaxCommandsPerTurn = d.MaxCommandsPerTurn
+	}
+	if m.MaxDueEventsPerTurn == 0 {
+		m.MaxDueEventsPerTurn = d.MaxDueEventsPerTurn
+	}
+	if m.TxWorkers == 0 {
+		m.TxWorkers = d.TxWorkers
+	}
+	if m.TxQueueCapacity == 0 {
+		m.TxQueueCapacity = d.TxQueueCapacity
+	}
+	if m.TxTimeout == "" {
+		m.TxTimeout = d.TxTimeout
+	}
+	if m.CommandDeadline == "" {
+		m.CommandDeadline = d.CommandDeadline
+	}
+	if m.LeaseTTL == "" {
+		m.LeaseTTL = d.LeaseTTL
+	}
+	if m.LeaseRenewInterval == "" {
+		m.LeaseRenewInterval = d.LeaseRenewInterval
+	}
+	if m.MaxViewWidth == 0 {
+		m.MaxViewWidth = d.MaxViewWidth
+	}
+	if m.MaxViewHeight == 0 {
+		m.MaxViewHeight = d.MaxViewHeight
+	}
+	if m.ViewPendingBytes == 0 {
+		m.ViewPendingBytes = d.ViewPendingBytes
+	}
+	if m.AOIPayloadLimitBytes == 0 {
+		m.AOIPayloadLimitBytes = d.AOIPayloadLimitBytes
+	}
+	if m.MaxBattleQueuePerTarget == 0 {
+		m.MaxBattleQueuePerTarget = d.MaxBattleQueuePerTarget
+	}
+	if m.BattleTimeout == "" {
+		m.BattleTimeout = d.BattleTimeout
+	}
+	if m.RefreshInterval == "" {
+		m.RefreshInterval = d.RefreshInterval
+	}
+	if m.RefreshBatchSize == 0 {
+		m.RefreshBatchSize = d.RefreshBatchSize
+	}
+	if m.ResourcePositionAttempts == 0 {
+		m.ResourcePositionAttempts = d.ResourcePositionAttempts
+	}
+	if m.DeliveryRetryMin == "" {
+		m.DeliveryRetryMin = d.DeliveryRetryMin
+	}
+	if m.DeliveryRetryMax == "" {
+		m.DeliveryRetryMax = d.DeliveryRetryMax
+	}
+	if m.MaxPlayerReceipts == 0 {
+		m.MaxPlayerReceipts = d.MaxPlayerReceipts
+	}
+	if m.MarchSpeedUnitsPerSec == 0 {
+		m.MarchSpeedUnitsPerSec = d.MarchSpeedUnitsPerSec
+	}
+	if m.CapacityUnits == 0 {
+		m.CapacityUnits = d.CapacityUnits
+	}
+	if m.CollectRateMilli == 0 {
+		m.CollectRateMilli = d.CollectRateMilli
+	}
+}
+
+// Validate 校验地图配置（设计文档 17.1 的启动校验清单）。
+//
+// 校验失败必须拒绝启动：地图拓扑错误（尺寸不整除、区块对不齐）
+// 会在运行期表现为"某个边缘格子永远查不到场景"，
+// 这类问题一旦带病上线极难定位。
+func (m MapConfig) Validate() error {
+	if m.WorldWidthCells <= 0 || m.WorldHeightCells <= 0 {
+		return fmt.Errorf("world 尺寸必须为正, got %dx%d", m.WorldWidthCells, m.WorldHeightCells)
+	}
+	if m.SceneCols <= 0 || m.SceneRows <= 0 {
+		return fmt.Errorf("scene 网格必须为正, got %dx%d", m.SceneCols, m.SceneRows)
+	}
+	if m.WorldWidthCells%int64(m.SceneCols) != 0 || m.WorldHeightCells%int64(m.SceneRows) != 0 {
+		return fmt.Errorf("世界 %dx%d 无法被场景网格 %dx%d 整除",
+			m.WorldWidthCells, m.WorldHeightCells, m.SceneCols, m.SceneRows)
+	}
+	if m.PositionUnitsPerCell <= 0 {
+		return fmt.Errorf("position_units_per_cell 必须为正, got %d", m.PositionUnitsPerCell)
+	}
+	if m.WorldWidthCells > (1<<62)/m.PositionUnitsPerCell ||
+		m.WorldHeightCells > (1<<62)/m.PositionUnitsPerCell {
+		return fmt.Errorf("世界尺寸与单位换算乘积溢出")
+	}
+	if m.AOIBlockCols <= 0 || m.AOIBlockRows <= 0 {
+		return fmt.Errorf("aoi 块网格必须为正, got %dx%d", m.AOIBlockCols, m.AOIBlockRows)
+	}
+	if m.WorldWidthCells%int64(m.AOIBlockCols) != 0 || m.WorldHeightCells%int64(m.AOIBlockRows) != 0 {
+		return fmt.Errorf("世界 %dx%d 无法被 AOI 块 %dx%d 整除",
+			m.WorldWidthCells, m.WorldHeightCells, m.AOIBlockCols, m.AOIBlockRows)
+	}
+	if m.AOICellSize <= 0 {
+		return fmt.Errorf("aoi_cell_size 必须为正, got %d", m.AOICellSize)
+	}
+	if blockW := m.WorldWidthCells / int64(m.AOIBlockCols); blockW%m.AOICellSize != 0 {
+		return fmt.Errorf("AOI 块宽 %d 无法被 cell 尺寸 %d 整除", blockW, m.AOICellSize)
+	}
+	if m.RichBlockSize <= 0 {
+		return fmt.Errorf("rich_block_size 必须为正, got %d", m.RichBlockSize)
+	}
+	if m.WorldWidthCells%m.RichBlockSize != 0 || m.WorldHeightCells%m.RichBlockSize != 0 {
+		return fmt.Errorf("世界 %dx%d 无法被富饶块 %d 整除",
+			m.WorldWidthCells, m.WorldHeightCells, m.RichBlockSize)
+	}
+	if m.SceneMailboxSize <= 0 || m.SceneControlCapacity < 2 {
+		return fmt.Errorf("scene 邮箱容量非法: mailbox=%d control=%d", m.SceneMailboxSize, m.SceneControlCapacity)
+	}
+	if m.MaxCommandsPerTurn <= 0 || m.MaxDueEventsPerTurn <= 0 {
+		return fmt.Errorf("每轮预算必须为正: commands=%d due=%d", m.MaxCommandsPerTurn, m.MaxDueEventsPerTurn)
+	}
+	if m.TxWorkers <= 0 || m.TxQueueCapacity < m.TxWorkers {
+		return fmt.Errorf("事务池参数非法: workers=%d queue=%d", m.TxWorkers, m.TxQueueCapacity)
+	}
+	txTimeout, err := ParseDuration(m.TxTimeout)
+	if err != nil {
+		return fmt.Errorf("tx_timeout 解析失败: %w", err)
+	}
+	cmdDeadline, err := ParseDuration(m.CommandDeadline)
+	if err != nil {
+		return fmt.Errorf("command_deadline 解析失败: %w", err)
+	}
+	if txTimeout <= 0 || cmdDeadline <= 0 {
+		return fmt.Errorf("tx_timeout(%s)/command_deadline(%s) 必须为正", m.TxTimeout, m.CommandDeadline)
+	}
+	if txTimeout >= cmdDeadline {
+		return fmt.Errorf("tx_timeout(%s) 必须小于 command_deadline(%s)", m.TxTimeout, m.CommandDeadline)
+	}
+	leaseTTL, err := ParseDuration(m.LeaseTTL)
+	if err != nil {
+		return fmt.Errorf("lease_ttl 解析失败: %w", err)
+	}
+	renew, err := ParseDuration(m.LeaseRenewInterval)
+	if err != nil {
+		return fmt.Errorf("lease_renew_interval 解析失败: %w", err)
+	}
+	if renew*3 > leaseTTL {
+		return fmt.Errorf("lease_renew_interval(%s) 必须明显小于 lease_ttl(%s)", m.LeaseRenewInterval, m.LeaseTTL)
+	}
+	if m.MaxViewWidth <= 0 || m.MaxViewHeight <= 0 {
+		return fmt.Errorf("视野上限必须为正, got %dx%d", m.MaxViewWidth, m.MaxViewHeight)
+	}
+	if m.MaxViewWidth > m.WorldWidthCells || m.MaxViewHeight > m.WorldHeightCells {
+		return fmt.Errorf("视野上限 %dx%d 超过世界尺寸", m.MaxViewWidth, m.MaxViewHeight)
+	}
+	if m.ViewPendingBytes <= 0 || m.AOIPayloadLimitBytes <= 0 {
+		return fmt.Errorf("投影缓冲参数必须为正")
+	}
+	if m.MaxBattleQueuePerTarget <= 0 {
+		return fmt.Errorf("战斗队列上限必须为正, got %d", m.MaxBattleQueuePerTarget)
+	}
+	if _, err := ParseDuration(m.BattleTimeout); err != nil {
+		return fmt.Errorf("battle_timeout 解析失败: %w", err)
+	}
+	if _, err := ParseDuration(m.RefreshInterval); err != nil {
+		return fmt.Errorf("refresh_interval 解析失败: %w", err)
+	}
+	if m.RefreshBatchSize <= 0 || m.ResourcePositionAttempts <= 0 {
+		return fmt.Errorf("刷新批次与选址尝试必须为正: batch=%d attempts=%d",
+			m.RefreshBatchSize, m.ResourcePositionAttempts)
+	}
+	if m.MaxPlayerReceipts <= 0 {
+		return fmt.Errorf("max_player_receipts 必须为正, got %d", m.MaxPlayerReceipts)
+	}
+	if m.MarchSpeedUnitsPerSec <= 0 || m.CapacityUnits <= 0 || m.CollectRateMilli <= 0 {
+		return fmt.Errorf("玩法规则必须为正: speed=%d capacity=%d rate=%d",
+			m.MarchSpeedUnitsPerSec, m.CapacityUnits, m.CollectRateMilli)
 	}
 	return nil
 }

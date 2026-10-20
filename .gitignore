@@ -5,6 +5,8 @@
 /gendata
 /genmsgid
 /keygen
+# go build ./cmd/map 会在仓库根生成同名二进制
+/map
 /reports/
 /deploy/volumes/
 /volumes/

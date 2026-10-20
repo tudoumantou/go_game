@@ -1,0 +1,72 @@
+# configs/map/map-dev.yaml —— 本地开发用地图配置
+#
+# 与 map-prod.yaml 的差别只有规模：世界里的一切尺寸都缩小到
+# 20×20 格 / 2×2 场景，方便手工验证边界（跨场景、富饶块、选址）。
+# 拓扑约束必须满足：
+#   world_width  % scene_cols == 0
+#   world_height % scene_rows == 0
+#   world_width  % aoi_block_cols == 0，且块宽 % aoi_cell_size == 0
+#   world_width  % rich_block_size == 0
+server:
+  name: map
+  env: dev
+  grpc_addr: ":9400"
+  http_addr: ":9401"
+
+log:
+  level: warn
+
+shutdown:
+  total_timeout: 10s
+
+map:
+  enabled: true
+  world_ids: [1, 2]
+
+  # 拓扑：20×20 格，2×2 场景（每场景 10×10 格）
+  world_width_cells: 20
+  world_height_cells: 20
+  scene_cols: 2
+  scene_rows: 2
+  position_units_per_cell: 1000
+
+  # AOI：2×2 块（每块 10×10 格），块内 5 格一个 cell
+  aoi_block_cols: 2
+  aoi_block_rows: 2
+  aoi_cell_size: 5
+  rich_block_size: 10
+
+  # 调度
+  tick_interval: 100ms
+  scene_mailbox_size: 1024
+  scene_control_capacity: 32
+  max_commands_per_turn: 32
+  max_due_events_per_turn: 32
+
+  # 事务（M1 为内存替身，参数仍按生产形态校验）
+  tx_workers: 2
+  tx_queue_capacity: 64
+  tx_timeout: 500ms
+  command_deadline: 1s
+
+  lease_ttl: 15s
+  lease_renew_interval: 3s
+
+  max_view_width: 20
+  max_view_height: 20
+  view_pending_bytes: 1048576
+  aoi_payload_limit_bytes: 65536
+
+  max_battle_queue_per_target: 10
+  battle_timeout: 5s
+  refresh_interval: 1m
+  refresh_batch_size: 5
+  resource_position_attempts: 20
+  delivery_retry_min: 1s
+  delivery_retry_max: 10s
+  max_player_receipts: 100
+
+  # 玩法规则（M2 起由 gamedata 注入）
+  march_speed_units_per_sec: 2000
+  capacity_units: 100
+  collect_rate_milli_per_sec: 2500

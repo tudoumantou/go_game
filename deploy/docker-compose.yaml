@@ -123,6 +123,20 @@ services:
       mysql: { condition: service_healthy }
       redis: { condition: service_healthy }
 
+  map:
+    stop_grace_period: 40s
+    build:
+      context: ..
+      dockerfile: ./deploy/docker/map.Dockerfile
+    ports: ["127.0.0.1:9400:9400", "127.0.0.1:9401:9401"]
+    volumes:
+      - configs:/app/configs:ro
+    command: ["-config", "/app/configs/map/map-docker.yaml"]
+    # M1 阶段地图无 MySQL/Redis 强依赖（内存事务替身），
+    # 因此只等 etcd 与服务发现就绪；接入持久化后需补 mysql/redis 依赖。
+    depends_on:
+      etcd: { condition: service_healthy }
+
   game:
     stop_grace_period: 70s
     build:

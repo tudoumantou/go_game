@@ -1,0 +1,375 @@
+package application
+
+// recall_test.go 覆盖文档 9.4 的召回分桶表。
+// 重点不是“返回值对不对”，而是“哪些对象进了同一个计划”
+// （COLLECTING 的 INV-04）以及“幂等分支是否真的零副作用”。
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"game_study/internal/worldmap/domain"
+)
+
+func TestPlanRecall(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     domain.CommandEnvelope
+		nowMS   int64
+		build   func(t *testing.T) (*SceneSnapshot, Command)
+		wantErr error
+		check   func(t *testing.T, h *harness, plan *domain.MutationPlan)
+	}{
+		{
+			name:  "MARCHING 按当前位置截断回城",
+			env:   testEnv(1, "req-marching", 1),
+			nowMS: 4000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseMarching)
+				tr.Move = makeMove(t, domain.Pos{X: 0, Y: 0}, domain.Pos{X: 10000, Y: 0}, 1000, 0, "m-out")
+				tr.Target = domain.TargetRef{TargetID: 1000, Intent: domain.MarchIntentCollect}
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr), resourceObject(newResource(1000, 10000, 0, 100))},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				if plan.CommandReceipt.ResultCode != domain.CodeOK {
+					t.Fatalf("ResultCode=%d", plan.CommandReceipt.ResultCode)
+				}
+				up, ok := findUpsert(plan, domain.ObjectKindTroop)
+				if !ok {
+					t.Fatalf("缺少 Troop upsert")
+				}
+				tr := up.Troop
+				if tr.Phase != domain.TroopPhaseReturning {
+					t.Fatalf("Phase=%v", tr.Phase)
+				}
+				if tr.Header.Version != 2 {
+					t.Fatalf("Version=%d, want 2", tr.Header.Version)
+				}
+				if tr.Move.MoveID == "m-out" {
+					t.Fatalf("回城必须生成新 MoveID")
+				}
+				// now=4000 时在 (4000,0)，回主堡 (0,0) 需要 4 秒。
+				if tr.Move.From != (domain.Pos{X: 4000, Y: 0}) {
+					t.Fatalf("起点=%+v", tr.Move.From)
+				}
+				if tr.Move.To != (domain.Pos{X: 0, Y: 0}) {
+					t.Fatalf("终点=%+v", tr.Move.To)
+				}
+				if tr.Move.EndAtMS != 8000 {
+					t.Fatalf("EndAtMS=%d, want 8000", tr.Move.EndAtMS)
+				}
+				m := receiptMap(t, plan)
+				if jsonInt(t, m, "arrive_at_ms") != 8000 || jsonStr(t, m, "move_id") != tr.Move.MoveID {
+					t.Fatalf("回执与移动段不一致: %v", m)
+				}
+			},
+		},
+		{
+			name:  "COLLECTING 部分结算后回城（INV-04 同一计划）",
+			env:   testEnv(1, "req-collect", 2),
+			nowMS: 3000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseCollecting)
+				tr.Header.Version = 3
+				tr.Cargo = map[int32]int64{101: 83} // capacityLeft = 100-83 = 17
+				tr.Target = domain.TargetRef{TargetID: 500, Intent: domain.MarchIntentCollect}
+				res := newResource(500, 10000, 0, 100)
+				res.ActiveCollectID = "sess-1"
+				sess := &domain.CollectSession{
+					ID: "sess-1", TroopID: 200, ResourceID: 500,
+					StartAtMS: 0, EndAtMS: 6800,
+					RateMilliItemsPerSec: 2500, PlannedQty: 17,
+					Status: domain.CollectStatusActive,
+				}
+				return snapshot(SnapshotOptions{
+					Objects:  []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr), resourceObject(res)},
+					Sessions: []*domain.CollectSession{sess},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				// 文档例子：rate=2500、capacityLeft=17、remaining=100、3000ms → 7。
+				if len(plan.CollectSettle) != 1 {
+					t.Fatalf("CollectSettle=%+v", plan.CollectSettle)
+				}
+				if plan.CollectSettle[0].SettledQty != 7 {
+					t.Fatalf("SettledQty=%d, want 7", plan.CollectSettle[0].SettledQty)
+				}
+				if plan.CollectSettle[0].SessionID != "sess-1" {
+					t.Fatalf("SessionID=%q", plan.CollectSettle[0].SessionID)
+				}
+				resUp, ok := findUpsert(plan, domain.ObjectKindResource)
+				if !ok {
+					t.Fatalf("INV-04: 资源扣减不在计划里")
+				}
+				if resUp.Resource.Remaining != 93 {
+					t.Fatalf("Remaining=%d, want 93", resUp.Resource.Remaining)
+				}
+				if resUp.Resource.ActiveCollectID != "" {
+					t.Fatalf("结算后必须清 active_collect_id")
+				}
+				trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
+				if !ok {
+					t.Fatalf("INV-04: Cargo 增加不在计划里")
+				}
+				if trUp.Troop.Cargo[101] != 90 {
+					t.Fatalf("Cargo=%v, want 90", trUp.Troop.Cargo)
+				}
+				if trUp.Troop.Phase != domain.TroopPhaseReturning || trUp.Troop.Header.Version != 4 {
+					t.Fatalf("Phase=%v Version=%d", trUp.Troop.Phase, trUp.Troop.Header.Version)
+				}
+			},
+		},
+		{
+			name:  "QUEUED 退出队列后回城",
+			env:   testEnv(1, "req-queued", 3),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseQueued)
+				tr.Target = domain.TargetRef{TargetID: 1000, Intent: domain.MarchIntentAttack}
+				battle := &domain.BattleRecord{
+					BattleID: "battle-1", WorldID: testWorld, TargetID: 1000,
+					AttackerID: 300, DefenderID: 400, Status: domain.BattleStatusPending,
+				}
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr), resourceObject(newResource(1000, 10000, 0, 100))},
+					Queues:  map[domain.ObjectID][]domain.ObjectID{1000: {200}},
+					Battles: []*domain.BattleRecord{battle},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				if len(plan.BattleUpsert) != 1 {
+					t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
+				}
+				// M1 约定：退出队列 = 该成员的 battle 记录置 TIMED_OUT。
+				if plan.BattleUpsert[0].Status != domain.BattleStatusTimedOut {
+					t.Fatalf("Status=%v, want TIMED_OUT", plan.BattleUpsert[0].Status)
+				}
+				if plan.BattleUpsert[0].BattleID != "battle-1" {
+					t.Fatalf("BattleID=%q", plan.BattleUpsert[0].BattleID)
+				}
+				trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
+				if !ok || trUp.Troop.Phase != domain.TroopPhaseReturning {
+					t.Fatalf("部队未转回城")
+				}
+				m := receiptMap(t, plan)
+				if !jsonBool(t, m, "queued_left") {
+					t.Fatalf("回执未标记退出队列: %v", m)
+				}
+			},
+		},
+		{
+			name:  "FIGHTING 保存 Deferred 且 Phase 不变",
+			env:   testEnv(1, "req-fight", 4),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseFighting)
+				tr.Header.Version = 5
+				tr.BattleID = "battle-9"
+				tr.Busy = domain.BusyState{Reason: domain.BusyReasonBattle, OpID: "battle-9", DeadlineMS: 20000}
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				up, ok := findUpsert(plan, domain.ObjectKindTroop)
+				if !ok {
+					t.Fatalf("缺少 Troop upsert")
+				}
+				tr := up.Troop
+				if tr.Phase != domain.TroopPhaseFighting {
+					t.Fatalf("战斗中的召回不得改 Phase, got %v", tr.Phase)
+				}
+				if tr.Busy.Reason != domain.BusyReasonBattle || tr.BattleID != "battle-9" {
+					t.Fatalf("不得清战斗锁: %+v", tr.Busy)
+				}
+				if tr.Deferred == nil || tr.Deferred.Kind != domain.DeferredKindRecall {
+					t.Fatalf("Deferred=%+v", tr.Deferred)
+				}
+				if tr.Deferred.RequestID != "req-fight" {
+					t.Fatalf("RequestID=%q", tr.Deferred.RequestID)
+				}
+				if tr.Header.Version != 6 {
+					t.Fatalf("Version=%d, want 6", tr.Header.Version)
+				}
+				m := receiptMap(t, plan)
+				if !jsonBool(t, m, "accepted") || !jsonBool(t, m, "deferred") {
+					t.Fatalf("回执=%v", m)
+				}
+			},
+		},
+		{
+			name:  "已有 ForceReturn 时玩家 Recall 不覆盖",
+			env:   testEnv(1, "req-downgrade", 5),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseFighting)
+				tr.Header.Version = 5
+				tr.BattleID = "battle-9"
+				tr.Busy = domain.BusyState{Reason: domain.BusyReasonBattle, OpID: "battle-9"}
+				tr.Deferred = &domain.DeferredAction{Kind: domain.DeferredKindForceReturn, RequestID: "req-admin"}
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200, ExpectedVersion: 5}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				if len(plan.ObjectsUpsert) != 0 {
+					t.Fatalf("保留 ForceReturn 时不应写对象, got %d", len(plan.ObjectsUpsert))
+				}
+				m := receiptMap(t, plan)
+				if !jsonBool(t, m, "deferred") || jsonStr(t, m, "deferred_kind") != "FORCE_RETURN" {
+					t.Fatalf("回执=%v", m)
+				}
+			},
+		},
+		{
+			name:  "ForceReturn 升级覆盖 Recall",
+			env:   testEnv(1, "req-upgrade", 6),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseFighting)
+				tr.Header.Version = 5
+				tr.BattleID = "battle-9"
+				tr.Busy = domain.BusyState{Reason: domain.BusyReasonBattle, OpID: "battle-9"}
+				tr.Deferred = &domain.DeferredAction{Kind: domain.DeferredKindRecall, RequestID: "req-player"}
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200, Force: true}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				up, ok := findUpsert(plan, domain.ObjectKindTroop)
+				if !ok {
+					t.Fatalf("升级必须写对象")
+				}
+				if up.Troop.Deferred.Kind != domain.DeferredKindForceReturn {
+					t.Fatalf("Deferred=%+v", up.Troop.Deferred)
+				}
+				if up.Troop.Header.Version != 6 {
+					t.Fatalf("Version=%d", up.Troop.Header.Version)
+				}
+			},
+		},
+		{
+			name:  "RETURNING 幂等",
+			env:   testEnv(1, "req-returning", 7),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseReturning)
+				tr.Header.Version = 4
+				tr.Move = makeMove(t, domain.Pos{X: 4000, Y: 0}, domain.Pos{X: 0, Y: 0}, 1000, 1000, "m-back")
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				if len(plan.ObjectsUpsert) != 0 {
+					t.Fatalf("幂等分支不应写对象")
+				}
+				m := receiptMap(t, plan)
+				if jsonStr(t, m, "move_id") != "m-back" || !jsonBool(t, m, "idempotent") {
+					t.Fatalf("回执=%v", m)
+				}
+				if jsonInt(t, m, "arrive_at_ms") != 5000 {
+					t.Fatalf("arrive_at_ms=%v", m["arrive_at_ms"])
+				}
+			},
+		},
+		{
+			name:  "SETTLING 返回交接单",
+			env:   testEnv(1, "req-settling", 8),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseSettling)
+				tr.Header.Version = 5
+				tr.SettlementID = "delivery-77"
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
+				if len(plan.ObjectsUpsert) != 0 {
+					t.Fatalf("SETTLING 不得改状态")
+				}
+				m := receiptMap(t, plan)
+				if jsonStr(t, m, "settlement_id") != "delivery-77" {
+					t.Fatalf("回执=%v", m)
+				}
+			},
+		},
+		{
+			name:  "部队不存在",
+			env:   testEnv(1, "req-missing", 9),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				return snapshot(SnapshotOptions{Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0)}}),
+					Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 999}}
+			},
+			wantErr: domain.ErrObjectNotFound,
+		},
+		{
+			name:  "不是自己的部队",
+			env:   testEnv(1, "req-owner", 10),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 2, domain.TroopPhaseMarching)
+				tr.Move = makeMove(t, domain.Pos{X: 0, Y: 0}, domain.Pos{X: 1000, Y: 0}, 1000, 0, "m-x")
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			wantErr: domain.ErrNotOwner,
+		},
+		{
+			name:  "版本过期",
+			env:   testEnv(1, "req-stale", 11),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseMarching)
+				tr.Header.Version = 4
+				tr.Move = makeMove(t, domain.Pos{X: 0, Y: 0}, domain.Pos{X: 1000, Y: 0}, 1000, 0, "m-y")
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200, ExpectedVersion: 3}}
+			},
+			wantErr: domain.ErrStaleVersion,
+		},
+		{
+			name:  "Busy=Transfer 返回 Pending",
+			env:   testEnv(1, "req-transfer", 12),
+			nowMS: 5000,
+			build: func(t *testing.T) (*SceneSnapshot, Command) {
+				tr := newTroop(200, 1, domain.TroopPhaseMarching)
+				tr.Busy = domain.BusyState{Reason: domain.BusyReasonTransfer, OpID: "op-42"}
+				tr.Move = makeMove(t, domain.Pos{X: 0, Y: 0}, domain.Pos{X: 1000, Y: 0}, 1000, 0, "m-z")
+				return snapshot(SnapshotOptions{
+					Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0), troopObject(tr)},
+				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
+			},
+			wantErr: domain.ErrOperationPending,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			snap, cmd := tc.build(t)
+			plan, err := h.planner.Plan(snap, tc.env, cmd, tc.nowMS)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("err=%v, want %v", err, tc.wantErr)
+				}
+				if tc.wantErr == domain.ErrOperationPending && !strings.Contains(err.Error(), "op-42") {
+					t.Fatalf("错误信息应带 op_id: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("意外错误: %v", err)
+			}
+			tc.check(t, h, plan)
+		})
+	}
+}
