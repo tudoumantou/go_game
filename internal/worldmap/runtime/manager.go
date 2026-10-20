@@ -18,6 +18,12 @@ type ManagerConfig struct {
 	Scene SceneConfig
 	// MaxWorlds 单进程最多加载几个世界（防止配置写错时把内存吃满）。
 	MaxWorlds int
+	// Epochs 每个世界的代次（来自 map_world 租约）。
+	//
+	// 必须由装配层在加载世界之前填好：场景快照的 epoch 会写进每个
+	// MutationPlan，store 用它与库里的 epoch 比对——填 0 会让所有
+	// 持久化写入被"epoch 已过期"拒绝。
+	Epochs map[domain.WorldID]uint64
 }
 
 // SeedData 是场景启动前的初始数据。
@@ -133,10 +139,14 @@ func (m *WorldManager) LoadWorld(ctx context.Context, worldID domain.WorldID) (*
 	}
 
 	worldCtx, cancel := context.WithCancel(context.Background())
+	var epoch uint64
+	if m.cfg.Epochs != nil {
+		epoch = m.cfg.Epochs[worldID]
+	}
 	w := &WorldInstance{
 		worldID: worldID,
 		topo:    topo,
-		epoch:   0,
+		epoch:   epoch,
 		scenes:  make(map[domain.SceneID]*SceneLoop, topo.MaxSceneID()),
 		pool:    pool,
 		ctx:     worldCtx,

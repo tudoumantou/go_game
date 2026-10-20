@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"game_study/internal/worldmap/domain"
 )
@@ -707,4 +708,62 @@ func loadAllObjects(ctx context.Context, q queryer, worldID domain.WorldID) ([]d
 		return nil, fmt.Errorf("查询世界对象 world=%d: %w", worldID, err)
 	}
 	return scanObjectRows(rows, worldID)
+}
+
+// AllocObjectIDs 批量分配 n 个连续对象 ID，返回起始值。
+//
+// 为什么批量而不是逐个：对象 ID 只在"创建对象"时用（出征建部队、
+// 刷新建资源点），每次创建都要一次网络往返会把事务延迟放大。
+// 预分配一段（默认 64）把摊薄到几乎为零；进程重启后从库里的
+// 自增水位继续，绝不重复。
+//
+// 连续性说明：MySQL 8.0 默认 innodb_autoinc_lock_mode=2（interleaved），
+// 但**单条 INSERT 多行**的自增值仍保证连续；只有混合模式（INSERT ... SELECT）
+// 才可能不连续。调用方拿到起始值后按 +0..n-1 使用是安全的。
+func (r *Repository) AllocObjectIDs(ctx context.Context, n int) (domain.ObjectID, error) {
+	if n <= 0 {
+		n = 1
+	}
+	// 构造 VALUES (NULL),(NULL),... ：显式 NULL 让自增列分配值，
+	// 比 INSERT INTO t () VALUES () 更明确（后者依赖方言）。
+	placeholders := make([]string, n)
+	for i := range placeholders {
+		placeholders[i] = "(NULL)"
+	}
+	query := "INSERT INTO map_id_allocator (id) VALUES " + strings.Join(placeholders, ",")
+	res, err := r.db.ExecContext(ctx, query)
+	if err != nil {
+		return 0, fmt.Errorf("分配对象 ID: %w", err)
+	}
+	first, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("读取分配到的对象 ID: %w", err)
+	}
+	return domain.ObjectID(first), nil
+}
+
+// EnsureIDWatermark 把 ID 分配器水位推进到现有最大 object_id。
+//
+// 场景：从"进程内计数器/手写 SQL"升级到分配器时，库里已有对象 ID，
+// 而分配器是空的——不推进水位，新建对象会立刻撞上历史 ID。
+// 幂等：重复调用只是把自增水位再推一次。
+func (r *Repository) EnsureIDWatermark(ctx context.Context, worldID domain.WorldID) error {
+	var maxID sql.NullInt64
+	row := r.db.QueryRowContext(ctx,
+		"SELECT MAX(object_id) FROM map_object WHERE world_id = ?", uint64(worldID))
+	if err := row.Scan(&maxID); err != nil {
+		return fmt.Errorf("读取对象 ID 水位: %w", err)
+	}
+	if !maxID.Valid || maxID.Int64 <= 0 {
+		return nil
+	}
+	// 显式插入一个等于当前最大值的 id：自增列被"人工占用"后，
+	// 下一个自动分配值必然是 max+1。
+	_, err := r.db.ExecContext(ctx,
+		"INSERT INTO map_id_allocator (id) VALUES (?) ON DUPLICATE KEY UPDATE id = id",
+		maxID.Int64)
+	if err != nil {
+		return fmt.Errorf("推进对象 ID 水位: %w", err)
+	}
+	return nil
 }

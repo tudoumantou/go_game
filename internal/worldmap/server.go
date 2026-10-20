@@ -54,9 +54,17 @@ type Server struct {
 	mu        sync.RWMutex
 	recovered map[domain.SceneID]runtime.SeedData
 	epochs    map[domain.WorldID]uint64
+	// epochOverrides 在 buildManager 时注入 ManagerConfig.Epochs。
+	epochOverrides map[domain.WorldID]uint64
 
 	objectSeq atomic.Int64
-	closed    atomic.Bool
+	// idMu/idNext/idEnd 是持久化模式下的对象 ID 预分配段。
+	// 每段 64 个：够一次批量出征/刷新用，又不会在进程崩溃时浪费太多 ID
+	// （ID 允许空洞，浪费无害）。
+	idMu   sync.Mutex
+	idNext uint64
+	idEnd  uint64
+	closed atomic.Bool
 }
 
 // Option 是 New 的可选参数。
@@ -206,6 +214,7 @@ func (s *Server) buildManager(committer runtime.Committer, sink runtime.Projecti
 			TickInterval:        mustDuration(s.cfg.TickInterval, time.Second),
 		},
 		MaxWorlds: len(s.cfg.WorldIDs) + 1,
+		Epochs:    s.epochOverrides,
 	}, runtime.Deps{
 		Planner:         s.planner,
 		Committer:       committer,
@@ -264,7 +273,27 @@ func (s *Server) initPersistence(ctx context.Context) error {
 	s.repo = repo
 	s.committer = repo
 
-	// 重建管理器：把内存替身换成真实仓储。
+	worlds := s.cfg.WorldIDs
+	if len(worlds) == 0 {
+		worlds = []uint64{1}
+	}
+
+	// 先抢租约拿 epoch，再建管理器：场景快照的 epoch 会进每个计划，
+	// 顺序反了会让所有持久化写入被"epoch 已过期"拒绝（实测踩过）。
+	ttl := mustDuration(s.cfg.LeaseTTL, 15*time.Second)
+	epochs := make(map[domain.WorldID]uint64, len(worlds))
+	for _, raw := range worlds {
+		worldID := domain.WorldID(raw)
+		epoch, err := repo.Acquire(ctx, worldID, s.ownerID, ttl)
+		if err != nil {
+			return fmt.Errorf("获取世界 %d 租约失败: %w", worldID, err)
+		}
+		epochs[worldID] = epoch
+		s.epochs[worldID] = epoch
+		s.logger.Info("世界租约获取成功", "world", worldID, "epoch", epoch, "owner", s.ownerID)
+	}
+
+	// 重建管理器：把内存替身换成真实仓储，并把 epoch 注入进去。
 	if s.manager != nil {
 		_ = s.manager.Shutdown(context.Background())
 	}
@@ -272,6 +301,7 @@ func (s *Server) initPersistence(ctx context.Context) error {
 	if s.sink != nil {
 		sink = s.sink
 	}
+	s.epochOverrides = epochs
 	manager, err := s.buildManager(repo, sink)
 	if err != nil {
 		return err
@@ -279,21 +309,14 @@ func (s *Server) initPersistence(ctx context.Context) error {
 	s.manager = manager
 	s.api = maprpc.NewServer(manager, s.coordinator, s.logger, s.verifier)
 
-	worlds := s.cfg.WorldIDs
-	if len(worlds) == 0 {
-		worlds = []uint64{1}
-	}
 	recovered := make(map[domain.SceneID]runtime.SeedData)
-	ttl := mustDuration(s.cfg.LeaseTTL, 15*time.Second)
 	for _, raw := range worlds {
 		worldID := domain.WorldID(raw)
-		epoch, err := repo.Acquire(ctx, worldID, s.ownerID, ttl)
-		if err != nil {
-			return fmt.Errorf("获取世界 %d 租约失败: %w", worldID, err)
+		// 推进 ID 水位：库里已有对象时，分配器必须从 max+1 开始，
+		// 否则新建对象会撞上历史 object_id。
+		if err := repo.EnsureIDWatermark(ctx, worldID); err != nil {
+			return fmt.Errorf("推进世界 %d 的对象 ID 水位失败: %w", worldID, err)
 		}
-		s.epochs[worldID] = epoch
-		s.logger.Info("世界租约获取成功", "world", worldID, "epoch", epoch, "owner", s.ownerID)
-
 		rec, err := repo.RecoverWorld(ctx, worldID)
 		if err != nil {
 			return fmt.Errorf("恢复世界 %d 失败: %w", worldID, err)
@@ -397,10 +420,33 @@ func newIDGen() application.IDGen {
 	}
 }
 
-// nextObjectID 分配对象 ID。内存模式用进程内原子自增；
-// 持久化模式下由 map_id_allocator 分配（store.AllocObjectID）。
+// nextObjectID 分配对象 ID。
+//
+// 内存模式：进程内原子自增（重启即丢，反正数据也丢）。
+// 持久化模式：从 map_id_allocator 预分配一段（64 个），池内递增。
+// 绝不能继续用进程内计数器——重启后它会从 1 重新开始，与库里的历史
+// 对象 ID 直接相撞（实测过一次：新部队拿到 object_id=1，覆盖了老数据）。
+//
+// 分配失败时 panic：返回 0 会让两个对象共用同一个 ID，比停下来更糟。
+// panic 会被场景循环的 recover 捕获并触发 world fail-stop。
 func (s *Server) nextObjectID() domain.ObjectID {
-	return domain.ObjectID(s.objectSeq.Add(1))
+	if s.repo == nil {
+		return domain.ObjectID(s.objectSeq.Add(1))
+	}
+	s.idMu.Lock()
+	defer s.idMu.Unlock()
+	if s.idNext >= s.idEnd {
+		const batch = 64
+		start, err := s.repo.AllocObjectIDs(context.Background(), batch)
+		if err != nil {
+			panic(fmt.Sprintf("worldmap: 分配对象 ID 失败: %v", err))
+		}
+		s.idNext = uint64(start)
+		s.idEnd = uint64(start) + batch
+	}
+	id := s.idNext
+	s.idNext++
+	return domain.ObjectID(id)
 }
 
 // randSuffix 生成 4 字节十六进制后缀，用于进程 owner 标识。
