@@ -20,6 +20,18 @@ type ManagerConfig struct {
 	MaxWorlds int
 }
 
+// SeedData 是场景启动前的初始数据。
+//
+// 为什么要在 Start 之前注入而不是启动后再 Seed：恢复场景需要
+// 「先有完整状态，再开始接受命令」。如果先启动再注入，中间会有一个
+// 窗口——场景已就绪但对象还没到，此时到达的查询会返回空视野，
+// 客户端会看到「我的城不见了」。Start 前注入从根上消除这个窗口。
+type SeedData struct {
+	Objects  []domain.ObjectSnapshot
+	Sessions []*domain.CollectSession
+	Revision uint64
+}
+
 // Deps 是运行时依赖。全部为接口，便于替换与测试。
 type Deps struct {
 	Planner   application.Planner
@@ -27,6 +39,9 @@ type Deps struct {
 	Sink      ProjectionSink
 	Clock     Clock
 	Logger    Logger
+	// Seed 在场景创建后、Start 前注入恢复数据；nil 表示从空场景开始
+	// （M1 内存模式）。
+	Seed func(worldID domain.WorldID, sceneID domain.SceneID) (SeedData, error)
 	// TxWorkers / TxQueueCapacity 事务池参数；0 用默认（4 / 256）。
 	TxWorkers       int
 	TxQueueCapacity int
@@ -139,6 +154,20 @@ func (m *WorldManager) LoadWorld(ctx context.Context, worldID domain.WorldID) (*
 			cancel()
 			_ = pool.Shutdown(context.Background())
 			return nil, err
+		}
+		// 恢复注入必须在 Start 之前：场景一旦开跑，外部就不能再直接改状态。
+		if m.deps.Seed != nil {
+			data, err := m.deps.Seed(worldID, id)
+			if err != nil {
+				cancel()
+				_ = pool.Shutdown(context.Background())
+				return nil, fmt.Errorf("注入场景 %d 恢复数据失败: %w", id, err)
+			}
+			if err := scene.LoadState(data.Objects, data.Sessions, data.Revision); err != nil {
+				cancel()
+				_ = pool.Shutdown(context.Background())
+				return nil, err
+			}
 		}
 		scene.SetPanicHandler(func(err error) {
 			// 任一场景 panic：整个世界 fail-stop（文档 4.3）。

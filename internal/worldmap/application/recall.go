@@ -197,41 +197,30 @@ func (p *DefaultPlanner) recallCollecting(snap *SceneSnapshot, env domain.Comman
 	return plan, nil
 }
 
-// recallQueued：退出目标战斗队列后回城。
+// recallQueued：退出目标战斗队列后回城（文档 9.4："从目标队列删除，
+// 然后回城，删除与 Phase 变更同一事务"）。
 //
-// 【M1 契约缺口处理——必读】
-// MutationPlan 没有队列字段，而“从队列删除”必须持久化，否则重启后
-// 队列会把已经回城的部队又拉进战斗。M1 的替代约定是：
+// 队列删除是**显式意图**：计划里写 QueueDequeue（按 target+troop 匹配），
+// 与 Phase/RETURNING 的变更在同一个计划里提交。这样不会出现"部队已经
+// 回城但队列里还留着它"的悬挂成员——那种成员下次轮到时会被当作
+// 有效攻击者重新拉进战斗。
 //
-//   - 队列成员在持久层表现为 map_battle 里 Status=PENDING 且
-//     AppliedOperationID=m1QueuedBattleMarker 的记录（见 arrive.go）；
-//   - 队首（真正在打的战斗）是 Status=PENDING 且不带该标记的记录；
-//   - 退出队列 = 把该成员的 BattleRecord 置为 TIMED_OUT。
-//
-// TIMED_OUT 在文档 11.3 的语义是“攻击无效、防守保留、无战损”，
-// 恰好等同于“该攻击方退出”，不会误伤防守方。runtime 的内存队列
-// 实现按 battle 状态重建：TIMED_OUT/RESOLVED 的记录不再是队列成员。
-//
-// 这是 M1 的权宜表示，有两个已知缺陷，M2 必须修：
-//  1. 同一目标的多条排队记录无法用 ActiveBattleOn（快照按目标去重）
-//     精确表达，只能靠 runtime 按状态过滤；
-//  2. 排队没有显式 enqueue_seq，顺序只能靠 DeadlineMS + BattleID
-//     近似，同一毫秒入队的顺序不严格保证。
-//
-// M2 增加 map_battle_queue(world_id,target_id,troop_id,enqueue_seq)
-// 后，QueueChange{TargetID, Leaving} 由 writer 直接消费，不再借用
-// BattleRecord。
+// 与旧实现的区别：以前 MutationPlan 没有队列字段，只能把队列成员的
+// BattleRecord 置 TIMED_OUT 来表示"退出"。那是借用战斗终态语义，
+// 会在审计里留下"一场根本没打的超时战斗"。现在直接删行，战斗记录
+// 只记录真正发生过的战斗。
 func (p *DefaultPlanner) recallQueued(snap *SceneSnapshot, env domain.CommandEnvelope, troop *domain.Troop, nowMS int64) (*domain.MutationPlan, error) {
 	plan := newPlan(snap, env, p.ids, nowMS)
 	targetID := troop.Target.TargetID
 
-	// 找到目标上的 PENDING 战斗。快照按目标只保留一条“进行中”记录，
-	// 因此它可能是别人正在打的战斗；M1 仍按“置 TIMED_OUT 表示本攻击方
-	// 退出”处理（见上面的说明）。
+	plan.QueueDequeue = append(plan.QueueDequeue, domain.QueueEntry{
+		TargetID: targetID,
+		TroopID:  troop.Header.ID,
+	})
+	// battle_id 只用于回执/日志：排队成员本身没有 battle_id（只有
+	// FIGHTING 才有），它关心的是"我在等哪一场"。
 	var battleID string
 	if rec, ok := snap.ActiveBattleOn(targetID); ok && rec.Status == domain.BattleStatusPending {
-		rec.Status = domain.BattleStatusTimedOut
-		plan.BattleUpsert = append(plan.BattleUpsert, *rec)
 		battleID = rec.BattleID
 	}
 

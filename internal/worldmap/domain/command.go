@@ -137,6 +137,23 @@ type MutationPlan struct {
 	// BattleUpsert 战斗记录写入。
 	BattleUpsert []BattleRecord
 
+	// QueueEnqueue / QueueDequeue 目标战斗队列的入队与出队意图
+	// （文档 11.1 / 11.4 / 14.1，对应表 map_battle_queue）。
+	//
+	// 为什么队列必须进计划而不是靠战斗记录"推断"：队列的真源是
+	// UNIQUE(world,target,troop) + enqueue_seq 的独立表。用
+	// BattleRecord（Status=PENDING + 标记）表示排队成员时，同一目标
+	// 只能保留一条"进行中"记录，排队成员的顺序只能靠 deadline 近似，
+	// 重启后无法还原严格 FIFO。显式字段让 writer 直接落表，也让
+	// 恢复路径只认一个真源。
+	//
+	// 语义：两个切片都是**意图**而不是全量状态。Dequeue 按
+	// (TargetID,TroopID) 删除（Seq 可缺省），Enqueue 带单调 enqueue_seq
+	// 追加；同一计划里先出队后入队，与 11.4"队首结束→下一名开始"
+	// 的因果顺序一致。
+	QueueEnqueue []QueueEntry
+	QueueDequeue []QueueEntry
+
 	// DeliveryCreate 回城交接单（先留单再清货，文档 9.5）。
 	DeliveryCreate []Delivery
 
@@ -200,6 +217,27 @@ type CollectSettleChange struct {
 	SessionID  string
 	SettledQty int64
 	SettleAtMS int64
+}
+
+// QueueEntry 是一条目标战斗队列记录（文档 11.4 / 14.1 的
+// map_battle_queue 行）。
+//
+// 为什么需要显式 Seq 而不是依赖切片下标：队列会持久化再恢复，
+// 恢复时的扫描顺序来自 SQL 行序或 map 遍历（Go 的 map range 顺序
+// 每轮随机），下标没有跨进程含义。Seq 是唯一能跨重启比较大小、
+// 保证 FIFO 的字段；切片下标只在本进程内存里有意义。
+//
+// Seq 的取值约定：入队时由规划器按"时间 × 1000 + 当前队列长度"
+// 派生，保证同一目标上的新增条目严格大于已有条目（场景单写者
+// 串行执行，长度只会单调增长）；出队时 Seq 可以留 0，消费方按
+// (TargetID,TroopID) 匹配删除。
+type QueueEntry struct {
+	// TargetID 队列所属防守目标（资源点/部队/城池）。
+	TargetID ObjectID
+	// TroopID 排队攻击方部队。
+	TroopID ObjectID
+	// Seq 入队序号，同一 TargetID 上严格递增。
+	Seq int64
 }
 
 // BattleRecord 是持久化战斗（文档 11.1）。

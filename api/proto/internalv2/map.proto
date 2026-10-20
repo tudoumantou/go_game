@@ -1,0 +1,191 @@
+// 内部 gRPC：游戏服 <-> 地图服（设计文档第 15 章）
+//
+// 为什么地图协议不直接给客户端用：地图权威状态必须只经游戏服转发，
+// 由游戏服做玩家鉴权与会话绑定。客户端直连地图服意味着要在地图侧
+// 再做一套鉴权与限流，且客户端可以伪造 player_id 试探他人主堡。
+//
+// 三个 RPC 对应三类流量：
+//   Submit     命令（出征/召回），幂等由 request_id 保证；
+//   Query      查询（部队、资源点），只读已提交状态；
+//   StreamView 视野流（AOI 增量），服务端按 revision 推送，落后可重同步。
+syntax = "proto3";
+
+package game_study.internal.v2;
+
+option go_package = "game_study/pkg/pb/internalv2;internalv2";
+
+service MapService {
+  // 提交地图命令。返回业务码（0=成功）；幂等重放返回首次结果。
+  rpc Submit(CommandRequest) returns (CommandReply);
+
+  // 查询已提交状态。不阻塞在途事务。
+  rpc Query(MapQueryRequest) returns (MapQueryReply);
+
+  // 视野流：进入视野时先发全量，之后按 revision 推增量。
+  rpc StreamView(StreamViewRequest) returns (stream ViewEvent);
+}
+
+// CommandRequest 是命令信封的线上形态。
+//
+// payload_hash 由游戏服按标准化参数计算并签名（M5 起带 HMAC），
+// 地图服只做"同键不同参"检测，不重新解释参数含义。
+message CommandRequest {
+  uint64 world_id = 1;                // 世界编号
+  int64 player_id = 2;                // 玩家（来自游戏服会话，不信客户端）
+  string request_id = 3;              // 幂等键，客户端生成，最长 64
+  bytes payload_hash = 4;             // 32 字节参数摘要
+  int32 scene_id = 5;                 // 目标场景（游戏服按对象归属路由）
+  uint64 expected_object_version = 6; // 乐观并发期望版本，0=不校验
+  uint64 world_epoch = 7;             // 期望的世界代次，不匹配即拒绝
+  int64 deadline_ms = 8;              // 命令超时（UTC ms），0=用服务端默认
+  string trace_id = 9;                // 链路追踪
+
+  oneof body {
+    MarchRequest march = 20;
+    RecallRequest recall = 21;
+  }
+}
+
+// MarchRequest 出征。只有 ID 与意图，没有坐标/速度/负载：
+// 那些必须由地图服按权威状态推导，否则客户端可以指定"瞬移到目标"。
+message MarchRequest {
+  int32 slot_id = 1;      // 出征槽位
+  uint64 home_city_id = 2;// 出发主堡
+  uint64 target_id = 3;   // 目标对象
+  MarchIntent intent = 4; // 采集/攻击
+}
+
+enum MarchIntent {
+  MARCH_INTENT_UNSPECIFIED = 0;
+  MARCH_INTENT_COLLECT = 1;
+  MARCH_INTENT_ATTACK = 2;
+}
+
+// RecallRequest 召回。
+message RecallRequest {
+  uint64 troop_id = 1;         // 部队
+  uint64 expected_version = 2; // 期望版本，0=不校验
+}
+
+// CommandReply 是命令结果。
+//
+// code 是业务码（44001..44017），不是 gRPC status：
+// 业务失败（槽位占用、路径受阻）属于"正常回复"，用 gRPC error 表达会让
+// 客户端分不清"请求没到"和"到了但被业务拒绝"。
+message CommandReply {
+  int32 code = 1;              // 0=成功
+  string message = 2;          // 可读说明（客户端可直接展示）
+  string command_id = 3;       // 服务端命令编号
+  bytes result_json = 4;       // 首次结果（重放时原样返回）
+  string operation_id = 5;     // 长操作编号（AcceptedDeferred 时非空）
+  bool replayed = 6;           // 是否为幂等重放
+}
+
+// MapQueryRequest 查询请求。
+message MapQueryRequest {
+  uint64 world_id = 1;
+  int64 player_id = 2;
+  int32 scene_id = 3;
+
+  oneof body {
+    QueryTroops query_troops = 10;
+    QueryResources query_resources = 11;
+  }
+}
+
+message QueryTroops {
+  int32 slot_id = 1; // 0=全部
+}
+
+message QueryResources {
+  int64 min_x = 1; // 格坐标，左闭右开
+  int64 min_y = 2;
+  int64 max_x = 3;
+  int64 max_y = 4;
+}
+
+// MapQueryReply 查询结果。
+message MapQueryReply {
+  uint64 revision = 1;          // 结果对应的场景版本
+  repeated TroopView troops = 2;
+  repeated ResourceView resources = 3;
+}
+
+// TroopView 部队视图。坐标是服务端按 MoveSegment 推导的当前值，
+// 不是客户端插值结果。
+message TroopView {
+  uint64 troop_id = 1;
+  int64 player_id = 2;
+  int32 slot_id = 3;
+  int32 phase = 4;         // TroopPhase 枚举值
+  int64 x = 5;             // 定点坐标
+  int64 y = 6;
+  uint64 target_id = 7;
+  int64 arrive_at_ms = 8;  // 当前段到达时刻
+  repeated CargoEntry cargo = 9;
+  uint64 version = 10;
+}
+
+message CargoEntry {
+  int32 item_id = 1;
+  int64 count = 2;
+}
+
+// ResourceView 资源点视图。
+message ResourceView {
+  uint64 resource_id = 1;
+  int64 x = 2;
+  int64 y = 3;
+  int32 resource_type = 4;
+  int64 remaining = 5;
+  int64 total = 6;
+  string active_collect_id = 7;
+  int64 rich_block_id = 8;
+  uint64 version = 9;
+}
+
+// StreamViewRequest 视野订阅。
+//
+// since_revision 用于断线重连：服务端若还能从该版本追平就推增量，
+// 否则直接下发 Resync（全量），避免客户端看到"永远缺一块"的视野。
+message StreamViewRequest {
+  uint64 world_id = 1;
+  int64 player_id = 2;
+  int32 scene_id = 3;
+  int64 min_x = 4;
+  int64 min_y = 5;
+  int64 max_x = 6;
+  int64 max_y = 7;
+  uint64 since_revision = 8;
+}
+
+// ViewEvent 视野事件。
+message ViewEvent {
+  uint64 revision = 1;
+  int32 scene_id = 2;
+
+  oneof body {
+    ObjectUpsert upsert = 10;
+    ObjectRemove remove = 11;
+    Resync resync = 12;
+  }
+}
+
+message ObjectUpsert {
+  uint64 object_id = 1;
+  int32 kind = 2;
+  TroopView troop = 3;
+  ResourceView resource = 4;
+  int64 x = 5;
+  int64 y = 6;
+}
+
+message ObjectRemove {
+  uint64 object_id = 1;
+}
+
+// Resync 表示"从这里重新开始"：客户端应清空该场景缓存。
+message Resync {
+  uint64 revision = 1;
+  string reason = 2;
+}

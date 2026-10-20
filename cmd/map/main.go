@@ -21,14 +21,17 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"game_study/internal/worldmap"
+	maprpc "game_study/internal/worldmap/rpc"
 	"game_study/pkg/config"
 	"game_study/pkg/log"
+	rpcpkg "game_study/pkg/rpc"
 )
 
 var (
@@ -58,7 +61,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv, err := worldmap.New(cfg.Map, loggerAdapter{logger})
+	verifier, err := tokenVerifier(cfg)
+	if err != nil {
+		logger.Error("map 鉴权配置无效", "err", err)
+		os.Exit(1)
+	}
+
+	// MySQL 连接配置从顶层段取（与其它服务共用一套连接参数）；
+	// 为空则走内存模式，适合本地联调。
+	srv, err := worldmap.New(cfg.Map, loggerAdapter{logger},
+		worldmap.WithMySQL(cfg.MySQL),
+		worldmap.WithTokenVerifier(verifier),
+	)
 	if err != nil {
 		logger.Error("map server init failed", "err", err)
 		os.Exit(1)
@@ -67,7 +81,17 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// gRPC 服务：注册必须在 Start 之前（gRPC 不允许运行中改服务表）。
+	rs := rpcpkg.NewServer(cfg.Server.GRPCAddr, logger)
+	srv.API().Register(rs.GRPCServer())
+	go func() {
+		if err := rs.Start(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("grpc server stopped with error", "err", err)
+		}
+	}()
+
 	runErr := srv.Run(ctx)
+	rs.Stop()
 	logger.Info("shutdown signal received")
 
 	// 关闭预算：地图是"等在途事务"型服务，超时太短会把已提交的命令
@@ -85,6 +109,28 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("MapServer stopped")
+}
+
+// tokenVerifier 构造内部 RPC 鉴权器。
+//
+// dev/test 环境用静态 token（配置 map 段暂时没有 token 字段，先用环境变量
+// MAP_INTERNAL_TOKEN）；生产未配置 token 时直接拒绝启动——
+// 地图服务暴露的是"改别人家城池"的能力，不能默认裸奔。
+func tokenVerifier(cfg *config.Config) (maprpc.TokenVerifier, error) {
+	token := os.Getenv("MAP_INTERNAL_TOKEN")
+	if token == "" {
+		// 生产环境没有 token 等于允许任意内部调用者伪造 player_id，
+		// 这是"改别人家城池"级别的风险，必须拒绝启动。
+		if cfg.Server.Env == "prod" {
+			return nil, fmt.Errorf("MAP_INTERNAL_TOKEN 未设置：生产环境不允许裸奔")
+		}
+		// dev/test：不校验，便于本地联调（日志明确提示）。
+		return maprpc.NopVerifier{}, nil
+	}
+	if v := maprpc.NewStaticTokenVerifier(token); v != nil {
+		return v, nil
+	}
+	return nil, fmt.Errorf("MAP_INTERNAL_TOKEN 为空")
 }
 
 // loggerAdapter 把项目日志器适配成 runtime.Logger。

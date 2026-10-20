@@ -234,15 +234,20 @@ func TestPlanArrive(t *testing.T) {
 				}), Command{Kind: CmdArrive, Arrive: ArriveParams{TroopID: 200, MoveID: "m-6"}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.BattleUpsert) != 1 {
-					t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
+				// 队列是显式持久事实（map_battle_queue），不再用
+				// BattleRecord + 标记表示排队成员。
+				if len(plan.BattleUpsert) != 0 {
+					t.Fatalf("排队不得再写占位战斗记录: %+v", plan.BattleUpsert)
 				}
-				queued := plan.BattleUpsert[0]
-				if queued.AppliedOperationID != m1QueuedBattleMarker {
-					t.Fatalf("排队成员必须带 M1 标记: %+v", queued)
+				if len(plan.QueueEnqueue) != 1 {
+					t.Fatalf("QueueEnqueue=%+v", plan.QueueEnqueue)
 				}
-				if queued.Status != domain.BattleStatusPending || queued.AttackerID != 200 {
-					t.Fatalf("排队记录=%+v", queued)
+				en := plan.QueueEnqueue[0]
+				if en.TargetID != 1000 || en.TroopID != 200 {
+					t.Fatalf("入队记录=%+v", en)
+				}
+				if en.Seq <= 0 {
+					t.Fatalf("入队序号必须为正（FIFO 依据）: %d", en.Seq)
 				}
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
 				if !ok || up.Troop.Phase != domain.TroopPhaseQueued {
@@ -254,6 +259,9 @@ func TestPlanArrive(t *testing.T) {
 				m := receiptMap(t, plan)
 				if !jsonBool(t, m, "queued") || jsonStr(t, m, "battle_id") != "battle-live" {
 					t.Fatalf("回执=%v", m)
+				}
+				if jsonInt(t, m, "enqueue_seq") != en.Seq {
+					t.Fatalf("回执与队列序号不一致: %v", m)
 				}
 			},
 		},

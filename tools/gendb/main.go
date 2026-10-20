@@ -474,7 +474,24 @@ func genModel(outDir string, t table) error {
 	}
 
 	path := filepath.Join(outDir, t.Name+"_gen.go")
-	return writeGoFile(path, b.String())
+	return writeGoFile(path, pruneUnusedFlushImport(b.String()))
+}
+
+// pruneUnusedFlushImport 在没有生成任何 flush.* 调用时去掉 flush 导入。
+//
+// 为什么需要：像 map_id_allocator 这种「只有自增主键 + DB 生成时间列」的表，
+// 没有可更新列（nonPKNonAutoCols 为空），因此不会生成 Update/Upsert/Flat，
+// 也就不会引用 flush。而 import 是提前写死的，Go 编译期报「导入未使用」，
+// 整个 pkg/model 都编不过。
+//
+// 判定方式：import 行本身是 "game_study/pkg/flush"（不含 "flush."），
+// 所以正文里出现 "flush." 就说明确实用到了；一次 Contains 即可判定，
+// 不需要解析 AST（生成器保持零依赖、纯字符串拼接的风格）。
+func pruneUnusedFlushImport(src string) string {
+	if strings.Contains(src, "flush.") {
+		return src
+	}
+	return strings.Replace(src, "\n\t\"game_study/pkg/flush\"", "", 1)
 }
 
 // goFieldType 列的 Go 字段类型：自增列恒为 int64；可空时间列用 sql.NullTime

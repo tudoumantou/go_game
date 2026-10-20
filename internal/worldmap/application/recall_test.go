@@ -140,15 +140,16 @@ func TestPlanRecall(t *testing.T) {
 				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.BattleUpsert) != 1 {
-					t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
+				// 退出队列 = 显式删除队列行（map_battle_queue），
+				// 与 Phase 变更同一事务；不再把战斗记录置 TIMED_OUT。
+				if len(plan.QueueDequeue) != 1 {
+					t.Fatalf("QueueDequeue=%+v", plan.QueueDequeue)
 				}
-				// M1 约定：退出队列 = 该成员的 battle 记录置 TIMED_OUT。
-				if plan.BattleUpsert[0].Status != domain.BattleStatusTimedOut {
-					t.Fatalf("Status=%v, want TIMED_OUT", plan.BattleUpsert[0].Status)
+				if de := plan.QueueDequeue[0]; de.TargetID != 1000 || de.TroopID != 200 {
+					t.Fatalf("出队记录=%+v", de)
 				}
-				if plan.BattleUpsert[0].BattleID != "battle-1" {
-					t.Fatalf("BattleID=%q", plan.BattleUpsert[0].BattleID)
+				if len(plan.BattleUpsert) != 0 {
+					t.Fatalf("退出队列不得改动正在进行的战斗: %+v", plan.BattleUpsert)
 				}
 				trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
 				if !ok || trUp.Troop.Phase != domain.TroopPhaseReturning {
@@ -157,6 +158,9 @@ func TestPlanRecall(t *testing.T) {
 				m := receiptMap(t, plan)
 				if !jsonBool(t, m, "queued_left") {
 					t.Fatalf("回执未标记退出队列: %v", m)
+				}
+				if jsonStr(t, m, "battle_id") != "battle-1" {
+					t.Fatalf("回执应带出正在进行的战斗编号: %v", m)
 				}
 			},
 		},

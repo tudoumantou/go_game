@@ -186,8 +186,15 @@ type SceneLoop struct {
 	sessions  map[domain.ObjectID]*domain.CollectSession
 	receipts  map[domain.CommandKey]domain.CommandReceipt
 	battles   map[domain.ObjectID]*domain.BattleRecord
-	queues    map[domain.ObjectID][]domain.ObjectID
-	revision  uint64
+	// queues 目标战斗队列的内存视图，value 按 Seq 升序（FIFO）。
+	// 元素带 Seq 而不是只存 ObjectID：恢复/合并时需要按序号排序，
+	// 只存 ID 就把顺序依赖压在了切片下标上，而切片下标没有跨进程含义。
+	queues map[domain.ObjectID][]domain.QueueEntry
+	// queueExplicit 表示队列已由显式计划（QueueEnqueue/Dequeue）维护。
+	// 一旦为 true，就不再从 BattleRecord 的 M1 标记推断队列——
+	// 否则每来一条无关命令都会用"旧推断"覆盖掉显式维护的 FIFO。
+	queueExplicit bool
+	revision      uint64
 
 	pending *pendingTx
 	heap    *DueQueue
@@ -257,7 +264,7 @@ func NewSceneLoop(
 		sessions:  make(map[domain.ObjectID]*domain.CollectSession),
 		receipts:  make(map[domain.CommandKey]domain.CommandReceipt),
 		battles:   make(map[domain.ObjectID]*domain.BattleRecord),
-		queues:    make(map[domain.ObjectID][]domain.ObjectID),
+		queues:    make(map[domain.ObjectID][]domain.QueueEntry),
 		heap:      NewDueQueue(),
 		done:      make(chan struct{}),
 	}, nil
@@ -721,9 +728,42 @@ func (s *SceneLoop) eventCommand(ev domain.DueEvent, nowMS int64) (routedCommand
 			},
 		}, true
 	case domain.DueKindBattleTimeout:
-		// M8 之前没有 BattleResolver 接入，超时裁决暂不处理：
-		// 保留事件类型与优先级，避免将来加实现时改调度契约。
-		return routedCommand{}, false
+		// 战斗超时：PENDING→TIMED_OUT（文档 11.3）。幂等键用
+		// domain.BattleResultKey，与结果命令共用 battle 维度——
+		// 谁先提交谁生效，迟到者读到终态只回执。
+		s.mu.RLock()
+		var rec *domain.BattleRecord
+		for _, cand := range s.battles {
+			if cand.BattleID != ev.BattleID {
+				continue
+			}
+			// Go 的 map 遍历顺序随机，但 battle_id 唯一，命中项唯一；
+			// 拷贝一份再解锁，避免把内部指针带出临界区。
+			cp := *cand
+			rec = &cp
+			break
+		}
+		var playerID int64
+		if rec != nil {
+			if troop, ok := s.troops[rec.AttackerID]; ok {
+				playerID = troop.PlayerID
+			}
+		}
+		s.mu.RUnlock()
+		// 战斗已消失或已终态：事件作废。这里直接丢弃而不是转成
+		// 命令，是因为终态不可反转（INV-06），多提交一次只会浪费事务。
+		if rec == nil || rec.Status.Terminal() {
+			return routedCommand{}, false
+		}
+		env := s.internalEnv(playerID, domain.BattleResultKey(rec.BattleID), nowMS)
+		return routedCommand{
+			Env: env,
+			Cmd: application.Command{
+				Kind:          application.CmdBattleTimeout,
+				TargetScene:   s.sceneID,
+				BattleTimeout: application.BattleTimeoutParams{BattleID: rec.BattleID},
+			},
+		}, true
 	default:
 		return routedCommand{}, false
 	}

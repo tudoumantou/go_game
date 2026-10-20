@@ -253,6 +253,39 @@ func (s *SceneSnapshot) ResourcesOfBlock(blockID int64) []*domain.ResourceNode {
 	return out
 }
 
+// AllObjects 返回场景内全部未删除对象。
+//
+// 给投影初始化用：视图层首次加载需要"这个场景现在有什么"，
+// 逐个按 ID 查不现实（调用方并不知道有哪些 ID）。
+// 返回深拷贝，与其它访问器保持同一契约。
+func (s *SceneSnapshot) AllObjects() []domain.ObjectSnapshot {
+	out := make([]domain.ObjectSnapshot, 0, len(s.objects))
+	for _, obj := range s.objects {
+		if obj.Deleted {
+			continue
+		}
+		out = append(out, cloneSnapshot(obj))
+	}
+	return out
+}
+
+// cloneSnapshot 深拷贝对象快照（内部复用）。
+func cloneSnapshot(obj domain.ObjectSnapshot) domain.ObjectSnapshot {
+	cp := obj
+	if obj.Troop != nil {
+		cp.Troop = obj.Troop.Clone()
+	}
+	if obj.City != nil {
+		c := *obj.City
+		cp.City = &c
+	}
+	if obj.Resource != nil {
+		r := *obj.Resource
+		cp.Resource = &r
+	}
+	return cp
+}
+
 // AllResources 返回场景内全部资源点副本。
 func (s *SceneSnapshot) AllResources() []*domain.ResourceNode {
 	out := make([]*domain.ResourceNode, 0, len(s.resources))

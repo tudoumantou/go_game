@@ -47,6 +47,13 @@ const (
 	CmdTransferPrepare  CommandKind = 7
 	CmdTransferActivate CommandKind = 8
 	CmdTransferRelease  CommandKind = 9
+	// CmdBattleResult 战斗结果应用（内部命令，由 Resolver 回包触发，
+	// 文档 11.3）。结果与超时共用 battle 维度的幂等键
+	// （domain.BattleResultKey），谁先提交谁生效。
+	CmdBattleResult CommandKind = 10
+	// CmdBattleTimeout 战斗超时裁决（内部命令，由到期事件触发，
+	// 文档 11.3：PENDING→TIMED_OUT，攻击无效、防守保留、无战损）。
+	CmdBattleTimeout CommandKind = 11
 )
 
 func (k CommandKind) String() string {
@@ -69,6 +76,10 @@ func (k CommandKind) String() string {
 		return "TRANSFER_ACTIVATE"
 	case CmdTransferRelease:
 		return "TRANSFER_RELEASE"
+	case CmdBattleResult:
+		return "BATTLE_RESULT"
+	case CmdBattleTimeout:
+		return "BATTLE_TIMEOUT"
 	default:
 		return fmt.Sprintf("CommandKind(%d)", int32(k))
 	}
@@ -79,7 +90,8 @@ func (k CommandKind) String() string {
 func (k CommandKind) Internal() bool {
 	switch k {
 	case CmdArrive, CmdCollectStart, CmdCollectSettle, CmdRefresh,
-		CmdTransferPrepare, CmdTransferActivate, CmdTransferRelease:
+		CmdTransferPrepare, CmdTransferActivate, CmdTransferRelease,
+		CmdBattleResult, CmdBattleTimeout:
 		return true
 	default:
 		return false
@@ -104,6 +116,10 @@ type Command struct {
 	CollectSettle CollectSettleParams
 	// Refresh 仅 CmdRefresh 使用。
 	Refresh RefreshParams
+	// BattleResult 仅 CmdBattleResult 使用。
+	BattleResult BattleResultParams
+	// BattleTimeout 仅 CmdBattleTimeout 使用。
+	BattleTimeout BattleTimeoutParams
 	// TargetScene 由 runtime 路由填写，规划器用它校验快照归属。
 	TargetScene domain.SceneID
 }
@@ -152,6 +168,27 @@ type RefreshParams struct {
 	RichBlockID int64
 	Generation  int64
 	Slot        int32
+}
+
+// BattleResultParams 战斗结果参数（文档 11.3）。
+//
+// 只有 battle_id 与胜者身份：伤害、战利品、阶段迁移一律由服务端按
+// 规则推导，客户端上报的 BattleResultReport 不能直接操作 map_battle
+// （11.2：外部 Resolver 需认证响应来源）。
+//
+// Winner 为 0 时退化为按 AttackerWon 推胜者（便于只关心"谁赢"的
+// 内部调用方）；两者都给了且矛盾时以 Winner 为准——只有一个字段
+// 能当权威，否则"胜负"会出现两个真源。
+type BattleResultParams struct {
+	BattleID    string
+	Winner      domain.ObjectID
+	AttackerWon bool
+}
+
+// BattleTimeoutParams 超时裁决参数。只带 battle_id：
+// 超时时刻由到期事件决定，应用时取命令的 nowMS，不从客户端来。
+type BattleTimeoutParams struct {
+	BattleID string
 }
 
 // Rules 是规划器使用的服务端规则（来自配置，构造时注入）。

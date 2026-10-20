@@ -40,18 +40,6 @@ type ObjectIDGen func() domain.ObjectID
 // 全局源则无法从持久化数据重建序列。
 type SeedGen func(block, generation, slot int64) int64
 
-// QueueChange 是队列变更的**扩展类型**，本版本不加入 MutationPlan。
-//
-// 为什么定义了却不用：domain.MutationPlan 没有队列字段，而本次任务
-// 不允许修改 domain 包。M1 的替代约定见 recall.go 的 QUEUED 分支：
-// 用 BattleRecord.Status=TIMED_OUT 表示“该攻击方退出队列”，由 runtime
-// 从 BattleRecord 列表重建队列。M2 增加 map_battle_queue 表之后，
-// writer 直接消费 QueueChange，进攻/退出队列不再借用战斗记录。
-type QueueChange struct {
-	TargetID domain.ObjectID
-	Leaving  []domain.ObjectID
-}
-
 const (
 	// unitWeight 是第一版的物品重量。文档 10.2 规定重量来自固定版本
 	// 配置且必须为正；M1 所有物品重量恒为 1（units 即物品数），
@@ -191,6 +179,10 @@ func (p *DefaultPlanner) Plan(snap *SceneSnapshot, env domain.CommandEnvelope, c
 		return p.PlanCollectSettle(snap, env, cmd, nowMS)
 	case CmdRefresh:
 		return p.PlanRefresh(snap, env, cmd, nowMS)
+	case CmdBattleResult:
+		return p.PlanBattleResult(snap, env, cmd, nowMS)
+	case CmdBattleTimeout:
+		return p.PlanBattleTimeout(snap, env, cmd, nowMS)
 	case CmdTransferPrepare, CmdTransferActivate, CmdTransferRelease:
 		return nil, fmt.Errorf("%w: 移交命令 %s 在 M1 未开放", domain.ErrFeatureDisabled, cmd.Kind)
 	default:
@@ -204,7 +196,8 @@ func (p *DefaultPlanner) Plan(snap *SceneSnapshot, env domain.CommandEnvelope, c
 func knownKind(k CommandKind) bool {
 	switch k {
 	case CmdMarchStart, CmdRecall, CmdArrive, CmdCollectStart, CmdCollectSettle,
-		CmdRefresh, CmdTransferPrepare, CmdTransferActivate, CmdTransferRelease:
+		CmdRefresh, CmdBattleResult, CmdBattleTimeout,
+		CmdTransferPrepare, CmdTransferActivate, CmdTransferRelease:
 		return true
 	default:
 		return false

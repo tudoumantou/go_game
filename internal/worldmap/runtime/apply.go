@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"sort"
+
 	"game_study/internal/worldmap/application"
 	"game_study/internal/worldmap/domain"
 )
@@ -71,7 +73,21 @@ func (s *SceneLoop) applyPlan(plan *domain.MutationPlan) {
 		cp := b
 		s.battles[cp.TargetID] = &cp
 	}
-	s.rebuildQueues()
+
+	// 队列：显式变更优先。
+	//
+	// 为什么需要 queueExplicit 这个开关：M1 的历史数据用
+	// "PENDING 战斗记录 + m1:queued 标记"表示排队成员，而新数据用
+	// map_battle_queue。如果每条计划都无条件 rebuildQueues，那么一条
+	// 与队列无关的命令提交后，队列就会被"从战斗记录推断"的结果覆盖，
+	// 显式维护的 FIFO 立刻丢失。反过来，只要还没见过显式变更，
+	// 就必须继续按旧格式推断，否则老世界恢复后队列是空的。
+	if len(plan.QueueEnqueue) > 0 || len(plan.QueueDequeue) > 0 {
+		s.queueExplicit = true
+		s.applyQueueChanges(plan)
+	} else if !s.queueExplicit {
+		s.rebuildQueues()
+	}
 
 	// 回执。
 	if plan.CommandReceipt != nil {
@@ -84,14 +100,63 @@ func (s *SceneLoop) applyPlan(plan *domain.MutationPlan) {
 	s.scheduleFromPlan(plan)
 }
 
-// rebuildQueues 从战斗记录重建排队视图。
+// applyQueueChanges 把计划里的队列变更落到内存视图。
+//
+// 顺序固定为"先出队、再入队"：结果命令会在同一个计划里先移除队首、
+// 再让下一名开战；如果反过来，同一个部队可能先入队再被删掉，
+// 或者 Seq 排序时把新的队首排到了被删除的成员后面。
+//
+// 去重按 (TargetID,TroopID)：map_battle_queue 上有
+// UNIQUE(world,target,troop)，同一支部队重复入队会让事务失败。
+// 内存视图先挡住，避免"规划重试"变成一次注定失败的提交。
+func (s *SceneLoop) applyQueueChanges(plan *domain.MutationPlan) {
+	for _, de := range plan.QueueDequeue {
+		q := s.queues[de.TargetID]
+		kept := make([]domain.QueueEntry, 0, len(q))
+		for _, e := range q {
+			if e.TroopID == de.TroopID {
+				continue
+			}
+			kept = append(kept, e)
+		}
+		if len(kept) == 0 {
+			delete(s.queues, de.TargetID)
+			continue
+		}
+		s.queues[de.TargetID] = kept
+	}
+	for _, en := range plan.QueueEnqueue {
+		q := s.queues[en.TargetID]
+		dup := false
+		for _, e := range q {
+			if e.TroopID == en.TroopID {
+				dup = true
+				break
+			}
+		}
+		if dup {
+			continue
+		}
+		q = append(q, domain.QueueEntry{TargetID: en.TargetID, TroopID: en.TroopID, Seq: en.Seq})
+		// 按 Seq 排序：入队顺序才是 FIFO 的真源，插入顺序不是
+		// （恢复/重放时插入顺序可能来自 SQL 行序或 map 遍历）。
+		sort.SliceStable(q, func(i, j int) bool { return q[i].Seq < q[j].Seq })
+		s.queues[en.TargetID] = q
+	}
+}
+
+// rebuildQueues 从战斗记录重建排队视图（M1 历史数据兼容路径）。
 //
 // M1 没有 map_battle_queue 表，队列成员在持久层表现为
 // Status=PENDING 且 AppliedOperationID="m1:queued" 的战斗记录
-// （见 application/arrive.go 的约定）。重建按 DeadlineMS、BattleID
-// 排序，保证同一份数据两次重建得到同样的顺序。
+// （见 application/arrive.go 的兼容标记说明）。重建按 DeadlineMS、
+// BattleID 排序，保证同一份数据两次重建得到同样的顺序——map 遍历
+// 顺序随机，不排序就会"每次重启队列顺序都不一样"。
+//
+// 新命令不再产生这种记录；一旦见过显式队列变更，本函数就不再被调用
+// （applyPlan 的 queueExplicit 开关）。
 func (s *SceneLoop) rebuildQueues() {
-	queues := make(map[domain.ObjectID][]domain.ObjectID)
+	queues := make(map[domain.ObjectID][]domain.QueueEntry)
 	for _, b := range s.battles {
 		if b.Status != domain.BattleStatusPending {
 			continue
@@ -99,7 +164,22 @@ func (s *SceneLoop) rebuildQueues() {
 		if b.AppliedOperationID != queuedMarker {
 			continue
 		}
-		queues[b.TargetID] = append(queues[b.TargetID], b.AttackerID)
+		queues[b.TargetID] = append(queues[b.TargetID], domain.QueueEntry{
+			TargetID: b.TargetID,
+			TroopID:  b.AttackerID,
+			// 序号取 DeadlineMS：M1 用它近似入队时间；同一毫秒内
+			// 再用 TroopID 兜底（下方 sort），保证重建顺序唯一。
+			Seq: b.DeadlineMS,
+		})
+	}
+	for target, q := range queues {
+		sort.SliceStable(q, func(i, j int) bool {
+			if q[i].Seq != q[j].Seq {
+				return q[i].Seq < q[j].Seq
+			}
+			return q[i].TroopID < q[j].TroopID
+		})
+		queues[target] = q
 	}
 	s.queues = queues
 }
@@ -132,16 +212,29 @@ func (s *SceneLoop) scheduleFromPlan(plan *domain.MutationPlan) {
 			SessionID: sess.ID,
 		})
 	}
+	// 战斗超时只给"队首"安排：同一目标上的 PENDING 记录里先到期的
+	// 那一条才是当前正在打的战斗。为什么不是全部 PENDING：历史数据
+	// 里排队成员也是 PENDING（M1 标记），给它们排超时会在队首还没结束
+	// 时就触发另一场超时裁决，把队列顺序彻底打乱。
+	//
+	// 用 map 聚合"每目标最早的一条"，聚合结果与遍历顺序无关
+	// （比较键是 DeadlineMS+BattleID 全序），因此可以放心 range。
+	heads := make(map[domain.ObjectID]domain.BattleRecord, len(plan.BattleUpsert))
 	for i := range plan.BattleUpsert {
 		b := plan.BattleUpsert[i]
 		if b.Status != domain.BattleStatusPending {
 			continue
 		}
-		// 排队中的战斗记录不是真正的战斗（只是占位），不安排超时；
-		// 只有队首那场才需要超时裁决。
 		if b.AppliedOperationID == queuedMarker {
 			continue
 		}
+		cur, ok := heads[b.TargetID]
+		if !ok || b.DeadlineMS < cur.DeadlineMS ||
+			(b.DeadlineMS == cur.DeadlineMS && b.BattleID < cur.BattleID) {
+			heads[b.TargetID] = b
+		}
+	}
+	for _, b := range heads {
 		s.heap.Schedule(domain.DueEvent{
 			WorldID:  s.worldID,
 			DueAtMS:  b.DeadlineMS,
@@ -152,7 +245,15 @@ func (s *SceneLoop) scheduleFromPlan(plan *domain.MutationPlan) {
 	}
 }
 
-// queuedMarker 标记「排队占位」的战斗记录（M1 约定，M2 由队列表替代）。
+// queuedMarker 标记「排队占位」的战斗记录。
+//
+// 这是 M1 的历史约定：MutationPlan 还没有队列字段时，排队成员写成
+// 一条 Status=PENDING 且 AppliedOperationID="m1:queued" 的战斗记录。
+// 现在队列有了显式字段（QueueEnqueue/QueueDequeue → map_battle_queue），
+// 新数据不再产生这种记录；本常量只服务于**兼容读取**（rebuildQueues
+// 与 scheduleFromPlan 跳过排队占位）。字符串必须与 application 包
+// 的 m1QueuedBattleMarker 保持一致——两份常量是历史包袱，删掉任一份
+// 都要先确认线上没有带标记的存量记录。
 const queuedMarker = "m1:queued"
 
 // snapshotForPlanner 用已提交状态构造只读快照。
@@ -185,9 +286,24 @@ func (s *SceneLoop) snapshotForPlanner(nowMS int64) *application.SceneSnapshot {
 		cp := *b
 		battles = append(battles, &cp)
 	}
+	// 队列投影：按 Seq 升序转成"攻击方 ID 列表"。规划器只关心先后
+	// 顺序，Seq 是持久化字段，不属于快照的命令契约。
+	//
+	// 先复制再排序：s.queues 是场景内部状态，快照必须与它完全隔离
+	// （文档 4.2），直接 sort 内部切片会在快照构造期间改动业务状态。
 	queues := make(map[domain.ObjectID][]domain.ObjectID, len(s.queues))
-	for k, v := range s.queues {
-		queues[k] = append([]domain.ObjectID(nil), v...)
+	for target, entries := range s.queues {
+		if len(entries) == 0 {
+			continue
+		}
+		ordered := make([]domain.QueueEntry, len(entries))
+		copy(ordered, entries)
+		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Seq < ordered[j].Seq })
+		ids := make([]domain.ObjectID, 0, len(ordered))
+		for _, e := range ordered {
+			ids = append(ids, e.TroopID)
+		}
+		queues[target] = ids
 	}
 	return application.NewSceneSnapshot(application.SnapshotOptions{
 		SceneID:      s.sceneID,

@@ -18,9 +18,14 @@ import (
 	"game_study/internal/worldmap/domain"
 )
 
-// m1QueuedBattleMarker 写在 BattleRecord.AppliedOperationID 上，用于把
-// “排队成员”与“正在裁决的战斗”区分开。这是 M1 的权宜表示（MutationPlan
-// 没有队列字段，见 recall.go 的详细说明）；M2 增加 map_battle_queue 后删除。
+// m1QueuedBattleMarker 是 M1 时期"排队成员"的兼容标记（写在
+// BattleRecord.AppliedOperationID 上）。
+//
+// 迁移期约定：新命令不再产生这个标记，队列改由 MutationPlan 的
+// QueueEnqueue/QueueDequeue 显式表达（对应 map_battle_queue 表）。
+// 但历史数据里仍有带该标记的 PENDING 记录，读取路径（runtime 的
+// rebuildQueues）必须继续认它，否则老世界恢复后队列会全部丢失。
+// 注释保留是为了让后来者明白：这个常量不是死代码，而是兼容开关。
 const m1QueuedBattleMarker = "m1:queued"
 
 // PlanArrive 处理移动到达。
@@ -137,7 +142,7 @@ func (p *DefaultPlanner) arriveResource(snap *SceneSnapshot, env domain.CommandE
 						"battle_id":   battle.BattleID,
 					})
 			}
-			return p.enqueueBattle(snap, env, troop, battle.BattleID, res.Header.ID, sess.TroopID, defStats, nowMS)
+			return p.enqueueBattle(snap, env, troop, battle.BattleID, res.Header.ID, nowMS)
 		}
 
 		return p.startBattle(snap, env, troop, res.Header.ID, sess.TroopID, defStats, nowMS)
@@ -202,7 +207,7 @@ func (p *DefaultPlanner) arriveCombatTarget(snap *SceneSnapshot, env domain.Comm
 					"battle_id": battle.BattleID,
 				})
 		}
-		return p.enqueueBattle(snap, env, troop, battle.BattleID, targetID, defenderID, defStats, nowMS)
+		return p.enqueueBattle(snap, env, troop, battle.BattleID, targetID, nowMS)
 	}
 	return p.startBattle(snap, env, troop, targetID, defenderID, defStats, nowMS)
 }
@@ -214,7 +219,7 @@ func (p *DefaultPlanner) arriveCombatTarget(snap *SceneSnapshot, env domain.Comm
 // (target, now, attacker) 派生，保证可回放且与刷新流互不干扰。
 func (p *DefaultPlanner) startBattle(snap *SceneSnapshot, env domain.CommandEnvelope, attacker *domain.Troop, targetID, defenderID domain.ObjectID, defenderStats domain.CombatSnapshot, nowMS int64) (*domain.MutationPlan, error) {
 	plan := newPlan(snap, env, p.ids, nowMS)
-	battleID, record := p.newBattleRecord(env, attacker, targetID, defenderID, defenderStats, "", nowMS)
+	battleID, record := p.newBattleRecord(env, attacker, targetID, defenderID, defenderStats, nowMS)
 	plan.BattleUpsert = append(plan.BattleUpsert, record)
 
 	// FIGHTING 必须三件套一致：Phase=FIGHTING、BattleID 非空、Busy=BATTLE
@@ -241,40 +246,61 @@ func (p *DefaultPlanner) startBattle(snap *SceneSnapshot, env domain.CommandEnve
 	return plan, nil
 }
 
-// enqueueBattle 把攻击方追加到目标战斗队列。
+// enqueueBattle 把攻击方追加到目标战斗队列（文档 11.4）。
 //
-// 【M1 表示】队列成员写成一条 Status=PENDING 的 BattleRecord，并用
-// AppliedOperationID=m1QueuedBattleMarker 与队首区分。DeadlineMS 取
-// 入队时间 + 超时，作为 M1 的近似入队序；M2 用 map_battle_queue.enqueue_seq。
-func (p *DefaultPlanner) enqueueBattle(snap *SceneSnapshot, env domain.CommandEnvelope, attacker *domain.Troop, activeBattleID string, targetID, defenderID domain.ObjectID, defenderStats domain.CombatSnapshot, nowMS int64) (*domain.MutationPlan, error) {
+// 队列是**显式持久事实**：计划里写 QueueEnqueue，由 writer 落到
+// map_battle_queue(world,target,enqueue_seq,troop)。不再借用
+// BattleRecord 表示排队成员——那样同一目标只能有一条进行中记录，
+// 顺序只能靠 deadline 近似，重启后 FIFO 无从还原。
+//
+// 入队序号的派生（为什么不是简单自增）：规划器是无状态的，进程内
+// 计数器在重启后归零，会和库里已有的序号撞车。这里用
+// "nowMS*1000 + 当前队列长度"：
+//   - 场景单写者串行执行，同一目标的队列长度只会因入队而单调增长，
+//     因此同一毫秒内的多次入队仍然严格递增；
+//   - 跨毫秒天然递增；重启后 nowMS 只会更大，不会回退到旧序号之前。
+//
+// 复核时若发现同一 (target,troop) 重复入队，由表的
+// UNIQUE(world,target,troop) 兜底，规划层只做内存预检。
+func (p *DefaultPlanner) enqueueBattle(snap *SceneSnapshot, env domain.CommandEnvelope, attacker *domain.Troop, activeBattleID string, targetID domain.ObjectID, nowMS int64) (*domain.MutationPlan, error) {
 	if activeBattleID == "" {
 		activeBattleID = "unknown"
 	}
 	plan := newPlan(snap, env, p.ids, nowMS)
-	queuedID, record := p.newBattleRecord(env, attacker, targetID, defenderID, defenderStats, m1QueuedBattleMarker, nowMS)
-	plan.BattleUpsert = append(plan.BattleUpsert, record)
+	queued := snap.QueuedOn(targetID)
+	seq := nowMS*1000 + int64(len(queued))
+	plan.QueueEnqueue = append(plan.QueueEnqueue, domain.QueueEntry{
+		TargetID: targetID,
+		TroopID:  attacker.Header.ID,
+		Seq:      seq,
+	})
 
+	// QUEUED 阶段不得携带战斗锁：只有真正 FIGHTING 的部队才有
+	// battle_id 与 Busy=BATTLE（troop.go 的反向约束）。
 	attacker.Phase = domain.TroopPhaseQueued
 	attacker.Move = nil
-	attacker.BattleID = "" // 非 FIGHTING 不得携带 battle_id
+	attacker.BattleID = ""
 	attacker.Busy = domain.BusyState{}
 	p.markTroopUpdated(plan, attacker, snap.SceneID())
 
 	setReceipt(plan, domain.CodeOK, map[string]any{
-		"queued":    true,
-		"troop_id":  uint64(attacker.Header.ID),
-		"battle_id": activeBattleID,
-		"queue_id":  queuedID,
-		"target_id": uint64(targetID),
-		"queue_len": int64(len(snap.QueuedOn(targetID)) + 1),
+		"queued":      true,
+		"troop_id":    uint64(attacker.Header.ID),
+		"battle_id":   activeBattleID,
+		"target_id":   uint64(targetID),
+		"enqueue_seq": seq,
+		"queue_len":   int64(len(queued) + 1),
 	}, nowMS)
 	plan.OutboxEvents = append(plan.OutboxEvents, p.newEvent(snap, env, "BattleQueued", nil))
 	return plan, nil
 }
 
-// newBattleRecord 构造战斗记录（创建与排队共用）。
-// marker 为空表示队首（真正参与裁决），非空表示排队成员。
-func (p *DefaultPlanner) newBattleRecord(env domain.CommandEnvelope, attacker *domain.Troop, targetID, defenderID domain.ObjectID, defenderStats domain.CombatSnapshot, marker string, nowMS int64) (string, domain.BattleRecord) {
+// newBattleRecord 构造战斗记录（首次开战与队列前进共用）。
+//
+// AppliedOperationID 留空：它只在结果/超时真正落地时才写入幂等键
+// （见 battle.go）。M1 曾用它存队列标记，现在的队列走显式字段，
+// 新记录不再带标记；历史数据中的标记由 runtime 的兼容读取处理。
+func (p *DefaultPlanner) newBattleRecord(env domain.CommandEnvelope, attacker *domain.Troop, targetID, defenderID domain.ObjectID, defenderStats domain.CombatSnapshot, nowMS int64) (string, domain.BattleRecord) {
 	battleID := p.ids()
 	seed := p.seeds(int64(targetID), nowMS, int64(attacker.Header.ID))
 	// 手工拼接规范化字节串：字段顺序固定、无分隔符歧义，
@@ -293,9 +319,6 @@ func (p *DefaultPlanner) newBattleRecord(env domain.CommandEnvelope, attacker *d
 		RandomSeed:    seed,
 		Status:        domain.BattleStatusPending,
 		DeadlineMS:    nowMS + p.rules.BattleTimeoutMS,
-		// marker 只用于 M1 队列区分；队首留空，避免与“结果已应用”的
-		// 语义混淆（结果应用会写真实 operation id）。
-		AppliedOperationID: marker,
 	}
 }
 
