@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -62,7 +63,7 @@ func (s *RoleService) FindByAccount(ctx context.Context, accountID int64) (*mode
 	return &p, nil
 }
 
-// Create 创建角色：校验名字/职业 → 事务插入 player + player_attr。
+// Create 创建角色：校验名字/职业 → 事务插入 player + player_attr + 初始背包。
 func (s *RoleService) Create(ctx context.Context, accountID int64, name string, career int32) (int64, error) {
 	name = strings.TrimSpace(name)
 	if !namePattern.MatchString(name) || utf8.RuneCountInString(name) > 16 {
@@ -80,6 +81,7 @@ func (s *RoleService) Create(ctx context.Context, accountID int64, name string, 
 	}
 
 	var roleID int64
+	items := initialItems(s.logger) // 配置只读一次，事务内复用（热更新不会在本事务中途换表）
 	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
 		const insPlayer = `INSERT INTO player (account_id, name, level, exp, coin, scene_id) VALUES (?, ?, 1, 0, 0, 0)`
 		res, err := tx.ExecContext(ctx, insPlayer, accountID, name)
@@ -100,6 +102,15 @@ func (s *RoleService) Create(ctx context.Context, accountID int64, name string, 
 		if _, err := tx.ExecContext(ctx, insAttr, roleID, career, hp, mp, atk, def, spd); err != nil {
 			return fmt.Errorf("insert player_attr: %w", err)
 		}
+
+		// 初始背包与角色同事务写入：要么角色和初始道具一起出现，要么都不出现，
+		// 不会留下「有角色但背包空」的半成品（客户端首屏会少展示初始道具）。
+		const insItem = `INSERT INTO player_item (player_id, item_id, count) VALUES (?, ?, ?)`
+		for _, it := range items {
+			if _, err := tx.ExecContext(ctx, insItem, roleID, it.itemID, it.count); err != nil {
+				return fmt.Errorf("insert initial item %d: %w", it.itemID, err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -112,8 +123,52 @@ func (s *RoleService) Create(ctx context.Context, accountID int64, name string, 
 		}
 	}
 
-	s.logger.Info("role created", "role_id", roleID, "account_id", accountID, "career", career)
+	s.logger.Info("role created", "role_id", roleID, "account_id", accountID, "career", career, "init_items", len(items))
 	return roleID, nil
+}
+
+// initItem 一行初始道具。
+type initItem struct {
+	itemID int32
+	count  int64
+}
+
+// initialItems 读取 init_bag.xml，返回创角时要写入背包的道具。
+//
+// 容错策略：配置行非法（ID/数量 <= 0）、道具不存在时只告警跳过，不阻断创角——
+// 创角失败的影响远大于少发一件新手道具；错误配置应在启动/发布期通过日志发现。
+// 同一道具多行会合并，并按 item.xml 的堆叠上限截断，避免写出非法数量。
+// 结果按 item_id 排序，保证 SQL 顺序稳定（便于测试与排查）。
+func initialItems(logger *log.Logger) []initItem {
+	return buildInitialItems(logger, gamedata.InitBagCfgList())
+}
+
+// buildInitialItems 与 initialItems 同逻辑，但配置行由调用方传入，便于单测覆盖
+// 重复行合并、堆叠上限截断、未知道具跳过等边界。
+func buildInitialItems(logger *log.Logger, rows []gamedata.InitBagCfg) []initItem {
+	merged := make(map[int32]int64)
+	for _, cfg := range rows {
+		itemID, count := int32(cfg.Col1), cfg.Col2
+		if itemID <= 0 || count <= 0 {
+			logger.Warn("init bag: invalid row", "row_id", cfg.Id, "item_id", itemID, "count", count)
+			continue
+		}
+		item, ok := gamedata.GetItemCfg(int64(itemID))
+		if !ok {
+			logger.Warn("init bag: item not in item.xml", "row_id", cfg.Id, "item_id", itemID)
+			continue
+		}
+		merged[itemID] += count
+		if item.Col2 > 0 && merged[itemID] > item.Col2 {
+			merged[itemID] = item.Col2
+		}
+	}
+	out := make([]initItem, 0, len(merged))
+	for id, n := range merged {
+		out = append(out, initItem{itemID: id, count: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].itemID < out[j].itemID })
+	return out
 }
 
 // baseAttrs 职业初始属性（P6 内置表；P7 改读 attr_formula.xml）。

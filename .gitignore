@@ -3,6 +3,8 @@
 /loadtest
 /gendb
 /gendata
+/genmsgid
+/keygen
 /reports/
 /deploy/volumes/
 /volumes/

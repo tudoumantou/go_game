@@ -14,7 +14,7 @@ import (
 var rawXML embed.FS
 
 // embeddedVersion 编译期内嵌配置的内容哈希（启动日志与线上核对用）
-const embeddedVersion = "c9c4366617fd2322"
+const embeddedVersion = "9a50d4815368a836"
 
 // Tables 一份不可变配置快照：热更新整体替换，读取方永远看到自洽的一套表。
 type Tables struct {
@@ -36,6 +36,7 @@ type Tables struct {
 	FriendLimit       FriendLimitTable
 	Guild             GuildTable
 	GuildLevel        GuildLevelTable
+	InitBag           InitBagTable
 	Item              ItemTable
 	Level             LevelTable
 	LoginReward       LoginRewardTable
@@ -109,6 +110,9 @@ func mustEmbedded() *Tables {
 		panic("gamedata: " + err.Error())
 	}
 	if t.GuildLevel, err = newGuildLevelTable(guild_levelRows); err != nil {
+		panic("gamedata: " + err.Error())
+	}
+	if t.InitBag, err = newInitBagTable(init_bagRows); err != nil {
 		panic("gamedata: " + err.Error())
 	}
 	if t.Item, err = newItemTable(itemRows); err != nil {
@@ -219,6 +223,9 @@ func (t *Tables) validate() error {
 		return err
 	}
 	if err := t.GuildLevel.validate("guild_level"); err != nil {
+		return err
+	}
+	if err := t.InitBag.validate("init_bag"); err != nil {
 		return err
 	}
 	if err := t.Item.validate("item"); err != nil {
@@ -484,6 +491,18 @@ var setters = map[string]func(*Tables, []byte) error{
 		t.GuildLevel = tb
 		return nil
 	},
+	"init_bag": func(t *Tables, raw []byte) error {
+		var rows []InitBagCfg
+		if err := json.Unmarshal(raw, &rows); err != nil {
+			return fmt.Errorf("decode json: %w", err)
+		}
+		tb, err := newInitBagTable(rows)
+		if err != nil {
+			return err
+		}
+		t.InitBag = tb
+		return nil
+	},
 	"item": func(t *Tables, raw []byte) error {
 		var rows []ItemCfg
 		if err := json.Unmarshal(raw, &rows); err != nil {
@@ -721,6 +740,7 @@ var tableNames = []string{
 	"friend_limit",
 	"guild",
 	"guild_level",
+	"init_bag",
 	"item",
 	"level",
 	"login_reward",

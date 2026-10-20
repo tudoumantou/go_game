@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 创角初始背包：id 仅为行号，col1=道具ID，col2=数量（超过 item.xml 的堆叠上限时按上限截断） -->
+<!-- 仅在创角事务内写入一次；创角后 GM 改库/补偿不会覆盖（此时尚未加载 Actor） -->
+<init_bag>
+    <row id="1" col1="2001" col2="1" />
+    <row id="2" col1="1002" col2="5" />
+    <row id="3" col1="1001" col2="1000" />
+</init_bag>
