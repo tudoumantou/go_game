@@ -1,3 +1,7 @@
+// internal/game/scene/aoi_test.go —— 九宫格 AOI 差集单测（R9.2 验收项）
+//
+// 固定布局：格宽 10，x=5/15/25 分别落在格 0/1/2——一格一人的间距下，
+// 3x3 视野恰好覆盖相邻两格，是验「进视野/离视野」的最小构造。
 package scene
 
 import (
@@ -24,6 +28,7 @@ func aoiRig(t *testing.T) (*Actor, *actor.System, *actor.PID, map[int64]*collect
 	return sc, sys, scPID, cols, pids
 }
 
+// itoa int64 → 十进制字符串（用于拼 actor 名，避免为一个常量引入 strconv）。
 func itoa(v int64) string {
 	if v == 0 {
 		return "0"

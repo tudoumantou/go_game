@@ -21,6 +21,8 @@ import (
 	"game_study/pkg/db"
 )
 
+// insertFriendPlayers 批量造测试玩家：好友列表的 name 来自 player 表，
+// 没有玩家行时名字为空（TestFriendFlow 里对此有断言）。
 func insertFriendPlayers(t *testing.T, database *db.DB, ids ...int64) {
 	t.Helper()
 	for _, id := range ids {
@@ -39,6 +41,17 @@ func friendRows(t *testing.T, database *db.DB, playerID int64) int {
 	return n
 }
 
+// TestFriendFlow 好友最小闭环（R5.1/R5.2）：断言一律落在数据库行数与状态上，
+// 而不是接口返回值。
+//
+// 六个子场景各盯一类真实漏洞：
+//   - 申请→同意→互见→删除：双边一致（恰好两行）、删除双向清理、重复操作幂等；
+//   - 互相申请：直接建关系，不留第二条待处理；
+//   - 好友满：拒绝（6804）且不产生单边关系 —— 「一边有一边没有」是最典型的事故形态；
+//   - 过期申请：同意被拒（6808）且状态落为已拒绝（2），防止补同意历史申请；
+//   - 拒绝后重新申请：复用同一行（唯一键），状态回到待处理。
+//
+// 好友上限用直接插 50 行构造，避免造 50 个玩家拖慢用例。
 func TestFriendFlow(t *testing.T) {
 	database, _, _ := startStorage(t)
 	ctx := context.Background()

@@ -1,3 +1,4 @@
+// errcode_test.go —— 错误码包单测：守护 proto/Go/文案表三方一致与 error 提取
 package errcode
 
 import (
@@ -44,6 +45,9 @@ func TestParityWithProto(t *testing.T) {
 	}
 }
 
+// TestFromError 覆盖三类输入：nil → OK（成功路径不构造 error）、
+// *Error → 原样取码（含 Newf 带上下文文案的场景）、其它 error → ErrParam 兜底。
+// 兜底策略保证接入层转 Resp.code 时永远不会漏码成 0（0 会被客户端当成功）。
 func TestFromError(t *testing.T) {
 	if got := FromError(nil); got != OK {
 		t.Fatalf("nil 应映射 OK，得到 %d", int32(got))

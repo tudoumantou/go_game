@@ -10,6 +10,9 @@ import (
 )
 
 // Envelope 消息信封。
+//
+// 字段语义：Key 决定分区（Hash 均衡器下同 Key 有序），Headers 承载 trace_id 等
+// 跨服务透传信息；Payload 是各业务 Msg 的 JSON 序列化结果。
 type Envelope struct {
 	BizID     string            `json:"biz_id"`            // 全局幂等键（必填）
 	Topic     string            `json:"topic"`             // 来源 topic（排查用）
@@ -25,6 +28,7 @@ func NewEnvelope(bizID, topic, key string, payload any) (*Envelope, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
+	// 生产端打时间戳（unix 毫秒）：消费 lag 观测与死信追溯都依赖它。
 	return &Envelope{
 		BizID:     bizID,
 		Topic:     topic,
@@ -36,6 +40,7 @@ func NewEnvelope(bizID, topic, key string, payload any) (*Envelope, error) {
 
 // Marshal 序列化信封为 Kafka value。
 func (e *Envelope) Marshal() ([]byte, error) {
+	// biz_id 是全局幂等键，缺失的消息无法去重，发送侧直接拒绝。
 	if e.BizID == "" {
 		return nil, fmt.Errorf("envelope biz_id is required")
 	}
@@ -48,6 +53,7 @@ func Unmarshal(data []byte) (*Envelope, error) {
 	if err := json.Unmarshal(data, &e); err != nil {
 		return nil, fmt.Errorf("unmarshal envelope: %w", err)
 	}
+	// 与 Marshal 对称：缺 biz_id 的消息在入口处拒绝，不进入业务处理。
 	if e.BizID == "" {
 		return nil, fmt.Errorf("envelope biz_id is empty")
 	}

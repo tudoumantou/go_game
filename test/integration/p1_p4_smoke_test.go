@@ -25,6 +25,18 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// TestP1toP4Smoke P1-P4 全链路冒烟：三服务（login/game/gateway）+ 三中间件
+// （MySQL/Redis/etcd）全部真实拉起，机器人走「游客登录 → 网关握手 → 心跳」。
+//
+// 编排要点：
+//   - 中间件用 testcontainers，测试结束 defer Terminate，不在开发机留残留进程；
+//   - 端口全部随机（freePort），避免与已跑的服务冲突；
+//   - 服务在测试进程内启动（非子进程），收尾走各服务 Shutdown —— 优雅关闭链路
+//     本身也是被验证的一环；
+//   - 先 os.Chdir 到项目根：gateway 按相对路径加载 keys/ 下的 RSA 私钥。
+//
+// 关键断言：握手 resp.Code==0 且 account 非 0、心跳 server_time 非 0
+// （说明「登录 → 网关 → etcd 选游戏服 → 绑定」整条链路已通）。
 func TestP1toP4Smoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

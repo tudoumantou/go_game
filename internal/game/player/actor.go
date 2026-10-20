@@ -1,4 +1,14 @@
 // internal/game/player/actor.go —— 玩家 Actor
+
+// Package player 玩家 Actor 及其状态、缓存路径与持久化的实现。
+//
+// 关键约定：
+//   - 一个玩家一个 Actor，Actor 内单线程处理消息；State 的锁只服务于
+//     「Actor 外的只读访问」（探针/测试），写路径一律发生在消息处理里；
+//   - 缓存权威模式下遵守 R2.1 契约「一次消息 = 一份快照 = 一次 CAS」：
+//     业务 handler 只改内存，提交/回滚/pending 收尾由 cache_actor.go 负责；
+//   - player 包不依赖 scene/gateway：场景连接经 SceneLink 注入、下行经
+//     SendFunc 注入，接线由组装层（internal/game/server.go）完成。
 package player
 
 import (
@@ -32,20 +42,27 @@ const (
 
 // BindMsg 绑定消息。
 type BindMsg struct {
+	// SessionID 权威会话 ID：后续 UNBIND 的身份校验与下行路由都以它为准。
 	SessionID uint64
-	PlayerID  int64
+	// PlayerID 与 Actor 身份一致（Manager 按它索引 PID），用于日志核对。
+	PlayerID int64
 }
 
 // UnbindMsg 解绑消息。
 type UnbindMsg struct {
+	// SessionID 发起解绑的会话；与 Actor 当前 sessionID 不一致即判定为
+	// 「被顶号旧连接的迟到解绑」，直接忽略（见 onUnbind）。
 	SessionID uint64
 }
 
 // PacketMsg 客户端消息。
 type PacketMsg struct {
+	// MsgID 业务协议号，Registry 按它分发到模块。
 	MsgID uint32
-	Seq   uint32
-	Body  []byte
+	// Seq 客户端序号，目前仅透传（回包由模块自行决定是否带回）。
+	Seq uint32
+	// Body protobuf 包体；解码失败由模块自行处理，玩家层不猜格式。
+	Body []byte
 }
 
 // GrantItem 奖励道具。
@@ -110,28 +127,45 @@ type SendFunc func(sessionID uint64, msgID uint32, body []byte) error
 
 // Actor 玩家 Actor。
 type Actor struct {
-	playerID  int64
-	state     *State
-	registry  *module.Registry
-	logger    *log.Logger
-	repo      *Repository
+	// playerID 只读标识；logger 已携带该字段，排错时无需再翻调用栈。
+	playerID int64
+	state    *State
+	registry *module.Registry
+	logger   *log.Logger
+	repo     *Repository
+	// preloader 非缓存模式的并行预加载器；prefetch 是它本次拉取的结果，
+	// 模块 OnLogin 经 module.Context.Prefetch 消费，避免二次查库。
 	preloader *Preloader
 	prefetch  *Prefetch
-	onDirty   func(playerID int64)
-	sendFunc  SendFunc
+	// onDirty 任一数据变更 → 通知 flusher 排落库；缓存权威模式下为空
+	// （持久化由 Redis 脏队列 + writebehind worker 负责，不走 flusher）。
+	onDirty  func(playerID int64)
+	sendFunc SendFunc
 
+	// sceneLink 由组装层注入（WithSceneLink）；player 包不直接依赖 scene 包。
 	sceneLink      SceneLink
-	heartbeatOn    bool
+	heartbeatOn    bool          // 心跳自调度只启动一次，置位后 onBind 重复进入不会重启
 	heartbeatEvery time.Duration // 0 用默认；测试注入短间隔
-	sessionID      uint64
-	online         bool
-	loaded         bool
-	needsReload    bool // 发奖提交结果未知时，禁止旧内存再次落库。
-	cacheVersion   int64
-	cacheReload    bool
-	bufferReplies  bool
-	queuedReplies  []cachedReply
-	cachePending   *writebehind.Record
+	// sessionID 当前权威会话（0 = 不在线）；UNBIND 身份校验与下行都读它。
+	sessionID uint64
+	online    bool
+	// loaded 预加载已完成；false 时丢弃业务包（onPacket）——
+	// 用空状态处理业务会写坏数据。
+	loaded      bool
+	needsReload bool // 发奖提交结果未知时，禁止旧内存再次落库。
+	// cacheVersion 本地已知的 Redis 快照版本，Commit 时作为 CAS 期望值；
+	// 提交成功则前进为新版本，失败保持旧值（下轮按同一版本重试）。
+	cacheVersion int64
+	// cacheReload 下一条消息前必须重新 LoadCached：上一次提交已回滚或
+	// 结果未知，内存相对 Redis 已过期，先恢复权威状态再进业务。
+	cacheReload bool
+	// bufferReplies 提交窗口内置位：业务产生的下行先入 queuedReplies，
+	// CAS 成功后才真正发出——客户端不会先看到「成功回包」再被告知失败。
+	bufferReplies bool
+	queuedReplies []cachedReply
+	// cachePending 结果未知的旧快照（来自不可回滚消息）：保留版本与状态，
+	// 后续消息先在 finishPending 里核对 Redis 实际版本，再放行新业务。
+	cachePending *writebehind.Record
 }
 
 // NewActor 创建玩家 Actor。
@@ -169,6 +203,9 @@ func (a *Actor) WithPreloader(p *Preloader) *Actor {
 func (a *Actor) State() *State { return a.state }
 
 // Receive 实现 actor.Actor。
+//
+// 分发逻辑：缓存权威模式下，纯下行消息（Push/ScenePush/心跳）不参与快照
+// 提交，直接进 receive；其余消息进 receiveCached 的「克隆→业务→CAS」流程。
 func (a *Actor) Receive(ctx *actor.Context) {
 	if a.repo.CacheEnabled() {
 		// 纯下行消息不参与「克隆快照 → 提交」流程：它们只读状态、不改状态。
@@ -182,6 +219,10 @@ func (a *Actor) Receive(ctx *actor.Context) {
 	a.receive(ctx)
 }
 
+// receive 非缓存路径的消息分发（直连 MySQL 落库形态）。
+//
+// needsReload 闸门放在最前面：上次 COMMIT 结果未知（ErrCommitUnknown）时，
+// 除 Save/Unbind 外的任何消息都先触发行锁重载，避免把过期背包写回库。
 func (a *Actor) receive(ctx *actor.Context) {
 	if a.needsReload {
 		switch ctx.Message().(type) {
@@ -274,6 +315,9 @@ type SaveMsg struct {
 	Done chan error
 }
 
+// onBind 登录/重连入口：预加载（仅首次）→ 属性重算 → 模块 OnLogin → 场景同步。
+//
+// 失败即回 BindResult{Code:1}：半成品 Actor 上线比拒绝登录更危险。
 func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	a.sessionID = msg.SessionID
 	a.online = true
@@ -396,6 +440,10 @@ func (a *Actor) preload(ctx *actor.Context) error {
 	return nil
 }
 
+// onUnbind 下线入口：会话身份校验 → 模块 OnLogout → 标脏落库。
+//
+// 身份校验失败的旧会话 UNBIND 直接忽略：玩家可能已在另一设备顶号，
+// 此时解绑会把仍在线的权威会话打成离线。
 func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 	if !a.online {
 		return
@@ -420,6 +468,8 @@ func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 	a.logger.Info("player offline", "session_id", msg.SessionID)
 }
 
+// onPacket 业务包入口：loaded 之前一律丢弃（空状态处理业务会写坏数据），
+// 之后交 Registry 按 MsgID 分发到对应模块。
 func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 	if !a.loaded {
 		// 预加载失败或尚未完成：拒绝业务包，避免用空状态处理（会写坏数据）
@@ -445,6 +495,9 @@ func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 // onGrantItems 发放奖励（Actor 内单线程执行，无需加锁）。
 func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 	if msg.BizID != "" {
+		// A 类幂等（R2.1 §2.2）：键 = source:bizID，与快照同一次 CAS、
+		// 同落库到 applied_grants，进程重启后依然有效——充值回调/Kafka
+		// 重投不会导致二次发奖。B 类（主动领取）禁止塞这里，会持续膨胀。
 		key := msg.Source + ":" + msg.BizID
 		if a.state.appliedGrants[key] {
 			if msg.Done != nil && !a.bufferReplies {
@@ -516,6 +569,10 @@ func replySave(done chan error, err error) {
 	}
 }
 
+// moduleCtx 组装模块执行上下文：每条消息一份，模块只经由它访问玩家状态。
+//
+// CommitItems 仅在非缓存模式挂载：缓存模式下玩家的唯一写入口是快照 CAS
+// （R2.1 契约），直连 SQL 会造成「库已扣、Redis 未扣」的双写分歧。
 func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 	mctx := &module.Context{
 		Actor: actx,

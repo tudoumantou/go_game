@@ -1,3 +1,8 @@
+// pkg/codec/msgids_test.go —— 消息号协议兼容性测试（wire baseline）
+// 守住两条不变量：① 已下发到客户端的消息号永远不变（wireBaseline 逐一比对）；
+// ② 注册表内一号一义、名字↔号码正反查询一致。
+// 新增消息必须同步补进 wireBaseline，否则 TestMsgIDsMatchWireBaseline 会以
+// 「条数不一致」失败——这是故意的：防止有人只加号不进基线、绕过兼容审查。
 package codec
 
 import "testing"
@@ -111,6 +116,13 @@ var wireBaseline = map[string]uint32{
 	"QuestClaimResp":         7106,
 }
 
+// TestMsgIDsMatchWireBaseline 逐条比对 wireBaseline：生成表里的号必须与
+// 基线完全一致，且总条数相等。
+//
+// 覆盖场景：改号（会破坏旧客户端——旧客户端把请求发到别的 handler 且不报错）、
+// 漏登（新增消息没补基线）、多登（基线里删了但生成表还有）。
+// 为什么用测试而不是 code review 守：号是跨进程契约，改号的后果只在
+// 特定消息上偶发，人工审查拦不住，回归测试成本最低。
 func TestMsgIDsMatchWireBaseline(t *testing.T) {
 	for name, want := range wireBaseline {
 		got, ok := MsgID(name)
@@ -126,6 +138,12 @@ func TestMsgIDsMatchWireBaseline(t *testing.T) {
 	}
 }
 
+// TestMsgNameReverse 反查必须与正查互为逆运算：MsgName(id) 回到同名。
+//
+// 覆盖场景：Notify 类消息只有号码没有名字（日志/调试/按号反解），
+// 反查错位会把 5010 打成 5011 的名字，误导排障；另外未注册的号与名字
+// 都不能命中——map 查找的零值 (0,false) 若被当成有效结果，会把
+// 「未知消息」误判成「0 号消息」。
 func TestMsgNameReverse(t *testing.T) {
 	for name, id := range wireBaseline {
 		got, ok := MsgName(id)
@@ -142,6 +160,10 @@ func TestMsgNameReverse(t *testing.T) {
 }
 
 // TestMsgIDsUnique 注册表内不允许一号多义（生成器已拦，这里守住产物）。
+//
+// 构造：seen map 记录「号 → 已占用它的名字」，遇到重复号即报错并指出
+// 冲突双方。这是对生成器的冗余防线——生成器（tools/genmsgid）启动时
+// 已拒绝重复号，但生成产物可能被手工编辑，测试守住的是文件现状。
 func TestMsgIDsUnique(t *testing.T) {
 	seen := map[uint32]string{}
 	for name, id := range wireBaseline {

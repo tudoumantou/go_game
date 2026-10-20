@@ -51,6 +51,10 @@ const (
 )
 
 // Record 单个任务的状态。
+//
+// 字段语义（与快照内 JSON 一致）：
+//   - Status：0=进行中 / 1=已完成待领 / 2=已领奖，见下方常量；
+//   - Progress：当前进度，达到配置 Col3 即完成；超额在 OnEvent 里截断。
 type Record struct {
 	Status   int32 `json:"status"`
 	Progress int32 `json:"progress"`
@@ -142,6 +146,7 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 		return
 	}
 	changed := false
+	// 配置约定：Col1=任务名，Col2=监听的事件类型，Col3=目标次数。
 	for _, cfg := range gamedata.QuestCfgList() {
 		if cfg.Col2 != evt.Type {
 			continue
@@ -312,6 +317,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return decode(row)
 }
 
+// decode 把表行的 JSON 列解成业务视图；坏 JSON 直接报错，由落库校验整批回滚。
 func decode(row *model.PlayerQuest) (*Data, error) {
 	d := &Data{Quests: map[int32]Record{}}
 	if row.Quests != "" {
@@ -337,6 +343,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {
@@ -345,6 +352,7 @@ func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	return ctx.Reply(msgID, body)
 }
 
+// warn 统一告警入口（logger 可为 nil）。
 func (m *Module) warn(msg string, ctx *module.Context, err error) {
 	if m.logger != nil {
 		m.logger.Warn(msg, "player_id", ctx.State.PlayerID(), "err", err)

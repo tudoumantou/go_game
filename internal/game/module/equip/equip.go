@@ -42,6 +42,12 @@ const (
 )
 
 // Entry 装备实例。
+//
+// 字段语义：
+//   - UID：实例唯一 ID（同配置 ID 可持有多件，按 UID 穿戴/卸下）；
+//   - EnhanceLevel：强化等级；
+//   - Quality：品质（配置派生，预留强化差异）；
+//   - Equipped：是否已穿戴；加成只由已穿戴件提供。
 type Entry struct {
 	UID          int64 `json:"uid"`
 	EquipID      int32 `json:"equip_id"`
@@ -136,6 +142,7 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 // OnLogout 实现 module.Module。
 func (m *Module) OnLogout(*module.Context) error { return nil }
 
+// onList 装备列表：按快照顺序原样下发（顺序即持有顺序，不做排序）。
 func (m *Module) onList(ctx *module.Context) error {
 	resp := &gamev1.EquipListResp{Code: codeOK}
 	d, err := load(ctx.State)
@@ -171,6 +178,7 @@ func (m *Module) onWear(ctx *module.Context, body []byte) error {
 		return reply(ctx, msgIDWearResp, resp)
 	}
 	e := d.Equips[idx]
+	// 已穿戴再穿：幂等成功，直接回当前属性，不重复叠加 atk 加成。
 	if e.Equipped {
 		resp.Code = codeOK
 		resp.Attrs = attrPairs(ctx)
@@ -285,6 +293,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return decode(row)
 }
 
+// decode 把表行 JSON 解成业务视图；保证切片非 nil。
 func decode(row *model.PlayerEquip) (*Data, error) {
 	d := &Data{Equips: []Entry{}}
 	if row.Equips != "" {
@@ -309,6 +318,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// attrPairs 把五维属性打包成协议对（AttrId 约定见 profile 模块 1-5）。
 func attrPairs(ctx *module.Context) []*gamev1.AttrPair {
 	return []*gamev1.AttrPair{
 		{AttrId: 1, Value: ctx.State.GetAttr("hp")},
@@ -319,6 +329,7 @@ func attrPairs(ctx *module.Context) []*gamev1.AttrPair {
 	}
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {

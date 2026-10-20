@@ -144,6 +144,7 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 		return reply(ctx, msgIDBuyResp, resp)
 	}
 	count := int64(req.Count)
+	// 数量裁剪到 1-999：0/负数按 1，上限防单次请求买穿限购与造成大额扣费。
 	if count <= 0 {
 		count = 1
 	}
@@ -172,6 +173,8 @@ func (m *Module) onBuy(ctx *module.Context, body []byte) error {
 	ctx.State.AddItem(itemID, gain)
 	ctx.State.MarkDirty("bag")
 
+	// 购买次数在扣费/发货之后才累加，但同属一份快照：CAS 失败时扣费与次数一起回滚。
+	// load 传入今天，跨天时会在读取路径上清零历史次数（见 load 注释）。
 	today := businessDay(time.Now())
 	d, err := load(ctx.State, today)
 	if err != nil {
@@ -243,6 +246,7 @@ func dailyRefresh() bool {
 // businessDay 北京时间自然日序号。
 func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }
 
+// decode 把表行 JSON 解成业务视图；保证 map 非 nil。
 func decode(row *model.ShopRecord) (*Data, error) {
 	d := &Data{Bought: map[string]int32{}}
 	if row.Bought != "" {
@@ -268,6 +272,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {

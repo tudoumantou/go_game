@@ -35,6 +35,10 @@ import (
 	"game_study/test/robot"
 )
 
+// main 入口：按 -mode 分发到 conn / login / biz / smoke 四种压测。
+//
+// 退出码约定：login/biz 模式只要有失败计数（或写 JSON 失败）就以非零码退出，
+// 便于 CI 与 scripts/bench.sh 判定；统计结果同时打印到控制台并落 -json。
 func main() {
 	var (
 		mode        = flag.String("mode", "smoke", "运行模式：conn | login | biz | smoke")
@@ -108,6 +112,8 @@ func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string, 
 	)
 	rec := NewRecorder()
 
+	// 分批建连 + 批间 sleep：一次性全量 dial 会打满网关 accept 队列、
+	// 耗尽本机 ephemeral 端口，且失败率虚高，测不出真实承载
 	start := time.Now()
 	for i := 0; i < total; i += batchSize {
 		if ctx.Err() != nil {
@@ -117,6 +123,8 @@ func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string, 
 		if i+n > total {
 			n = total - i
 		}
+		// 每批内并发 dial；chunk 按下标独占写入、goroutine 之间不共享同一元素，
+		// 因此汇总时无需对 chunk 加锁（conns 切片本身才需要 mu）
 		var wg sync.WaitGroup
 		wg.Add(n)
 		chunk := make([]net.Conn, n)
@@ -216,6 +224,7 @@ func runSmoke(loginURL, gatewayAddr string, devices int) error {
 	if devices <= 0 {
 		devices = 1
 	}
+	// device_id 带时间戳：每次冒烟都是新账号，避免复用历史角色把「创角」步骤绕过去
 	for i := 0; i < devices; i++ {
 		deviceID := fmt.Sprintf("loadtest-%d-%d", time.Now().UnixNano(), i)
 		roleName := fmt.Sprintf("压测%d", time.Now().UnixNano()%1000000)

@@ -39,11 +39,19 @@ import (
 )
 
 // Server 中心服。
+//
+// 组装层：把注册表/匹配/中转/排行榜/统计/归档/调度/里程碑/选主九个子系统
+// 装配到一台进程里，并持有它们共享的 Redis/MySQL/Kafka 句柄。各子系统
+// 自身不感知集群——多实例协作的全部约定（选主、跨实例中转、分实例统计）
+// 都收敛在本文件的启动编排里。
 type Server struct {
 	cfg        *config.Config
 	logger     *log.Logger
 	metricsSrv *metrics.Server
 
+	// reg 节点注册表；matcher 匹配池；router 同实例中转路由。
+	// rankSvc/statsSvc/redisCli 仅当配置了 Redis 时非 nil；election 仅当配置了
+	// etcd 时非 nil（无 etcd 时 IsLeader 恒 false，归档/调度/里程碑自动跳过）。
 	reg       *registry.Registry
 	matcher   *match.Matcher
 	router    *relay.Router
@@ -71,6 +79,10 @@ type Server struct {
 }
 
 // New 组装服务器。
+//
+// 只装配无外部依赖的组件（注册表/匹配器/中转路由）；依赖 Redis/etcd/Kafka/
+// MySQL 的组件保持 nil，由 Start 按配置惰性创建——未配置中间件时中心服以
+// 降级模式运行（无排行榜/统计，单实例中转），而不是启动失败。
 func New(cfg *config.Config) *Server {
 	logger := log.New("center", log.WithLevel(cfg.Log.Level))
 
@@ -95,6 +107,10 @@ func New(cfg *config.Config) *Server {
 }
 
 // Start 启动服务（阻塞至 ctx 取消）。
+//
+// 启动顺序即依赖顺序：指标 → Redis → 排行榜/统计 → gRPC → 中转桥 → MySQL
+// 相关组件（归档/调度/里程碑，仅 leader 执行）→ 选主 → 后台节拍循环。
+// 任一步失败直接返回错误由进程管理器重启；ctx 取消时返回 ctx.Err()。
 func (s *Server) Start(ctx context.Context) error {
 	// ① 指标
 	if s.cfg.Metrics.Enable {
@@ -226,6 +242,10 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // tickLoop 统一节拍循环（1s）：节点心跳巡检、匹配放宽、中转重试、指标上报。
+//
+// 统计快照（5 分钟）与指标（10 秒）在同一循环里用时间差节流，而不是各起
+// 定时器：中心服后台任务种类多但都很轻，单循环足够且关闭时只需等一个
+// goroutine 退出。
 func (s *Server) tickLoop(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -304,6 +324,10 @@ func (s *Server) readiness(_ context.Context) error {
 }
 
 // OnRegister 实现 centerRPC.Handler：节点注册后下发分组信息。
+//
+// 未携带 group_id 的节点分配到本实例默认分组并回写注册表；随后向组内广播
+// 最新成员列表，保证新节点立刻拿到同组其它节点与跨服地址。返回值是回给
+// 该节点的初始指令（GroupUpdate）。
 func (s *Server) OnRegister(node *registry.Node) []*internalv2.CenterCommand {
 	// 未指定分组的节点 → 分配到本实例默认分组
 	if node.GroupID == "" {
@@ -358,6 +382,10 @@ func (s *Server) groupUpdateCmd(groupID string) *internalv2.CenterCommand {
 }
 
 // OnMatchRequest 实现 centerRPC.Handler：入队匹配。
+//
+// nodeID 是发起匹配的游戏服（结果回传目标）。入队可能立即成局（返回多条
+// Result，每条对应一名玩家），逐条下发；未成局时入队等待，由 tickLoop 的
+// Sweep 在超时后放宽 elo 桶再配。
 func (s *Server) OnMatchRequest(nodeID string, req *internalv2.MatchRequest) {
 	if req == nil || req.PlayerId == 0 {
 		return
@@ -414,6 +442,10 @@ func (s *Server) deliverMatchResult(res *match.Result) {
 //	本地无目标 → 写入 Kafka center.relay，由承载该节点的实例消费后下发（跨实例）
 //
 // 广播同时走两条：本实例投自己承载的节点，其余实例各投各的 —— 每个节点只收一次。
+//
+// 一致性要点：点对点消息要么本地直达、要么经 Kafka 转给目标所在实例，两条
+// 路径互斥（本地无目标才转发），同一 relay_id 不会被重复投递；广播则依赖
+// 「每个实例只投本地节点」的约定天然去重。
 func (s *Server) OnRelayRequest(nodeID string, req *internalv2.RelayRequest) {
 	if req == nil {
 		return
@@ -461,6 +493,9 @@ func (s *Server) OnRelayRequest(nodeID string, req *internalv2.RelayRequest) {
 // deliverLocal 供中转桥调用：只投递本实例承载的节点，返回投递成功数。
 //
 // 返回 0 表示目标都不归本实例管（由其他实例处理），不是错误。
+//
+// 与 OnRelayRequest 内的本地投递不同：这里不登记重试——Kafka 已 ack，
+// 跨实例路径刻意不重试（重复投递比丢失更糟，见 relay/bridge.go 可靠性约定）。
 func (s *Server) deliverLocal(p relay.Payload) int {
 	targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
 	if len(targets) == 0 {
@@ -523,6 +558,10 @@ func (a *senderAdapter) SendPush(p *relay.PushPayload) error {
 }
 
 // Shutdown 优雅关闭（9.7）。
+//
+// 顺序：先 Kick 全部节点让它们尽早重连其它实例（滚动发布时玩家无感），
+// 再依次停 gRPC、中转桥、落库组件、指标。gRPC 带超时强停，避免 Report
+// 流永不结束卡死整个关闭流程（与 P13 网关下线同类问题）。
 func (s *Server) Shutdown(ctx context.Context) error {
 	// ① 通知所有节点「准备关闭」，让它们尽早重连到其它中心服实例
 	s.kickAllNodes()
@@ -594,6 +633,7 @@ func instanceIndex(name string) uint32 {
 	return idx
 }
 
+// pow10 计算 10 的 n 次方（instanceIndex 逐位还原实例序号用，n 为名字尾部数字位数）。
 func pow10(n uint32) uint32 {
 	out := uint32(1)
 	for i := uint32(0); i < n; i++ {
@@ -603,6 +643,9 @@ func pow10(n uint32) uint32 {
 }
 
 // startElection 参与 etcd 选主（9.6）。etcd 未配置时跳过（单实例部署无需选主）。
+//
+// 租约 TTL 缺省 10s：leader 崩溃后最长约一个 TTL 完成切换，期间有主任务
+// （归档/调度/里程碑）空转等新主；TTL 越短切换越快，但 etcd 续约压力越大。
 func (s *Server) startElection(ctx context.Context) {
 	if len(s.cfg.Etcd.Endpoints) == 0 {
 		s.logger.Info("etcd not configured, skip leader election")
@@ -642,6 +685,9 @@ func (s *Server) startElection(ctx context.Context) {
 }
 
 // IsLeader 当前实例是否为主（GM/诊断用）。
+//
+// 未配置 etcd 时恒为 false：此时归档/调度/里程碑等以 IsLeader 为开关的
+// 任务都不会执行——单实例未配 etcd 的已知降级路径（要跑这些能力必须配 etcd）。
 func (s *Server) IsLeader() bool {
 	return s.election != nil && s.election.IsLeader()
 }

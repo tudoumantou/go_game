@@ -1,3 +1,6 @@
+// internal/game/module/activity/registry_test.go —— 窗口注册表单测：版本乱序幂等、开放判定。
+//
+// 直接操作进程级 defaultRegistry，用例之间靠重置注册表隔离。
 package activity
 
 import (

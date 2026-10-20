@@ -78,11 +78,14 @@ type entity struct {
 	cell     int64     // 当前所在格的键（九宫格索引）
 	lastSeen time.Time // 心跳兜底与速度校验的时间基准
 
+	// moveWindowStart/moveCount：限频滑窗状态（每秒 moveQuota 次，见常量注释）
 	moveWindowStart time.Time
 	moveCount       int
 }
 
 // Actor 场景 Actor。所有字段只在分片 goroutine 内读写，无锁。
+//
+// sys 是广播出口：视野差集推送没有 ctx 可用，只能用 System.Send（见 pushBody）。
 type Actor struct {
 	cfg    Config
 	sys    *actor.System
@@ -94,6 +97,8 @@ type Actor struct {
 // NewActor 创建场景 Actor。
 func NewActor(cfg Config, sys *actor.System, logger *log.Logger) *Actor {
 	if cfg.IdleTimeout <= 0 {
+		// 0/负值按默认 90s：生产不接受配置（防误配成 0 秒清场），
+		// 测试显式传小值（见 Config.IdleTimeout 注释）
 		cfg.IdleTimeout = defaultIdleTimeout
 	}
 	return &Actor{
@@ -164,8 +169,10 @@ func (a *Actor) Receive(ctx *actor.Context) {
 		a.onHeartbeat(msg)
 	case *SweepMsg:
 		a.sweep(time.Now())
+		// 扫完立刻给自己排下一帧：自维持的周期扫描，不依赖外部定时器
 		ctx.ScheduleOnce(sweepInterval, ctx.PID(), &SweepMsg{})
 	case *CountMsg:
+		// 唯一需要「拿结果」的消息：用调用方提供的同步通道回包
 		msg.Reply <- len(a.ents)
 	default:
 		a.logger.Debug("scene unknown message", "type", fmt.Sprintf("%T", ctx.Message()))
@@ -190,6 +197,8 @@ func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 	}
 
 	now := time.Now()
+	// 进入即钳制：客户端可发任意坐标，非法坐标进网格会破坏
+	//「格键恒非负」这个 cellKeyOf/viewSet 依赖的不变量
 	e := &entity{
 		id:              msg.PlayerID,
 		pid:             msg.PID,
@@ -207,6 +216,8 @@ func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 	// 顺序反了会让新玩家先收到别人的出现通知、再收到快照，客户端出现重复实体。
 	a.replyEnter(ctx, msg.PID, codeOK, e, false)
 
+	// 视野对称：新实体出现要通知视野内每一个其他人；
+	// 自己的快照已在回执里，不需要再给自己推一条。
 	for id := range a.viewSet(e.x, e.y) {
 		if id == e.id {
 			continue
@@ -242,6 +253,9 @@ func (a *Actor) replyEnter(ctx *actor.Context, pid *actor.PID, code int32, self 
 		a.logger.Error("marshal enter resp", "err", err)
 		return
 	}
+	// SetScene 只在首次成功进入为 true：玩家 Actor 据此更新 Profile.SceneID
+	// 并走一次快照 CAS（R2.1「一条消息 = 一次 CAS」）；重复进入不标脏，
+	// 失败进入更不标脏——否则一次拒绝就白写一次快照。
 	_ = ctx.Send(pid, &player.SceneResult{
 		SceneID:  a.cfg.ID,
 		MsgID:    codec.MsgSceneEnterResp,
@@ -286,6 +300,7 @@ func (a *Actor) onMove(ctx *actor.Context, msg *MoveMsg) {
 		return
 	}
 
+	// 旧视野必须在改坐标/移格之前算：gridMove 之后 e.cell 已变，旧视野就复原不出来
 	oldView := a.viewSet(e.x, e.y)
 	e.x, e.y = x, y
 	e.lastSeen = now
@@ -297,6 +312,8 @@ func (a *Actor) onMove(ctx *actor.Context, msg *MoveMsg) {
 	a.applyViewDelta(e, oldView, newView)
 }
 
+// replyMove 回移动回执。实体已离场（被 sweep/离开）时静默返回——
+// 移动到达时玩家可能已不在场景里，回执没有接收方。
 func (a *Actor) replyMove(ctx *actor.Context, playerID int64, seq, code, x, y int32) {
 	e, ok := a.ents[playerID]
 	if !ok {
@@ -310,6 +327,9 @@ func (a *Actor) replyMove(ctx *actor.Context, playerID int64, seq, code, x, y in
 		SceneID: a.cfg.ID,
 		MsgID:   codec.MsgSceneMoveResp,
 		Body:    body,
+		// 回执恒带服务端权威坐标（X/Y）：被拒（超速/限频）时客户端按它回滚，
+		// 避免客户端预测位置与服务端长期分叉。与进入回执不同，移动回执
+		// 不置 SetScene——位置权威在场景，不需要玩家侧标脏落库。
 	})
 }
 
@@ -330,6 +350,8 @@ func (a *Actor) removeEntity(e *entity) {
 	a.gridRemove(e)
 	delete(a.ents, e.id)
 
+	// R9 §5 不变量 3：离开场景/断线后，仍在场的其他人必收到 Leave，
+	// 否则客户端会留下一个永远不消失的幽灵实体。
 	for id := range view {
 		if id == e.id {
 			continue
@@ -343,6 +365,7 @@ func (a *Actor) removeEntity(e *entity) {
 // sweep 清理空闲超时的实体。
 func (a *Actor) sweep(now time.Time) {
 	if len(a.ents) == 0 {
+		// 空场景免扫：长尾时间里大多数场景无人，省掉一次全表遍历
 		return
 	}
 	var stale []*entity
@@ -351,8 +374,11 @@ func (a *Actor) sweep(now time.Time) {
 			stale = append(stale, e)
 		}
 	}
+	// 两阶段：先收集再移除。removeEntity 内部要广播，混在遍历里改 map 可读性差
 	for _, e := range stale {
 		a.removeEntity(e)
+		// Warn 级：幽灵清理是异常路径（正常下线走 LeaveMsg），
+		// 清理量大说明「下线通知离场」在静默失败，需要运维介入
 		a.logger.Warn("scene entity timeout, removed",
 			"player_id", e.id, "idle", now.Sub(e.lastSeen).Round(time.Second).String())
 	}
@@ -373,6 +399,8 @@ func (a *Actor) onSync(ctx *actor.Context, msg *SyncMsg) {
 	e.pid = msg.PID // 重连后 PID 可能变化
 	e.lastSeen = time.Now()
 
+	// Sync 是全量兜底：广播不重试（见 pushBody），重连/序号断档时
+	// 用它把视野一次补齐，客户端可直接复用进入回执的渲染逻辑
 	view := a.viewSet(e.x, e.y)
 	resp := &gamev1.SceneSyncResp{
 		Code:     codeOK,
@@ -396,6 +424,8 @@ func (a *Actor) onSync(ctx *actor.Context, msg *SyncMsg) {
 	_ = ctx.Send(e.pid, &player.SceneResult{SceneID: a.cfg.ID, MsgID: codec.MsgSceneSyncResp, Body: body})
 }
 
+// onHeartbeat 只刷新 lastSeen，不回包：心跳是纯保活信号（玩家 Actor 每 30s 一次），
+// 回包只会让两个方向的车轮翻倍。
 func (a *Actor) onHeartbeat(msg *HeartbeatMsg) {
 	if e, ok := a.ents[msg.PlayerID]; ok {
 		e.lastSeen = time.Now()
@@ -410,6 +440,9 @@ func (a *Actor) pushBody(e *entity, body []byte) {
 	if e == nil || e.pid == nil || len(body) == 0 {
 		return
 	}
+	// 走 ScenePush 而不是 SceneResult：实体通知是纯下行广播，
+	// 不触发玩家 Actor 的快照 CAS——位置权威在场景，玩家侧坐标只是只读副本；
+	// 只有进入回执（SceneResult + SetScene）才更新 Profile.SceneID。
 	if err := a.sys.Send(e.pid, &player.ScenePush{
 		SceneID: a.cfg.ID,
 		MsgID:   codec.MsgSceneEntityNotify,
@@ -422,6 +455,7 @@ func (a *Actor) pushBody(e *entity, body []byte) {
 // Count 当前在场人数（测试与指标使用）。
 func (a *Actor) Count() int { return len(a.ents) }
 
+// snapshot 广播/回执共用的实体快照：只带客户端渲染必需的字段。
 func snapshot(e *entity) *gamev1.SceneEntity {
 	return &gamev1.SceneEntity{
 		PlayerId: e.id,
@@ -432,6 +466,7 @@ func snapshot(e *entity) *gamev1.SceneEntity {
 	}
 }
 
+// appearNotice Type=1（出现）：Entity 为全量快照，客户端据此创建实体。
 func appearNotice(e *entity) []byte {
 	body, err := proto.Marshal(&gamev1.SceneEntityNotify{Type: 1, Entity: snapshot(e)})
 	if err != nil {
@@ -440,6 +475,7 @@ func appearNotice(e *entity) []byte {
 	return body
 }
 
+// moveNotice Type=2（移动）：同快照结构，客户端按 PlayerId 更新坐标。
 func moveNotice(e *entity) []byte {
 	body, err := proto.Marshal(&gamev1.SceneEntityNotify{Type: 2, Entity: snapshot(e)})
 	if err != nil {
@@ -448,6 +484,7 @@ func moveNotice(e *entity) []byte {
 	return body
 }
 
+// leaveNotice Type=3（离开）：只带 id——客户端按 id 移除实体，不需要最后坐标。
 func leaveNotice(playerID int64) []byte {
 	body, err := proto.Marshal(&gamev1.SceneEntityNotify{
 		Type:   3,

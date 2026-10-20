@@ -32,6 +32,13 @@ const stateKey = "login"
 var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // Data 是登录礼包的私有状态。
+//
+// 字段语义：
+//   - LastDay：最近一次发放所在的北京时间自然日序号（见 businessDay）；
+//   - Streak：连续登录天数，断签（LastDay != 今天-1）时重置为 1。
+//
+// 两者与道具在同一次快照 CAS 提交，是本模块唯一的幂等依据——
+// 刻意不占用 AppliedGrants：每天一个业务键会让 applied_grants 无限膨胀。
 type Data struct {
 	LastDay int64 `json:"last_day"`
 	Streak  int32 `json:"streak"`
@@ -107,6 +114,7 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	if d.LastDay == day {
 		return nil // 今天已经领过
 	}
+	// 连续登录判定：昨天（day-1）领过才 +1，否则（断签/首次）重置为 1。
 	if d.LastDay == day-1 {
 		d.Streak++
 	} else {
@@ -203,6 +211,7 @@ func parseReward(s string) (module.ItemGrant, error) {
 // businessDay 北京时间自然日序号。
 func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }
 
+// load 读取登录状态；从未登录过返回零值（LastDay=0 不等于任何自然日序号）。
 func load(state writebehind.ExtState) (*Data, error) {
 	row, err := writebehind.LoadExt[model.PlayerLogin](state, stateKey)
 	if err != nil {
@@ -214,6 +223,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return &Data{LastDay: row.LastDay, Streak: row.Streak}, nil
 }
 
+// save 把发放事实写回 Ext 槽位；落库调度由 Write-Behind 负责。
 func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	return writebehind.SaveExt(state, stateKey, &model.PlayerLogin{
 		PlayerId: playerID,
@@ -222,6 +232,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// warn 统一告警入口（logger 可为 nil，单测里传 nil 不 panic）。
 func (m *Module) warn(msg string, ctx *module.Context, err error) {
 	if m.logger != nil {
 		m.logger.Warn(msg, "player_id", ctx.State.PlayerID(), "err", err)

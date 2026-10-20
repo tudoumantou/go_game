@@ -1,4 +1,9 @@
 // Package gateway 网关服（设计文档第 7 章）
+//
+// 本文件（server.go）是网关进程的组装层入口：把 conn/session/router/backend
+// 四个子包装配成完整服务，并编排「加载 RSA 密钥 → 连 Redis/etcd → 注册 →
+// 监听 TCP/HTTP → 优雅退出」的全生命周期。协议细节在各子包，这里只写清
+// 组件间的依赖与启动/停机顺序。
 package gateway
 
 import (
@@ -33,7 +38,14 @@ import (
 )
 
 // Server 网关服（组装层入口，职责见设计文档 3.1 目录树）
+//
+// 字段分四组：基础组件（cfg/logger/connMgr/sessMgr/router，New 时即就绪）、
+// 加解密（gatewayKey/gatewayPub，Start 时从 PEM 加载）、服务发现与后端
+// （etcd*/backend/redis/metricsSrv）、会话→游戏服路由表（sessGame）。
+// 不变量：sessGame 的 key 与 backend.Pool 的 session_id 必须一致；
+// 会话消亡时两侧都要清理（SetOnClosed 回调与 forwardPacket 失败路径）。
 type Server struct {
+	// 基础组件：无外部依赖，New 即可用
 	cfg     *config.Config
 	logger  *log.Logger
 	connMgr *conn.Manager
@@ -42,9 +54,11 @@ type Server struct {
 	tcpSrv  *netpkg.TCPServer
 	httpSrv *http.Server
 
+	// 网关 RSA 密钥对：ServerHello 下发公钥，私钥解客户端的 pre-master（15 章握手）
 	gatewayKey *rsa.PrivateKey
 	gatewayPub *rsa.PublicKey
 
+	// etcd 客户端/注册器 + 游戏服连接池；etcdCancel 是保活注册的注销函数
 	etcdClient *clientv3.Client
 	etcdReg    *gameetcd.Registry
 	etcdCancel context.CancelFunc
@@ -52,6 +66,7 @@ type Server struct {
 	redis      *cache.Client
 	metricsSrv *metrics.Server
 
+	// sessMu 保护 sessGame（读多写少，用 RWMutex）
 	sessMu   sync.RWMutex
 	sessGame map[uint64]string // session_id -> game target
 }
@@ -85,6 +100,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.logger.Info("metrics server started", "addr", mSrv.Addr())
 	}
 	// 加载网关 RSA 密钥对（优先用配置路径，缺省回退 keys/）
+	// 密钥对是握手根基：公钥随 ServerHello 明文下发，私钥只在网关内存，
+	// 解出 pre-master 后派生 AES-GCM 会话密钥（15 章）
 	privPath := s.cfg.Crypto.RSAPrivateKey
 	if privPath == "" {
 		privPath = "keys/gateway_rsa.pem"
@@ -117,6 +134,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// 路由（token 校验器 + 鉴权成功回调）
+	// token 校验器：握手期 token → account_id 只查 Redis，2s 超时防止
+	// 慢 Redis 拖死握手流程；无 Redis 环境（单测）放行
 	validator := func(token string) (int64, error) {
 		if s.redis == nil {
 			return 0, nil // 无 Redis 环境（单测）放行
@@ -173,6 +192,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// HTTP 健康检查 / 网关状态
+	// 只承载 /healthz、/status 探针与运维查询，不接业务流量（业务 HTTP 在登录服）
 	s.httpSrv = &http.Server{
 		Addr:    s.cfg.Server.HTTPAddr,
 		Handler: s.httpHandler(),
@@ -192,6 +212,11 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // bindToGame 鉴权成功后把会话绑定到游戏服。
+//
+// 选路策略：按 player_id 对存活 game 节点取模——同一玩家始终落到同一节点，
+// 玩家数据（Actor）无需跨节点迁移；节点列表来自 etcd（故障节点已被摘除）。
+// 绑定即建流：首帧 BIND 随 stream 一起发出（4.5），失败必须断客户端连接，
+// 否则玩家会对着一个「永远进不去」的会话反复发包。
 func (s *Server) bindToGame(sess *session.Session) {
 	if s.backend == nil || s.etcdReg == nil {
 		return
@@ -208,6 +233,7 @@ func (s *Server) bindToGame(sess *session.Session) {
 	idx := int(sess.PlayerID() % int64(len(nodes)))
 	node := nodes[idx]
 
+	// target 用 etcd resolver scheme 表达，gRPC 目标解析交给 backend.ClientPool
 	target := "etcd:///" + node.Service
 	frame := &internalv2.StreamFrame{
 		Data: &internalv2.StreamFrame_Ctrl{
@@ -232,6 +258,8 @@ func (s *Server) bindToGame(sess *session.Session) {
 }
 
 // deliverToClient 下行：游戏服回包 → 加密写回客户端。
+//
+// 会话可能已随断连消亡，此时丢弃并告警即可（游戏服侧迟到的帧无接收方）。
 func (s *Server) deliverToClient(sessionID uint64, msgID uint32, body []byte) {
 	sess := s.sessMgr.GetByNumID(sessionID)
 	if sess == nil {
@@ -252,6 +280,9 @@ func (s *Server) deliverToClient(sessionID uint64, msgID uint32, body []byte) {
 }
 
 // forwardPacket 业务消息透传：按会话绑定的 game target 走同一 stream（4.5）。
+//
+// 网关不解析业务协议，只按 session_id 找到 stream 原样转发；
+// 帧内必须带 session_id，游戏服据此找回 Actor。
 func (s *Server) forwardPacket(sess *session.Session, msgID uint32, body []byte) error {
 	s.sessMu.RLock()
 	target := s.sessGame[sess.NumID()]
@@ -283,7 +314,13 @@ func (s *Server) forwardPacket(sess *session.Session, msgID uint32, body []byte)
 	return nil
 }
 
+// onAccept 新连接接入：限流 → 分配 ID → 建会话 → 发 ServerHello → 进入读写循环。
+//
+// ServerHello 是全流程唯一一段明文协议（握手期，15 章）；此后所有包走
+// AES-GCM。注意 Serve 用 context.Background()：单连接的生命周期独立于
+// 进程启动 ctx，停机时由 sessMgr.CloseAll 统一断连。
 func (s *Server) onAccept(raw net.Conn) {
+	// 连接数上限保护：达到即拒并计数，避免 fd 耗尽拖垮整机
 	if s.connMgr.Count() >= s.cfg.Server.MaxConns {
 		s.logger.Warn("max connections reached", "max", s.cfg.Server.MaxConns)
 		metrics.ConnRejected("max_conns")
@@ -291,6 +328,8 @@ func (s *Server) onAccept(raw net.Conn) {
 		return
 	}
 
+	// connID 同时充当会话数值 ID（NewSession 内绑定），
+	// 下行路由与 gRPC BIND 帧都用它标识会话
 	connID := s.connMgr.NextID()
 	c := conn.New(connID, raw, s.router, s.logger)
 	s.connMgr.Add(c)
@@ -299,6 +338,7 @@ func (s *Server) onAccept(raw net.Conn) {
 	sess := s.sessMgr.NewSession(c)
 
 	// 发送 ServerHello（明文）
+	// 握手状态机随会话走：RSA 公钥 + 32B 随机盐，见 crypto.HandshakeServer
 	hs := crypto.NewHandshakeServer(s.gatewayPub, s.gatewayKey)
 	sess.SetHandshakeServer(hs)
 	pub, salt := hs.ServerHello()
@@ -310,10 +350,13 @@ func (s *Server) onAccept(raw net.Conn) {
 	}
 	sess.SetState(session.StateHelloSent)
 
+	// Serve 阻塞到连接关闭；TCPServer 每连接起一个 goroutine，
+	// 返回后经 conn.Close → router.OnClose 完成会话清理
 	c.Serve(context.Background())
 	metrics.ConnDec()
 }
 
+// httpHandler 健康检查/状态查询路由（探针由 K8s 高频调用，实现保持零依赖）。
 func (s *Server) httpHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {

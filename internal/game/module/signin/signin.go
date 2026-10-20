@@ -44,6 +44,13 @@ const (
 var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // Data 是签到的业务视图：本周已领取天数（1=周一…7=周日）与已领取奖励汇总。
+//
+// 字段语义：
+//   - Days：本周已领取的星期几，落库保持升序（便于对账与 diff）；
+//   - Rewards：本周已领取奖励汇总（item_id → 累计数量），只作展示/对账，不发奖。
+//
+// 跨周后本结构不会被自动清零——清空由周期回调模块调用 Reset 完成，
+// 这是「模块不持时钟锚点」设计的已知取舍（见 docs/signin.md）。
 type Data struct {
 	Days    []int32
 	Rewards map[int32]int64
@@ -76,6 +83,7 @@ func validate(row *model.PlayerSignin) error {
 // Reset 清空签到状态，供周期回调模块在周切换时调用；本模块自身不触发重置。
 func Reset(state writebehind.ExtState) { state.SetExt(stateKey, nil) }
 
+// Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
 type Module struct {
 	logger *log.Logger
 	now    func() time.Time
@@ -90,6 +98,8 @@ func New(logger *log.Logger, clock ...func() time.Time) *Module {
 	return m
 }
 
+// Name 模块名（同时是 Ext 槽位键与落库表名 player_signin 的归属）。
+// MsgIDs 只处理信息查询与领取两个协议。
 func (*Module) Name() string     { return stateKey }
 func (*Module) MsgIDs() []uint32 { return []uint32{MsgInfoReq, MsgClaimReq} }
 
@@ -125,10 +135,15 @@ func (*Module) Init(*module.Context) error {
 	return nil
 }
 
+// OnSave / OnLogin / OnLogout 对本模块都是无操作：
+// 领取事实与道具在同一次快照 CAS 里提交，没有模块级聚合数据要单独落库；
+// 周切换清零也不在这里做（由周期回调模块调用 Reset）。
 func (*Module) OnSave(context.Context) error   { return nil }
 func (*Module) OnLogin(*module.Context) error  { return nil }
 func (*Module) OnLogout(*module.Context) error { return nil }
 
+// OnMessage 协议入口：先解码，再确认缓存权威路径可用（旧直写 MySQL 路径已移除），
+// 然后每个请求只采样一次时钟，防止处理途中跨过周零点。
 func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
 	var req proto.Message
 	switch msgID {
@@ -176,6 +191,8 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 	}
 	for _, g := range grants {
 		current := ctx.State.GetItemCount(g.ItemID)
+		// 持有量已达 int32 上限时不能再发：协议里的 Count 是 int32，
+		// 溢出会变成负数，必须在发奖前拦住。
 		if current < 0 || g.Count > math.MaxInt32-current {
 			return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 		}
@@ -184,6 +201,8 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagFull, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 	}
 	d.add(today, grants)
+	// 先写领取事实再发道具：两者同属一份快照，CAS 失败整体回滚，
+	// 不会出现「奖发了、状态没记」的重复可领。
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return m.failure(ctx, MsgClaimReq, err)
 	}
@@ -204,6 +223,7 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 	return reply(ctx, 3010, &gamev1.BagChangeNotify{Changes: changes})
 }
 
+// failure 记录告警并回系统级错误码（codeSystem）。
 func (m *Module) failure(ctx *module.Context, msgID uint32, err error) error {
 	if m.logger != nil {
 		m.logger.Warn("signin request failed", "player_id", ctx.State.PlayerID(), "msg_id", msgID, "err", err)
@@ -292,6 +312,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发（Send 未注入时静默丢弃，便于单测）。
 func reply(ctx *module.Context, id uint32, msg proto.Message) error {
 	raw, err := proto.Marshal(msg)
 	if err != nil {
@@ -300,6 +321,7 @@ func reply(ctx *module.Context, id uint32, msg proto.Message) error {
 	return ctx.Reply(id, raw)
 }
 
+// protoRewards 把内部发奖结构转成协议结构（按 ItemID 排序由调用方保证）。
 func protoRewards(grants []module.ItemGrant) []*gamev1.SigninReward {
 	out := make([]*gamev1.SigninReward, 0, len(grants))
 	for _, g := range grants {

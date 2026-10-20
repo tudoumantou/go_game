@@ -134,6 +134,8 @@ func bizWorker(loginURL, gateway string, idx, rounds int, weights []struct {
 		return fmt.Errorf("enter game code=%d", eg.Code)
 	}
 
+	// 每个玩家独立随机源（种子含 idx）：并发 goroutine 共用全局 rand 有锁竞争，
+	// 且换 seed 才能复现某次压测的消息序列
 	rnd := rand.New(rand.NewSource(time.Now().UnixNano() + int64(idx)))
 	total := 0
 	for _, w := range weights {

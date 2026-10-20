@@ -15,12 +15,25 @@ import (
 )
 
 // Logger Actor 系统日志接口（避免 pkg/actor 依赖具体日志实现）。
+//
+// 目前用于 panic 恢复与定时消息投递失败的可观测输出；
+// keysAndValues 为交替的 key/value 对（slog 风格），由实现方解析。
 type Logger interface {
 	Error(msg string, keysAndValues ...any)
 }
 
 // System Actor 系统。
+//
+// 并发模型：actorID 经 fnv32a 哈希取模落到某个 shard，每个 shard 一个
+// goroutine，串行处理名下所有 Actor 的消息——Actor 内部无锁，分片间并行。
+// 与缓存的契约：一次 Actor 消息处理 = 一份快照 = 一次 CAS 提交，
+// 见 docs/R2.1-缓存原子变更契约.md。
+//
+// 生命周期：NewSystem → Start → （业务运行）→ Stop；优雅关闭顺序为
+// 停外部入口 → Drain 等在途消息 → 保存 → Stop（见 Drain 注释）。
 type System struct {
+	// shardCount 分片数，配置要求 2 的幂（config.Validate 强校验）；
+	// 寻址在 shardFor：fnv32a(id) % shardCount。
 	shardCount  int
 	mailboxSize int
 	shards      []*shard
@@ -29,13 +42,18 @@ type System struct {
 	stopOnce    sync.Once
 	stopCh      chan struct{}
 
-	// 定时器
+	// 定时器：timerLoop 每 100ms 线性扫描到期的 entry 并投递。
+	// timerMu 保护 timers 切片——ScheduleOnce（业务 goroutine）与
+	// fireTimers（定时器 goroutine）跨 goroutine 读写同一切片。
 	timerMu sync.Mutex
 	timers  []*timerEntry
 	timerWg sync.WaitGroup
 }
 
 // Config ActorSystem 配置。
+//
+// ShardCount/MailboxSize <= 0 时分别回退默认 1024；Logger 可选，
+// 不提供则 panic 时走 debug.PrintStack（输出到 stderr）。
 type Config struct {
 	ShardCount  int
 	MailboxSize int
@@ -43,7 +61,13 @@ type Config struct {
 }
 
 // NewSystem 创建 ActorSystem。
+// NewSystem 创建 ActorSystem（不启动任何 goroutine，需显式 Start）。
+//
+// 分片在创建时全部就绪，Spawn 之前即可投递——消息先入信箱排队，
+// 等 Start 后由分片循环消费。
 func NewSystem(cfg Config) *System {
+	// 默认 1024 分片：足够把热点玩家打散；空闲分片阻塞在 wake 上，
+	// 成本主要是内存而非 CPU。
 	if cfg.ShardCount <= 0 {
 		cfg.ShardCount = 1024
 	}
@@ -64,6 +88,10 @@ func NewSystem(cfg Config) *System {
 }
 
 // Start 启动所有分片 goroutine。
+//
+// wg.Add 必须在 go 之前完成：否则 Start 尚未返回时 Stop 若已跑完
+// Wait，后启动的 goroutine 将漏等（经典 WaitGroup 竞态）。
+// ctx 取消与 Stop 任一发生都会让循环退出。
 func (s *System) Start(ctx context.Context) {
 	for _, sh := range s.shards {
 		s.wg.Add(1)
@@ -74,6 +102,10 @@ func (s *System) Start(ctx context.Context) {
 }
 
 // Stop 停止所有分片。
+//
+// stopOnce 保证 stopCh 只 close 一次（重复 close 会 panic）；之后等
+// 所有分片与定时器 goroutine 退出。Stop 不等待在途消息处理完——
+// 需要保证处理完应在 Stop 之前 Drain。
 func (s *System) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
@@ -90,6 +122,8 @@ func (s *System) Stop() {
 // Drain 不阻止新消息投递，调用方应先停掉外部入口（gRPC、Kafka 消费者），
 // 否则一边排空一边进新消息，只能等到超时。
 func (s *System) Drain(ctx context.Context) error {
+	// 10ms 轮询：Drain 是关闭路径上的低频操作，该粒度足够；
+	// 更短只是白烧 CPU，更长则拖长关闭总时长。
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -115,6 +149,10 @@ func (s *System) idle() bool {
 }
 
 // Spawn 创建 Actor。
+//
+// 只注册不启动：Actor 生命周期与信箱同在，Terminate 时移除；
+// id 重复返回错误（分片内 ID 唯一，否则两条消息流会挤同一个信箱）。
+// 可在 Start 之前调用（消息先排队，等人来消费）。
 func (s *System) Spawn(id string, actor Actor) (*PID, error) {
 	sh := s.shardFor(id)
 	pid := &PID{ID: id, Shard: sh.index}
@@ -134,6 +172,9 @@ func (s *System) Send(target *PID, msg any) error {
 }
 
 // SendWithSender 带发送者发送消息。
+//
+// sender 为 nil 表示匿名发送（定时器/系统消息），接收方 Respond 会跳过；
+// target 为 nil 属于调用方 bug，返回错误而不 panic。
 func (s *System) SendWithSender(target *PID, msg any, sender *PID) error {
 	if target == nil {
 		return fmt.Errorf("target pid is nil")
@@ -143,6 +184,10 @@ func (s *System) SendWithSender(target *PID, msg any, sender *PID) error {
 }
 
 // ScheduleOnce 调度一次性延迟消息。
+//
+// 入队即返回（O(1) 追加），到期扫描在 timerLoop；计时精度为 100ms
+// tick，且重启即丢失——需要持久化的定时任务应落库或用其他调度。
+// target 为 nil 时静默忽略（与 Send 报错不同：定时任务允许配空目标）。
 func (s *System) ScheduleOnce(d time.Duration, target *PID, msg any) {
 	if target == nil {
 		return
@@ -152,6 +197,11 @@ func (s *System) ScheduleOnce(d time.Duration, target *PID, msg any) {
 	s.timerMu.Unlock()
 }
 
+// shardFor 计算 id 归属的分片。
+//
+// 选 fnv 而非 maphash：maphash 的种子随进程变化，同一条 actorID 在
+// 不同进程会落到不同分片；fnv 是固定算法，跨进程/跨重启结果一致
+// （重启后同一玩家仍落同一分片，本地缓存不失效）。
 func (s *System) shardFor(id string) *shard {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(id))
@@ -159,6 +209,11 @@ func (s *System) shardFor(id string) *shard {
 }
 
 // Terminate 停止并移除 Actor。
+//
+// 幂等：移除不存在的 Actor 静默返回。关闭信箱后新 push 全部返回
+// ErrActorGone；已入队的消息仍会被分片排空（从已关闭 channel 读安全）。
+// Terminate 不等待在途消息——需要等待请先 Drain。
+// pid 为 nil 静默忽略（关闭路径上允许批量传 nil）。
 func (s *System) Terminate(pid *PID) {
 	if pid == nil {
 		return
@@ -190,6 +245,9 @@ type shard struct {
 	lastRejected int64
 }
 
+// newShard 创建分片。wake 容量 1：多个 Actor 同时到达只保留一个唤醒
+// 信号——分片循环会排空所有信箱，不需要精确计数；极端情况下信号被吞
+// 时由 100ms ticker 兜底，不会丢消息。
 func newShard(index int, sys *System) *shard {
 	return &shard{
 		wake:  make(chan struct{}, 1),
@@ -199,6 +257,10 @@ func newShard(index int, sys *System) *shard {
 	}
 }
 
+// add 注册 cell 到分片；ID 已存在返回错误。
+//
+// 调用方（Spawn）已按 shardFor 选好分片，此处只做唯一性校验。
+// cells map 由 mu 保护：add/remove 持写锁，deliver/idle/allCells 持读锁。
 func (sh *shard) add(cell *actorCell) error {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -209,11 +271,17 @@ func (sh *shard) add(cell *actorCell) error {
 	return nil
 }
 
+// deliver 把消息投递到 id 对应的信箱并唤醒分片。
+//
+// 先取 cell 再 push：cell 取出后可能被并发 Terminate（close 信箱），
+// 此时 push 返回 ErrActorGone——两种竞争结果都不会 panic。
+// push 成功才 notify：失败（满/已终止）时信箱状态未变，无需唤醒。
 func (sh *shard) deliver(id string, env envelope) error {
 	sh.mu.RLock()
 	cell, ok := sh.cells[id]
 	sh.mu.RUnlock()
 	if !ok {
+		// 包一层 ErrActorGone：调用方可用 errors.Is 判定，同时带上 id 便于排查
 		return fmt.Errorf("%w: %s", ErrActorGone, id)
 	}
 	if err := cell.mbox.push(env); err != nil {
@@ -231,6 +299,11 @@ func (sh *shard) notify() {
 	}
 }
 
+// remove 关闭信箱并摘除 cell；不存在则静默返回（幂等）。
+//
+// close 与 delete 在同一把写锁内：deliver 要么在锁外已取到 cell
+// （push 时被 closed 挡住返回 ErrActorGone），要么看到 map 里已删除，
+// 不会出现「cell 已不在 map、信箱却仍可投递」的窗口。
 func (sh *shard) remove(id string) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

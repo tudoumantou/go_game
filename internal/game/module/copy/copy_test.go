@@ -1,3 +1,6 @@
+// internal/game/module/copy/copy_test.go —— 副本模块单测：首通发奖一次、星级不回退、等级门槛。
+//
+// fakeState 等级默认 99，用于绕过等级门槛；需要验证门槛的用例再显式调低。
 package copy
 
 import (

@@ -30,13 +30,17 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// grantActor 捕获发奖消息。
+// grantActor 捕获 GrantItemsMsg 的测试 Actor：记录发奖次数并暂存道具列表，
+// 替代真实玩家 Actor，用于断言「充值消息 → Kafka → 消费 → 发奖」的端到端结果。
 type grantActor struct {
+	// mu 保护 grants/items：Receive 在消费 goroutine 调用，count() 在测试 goroutine 读
 	mu     sync.Mutex
 	grants int
 	items  []player.GrantItem
 }
 
+// Receive 实现 actor.Actor：只关心 GrantItemsMsg，其余消息直接忽略；
+// msg.Done 非空时回写 nil，让发送方（消费者）确认投递完成。
 func (a *grantActor) Receive(ctx *actor.Context) {
 	msg, ok := ctx.Message().(*player.GrantItemsMsg)
 	if !ok {
@@ -51,26 +55,45 @@ func (a *grantActor) Receive(ctx *actor.Context) {
 	}
 }
 
+// count 已收到的发奖次数（测试 goroutine 安全读取）。
 func (a *grantActor) count() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.grants
 }
 
+// staticRouter 永远返回同一个 PID 的路由（测试替身）：本用例只涉及玩家 2001，
+// 不需要真实的 GetOrSpawn 逻辑。
 type staticRouter struct{ pid *actor.PID }
 
-func (r *staticRouter) Get(int64) (*actor.PID, bool)         { return r.pid, true }
+// Get 总是返回预置 PID 且存在。
+func (r *staticRouter) Get(int64) (*actor.PID, bool) { return r.pid, true }
+
+// GetOrSpawn 与 Get 相同：测试里不真的 spawn。
 func (r *staticRouter) GetOrSpawn(int64) (*actor.PID, error) { return r.pid, nil }
 
+// alwaysOnline 在线判定桩：任何玩家都「在线」且在指定节点，
+// 省去真实 presence（etcd/Redis）装配，把用例聚焦在 Kafka 链路本身。
 type alwaysOnline struct{ node string }
 
+// IsOnline 恒返回 (node, true)。
 func (a alwaysOnline) IsOnline(ctx context.Context, playerID int64) (string, bool) {
 	return a.node, true
 }
+
+// PendPush 空实现：离线暂存路径不在本用例覆盖范围内。
 func (a alwaysOnline) PendPush(ctx context.Context, biz string, playerID int64, value []byte, maxLen int64, ttl time.Duration) error {
 	return nil
 }
 
+// TestKafkaRechargeFlow 充值订单 → Kafka → 消费 → 发奖 端到端（P5）。
+//
+// 前置：KAFKA_BROKERS 环境变量，未设置则跳过（不阻塞 CI 默认集成测试）。
+// 隔离手段：独立 topic + 唯一消费组，保证本次测试独占数据、读不到历史残留。
+//
+// 关键断言：① 一条订单恰好触发一次发奖；② 同一 envelope 重复投递被幂等器
+// 拦下（Deduper.FirstTime 第二次返回 false），不重复发奖 —— 对应线上
+// 「Kafka at-least-once 投递」的真实语义。
 func TestKafkaRechargeFlow(t *testing.T) {
 	brokersEnv := os.Getenv("KAFKA_BROKERS")
 	if brokersEnv == "" {
@@ -172,6 +195,8 @@ type itDeduper struct {
 	seen map[string]bool
 }
 
+// FirstTime 首次见到 (topic,bizID) 返回 true，之后返回 false。
+// 内存实现替代 Redis 版幂等器，只为验证消费侧「先判重再发奖」的调用契约。
 func (d *itDeduper) FirstTime(ctx context.Context, topic, bizID string, ttl time.Duration) (bool, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -183,6 +208,7 @@ func (d *itDeduper) FirstTime(ctx context.Context, topic, bizID string, ttl time
 	return true, nil
 }
 
+// Forget 删除幂等记录（本用例未走到，仅为接口完整）。
 func (d *itDeduper) Forget(ctx context.Context, topic, bizID string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

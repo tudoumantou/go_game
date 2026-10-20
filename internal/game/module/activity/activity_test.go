@@ -1,3 +1,6 @@
+// internal/game/module/activity/activity_test.go —— 活动模块单测：领取幂等、进度截断。
+//
+// fakeState 的 Profile 固定 10 级；用例直接写快照进度，绕过事件累积。
 package activity
 
 import (

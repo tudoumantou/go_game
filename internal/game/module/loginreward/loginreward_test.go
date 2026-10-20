@@ -1,3 +1,6 @@
+// internal/game/module/loginreward/loginreward_test.go —— 登录礼包单测：连续/断签/同天重连/超档。
+//
+// 时钟用 New 的可选参数注入固定时间，避免依赖真实日期导致用例偶发失败。
 package loginreward
 
 import (

@@ -1,3 +1,6 @@
+// internal/game/module/quest/quest_test.go —— 任务模块单测：接取→事件推进→领奖→幂等。
+//
+// 事件类型与目标次数直接取自配置首行，XML 变更时用例自动跟随，不写死数值。
 package quest
 
 import (

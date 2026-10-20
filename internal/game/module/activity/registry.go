@@ -1,3 +1,7 @@
+// internal/game/module/activity/registry.go —— 活动窗口注册表（R7.2）。
+//
+// 中心服调度把活动实例（窗口起止 + 版本号）下发到本进程；活动模块与
+// 窗口自算路径共用同一份注册表，保证「下发」与「按配置自算」不打架。
 package activity
 
 import (

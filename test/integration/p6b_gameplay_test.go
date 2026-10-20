@@ -32,6 +32,13 @@ const (
 	skillFire   int32 = 4002 // 火球术（等级门槛 1，升级消耗 cfg.Col3*level 钻石）
 )
 
+// TestP6BGameplayFlow P6 业务闭环（第二批）：任务/装备/技能/私聊/公会/组队/
+// 副本/商店/活动，全部以错误码与终态断言。
+//
+// 编排：两个玩家（A 主号、B 交互方）；A 的钻石/药水/装备直接落库预置，
+// 绕过业务获取路径，聚焦各模块状态机。商店购买后轮询等待 Write-Behind 落库
+// （flush 周期 2s）：bagItem 走协议读内存态、itemCount 直查库，两侧一致才说明
+// 缓存权威 + 异步落库闭环成立。
 func TestP6BGameplayFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()

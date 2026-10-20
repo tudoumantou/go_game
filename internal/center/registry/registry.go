@@ -18,6 +18,9 @@ const (
 )
 
 // Node 节点信息（注册时上报 + 心跳更新）。
+//
+// 注册表对外返回的永远是副本（Get/ListByType/ListByGroup 均拷贝），调用方
+// 修改不会污染内部状态；LastSeen 由注册表维护，不随上报变化。
 type Node struct {
 	ID        string
 	Type      string
@@ -35,6 +38,10 @@ type Node struct {
 }
 
 // Registry 节点注册表。
+//
+// 不变量：nodes 与 senders 的 key 集合始终一致（Register 成对写入，
+// Unregister/Tick 成对删除）；Sender 与节点同生命周期，流断开即摘除，
+// 不会出现「有节点无下发通道」的中间态。
 type Registry struct {
 	mu    sync.RWMutex
 	nodes map[string]*Node
@@ -71,6 +78,10 @@ func New(timeout time.Duration, logger Logger) *Registry {
 }
 
 // Register 注册/更新节点并绑定下发通道。
+//
+// 幂等：同 node_id 重复注册（重连补发 Register）只更新信息与通道，不产生
+// 重复条目。s 为 nil 时保留原通道（心跳路径不传通道）。同 ID 换类型属于
+// 配置错误：覆盖并告警而不拒绝——否则节点将永远无法修正类型。
 func (r *Registry) Register(n *Node, s Sender) {
 	if n == nil || n.ID == "" {
 		return
@@ -97,6 +108,10 @@ func (r *Registry) Register(n *Node, s Sender) {
 }
 
 // Heartbeat 更新心跳（节点未注册时返回 false，由调用方要求补发 Register）。
+//
+// 返回 false 的典型场景是中心服重启过（内存注册表已清空）：节点侧按协议
+// 补发 Register 即可恢复，不需要重建连接。version 为空表示本次不上报
+// 版本，保留原值。
 func (r *Registry) Heartbeat(nodeID string, playerNum, cpuLoad, memLoad int, qps int64, version string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -129,6 +144,9 @@ func (r *Registry) Unregister(nodeID string) {
 }
 
 // Get 查询节点。
+//
+// 返回节点副本：调用方对返回值的修改不会影响注册表，内部状态只经
+// Register/Heartbeat 变更。
 func (r *Registry) Get(nodeID string) (*Node, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -201,6 +219,10 @@ func (r *Registry) Groups() []string {
 }
 
 // Tick 摘除心跳超时节点，返回被摘除的节点（供上层广播）。
+//
+// now 由调用方传入（而非 time.Now()）：节拍循环统一时钟，测试可注入。
+// 超时判定为 now-LastSeen > timeout；摘除同时删除下行通道，避免向已死
+// 节点堆积指令。返回的节点也是副本。
 func (r *Registry) Tick(now time.Time) []*Node {
 	r.mu.Lock()
 	var dead []*Node

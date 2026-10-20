@@ -44,6 +44,11 @@ var (
 )
 
 // MailRow 邮件列表行（含附件标记）。
+//
+// 字段语义：
+//   - Status：0=未读，1=已读，2=已领（附件取完后由 MarkTaken 尽力更新）；
+//   - ExpireAt：可空；过期邮件仍会查出，由客户端决定是否展示；
+//   - HasAttachment：由 EXISTS 子查询得出，避免列表再查一次附件表。
 type MailRow struct {
 	ID            int64
 	Title         string
@@ -421,6 +426,7 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 	return m.replyTake(ctx, resp)
 }
 
+// replyTake 序列化并回包领取响应。
 func (m *Module) replyTake(ctx *module.Context, resp *gamev1.MailTakeAttachmentResp) error {
 	body, err := proto.Marshal(resp)
 	if err != nil {

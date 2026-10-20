@@ -48,6 +48,7 @@ func (m *Module) Name() string { return "bag" }
 // Rollbackable 背包列表只读；使用道具会改资产，按不可回滚处理。
 func (*Module) Rollbackable(msgID uint32) bool { return msgID == msgIDBagListReq }
 
+// MsgIDs 本模块处理的协议号：使用道具 + 背包列表（推送 3010 不走请求路由）。
 func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDUseItemReq, msgIDBagListReq} }
 
 // Init 实现 module.Module。
@@ -109,6 +110,7 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 	}
 	itemID := int32(req.ItemUid)
 	count := req.Count
+	// 未带数量按 1 个处理；堆叠模式下 ItemUid 即 item_id。
 	if count <= 0 {
 		count = 1
 	}
@@ -124,6 +126,7 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 		resp.Code = codeItemNotUsable
 		return m.replyUse(ctx, resp)
 	}
+	// 请求数量超过单次上限时截断，而不是报错：与客户端的批量使用体验一致。
 	if int64(count) > cfg.Col3 {
 		count = int32(cfg.Col3)
 	}
@@ -149,6 +152,7 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 		return err
 	}
 	// 增量推送
+	// Change=2 表示扣减（协议约定 1=增加、2=减少），与商店/发奖路径对称。
 	notify := &gamev1.BagChangeNotify{Changes: []*gamev1.ItemChange{{
 		ItemUid: int64(itemID),
 		ItemId:  itemID,
@@ -161,6 +165,7 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 	return nil
 }
 
+// replyUse 序列化并回包使用道具响应。
 func (m *Module) replyUse(ctx *module.Context, resp *gamev1.UseItemResp) error {
 	body, err := proto.Marshal(resp)
 	if err != nil {

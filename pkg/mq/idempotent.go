@@ -23,8 +23,13 @@ type Forgetter interface {
 }
 
 // Forget 若实现 Forgetter 则回滚幂等标记。
+//
+// 用于业务处理失败的补偿路径：删掉 FirstTime 写下的标记，让重投的消息
+// 能被重新判定为「首次」并再次处理。
 func Forget(ctx context.Context, d Deduper, topic, bizID string) {
 	if f, ok := d.(Forgetter); ok {
+		// 回滚失败不向上传染：标记最坏也会随 TTL 自然过期，
+		// 不会把「可恢复的清理失败」升级成消费中断。
 		_ = f.Forget(ctx, topic, bizID)
 	}
 }
@@ -34,6 +39,8 @@ type NoopDeduper struct{}
 
 // FirstTime 实现 Deduper。
 func (NoopDeduper) FirstTime(ctx context.Context, topic, bizID string, ttl time.Duration) (bool, error) {
+	// 恒定返回 true：本地开发/单测场景不去重，重复投递会重复执行业务，
+	// 换来的是不依赖 Redis 也能跑通链路。
 	_ = ctx
 	_ = topic
 	_ = bizID

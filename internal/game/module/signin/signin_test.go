@@ -1,3 +1,7 @@
+// internal/game/module/signin/signin_test.go —— 签到模块单测：周几映射、状态编解码、领取幂等。
+//
+// 全部用例不碰数据库：fakeState 在内存里模拟 Ext 槽位，验证「领取事实 + 道具」
+// 是否按设计落在同一份快照形状里。
 package signin
 
 import (

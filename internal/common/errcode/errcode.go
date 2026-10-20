@@ -86,10 +86,14 @@ func Message(c Code) string {
 
 // Error 带错误码的 error（业务层返回，接入层转 Resp.code / ErrorNotify）
 type Error struct {
+	// Code 业务错误码；客户端按它切换文案与行为（如 token 过期→回登录页）
 	Code Code
 	Msg  string // 空则取文案表
 }
 
+// Error 实现 error 接口。
+// Msg 非空时优先返回（附带上下文，如具体缺少的道具数量）；
+// 为空时回退文案表，保证日志与客户端提示始终中文可读。
 func (e *Error) Error() string {
 	if e.Msg != "" {
 		return e.Msg

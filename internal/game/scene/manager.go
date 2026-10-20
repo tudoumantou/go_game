@@ -1,3 +1,8 @@
+// internal/game/scene/manager.go —— 场景 Actor 的启动装配、查找与保活入口（R9.1）
+//
+// 场景是配置表驱动的静态集合：Boot 一次性 Spawn 全部场景 Actor，
+// 之后 pids 只读；Heartbeat/Resync 是 player.SceneLink 的实现，
+// 玩家 Actor 经它与场景交互（player 包不直接依赖 scene 包）。
 package scene
 
 import (
@@ -36,6 +41,7 @@ func (m *Manager) Boot() error {
 		}
 		m.pids[sc.ID] = pid
 		// 启动心跳扫描：自调度，之后由 Actor 自己续期。
+		// 首帧必须由 Manager 代发：Actor 只有进了 Receive 才能给自己 ScheduleOnce。
 		if err := m.sys.Send(pid, &SweepMsg{}); err != nil {
 			return fmt.Errorf("start sweep for scene %d: %w", sc.ID, err)
 		}
@@ -50,9 +56,11 @@ func (m *Manager) Boot() error {
 func (m *Manager) Heartbeat(playerID int64, sceneID int32) {
 	pid := m.PID(sceneID)
 	if pid == nil {
+		// 场景未启动：无处保活；玩家本就不在该场景的实体表里，sweep 也不会误伤
 		return
 	}
 	_ = m.sys.Send(pid, &HeartbeatMsg{PlayerID: playerID})
+	// 发送失败不重试：保活消息丢失的后果由场景内 sweep 兜底（见 defaultIdleTimeout 注释）
 }
 
 // Resync 请求场景推送一次全量视野（实现 player.SceneLink）。
@@ -65,6 +73,7 @@ func (m *Manager) Resync(playerID int64, sceneID int32, playerPID *actor.PID) {
 		return
 	}
 	_ = m.sys.Send(pid, &SyncMsg{PlayerID: playerID, PID: playerPID})
+	// 失败不重试：同步是尽力而为，客户端发现序号断档还会主动请求 SceneSync（4020）
 }
 
 // PID 场景 Actor 的 PID；场景不存在返回 nil。
@@ -84,12 +93,15 @@ func fromConfig(cfg gamedata.SceneCfg) (Config, error) {
 		return Config{}, fmt.Errorf("scene: invalid id %d", cfg.Id)
 	}
 	if cfg.Col2 <= 0 || cfg.Col3 <= 0 {
+		// 宽高为 0：Clamp 把所有坐标钉死在 (0,0)，场景退化成一点、所有人互相重叠
 		return Config{}, fmt.Errorf("scene %d: width/height must be positive (got %d/%d)", cfg.Id, cfg.Col2, cfg.Col3)
 	}
 	if cfg.Col4 <= 0 {
+		// 格宽为 0：cellOf 的 x/Cell 整数除法直接除零 panic，必须启动期拦下
 		return Config{}, fmt.Errorf("scene %d: cell size must be positive (got %d)", cfg.Id, cfg.Col4)
 	}
 	if cfg.Col5 <= 0 {
+		// 人数上限为 0：一进就满，场景等同于不可用
 		return Config{}, fmt.Errorf("scene %d: max players must be positive (got %d)", cfg.Id, cfg.Col5)
 	}
 	return Config{

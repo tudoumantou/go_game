@@ -58,6 +58,9 @@ type Member struct {
 }
 
 // Team 队伍信息。
+//
+// 字段语义：Status 0=正常，2=已解散（软删，查询一律过滤）；
+// CopyID 是队伍要打的副本配置 ID。
 type Team struct {
 	ID       int64
 	LeaderID int64
@@ -131,6 +134,7 @@ func (r *Repo) Join(ctx context.Context, teamID, playerID int64) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO team_member (team_id, player_id, ready) VALUES (?, ?, 0)`, teamID, playerID); err != nil {
+			// 唯一键冲突 = 重复加入；MySQL 错误码 1062 是唯一途径（driver 不暴露类型）。
 			if strings.Contains(err.Error(), "1062") {
 				return ErrAlreadyIn
 			}
@@ -253,6 +257,7 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 	return nil
 }
 
+// onInfo 查询当前队伍信息；不在队回 codeNotInTeam。
 func (m *Module) onInfo(ctx *module.Context) error {
 	resp := &gamev1.TeamInfoResp{}
 	if m.repo == nil {
@@ -285,6 +290,7 @@ func (m *Module) onInfo(ctx *module.Context) error {
 	return m.reply(ctx, msgIDInfoResp, resp)
 }
 
+// onCreate 创建队伍；repo 缺失（单机/测试）时按成功降级。
 func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 	var req gamev1.TeamCreateReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -310,6 +316,7 @@ func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 	return m.reply(ctx, msgIDCreateResp, resp)
 }
 
+// onJoin 加入指定队伍；已在别的队先拒绝，超员/不存在由仓储错误码转换。
 func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 	var req gamev1.TeamJoinReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -343,6 +350,7 @@ func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 	return m.reply(ctx, msgIDJoinResp, resp)
 }
 
+// onLeave 主动退队；队长退队 = 解散（仓储层保证）。
 func (m *Module) onLeave(ctx *module.Context) error {
 	resp := &gamev1.TeamLeaveResp{}
 	if m.repo == nil {
@@ -360,6 +368,7 @@ func (m *Module) onLeave(ctx *module.Context) error {
 	return m.reply(ctx, msgIDLeaveResp, resp)
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {

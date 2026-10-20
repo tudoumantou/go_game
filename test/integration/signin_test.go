@@ -1,5 +1,15 @@
 //go:build integration
 
+// test/integration/signin_test.go —— 单表签到全链路（缓存权威 + Write-Behind，见 docs/signin.md）
+//
+// 不起真实服务进程：直接装配 actor.System + 模块 Registry + Repository/Worker，
+// 用可控时钟把「今天」固定为周三，覆盖四条路径：
+//  1. 在线签到只写缓存（SQL 立即查应为空）；
+//  2. 同分片多角色由 worker 合批落库（一次 FlushBatch 落两行）；
+//  3. Actor 重启：Redis 仍在 → 从缓存恢复已领状态；
+//  4. Redis 丢失 → FlatPersister 走生成代码从 SQL 冷启动恢复。
+//
+// 另外验证角色隔离与重复领取幂等。
 package integration
 
 import (

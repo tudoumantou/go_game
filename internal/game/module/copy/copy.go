@@ -39,6 +39,11 @@ const (
 )
 
 // Record 单个副本的通关记录。
+//
+// 字段语义：
+//   - Star：历史最佳星级（0-3），只升不降；
+//   - PassCount：累计通关次数；
+//   - FirstPass：首通奖励是否已发放——一旦置位永不清零，是首通幂等的唯一依据。
 type Record struct {
 	Star      int32 `json:"star"`
 	PassCount int32 `json:"pass_count"`
@@ -148,6 +153,7 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 		return reply(ctx, msgIDSettleResp, resp)
 	}
 	star := req.Star
+	// 客户端上报的星级裁剪到 1-3：0/负数按 1 星，超高按 3 星，防止脏数据落库。
 	if star < 1 {
 		star = 1
 	}
@@ -160,6 +166,7 @@ func (m *Module) onSettle(ctx *module.Context, body []byte) error {
 		return err
 	}
 	rec := d.Records[req.CopyId]
+	// FirstPass 先取反再置位：本次是否是首通，必须在改写之前判定。
 	firstPass := !rec.FirstPass
 	if rec.Star < star {
 		rec.Star = star
@@ -238,6 +245,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return decode(row)
 }
 
+// decode 把表行 JSON 解成业务视图；保证 map 非 nil。
 func decode(row *model.CopyRecord) (*Data, error) {
 	d := &Data{Records: map[int32]Record{}}
 	if row.Records != "" {
@@ -262,6 +270,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {

@@ -32,6 +32,8 @@ func (s *Server) drainOffline(playerID int64, sessionID uint64) {
 	if s.presence == nil {
 		return
 	}
+	// 独立 ctx + 短超时：补投是尽力而为的收尾工作，Redis 卡住不能无限等
+	// （调用方是登录流程里的 goroutine，超时即放弃本次补投）。
 	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
 
@@ -40,6 +42,9 @@ func (s *Server) drainOffline(playerID int64, sessionID uint64) {
 
 // drainOfflineChat 补投离线私聊。
 func (s *Server) drainOfflineChat(ctx context.Context, playerID int64, sessionID uint64) {
+	// PendDrain 在同一个管道里 LRange + Del：取出即清空，语义是「至少一次」
+	// 而非「恰好一次」。所以推送失败不重试——消息已离开 Redis，重试只会放大
+	// 延迟；单条失败立即 return，剩余消息随清空丢弃（离线补投本就尽力而为）。
 	msgs, err := s.presence.PendDrain(ctx, pendBizChat, playerID)
 	if err != nil {
 		s.logger.Warn("drain offline chat failed", "player_id", playerID, "err", err)
@@ -56,6 +61,8 @@ func (s *Server) drainOfflineChat(ctx context.Context, playerID int64, sessionID
 			s.logger.Warn("bad offline chat payload", "player_id", playerID, "err", err)
 			continue
 		}
+		// 6010 = ChatMessageNotify（4.9 Demo 客户端协议契约，跨服扇出同格式）。
+		// SendTime 毫秒 → 秒：协议侧时间戳是秒级。
 		notify := &gamev1.ChatMessageNotify{
 			MsgId:      formatMsgID(cm.MsgID),
 			Channel:    cm.Channel,

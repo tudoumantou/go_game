@@ -21,17 +21,29 @@ type Profile = writebehind.Profile
 
 // PlayerState 玩家内存状态接口（由 player.State 实现，模块通过它读写数据）。
 type PlayerState interface {
+	// PlayerID 玩家 ID：快照主键，日志与业务键（biz key）都基于它派生。
 	PlayerID() int64
+	// Profile 角色基础信息快照（等级/经验/货币/场景归属等）。
 	Profile() Profile
+	// ExpMax 当前等级升到下一级所需经验（由等级配置决定）。
 	ExpMax() int64
+	// GetAttr 读取战斗属性最终值（基础值 + 各模块加成之和）。
 	GetAttr(key string) int64
+	// SetAttr 覆写属性基础值（升级重算时用）。
 	SetAttr(key string, val int64)
+	// AddBonus 增减某项属性的加成（装备/伙伴等派生项，只进内存不落库）。
 	AddBonus(key string, delta int64)
+	// ClearBonus 清空全部加成；登录重算前由玩家层统一调用。
 	ClearBonus()
+	// GetItemCount 某道具的持有数量（P6 堆叠模式：item_id 即占位 uid）。
 	GetItemCount(itemID int32) int64
+	// Items 全部道具的只读视图；返回内部 map，调用方不得直接修改。
 	Items() map[int32]int64
+	// AddItem 增加道具（只改内存，随玩家快照同一次 CAS 提交）。
 	AddItem(itemID int32, count int64)
+	// RemoveItem 减少道具；数量不足时返回 false 且不产生部分扣减。
 	RemoveItem(itemID int32, count int64) bool
+	// MarkDirty 标记模块状态已变，提示 flusher 关注；权威提交仍是快照 CAS。
 	MarkDirty(module string)
 	// SetSceneID 更新所在场景（0 表示不在场景中）并标脏。
 	// 场景归属由场景 Actor 决定，模块只负责把它写回玩家状态。
@@ -158,6 +170,7 @@ type Module interface {
 
 // EventAware 可选接口：关心玩家行为事件的模块实现它。
 type EventAware interface {
+	// OnEvent 消费一个玩家行为事件；在玩家 Actor 内单线程调用，可无锁读写 state。
 	OnEvent(ctx *Context, evt Event)
 }
 
@@ -166,6 +179,7 @@ type EventAware interface {
 // 返回 true 的前提是「重放该请求不会产生第二次副作用」：要么只读，要么有业务幂等键。
 // 未实现该接口的模块按不可回滚处理（保守），失败时保留待提交快照而不是丢弃改动。
 type RollbackAware interface {
+	// Rollbackable 判定该协议是否满足「重放无第二次副作用」。
 	Rollbackable(msgID uint32) bool
 }
 
@@ -174,6 +188,7 @@ type RollbackAware interface {
 // 未实现时由网关层统一回通用错误通知；实现了就由模块自己决定响应协议号与错误码，
 // 避免在玩家层硬编码各模块的协议号。
 type CacheFailureAware interface {
+	// CacheFailureReply 返回模块自定义的缓存不可用响应；ok=false 时走网关通用错误。
 	CacheFailureReply(msgID uint32) (respID uint32, body []byte, ok bool)
 }
 

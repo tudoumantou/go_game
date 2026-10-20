@@ -1,3 +1,6 @@
+// internal/game/module/skill/skill_test.go —— 技能模块单测：学习/升级扣费/重复学习/落库形状。
+//
+// 统一取「带消耗」的第一个技能配置，保证升级路径能真正验证扣费。
 package skill
 
 import (

@@ -40,6 +40,9 @@ type table struct {
 	FlatModule string
 }
 
+// main 入口：扫 sql/schema/*.sql → 解析表与 @flat 标注 → 生成 querier + 逐表 model。
+//
+// 表按名排序后生成：输出顺序稳定，make gen-check 的逐文件比对才不会误报。
 func main() {
 	in := flag.String("in", "sql/schema", "DDL 输入目录")
 	out := flag.String("out", "pkg/model", "Go 代码输出目录")
@@ -60,6 +63,7 @@ func main() {
 		}
 		tables = append(tables, ts...)
 	}
+	// 排序保证生成顺序稳定：gen-check 与工作区状态无关，靠「生成到临时目录再逐文件比对」
 	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
 
 	if err := os.MkdirAll(*out, 0o755); err != nil {
@@ -78,6 +82,10 @@ func main() {
 	fmt.Printf("gendb 完成：%d 张表 → %s\n", len(tables), *out)
 }
 
+// createTableRe 匹配一条 CREATE TABLE，抓表名与括号内的列定义段。
+//
+// (?is)：. 跨行 + 忽略大小写；列段用非贪婪 (.*?) 并以 ENGINE/COMMENT/DEFAULT/; 收尾，
+// 覆盖「无 ENGINE 子句的 DDL」；表名允许反引号/双引号包裹两种写法。
 var createTableRe = regexp.MustCompile(`(?is)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[` + "`" + `\"]?([a-zA-Z0-9_]+)[` + "`" + `\"]?\s*\((.*?)\)\s*(?:ENGINE|COMMENT|DEFAULT|;)`)
 
 // genQuerier 生成 *sql.DB 与 *sql.Tx 的公共子集。
@@ -118,6 +126,11 @@ func flatSuffix(t table) string {
 	return "，@flat:" + t.FlatModule
 }
 
+// parseSQL 解析一个 .sql 文件里的全部 CREATE TABLE。
+//
+// 返回的表携带列、PK 与 @flat:<模块> 标注；@flat 表额外强制「PK 恰为 player_id」，
+// 不满足直接返回错误 —— 生成期失败优于生成出编译不过的代码（FindByPK 签名会与
+// FlatOps.Load 对不上）。
 func parseSQL(path string) ([]table, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -147,11 +160,13 @@ func parseSQL(path string) ([]table, error) {
 			if line == "" {
 				continue
 			}
+			// DDL 关键字大小写不敏感（PRIMARY KEY / primary key 都合法），统一转大写后匹配
 			up := strings.ToUpper(line)
 			if strings.HasPrefix(up, "PRIMARY KEY") {
 				t.PKs = pkCols(line)
 				continue
 			}
+			// 索引/约束子句不是列定义，跳过（UNIQUE KEY 也以 KEY 开头，一并覆盖）
 			if strings.HasPrefix(up, "UNIQUE") || strings.HasPrefix(up, "KEY") ||
 				strings.HasPrefix(up, "INDEX") || strings.HasPrefix(up, "CONSTRAINT") ||
 				strings.HasPrefix(up, "FOREIGN") {
@@ -205,6 +220,7 @@ func parseSQL(path string) ([]table, error) {
 	return tables, nil
 }
 
+// pkCols 从 `PRIMARY KEY (a, b)` 行提取列名（去空白与引号，多列主键按 DDL 顺序）。
 func pkCols(line string) []string {
 	i := strings.Index(line, "(")
 	j := strings.LastIndex(line, ")")
@@ -218,6 +234,12 @@ func pkCols(line string) []string {
 	return cols
 }
 
+// goType SQL 类型 → Go 类型（列常量/结构体/扫描目标的类型唯一来源）。
+//
+// 映射约定：tinyint(1) → bool（布尔语义优先于整型，必须先判带参形式）；
+// bigint → int64；int/smallint/tinyint → int32；decimal/float/double → float64
+// （浮点有精度损失，金额字段若要精确需另行约定 decimal+string）；
+// datetime/timestamp/date → time.Time；其余（varchar/text/json/enum）→ string。
 func goType(sqlType string) string {
 	base := sqlType
 	if i := strings.Index(base, "("); i > 0 {
@@ -243,6 +265,11 @@ func goType(sqlType string) string {
 	}
 }
 
+// genModel 生成一张表的 <table>_gen.go：结构体 + 列常量 + TableName + 单行 CRUD
+// + 批量/按玩家读写 + （可选）@flat FlatOps 适配。
+//
+// 全量覆盖写盘（设计文档 16.4 约定禁止手改）；自定义查询放同名 <table>_model.go，
+// 由生成器仅首次创建，不被覆盖。
 func genModel(outDir string, t table) error {
 	tn := upperCamel(t.Name) // 导出标识符统一走 CamelCase（account → Account）
 	var b strings.Builder
@@ -393,6 +420,9 @@ func genModel(outDir string, t table) error {
 	return writeGoFile(path, b.String())
 }
 
+// goFieldType 列的 Go 字段类型：自增列恒为 int64；可空时间列用 sql.NullTime
+// （写入零值为 NULL，避免 time.Time{} 超出 TIMESTAMP/DATETIME 范围报 1292；
+// 读出 NULL 也不报 "converting NULL to time.Time is unsupported"）。
 func goFieldType(c column) string {
 	if c.AutoInc {
 		return "int64"
@@ -446,6 +476,7 @@ func batchUpsertCols(t table) []column {
 	return out
 }
 
+// colNames 列切片 → 列名切片（SQL 语句拼接用，顺序与入参一致）。
 func colNames(cols []column) []string {
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -454,6 +485,7 @@ func colNames(cols []column) []string {
 	return out
 }
 
+// argsOf 生成 `m.Xxx, m.Yyy` 形式的实参列表（与列顺序一一对应，供 ExecContext 用）。
 func argsOf(cols []column) string {
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -462,6 +494,8 @@ func argsOf(cols []column) string {
 	return strings.Join(out, ", ")
 }
 
+// pkParams 生成 `Id int64` 形式的形参列表（Find/Delete ByPK 用）。
+// 多列主键按 DDL 声明顺序展开，调用方传参顺序必须与之一致。
 func pkParams(t table) string {
 	var out []string
 	for _, p := range t.PKs {
@@ -489,6 +523,7 @@ func pkArgNamesOfM(t table) string {
 	return strings.Join(out, ", ")
 }
 
+// pkArgNames 生成 `Id` 形式的实参列表（Find/Delete ByPK 用，与 pkParams 一一对应）。
 func pkArgNames(t table) string {
 	var out []string
 	for _, p := range t.PKs {
@@ -501,6 +536,7 @@ func pkArgNames(t table) string {
 	return strings.Join(out, ", ")
 }
 
+// pkWhere 生成 `id = ? AND player_id = ?` 形式的 WHERE 子句（多列主键 AND 连接）。
 func pkWhere(t table) string {
 	var out []string
 	for _, p := range t.PKs {
@@ -509,6 +545,8 @@ func pkWhere(t table) string {
 	return strings.Join(out, " AND ")
 }
 
+// scanTargets 生成 `&m.Xxx, ...` 形式的 Scan 目标列表，
+// 顺序必须与 SELECT 的列序一致（SELECT 全部列，因此字段序 = 列序）。
 func scanTargets(t table) string {
 	out := make([]string, 0, len(t.Columns))
 	for _, c := range t.Columns {
@@ -517,6 +555,8 @@ func scanTargets(t table) string {
 	return strings.Join(out, ", ")
 }
 
+// upperCamel snake_case → CamelCase（account_id → AccountId）。
+// 表名与列名的导出标识符统一入口（account → Account）。
 func upperCamel(s string) string {
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' || r == ' ' })
 	var b strings.Builder

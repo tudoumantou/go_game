@@ -34,6 +34,9 @@ func ReleaseBuffer(b *bytes.Buffer) {
 }
 
 // sizedWriter 包装 []byte 并复用。
+//
+// buf 归还后不得继续持有 Bytes() 的结果：下一个 AcquireWriter
+// 会复用同一对象并覆盖底层数组，旧切片会「看到」别人的数据。
 type sizedWriter struct {
 	buf []byte
 }
@@ -41,6 +44,8 @@ type sizedWriter struct {
 // AcquireWriter 获取一个复用 writer（初始容量 hint）。
 func AcquireWriter(hint int) *sizedWriter {
 	w := writerPool.Get().(*sizedWriter)
+	// 容量不够才重新分配：池里的 writer 反复复用已长大的 buffer，
+	// hint 只是首次/扩容的参考值，不是每次都 make。
 	if cap(w.buf) < hint {
 		w.buf = make([]byte, 0, hint)
 	} else {
@@ -68,6 +73,9 @@ func (w *sizedWriter) Write(p []byte) (int, error) {
 }
 
 // Grow 预扩容。
+//
+// 新容量取「翻倍」与「恰好够用」的较大值：翻倍摊薄连续多次 Grow
+// 的数组搬运成本，下限保证本次请求一定被满足。
 func (w *sizedWriter) Grow(n int) {
 	if cap(w.buf)-len(w.buf) < n {
 		newCap := cap(w.buf) * 2

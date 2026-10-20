@@ -28,6 +28,20 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// TestP6GameplayFlow P6 业务闭环（第一批）：创角 → 进游戏 → 邮件领取 → 背包增量
+// → 使用道具 → 场景移动 → 榜单降级语义。
+//
+// 编排：三服务 + 三中间件（testcontainers）；网关 RSA 密钥在临时目录自签生成，
+// 不依赖开发机 keys/，也不与并行用例抢同一把私钥。带附件邮件直接落库构造，
+// 模拟 Kafka gs.mail 的投递结果，避免为一条邮件拉起整条 MQ 链路。
+//
+// 关键断言：
+//   - 空账号进游戏 2003、创角后 role_id 非 0、重名 2004；
+//   - 领附件后钻石恰好 +50（以登录礼包基线做增量，避免绝对值抖动）；
+//   - 重复领取 5002（幂等）；使用道具受配置单次上限钳制；
+//   - 越界坐标钳到地图上界(99)、跨图瞬移 4004 并回权威坐标、离开后同步 4005；
+//   - 未起中心服时榜单回 6702 且 entries 为空 —— 必须区分「暂不可用」与「空榜」，
+//     否则玩家会误以为自己没有成绩（R8.1/R11.1）。
 func TestP6GameplayFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

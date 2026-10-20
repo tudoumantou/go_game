@@ -1,3 +1,6 @@
+// internal/game/module/friend/friend_test.go —— 好友模块单测：自加/非法目标拦截、上限兜底。
+//
+// repo 传 nil：这些用例只验证「不进数据库」的模块层校验分支。
 package friend
 
 import (

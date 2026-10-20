@@ -1,4 +1,8 @@
 // internal/gateway/session/manager.go —— 会话管理（SID 生成、reconnect 窗口、按 player_id 索引）
+//
+// Package session 网关会话层（见 session.go 的包注释）：Manager 是会话的
+// 索引与生命周期管家——四张 map 分别按 SID/数值 ID/连接/玩家检索，
+// 并提供「顶号检测、超时回收、批量关闭」三个运维必需能力。
 package session
 
 import (
@@ -12,13 +16,18 @@ import (
 )
 
 // Manager 会话管理器。
+//
+// 四张索引必须保持一致：任何增删都要四张 map 同步（Remove/GC/CloseAll
+// 都遵循同一模式）。seq 只在新会话创建时自增，用于生成可读 SID。
 type Manager struct {
+	// mu 保护下面四张索引表；byPlayer 同时承担「顶号检测」职责
 	mu       sync.RWMutex
 	bySID    map[string]*Session
 	byNum    map[uint64]*Session
 	byConn   map[int64]*Session
 	byPlayer map[int64]*Session
 
+	// seq 会话序号（SID 后缀）；logger 只读
 	seq    int64
 	logger *log.Logger
 }
@@ -35,6 +44,9 @@ func NewManager(logger *log.Logger) *Manager {
 }
 
 // NewSession 为新连接创建会话。
+//
+// SID 格式 gw-{unix秒}-{seq}：可读且足够定位；numID 直接取连接 ID，
+// 这是与 backend.Pool / gRPC BIND 帧的约定——下游全部按 numID 寻址。
 func (m *Manager) NewSession(c *conn.Conn) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -77,6 +89,9 @@ func (m *Manager) GetByPlayer(playerID int64) *Session {
 }
 
 // BindPlayer 把会话绑定到玩家 ID。
+//
+// 双连接顶号保护：同一 player_id 已有别的会话时返回错误（由调用方决定
+// 踢旧还是拒新）；同一会话重复绑定（如断线重连同会话）放行。
 func (m *Manager) BindPlayer(s *Session, playerID int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -110,6 +125,9 @@ func (m *Manager) Count() int {
 }
 
 // CloseAll 关闭所有会话（优雅关闭用）。
+//
+// 先摘表再逐个 Close：避免 Close 回调（OnClose→Remove）在持锁状态下
+// 重入 Manager 造成死锁。摘表后新到达的下行帧按「会话不存在」丢弃。
 func (m *Manager) CloseAll() {
 	m.mu.Lock()
 	sessions := make([]*Session, 0, len(m.bySID))
@@ -128,6 +146,10 @@ func (m *Manager) CloseAll() {
 }
 
 // GC 清理过期未认证会话（reconnect 窗口外）。
+//
+// 只处理两类：已关闭的残留条目（连接层已清理但索引未摘）与超过
+// DefaultSessionReconnectTTL 仍未完成鉴权的半开连接。已鉴权会话不在此
+// 回收——它们的生命周期由连接断开事件驱动（OnClose）。
 func (m *Manager) GC(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

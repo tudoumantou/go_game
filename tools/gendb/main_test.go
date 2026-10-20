@@ -1,3 +1,8 @@
+// tools/gendb/main_test.go —— DDL 解析与 @flat 生成的单元测试
+//
+// 核心不变量是「标注即契约」：@flat 只允许出现在 PK 恰为 player_id 的
+// 玩家级单行状态表上；集合表（自增 id 主键）被标注必须在解析期报错，
+// 而不是生成一份 FindByPK 签名与 FlatOps.Load 对不上、编译不过的代码。
 package main
 
 import (
@@ -28,6 +33,7 @@ CREATE TABLE player_quest (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `
 
+// writeTempSQL 把 DDL 写入临时文件并返回路径（parseSQL 只接受文件路径）。
 func writeTempSQL(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "schema.sql")
@@ -37,6 +43,11 @@ func writeTempSQL(t *testing.T, content string) string {
 	return path
 }
 
+// TestParseSQLFlatAnnotation @flat 标注的归属判定：取「本表之前、上一张表结束之后」
+// 区间内的注解，因此同一文件里一张表有标注、一张表没有，互不串扰。
+//
+// 同时断言标注不影响列解析（仍为 3 列）—— 注释是被替换成等长空格而非删除的，
+// 列定义段的字节偏移不受影响。
 func TestParseSQLFlatAnnotation(t *testing.T) {
 	tables, err := parseSQL(writeTempSQL(t, flatDDL))
 	if err != nil {
@@ -61,6 +72,8 @@ func TestParseSQLFlatAnnotation(t *testing.T) {
 	}
 }
 
+// TestParseSQLRejectsFlatOnCollectionTable 多行集合表（PK 是自增 id）被标成
+// 单行状态表：生成期必须报错，否则 FindByPK(id) 与 FlatOps.Load(playerID) 签名对不上。
 func TestParseSQLRejectsFlatOnCollectionTable(t *testing.T) {
 	// 多行集合表（PK 是自增 id）被标成单行状态表：生成期必须报错，
 	// 否则 FindByPK 的签名与 FlatOps.Load 对不上，生成出一份编译不过的代码。
@@ -78,6 +91,9 @@ CREATE TABLE player_quest (
 	}
 }
 
+// TestGenModelGeneratesFlatSpec 生成物必须含 PlayerSettingsFlat 适配
+// （Upsert=Batch 写、Load=FindByPK 读）；未标注表不得出现 FlatOps，
+// 防止注解泄漏到集合表。
 func TestGenModelGeneratesFlatSpec(t *testing.T) {
 	tables, err := parseSQL(writeTempSQL(t, flatDDL))
 	if err != nil {

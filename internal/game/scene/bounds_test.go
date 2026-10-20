@@ -1,3 +1,4 @@
+// internal/game/scene/bounds_test.go —— 边界钳制与启动期配置校验单测
 package scene
 
 import (
@@ -6,6 +7,8 @@ import (
 	"game_study/pkg/gamedata"
 )
 
+// TestClamp 钳制语义：下界钉 0、上界开区间（max-1）、非法宽度退化为 0。
+// 用例覆盖负数/边界/远超上界与 max<=0 兜底——后者是配置非法时运行期的最后防线。
 func TestClamp(t *testing.T) {
 	cases := []struct{ v, max, want int32 }{
 		{-5, 100, 0},
@@ -23,6 +26,7 @@ func TestClamp(t *testing.T) {
 	}
 }
 
+// TestInBounds 开区间语义 [0,width)：四角在内，贴界与负值在外。
 func TestInBounds(t *testing.T) {
 	if !InBounds(0, 0, 100, 100) || !InBounds(99, 99, 100, 100) {
 		t.Fatal("corners must be inside")

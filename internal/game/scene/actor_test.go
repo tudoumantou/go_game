@@ -1,3 +1,7 @@
+// internal/game/scene/actor_test.go —— 场景 Actor 生命周期单测（真实 actor.System 投递）
+//
+// 所有用例都通过真实 System.Send 投递：消息经分片 goroutine 处理，
+// 断言前已天然与 Actor 内部执行建立 happens-before，不需要额外同步。
 package scene
 
 import (
@@ -30,6 +34,8 @@ func (c *collector) Receive(ctx *actor.Context) {
 	}
 }
 
+// newRig 默认测试台：100x100 地图、格宽 10、人数上限 2
+// （够验进入/移动/离开主链路，上限 2 专供 TestEnterFull）。
 func newRig(t *testing.T) (*Actor, *actor.System, *actor.PID) {
 	t.Helper()
 	return newRigWith(t, Config{ID: 1, Name: "test", Width: 100, Height: 100, Cell: 10, MaxPlayers: 2})
@@ -62,6 +68,7 @@ func send(t *testing.T, sys *actor.System, pid *actor.PID, msg any) {
 	}
 }
 
+// spawnCollector 起一个假玩家 Actor：分通道回收场景发来的回执与推送，供断言。
 func spawnCollector(t *testing.T, sys *actor.System, id string) (*actor.PID, *collector) {
 	t.Helper()
 	c := &collector{
@@ -75,6 +82,7 @@ func spawnCollector(t *testing.T, sys *actor.System, id string) (*actor.PID, *co
 	return pid, c
 }
 
+// waitResult 等一条进入/移动回执（2s 超时：CI 慢机器上不误报挂死）。
 func waitResult(t *testing.T, c *collector) *player.SceneResult {
 	t.Helper()
 	select {
@@ -86,6 +94,7 @@ func waitResult(t *testing.T, c *collector) *player.SceneResult {
 	}
 }
 
+// waitPush 等一条下行推送（SceneEntityNotify）。
 func waitPush(t *testing.T, c *collector) *player.ScenePush {
 	t.Helper()
 	select {
@@ -97,6 +106,7 @@ func waitPush(t *testing.T, c *collector) *player.ScenePush {
 	}
 }
 
+// decodeEnter 解 SceneEnterResp（回执 Body 是 proto 字节，不是结构体）。
 func decodeEnter(t *testing.T, r *player.SceneResult) *gamev1.SceneEnterResp {
 	t.Helper()
 	var resp gamev1.SceneEnterResp

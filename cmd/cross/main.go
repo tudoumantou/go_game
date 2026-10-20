@@ -16,6 +16,7 @@ import (
 )
 
 var (
+	// configPath 默认指向 dev 配置；生产环境用 -config 显式覆盖（配置分层见 19.1）
 	configPath = flag.String("config", "configs/cross/cross-dev.yaml", "配置文件路径")
 	version    = "dev" // 构建时 -ldflags "-X main.version=..." 注入
 )
@@ -37,11 +38,14 @@ func main() {
 	logger.Info("config loaded", "name", cfg.Server.Name, "env", cfg.Server.Env)
 
 	// ② 信号上下文（SIGINT/SIGTERM → 优雅关闭，18.1）
+	// ctx 即进程生命周期：跨服节点的 Start 内部监听它退出阻塞，随后进入关闭编排
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// ③ 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心；内部组装细节见 internal/cross）
 	//   启动顺序有依赖：etcd → 中间件 → 中心服 → 游戏服/跨服 → 网关 → 登录服（19.5）
+	//   跨服节点按小组横向扩容，无单点；依赖中心服已完成 etcd 注册
+	// New 只做纯内存组装不返回 error；监听与外部依赖连接都在 Start 内完成
 	srv := cross.New(cfg)
 	logger.Info("CrossServer bootstrap done, starting", "listen", cfg.Server.GRPCAddr)
 	if err := srv.Start(ctx); err != nil {

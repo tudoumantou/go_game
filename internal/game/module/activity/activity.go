@@ -47,6 +47,10 @@ const (
 const itemDiamond int32 = 1001
 
 // Record 单个活动的进度与领取位图。
+//
+// 字段语义：
+//   - Progress：当前进度，由 OnEvent 累加并在配置 Col3 目标处截断；
+//   - RewardMask：领取位图，bit0=第一档奖励已领；多档奖励时按位扩展。
 type Record struct {
 	Progress   int32 `json:"progress"`
 	RewardMask int64 `json:"reward_mask"`
@@ -84,6 +88,7 @@ type Module struct {
 
 // ProgressProducer 贡献上报能力（*pkgmq.Producer 实现）。
 type ProgressProducer interface {
+	// ProduceEnvelope 投递一条全服活动贡献消息；失败由调用方降级为日志。
 	ProduceEnvelope(ctx context.Context, env *pkgmq.Envelope) error
 }
 
@@ -324,6 +329,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return decode(row)
 }
 
+// decode 把表行 JSON 解成业务视图；保证 map 非 nil。
 func decode(row *model.ActivityRecord) (*Data, error) {
 	d := &Data{Records: map[int32]Record{}}
 	if row.Records != "" {
@@ -337,6 +343,7 @@ func decode(row *model.ActivityRecord) (*Data, error) {
 	return d, nil
 }
 
+// save 把进度与位图编码回 Ext 槽位；落库由 Write-Behind 负责。
 func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	raw, err := json.Marshal(d.Records)
 	if err != nil {
@@ -348,6 +355,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {
@@ -356,6 +364,7 @@ func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	return ctx.Reply(msgID, body)
 }
 
+// warn 统一告警入口（logger 可为 nil）。
 func (m *Module) warn(msg string, ctx *module.Context, err error) {
 	if m.logger != nil {
 		m.logger.Warn(msg, "player_id", ctx.State.PlayerID(), "err", err)

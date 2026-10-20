@@ -11,6 +11,9 @@ import (
 )
 
 // Node 服务节点信息，与 internal/v2/registry.proto 的 NodeInfo 对齐。
+//
+// 注册 key 形如 /services/{Service}/{ID}；Addr 是 Watch 侧直接拨号的
+// host:port；Metadata 放区服/权重等扩展属性，由消费方按需解释。
 type Node struct {
 	ID       string            `json:"id"`
 	Service  string            `json:"service"`
@@ -20,6 +23,9 @@ type Node struct {
 }
 
 // Registry etcd 注册表。
+//
+// client 由 New 创建并归 Registry 所有，Close 时释放；
+// 所有方法线程安全（clientv3.Client 自身并发安全）。
 type Registry struct {
 	client *clientv3.Client
 }
@@ -54,6 +60,8 @@ func (r *Registry) RegisterWithKeepalive(ctx context.Context, node Node, ttl int
 		return nil, err
 	}
 
+	// keepalive 的生命周期独立于调用方 ctx：注册是进程级承诺，
+	// 不随某次请求的取消而中断；停止注册只能走返回的 cancel。
 	keepCtx, cancel := context.WithCancel(context.Background())
 	ch, err := r.client.KeepAlive(keepCtx, grant.ID)
 	if err != nil {
@@ -61,6 +69,8 @@ func (r *Registry) RegisterWithKeepalive(ctx context.Context, node Node, ttl int
 		return nil, err
 	}
 
+	// KeepAlive 通道必须被持续读取，否则 etcd 客户端内部会阻塞；
+	// 这里只关心通道关闭（续约失败或 cancel），响应值本身不处理。
 	go func() {
 		for {
 			select {

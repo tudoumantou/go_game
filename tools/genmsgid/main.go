@@ -46,6 +46,10 @@ type segment struct {
 	Min, Max uint32
 }
 
+// main 入口：读号段（constant 包）→ 扫 proto 注解 → 校验 → 生成或 -check 比对。
+//
+// -check 模式不写文件：把内存里的生成结果与磁盘上的 msgids_gen.go 逐字节比对，
+// 供 CI（make gen-check）发现「改了 proto 忘了跑 make gen-msgid」。
 func main() {
 	in := flag.String("in", "api/proto/game/v1", "proto 输入目录（递归）")
 	goOut := flag.String("out", "pkg/codec/msgids_gen.go", "生成的 Go 文件")
@@ -73,6 +77,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 校验先行：撞号/重名/越界任一存在都不生成，避免产出半套注册表
 	problems := validate(decls, segments)
 	if len(problems) > 0 {
 		fmt.Fprintf(os.Stderr, "消息号校验失败（%d 项）：\n", len(problems))
@@ -139,11 +144,20 @@ func scanProtos(dir string) ([]decl, error) {
 }
 
 var (
+	// reMsgAnno 匹配 `// @msg <id>` 注解行（行首行尾锚定，避免匹配到正文里的同名文本）。
 	reMsgAnno = regexp.MustCompile(`^\s*//\s*@msg\s+(\d+)\s*$`)
+	// reMessage 匹配 message 声明行（按文本扫描而非完整 proto 解析，不依赖 protoc/buf 版本）。
 	reMessage = regexp.MustCompile(`^\s*message\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+	// rePackage 匹配 proto package 行；当前仅声明未使用（package 级变量不报编译错误），
+	// 留给将来按包分组的报告。
 	rePackage = regexp.MustCompile(`^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
 )
 
+// scanFile 扫描单个 .proto，收集「注解 → message」绑定。
+//
+// 行状态机语义：见到 @msg 记 pending；空行与注释不打断邻接关系（注解与 message
+// 之间常有说明注释）；pending 状态下遇到非 message 的实质行即报悬空错误。
+// 所有错误带 文件:行号，直接指回 proto 声明点，不需要额外查表。
 func scanFile(path string) ([]decl, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -201,6 +215,8 @@ func scanFile(path string) ([]decl, error) {
 	return out, nil
 }
 
+// reSegMin/reSegMax 匹配 constant 包里的 MsgID<Group>Min/Max 常量行：
+// 号段边界只有这一处来源，新增号段 = 在 constant 加一对常量，无需改本工具。
 var reSegMin = regexp.MustCompile(`^\s*(MsgID([A-Za-z]+))Min\s*=\s*(\d+)`)
 var reSegMax = regexp.MustCompile(`^\s*(MsgID([A-Za-z]+))Max\s*=\s*(\d+)`)
 
@@ -290,6 +306,7 @@ func validate(decls []decl, segs []segment) []string {
 	return problems
 }
 
+// lookupSegment 按号查找所属号段（号段互不重叠，线性扫描足够；未命中即越界）。
 func lookupSegment(id uint32, segs []segment) (segment, bool) {
 	for _, s := range segs {
 		if id >= s.Min && id <= s.Max {
@@ -344,6 +361,7 @@ func generate(decls []decl, segs []segment) string {
 	return b.String()
 }
 
+// shortPath 报告用短路径：只保留 api/proto/ 之后的部分，错误信息更短。
 func shortPath(p string) string {
 	// 只保留 api/proto 之后的部分，报告更短。
 	if i := strings.Index(p, "api/proto/"); i >= 0 {

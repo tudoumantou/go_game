@@ -17,6 +17,14 @@ import (
 )
 
 // Config Kafka 配置。
+//
+// 字段语义：
+//   - Brokers：broker 地址列表（host:port），生产环境至少配两个防单点；
+//   - ConsumerGroup：同服务多实例共用一个 group 分摊分区；广播类 topic
+//     （如 center.relay）则每实例独立 group，重启即全新 group；
+//   - BatchSize/BatchTimeout：生产者攒批条数与最长等待（默认 100 条 / 10ms）；
+//   - MaxRetries：消费失败重试次数（默认 3）；
+//   - RequiredAcks：写入确认级别（默认 all）。
 type Config struct {
 	Brokers       []string
 	RequiredAcks  string // all / leader / none，默认 all
@@ -32,6 +40,9 @@ type Config struct {
 }
 
 // Producer Kafka 生产者。
+//
+// writer 发业务消息（Topic 留空、按消息自带 Topic 路由）；retry 专发死信 topic；
+// maxRetry 是归一化后的重试配置，仅随结构传递，同步发送路径本身不重试。
 type Producer struct {
 	writer   *kafka.Writer
 	retry    *kafka.Writer // 死信写入
@@ -47,6 +58,8 @@ func NewProducer(cfg Config) *Producer {
 	case "none":
 		acks = kafka.RequireNone
 	}
+	// 四项参数统一兜底：0/负值传进 kafka.Writer 会造成不攒批、
+	// 无限重试等未定义行为，在入口收敛成安全默认值。
 	batch := cfg.BatchSize
 	if batch <= 0 {
 		batch = 100
@@ -108,10 +121,14 @@ func (p *Producer) DeadLetter(ctx context.Context, env *Envelope, cause error) e
 	if p.retry == nil {
 		return fmt.Errorf("dead letter writer not initialized")
 	}
+	// 注意：本函数会就地改写 env.Headers 追加死信元数据，
+	// 调用方不得再把同一个 env 投向业务 topic。
 	headers := map[string]string{}
 	for k, v := range env.Headers {
 		headers[k] = v
 	}
+	// dlq_ 前缀与业务头隔离，避免键冲突；补偿任务按
+	// dlq_source_topic 路由、按 dlq_cause 定位失败原因。
 	headers["dlq_source_topic"] = env.Topic
 	headers["dlq_cause"] = cause.Error()
 	env.Headers = headers
@@ -162,6 +179,9 @@ type deadLetterWriter interface {
 }
 
 // Consumer Kafka 消费者（Group 消费 + 手动 commit）。
+//
+// reader/producer 抽成窄接口（messageReader/deadLetterWriter）只为测试可注入故障；
+// topic 字段仅用于错误信息与指标标签，不参与路由。
 type Consumer struct {
 	reader   messageReader
 	producer deadLetterWriter // 死信写入
@@ -179,6 +199,8 @@ func NewConsumer(cfg Config, topic, groupID string, producer *Producer) *Consume
 	if cfg.StartOffset == "last" {
 		startOffset = kafka.LastOffset
 	}
+	// MinBytes=1：有数据立即返回，不为凑批牺牲消费延迟；
+	// CommitInterval=0 关掉自动提交，offset 推进完全由 Run 掌控（R1.4）。
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers:        cfg.Brokers,
@@ -201,6 +223,8 @@ func NewConsumer(cfg Config, topic, groupID string, producer *Producer) *Consume
 // 死信写不进去时绝不能提交——那等于既没处理、也没留下痕迹，消息凭空消失。
 // 这条路径上宁可让分区停住（返回错误、由上层重启后重放），也不越过失败消息。
 func (c *Consumer) Run(ctx context.Context, h Handler) error {
+	// 线性退避基数：第 n 次重试等待 n×100ms（见 handle），
+	// 给 MySQL/Redis 等下游留恢复窗口，又不用固定 sleep 放大故障。
 	backoff := 100 * time.Millisecond
 	consumed := 0
 	for {
@@ -264,6 +288,8 @@ func (c *Consumer) handle(ctx context.Context, h Handler, env *Envelope, backoff
 		if attempt == c.maxRetry {
 			break
 		}
+		// 线性退避（100ms、200ms、300ms…）；ctx 取消时立即让路，
+		// 保证关服路径不被退避 sleep 拖住。
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

@@ -32,6 +32,7 @@ import (
 type rowItem struct {
 	ID   string
 	Cols []string // 有序列名（保序生成结构体）
+	// Vals 列名 → XML 属性原始字符串；类型推断与字面量生成的唯一数据来源
 	Vals map[string]string
 }
 
@@ -42,6 +43,10 @@ type table struct {
 	Rows []rowItem
 }
 
+// main 入口：读 XML → 校验 → 拷贝 embed → 逐表生成 → 汇总 data.go。
+//
+// 顺序约束：先校验再落盘（见下方 problems 检查），任何配置错误都不产出半套生成物，
+// 避免「生成到一半」的中间态被后续 make gen 流程当成有效产物。
 func main() {
 	in := flag.String("in", "configs/gamedata/xml", "XML 输入目录")
 	out := flag.String("out", "pkg/gamedata", "Go 代码输出目录")
@@ -56,8 +61,11 @@ func main() {
 	embedDir := filepath.Join(*out, "embed", "xml")
 
 	var tables []table
+	// rawXML 暂存每张表的原始字节：既要解析成行数据，也要原样拷贝进 embed 目录
+	//（go:embed 的输入，见设计文档 16.1.3）
 	rawXML := make(map[string][]byte, len(entries))
 
+	// 只处理顶层 .xml：目录约定「一个文件一张表」，不递归子目录
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".xml") {
 			continue
@@ -78,6 +86,7 @@ func main() {
 			Rows: rows,
 		})
 	}
+	// 按文件名排序：生成顺序稳定，重复运行的输出可 diff（gen-check 的前提）
 	sort.Slice(tables, func(i, j int) bool { return tables[i].File < tables[j].File })
 
 	// 先校验再落盘：任何一项不通过都不产出半套生成物，避免「生成到一半」的中间态。
@@ -217,6 +226,7 @@ func genTable(outDir, name, file string, rows []rowItem) error {
 	// 表视图类型（泛型 table[T] 定义在 tables.go，手写不被覆盖）
 	b.WriteString("// " + name + "Table " + file + " 的只读视图，随快照整体替换，不做原地修改\n")
 	b.WriteString("type " + name + "Table = table[" + name + "Cfg]\n\n")
+	// 表视图构造器：ByID 索引的键函数固定取 Id 列（行元素必须带 id 属性，见文件头 XML 约定）
 	b.WriteString("func new" + name + "Table(list []" + name + "Cfg) (" + name + "Table, error) {\n")
 	b.WriteString("\treturn newTable(list, func(c *" + name + "Cfg) int64 { return c.Id })\n}\n\n")
 
@@ -355,6 +365,8 @@ func inferType(rows []rowItem, col string) string {
 			allBool = false
 		}
 	}
+	// 全表一致的列类型：全 int→int64，全 bool→bool，否则 string
+	// （顺序即优先级：字面 true/false 不会同时是整数，两类不会歧义）
 	switch {
 	case allBool:
 		return "bool"
@@ -369,6 +381,8 @@ func inferType(rows []rowItem, col string) string {
 func goLiteral(v, typ string) string {
 	switch typ {
 	case "int64":
+		// 理论上全表可解析（inferType 已保证）；异常值回落 0，
+		// 保证生成物永远可编译，把数据问题暴露在运行期而不是生成期
 		if v == "" {
 			return "0"
 		}
@@ -383,6 +397,8 @@ func goLiteral(v, typ string) string {
 	}
 }
 
+// upperCamel snake/kebab/空格分词转 CamelCase（item_id → ItemId）。
+// 列名与表名的导出标识符统一走这里，保证 XML 属性名与 Go 字段名可互相推导。
 func upperCamel(s string) string {
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' || r == ' ' })
 	var b strings.Builder
@@ -395,6 +411,8 @@ func upperCamel(s string) string {
 	return b.String()
 }
 
+// lowerSnake CamelCase 转 snake_case（Item → item）。
+// 与 upperCamel 互逆，是「表名 ↔ 生成文件名 ↔ 包级变量名」三者换算的另一半。
 func lowerSnake(s string) string {
 	var b strings.Builder
 	for i, r := range s {
@@ -445,6 +463,8 @@ func genJSON(outDir string, tables []table) error {
 	}
 	for _, t := range tables {
 		rows := make([]map[string]any, 0, len(t.Rows))
+		// 列集合同样以首行为准（前置校验已保证每张表非空）；缺列的行取零值，
+		// 与 Cfg 结构体读回时的行为一致
 		cols := t.Rows[0].Cols
 		types := make(map[string]string, len(cols))
 		for _, c := range cols {

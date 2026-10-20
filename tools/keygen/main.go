@@ -21,6 +21,10 @@ import (
 	"path/filepath"
 )
 
+// main 入口：生成网关握手与登录 Token 两对 RSA 密钥，写入 -out 目录。
+//
+// 安全约束：私钥严禁入库（.gitignore 已排除 deploy/keys/*.pem）；重新生成会使
+// 线上已签发 Token 全部失效，只能在部署阶段执行一次。
 func main() {
 	out := flag.String("out", "deploy/keys", "输出目录")
 	bits := flag.Int("bits", 2048, "RSA 密钥位数")
@@ -51,6 +55,10 @@ func main() {
 	fmt.Println("  login_rsa_pub.pem   公钥 → 网关（验签 Token）")
 }
 
+// genPair 生成一对 RSA 密钥，返回 (私钥 PEM, 公钥 PEM, error)。
+//
+// 编码约定：私钥用 PKCS#8（BEGIN PRIVATE KEY）、公钥用 PKIX（BEGIN PUBLIC KEY），
+// 与网关/登录服配置读取的 PEM 类型一致；bits 由调用方给（默认 2048）。
 func genPair(bits int) (privPEM, pubPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
@@ -70,6 +78,10 @@ func genPair(bits int) (privPEM, pubPEM []byte, err error) {
 	return privPEM, pubPEM, nil
 }
 
+// writePair 把一对密钥落盘：私钥 0600（仅属主可读）、公钥 0644。
+//
+// 写失败直接 log.Fatal：半套密钥比没有密钥更危险 —— 对端会拿着失效公钥验签，
+// 故障表现是「握手随机失败」而非启动即报错，极难排查。
 func writePair(dir, name string, privPEM, pubPEM []byte) {
 	privPath := filepath.Join(dir, name+".pem")
 	if err := os.WriteFile(privPath, privPEM, 0o600); err != nil {

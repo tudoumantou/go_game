@@ -33,6 +33,11 @@ const (
 )
 
 // Service 排行榜服务。
+//
+// 无状态（除 currentSeason）：全部数据在 Redis，多实例可并行写。
+// currentSeason 只影响「上报未带 season」时的默认归属，由 leader 归档
+// 切换后调用 SetSeason 更新；切换瞬间在途的旧赛季上报仍按自带 season
+// 落旧榜，不会串榜。
 type Service struct {
 	rdb    redis.UniversalClient
 	logger *log.Logger
@@ -66,6 +71,9 @@ func (s *Service) SetSeason(season string) {
 //
 // 幂等性：带 biz_id 的上报按业务键去重（Redis SETNX），同一次结算重投不会重复加分；
 // 不带 biz_id 的上报无法判重，只能依赖上报方不重发。
+//
+// 去重键 TTL 30 天（dedupTTL），按赛季周期设定：足够覆盖一次结算的重投
+// 窗口，又不会让 key 无限堆积；跨赛季复用同名 biz_id 不会互相屏蔽。
 func (s *Service) Write(rep *internalv2.RankReport) {
 	if rep == nil || rep.PlayerId == 0 {
 		return
@@ -113,6 +121,10 @@ func (s *Service) Write(rep *internalv2.RankReport) {
 }
 
 // TopN 取前 N 名。
+//
+// season 为空用当前赛季；n<=0 取默认 100。返回按分数降序、名次从 1 连续
+// 编号。Name 字段留空——中心服不持有玩家数据（9.1），展示名由客户端按
+// playerId 补齐。
 func (s *Service) TopN(rankType, season string, n int32) []*internalv2.RankEntry {
 	if n <= 0 {
 		n = 100
@@ -143,6 +155,10 @@ func (s *Service) TopN(rankType, season string, n int32) []*internalv2.RankEntry
 }
 
 // Around 取指定玩家周边排名（含自己），按名次升序返回。
+//
+// 先 ZSCAN 前缀定位 member（约定同一玩家只在一个服有榜数据），再以
+// ZREVRANK 名次为中心前后各取一半。玩家未上榜返回 nil；贴近榜尾时
+// 窗口自动收窄（start 不小于 0），不会越界。
 func (s *Service) Around(rankType, season string, playerID int64, n int32) []*internalv2.RankEntry {
 	if n <= 0 {
 		n = 20
@@ -191,6 +207,9 @@ func (s *Service) Around(rankType, season string, playerID int64, n int32) []*in
 }
 
 // RankOf 查询某玩家的名次与分数（0 表示未上榜）。
+//
+// 名次为 1-based；未上榜或 Redis 出错都返回 (0, 0)——调用方无法区分
+// 「未上榜」与「查询失败」，GM/展示场景可接受此模糊。
 func (s *Service) RankOf(rankType, season string, playerID int64) (rankNo int64, score int64) {
 	if season == "" {
 		season = s.currentSeason
@@ -216,6 +235,9 @@ func (s *Service) RankOf(rankType, season string, playerID int64) (rankNo int64,
 // Archive 归档指定赛季的榜单到给定回调（由 leader 在赛季切换时调用）。
 //
 // 回调收到的是「按名次升序」的完整榜单，调用方负责写 MySQL。
+//
+// 空榜单直接返回 nil（不触发回调）：新赛季还没有任何上报时无需归档。
+// 回调返回错误会中断归档并向上传播，由 leader 下一轮重试。
 func (s *Service) Archive(ctx context.Context, rankType, season string, topN int64, fn func(entries []*internalv2.RankEntry) error) error {
 	if season == "" {
 		return fmt.Errorf("season is required for archive")

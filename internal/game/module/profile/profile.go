@@ -72,6 +72,10 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 	return nil
 }
 
+// onPlayerInfo 组装玩家信息：Profile 基础字段 + 五维战斗属性。
+//
+// 属性走 State.GetAttr 而不是直接读 Profile：装备/伙伴的加成由各模块
+// 维护在 bonus 上，最终值 = 基础值 + 加成，这里只取最终值下发。
 func (m *Module) onPlayerInfo(ctx *module.Context) error {
 	p := ctx.State.Profile()
 	resp := &gamev1.PlayerInfoResp{

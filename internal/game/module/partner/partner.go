@@ -62,11 +62,15 @@ func init() {
 	writebehind.RegisterFlat[model.PlayerPartner](stateKey, model.PlayerPartnerFlat, validate)
 }
 
+// validate 落库前校验：只做可解码性检查，业务不变量（上阵合法）在 decode 里。
 func validate(row *model.PlayerPartner) error {
 	_, err := decode(row)
 	return err
 }
 
+// decode 把表行 JSON 解成业务视图，并拦住坏快照：
+// 上阵位超限、上阵未拥有、重复上阵都会让登录给出错误加成且无法自愈，
+// 宁可整批落库失败，也不把坏状态放进出战计算。
 func decode(row *model.PlayerPartner) (*Data, error) {
 	d := &Data{Stars: map[int32]int32{}, Field: []int32{}}
 	if row == nil || row.Partners == "" {
@@ -96,6 +100,7 @@ func decode(row *model.PlayerPartner) (*Data, error) {
 	return d, nil
 }
 
+// load 读取伙伴状态；从未激活返回空结构（Stars 空 map、Field 空切片）。
 func load(state writebehind.ExtState) (*Data, error) {
 	row, err := writebehind.LoadExt[model.PlayerPartner](state, stateKey)
 	if err != nil {
@@ -104,6 +109,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return decode(row)
 }
 
+// save 把星级与上阵序列化回 Ext 槽位；落库由 Write-Behind 负责。
 func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	raw, err := json.Marshal(d)
 	if err != nil {
@@ -123,12 +129,15 @@ type Module struct {
 // New 创建模块。
 func New(logger *log.Logger) *Module { return &Module{logger: logger} }
 
+// Name 模块名（= Ext 槽位键 = 落库归属）。
 func (*Module) Name() string { return stateKey }
 
+// MsgIDs 列表 / 激活 / 升星 / 上阵下阵。
 func (*Module) MsgIDs() []uint32 {
 	return []uint32{msgIDListReq, msgIDActivateReq, msgIDStarUpReq, msgIDFieldReq}
 }
 
+// Init 无模块级配置要加载（上限与货币 ID 是玩法常量）。
 func (*Module) Init(*module.Context) error { return nil }
 
 // OnSave 状态随快照提交，无额外聚合数据。
@@ -150,6 +159,7 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	return nil
 }
 
+// OnLogout 无操作：加成是内存派生值，不落库，登录时按快照重算。
 func (*Module) OnLogout(*module.Context) error { return nil }
 
 func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
@@ -167,6 +177,7 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 	}
 }
 
+// onList 伙伴列表：全部配置都下发，未拥有（星级 0）不带加成字段。
 func (m *Module) onList(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
@@ -346,6 +357,7 @@ func starCost(partnerID, star int32) (int64, bool) {
 	return 0, false
 }
 
+// contains 列表成员判断（上阵位很小，线性扫描足够）。
 func contains(list []int32, v int32) bool {
 	for _, x := range list {
 		if x == v {
@@ -355,6 +367,7 @@ func contains(list []int32, v int32) bool {
 	return false
 }
 
+// remove 原地过滤掉指定成员并返回同一底层数组的新切片（调用方立即覆盖原字段）。
 func remove(list []int32, v int32) []int32 {
 	out := list[:0]
 	for _, x := range list {

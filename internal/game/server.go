@@ -1,3 +1,18 @@
+// internal/game/server.go —— 游戏服进程装配与生命周期管理
+//
+// 本文件是 game 包的组装层：New 只构造轻量对象，Start 按固定顺序拉起全部外部
+// 依赖（指标 → MySQL → Redis → Actor 系统 → 模块 → Flusher → Kafka → etcd →
+// gRPC），收到退出信号后由 Shutdown 按 DRAIN→DRAINING→FLUSH→STOP 反向收场。
+//
+// 关键设计取舍：
+//   - 组件生命周期统一挂内部 runCtx，与外部信号 ctx 解耦：SIGTERM 时外部 ctx
+//     立即取消，但 Actor 必须活到「排空在途消息」之后才停，否则保存没有对象可等；
+//   - 启动顺序即依赖顺序，后一步可能依赖前一步已就绪的能力（模块注册需要
+//     Actor 系统、Kafka 消费组需要 PlayerManager），调整前先对照
+//     docs/游戏服启动流程解析.md 第 3 节的顺序表；
+//   - 缓存权威模式下进程内默认起 inline writebehind worker：避免忘记部署独立
+//     flusher 时脏数据永远不落库；两者并行也安全（版本栅栏保证）。
+
 // Package game 游戏服（设计文档第 8 章）
 package game
 
@@ -92,6 +107,9 @@ type Server struct {
 	centerCli *gamecenter.Client // 到中心服的 Report 流
 	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
 
+	// mu 保护下面三张会话映射表的全部读写；players2sess 是
+	// player→session 的唯一权威映射，顶号判定与下行路由都读它，
+	// 必须与 sessions/accounts 在同一把锁内原子更新。
 	mu       sync.RWMutex
 	sessions map[uint64]int64 // session_id -> player_id（0 = 未选角）
 	accounts map[uint64]int64 // session_id -> account_id
@@ -158,6 +176,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// ② Redis（在线状态 / 幂等 / 离线暂存）
 	var deduper pkgmq.Deduper = pkgmq.NoopDeduper{}
+	// 默认不去重：未配 Redis 时消费侧退化为「至少一次」投递，由业务幂等兜底；
+	// 配上 Redis 才换成 SETNX 去重（R1.4「死信成功才提交」规则的前提）。
 	if len(s.cfg.Redis.Addrs) > 0 {
 		redisClient, err := cache.New(cache.RedisConfig{
 			Addrs:    s.cfg.Redis.Addrs,
@@ -229,6 +249,10 @@ func (s *Server) Start(ctx context.Context) error {
 		})
 	}
 
+	// Module 对象进程级共享，一套 Registry 服务所有玩家
+	// （docs/游戏服启动流程解析.md 第 6 节）：玩家数据只允许放 Context.State
+	// 或按 player_id 索引的容器，严禁在共享 Module 上加 currentPlayer 一类
+	// 「以为只有一个玩家」的字段。
 	s.modules = module.NewRegistry()
 	s.modules.Register(profile.New(s.logger))
 	s.modules.Register(attr.New(s.logger))
@@ -236,6 +260,9 @@ func (s *Server) Start(ctx context.Context) error {
 	s.modules.Register(item.New(s.logger))
 	s.modules.Register(s.battleMod)
 
+	// 以下模块依赖 MySQL：mail/chat/guild/team 直写库，quest/equip/skill/copy/
+	// shop/activity/signin/loginreward/rank/friend/partner 经 Persister 落库。
+	// 无库环境（单测/演示）整体跳过，玩家仍可用 profile/attr/bag/item/battle。
 	var mailMod *mail.Module
 	var chatMod *chat.Module
 	if s.database != nil {
@@ -304,6 +331,10 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 	}
 
+	// 落库调度二选一，互斥使用：
+	//   非缓存模式 → flusher.MarkDirty，进程内分片合批直连 MySQL；
+	//   缓存权威模式 → 置空，持久化改由 Redis 脏队列 + writebehind worker 承担。
+	// 缓存模式若仍走 flusher，玩家会被标进一个没有消费者的队列，永远不落库。
 	var onDirty func(int64) = s.flusher.MarkDirty
 	if s.repo.CacheEnabled() {
 		onDirty = nil
@@ -383,13 +414,18 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.logger.Info("GameServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
 		"players", s.players.Count())
+	// 至此全部组件就绪：启动失败提前返回的窗口关闭。之后即使 ctx 取消也只表示
+	// 「收到退出信号」，资源回收统一走 Shutdown 的有序收尾。
 	started = true
+	// 阻塞运行期：外部 ctx 只负责通知，不停任何组件（见 runCtx 字段注释）。
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 // readiness 就绪探针：DB/Redis 可用才允许接流量（19.6 探针表）。
 func (s *Server) readiness(ctx context.Context) error {
+	// nil 检查的含义是「未配置则不检查」：演示/单测环境可以只起部分依赖，
+	// 探针只对实际启用的组件负责，不会因为没配 MySQL 就永远 not ready。
 	if s.database != nil {
 		if err := s.database.PingContext(ctx); err != nil {
 			return fmt.Errorf("mysql: %w", err)
@@ -539,6 +575,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return nil
 	})
 
+	// Run 按 Phase 顺序执行、同阶段内按注册顺序；单步失败不中断后续步骤
+	// （跳过清理只会让进程更难收场），但所有错误会聚合进返回值。
 	if err := mgr.Run(ctx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
@@ -633,9 +671,13 @@ const saveAckTimeout = 5 * time.Second
 // 返回 nil 的语义是「SQL 已成功」而不是「消息已投递」：以前只 Send 就返回 nil，
 // flusher 会把玩家从脏队列移除，保存失败时数据静默丢失。
 func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
+	// 缓存权威模式下直连落库已禁用（persist.Save 同样拒绝执行）：脏数据在
+	// Redis 队列里由 wbWorker 消费，flusher 只服务非缓存玩家。
 	if s.repo.CacheEnabled() {
 		return nil
 	}
+	// 玩家不在线（从未上线或 PID 已不在索引）→ 没有 Actor 可保存：
+	// 此时库里的数据就是最新状态，视为成功，不能当成失败重试。
 	pid, ok := s.players.Get(playerID)
 	if !ok {
 		return nil
@@ -704,6 +746,9 @@ func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int6
 		}
 	}
 
+	// 三张表在同一把锁内完成「读旧会话 → 写新映射」：old 是被顶号的旧会话
+	// （0 表示首次绑定）。players2sess 是顶号判定的唯一权威，必须先于
+	// kick 完成切换，否则旧连接的迟到 UNBIND 会命中错误的会话身份。
 	s.mu.Lock()
 	old := s.players2sess[playerID]
 	s.sessions[sessionID] = playerID
@@ -790,6 +835,10 @@ func (s *Server) bindActor(ctx context.Context, sessionID uint64, playerID int64
 		}
 		pid = spawned
 	}
+	// sender 传 nil：装配层不接收 BindResult（ctx.Respond 对 nil 发送者静默
+	// 丢弃），绑定失败经 player 包的下行错误通道通知客户端（cache_actor.go
+	// 的 cacheFailure）。Bind 与后续业务包走同一信箱 FIFO，Actor 必然
+	// 先处理 Bind、再处理业务包。
 	if err := s.actorSys.SendWithSender(pid,
 		&player.BindMsg{SessionID: sessionID, PlayerID: playerID}, nil); err != nil {
 		return err

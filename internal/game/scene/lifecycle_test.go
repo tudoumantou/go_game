@@ -1,3 +1,7 @@
+// internal/game/scene/lifecycle_test.go —— 心跳兜底与超时清理单测（R9.3）
+//
+// 测试台把 IdleTimeout 压到 40ms：生产值是 90s/30s（见 actor.go 常量），
+// 这里用同一套 sweep 逻辑在毫秒级验证，不等真实时钟。
 package scene
 
 import (
@@ -24,6 +28,8 @@ func lifeRig(t *testing.T) (*Actor, *actor.System, *actor.PID, map[int64]*collec
 	return sc, sys, scPID, cols, pids
 }
 
+// countOf 经 CountMsg 查询在场人数：跨 goroutine 读 Actor 状态必须走消息，
+// 直接读 map 会与分片 goroutine 竞争（见 CountMsg 注释）。
 func countOf(t *testing.T, sys *actor.System, scPID *actor.PID) int {
 	t.Helper()
 	reply := make(chan int, 1)

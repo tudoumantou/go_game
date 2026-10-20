@@ -112,12 +112,15 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 	return nil
 }
 
+// onList 已学技能列表：按 skill_id 升序返回（技能数量很小，用手写排序避免引入 sort 依赖），
+// 配置缺失时名字留空——不让单个技能配置把整个列表请求拖失败。
 func (m *Module) onList(ctx *module.Context) error {
 	resp := &gamev1.SkillListResp{Code: codeOK}
 	d, err := load(ctx.State)
 	if err != nil {
 		return err
 	}
+
 	ids := make([]int32, 0, len(d.Levels))
 	for id := range d.Levels {
 		ids = append(ids, id)
@@ -144,6 +147,7 @@ func (m *Module) onList(ctx *module.Context) error {
 	return reply(ctx, msgIDListResp, resp)
 }
 
+// onLearn 学习技能：Col2 是学习等级门槛，未达到直接拒绝。
 func (m *Module) onLearn(ctx *module.Context, body []byte) error {
 	var req gamev1.SkillLearnReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -228,6 +232,7 @@ func load(state writebehind.ExtState) (*Data, error) {
 	return decode(row)
 }
 
+// decode 把表行 JSON 解成业务视图；保证 map 非 nil，避免调用方写入 panic。
 func decode(row *model.PlayerSkill) (*Data, error) {
 	d := &Data{Levels: map[int32]int32{}}
 	if row.Skills != "" {
@@ -241,6 +246,7 @@ func decode(row *model.PlayerSkill) (*Data, error) {
 	return d, nil
 }
 
+// save 把技能等级编码回 Ext 槽位；落库由 Write-Behind 负责。
 func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	raw, err := json.Marshal(d.Levels)
 	if err != nil {
@@ -252,6 +258,7 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	})
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {

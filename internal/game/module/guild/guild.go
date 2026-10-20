@@ -59,6 +59,9 @@ const (
 )
 
 // Guild 公会信息。
+//
+// 字段语义：MemberCount 是冗余计数（Join/Quit 时 ±1），人数上限按 Level 查
+// guild_level.xml；Level 为公会等级，与成员等级无关。
 type Guild struct {
 	ID          int64
 	Name        string
@@ -135,6 +138,7 @@ func (r *Repo) Join(ctx context.Context, guildID, playerID int64) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO guild_member (guild_id, player_id, title) VALUES (?, ?, ?)`,
 			guildID, playerID, titleMember); err != nil {
+			// 唯一键冲突 = 已在该公会；靠 MySQL 1062 识别（driver 不暴露约束类型）。
 			if strings.Contains(err.Error(), "1062") {
 				return ErrAlreadyIn
 			}
@@ -177,6 +181,7 @@ func (r *Repo) Quit(ctx context.Context, playerID int64) error {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE guild SET member_count = GREATEST(member_count - 1, 0) WHERE id = ?`, guildID)
+		// GREATEST 兜底：并发退出时计数不会被减成负数。
 		return err
 	})
 }
@@ -229,6 +234,7 @@ func (m *Module) OnLogin(ctx *module.Context) error { return nil }
 // OnLogout 实现 module.Module。
 func (m *Module) OnLogout(ctx *module.Context) error { return nil }
 
+// onInfo 查询所在公会；IsLeader 由 LeaderID 与本人比较得出。
 func (m *Module) onInfo(ctx *module.Context) error {
 	resp := &gamev1.GuildInfoResp{}
 	if m.repo == nil {
@@ -252,6 +258,7 @@ func (m *Module) onInfo(ctx *module.Context) error {
 	return m.reply(ctx, msgIDInfoResp, resp)
 }
 
+// onCreate 创建公会：名字按字符（而非字节）校验 2-16，中文名不会被误判。
 func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 	var req gamev1.GuildCreateReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -286,6 +293,7 @@ func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 	return m.reply(ctx, msgIDCreateResp, resp)
 }
 
+// onJoin 加入公会；仓储错误（不存在/满员/已加入）转业务码。
 func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 	var req gamev1.GuildJoinReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -319,6 +327,7 @@ func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 	return m.reply(ctx, msgIDJoinResp, resp)
 }
 
+// onQuit 退出公会；会长退出即解散（仓储层删全员 + 删公会行）。
 func (m *Module) onQuit(ctx *module.Context) error {
 	resp := &gamev1.GuildQuitResp{}
 	if m.repo == nil {
@@ -336,6 +345,7 @@ func (m *Module) onQuit(ctx *module.Context) error {
 	return m.reply(ctx, msgIDQuitResp, resp)
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	body, err := proto.Marshal(msg)
 	if err != nil {

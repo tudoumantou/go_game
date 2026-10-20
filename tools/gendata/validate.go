@@ -184,6 +184,7 @@ func validateRefs(tables []table) []string {
 	return errs
 }
 
+// colSet 列名切片 → 集合（列一致性比较用：多列/少列两个方向都靠它判断）。
 func colSet(cols []string) map[string]bool {
 	m := make(map[string]bool, len(cols))
 	for _, c := range cols {

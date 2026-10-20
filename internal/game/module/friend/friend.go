@@ -73,12 +73,15 @@ func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
 	return &Module{repo: NewRepo(database), online: online, logger: logger}
 }
 
+// Name 模块名（= 落库归属标签；好友关系本身直写 MySQL，不进快照）。
 func (*Module) Name() string { return "friend" }
 
+// MsgIDs 好友四件套：列表 / 申请 / 处理 / 删除。
 func (*Module) MsgIDs() []uint32 {
 	return []uint32{msgIDListReq, msgIDApplyReq, msgIDHandleReq, msgIDDeleteReq}
 }
 
+// Init 无模块级状态要初始化。
 func (*Module) Init(*module.Context) error { return nil }
 
 // 好友关系直接落库，没有快照旁路数据。
@@ -86,6 +89,7 @@ func (*Module) OnSave(context.Context) error   { return nil }
 func (*Module) OnLogin(*module.Context) error  { return nil }
 func (*Module) OnLogout(*module.Context) error { return nil }
 
+// OnMessage 协议分发；所有数据库访问都带 3s 超时，避免玩家 Actor 被慢 SQL 拖住。
 func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
 	switch msgID {
 	case msgIDListReq:
@@ -101,6 +105,7 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 	}
 }
 
+// onList 好友 + 待处理申请列表；在线状态只作展示，不影响关系判定。
 func (m *Module) onList(ctx *module.Context) error {
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -137,6 +142,7 @@ func (m *Module) onList(ctx *module.Context) error {
 	return reply(ctx, msgIDListResp, resp)
 }
 
+// onApply 发起好友申请；自加/非法目标在模块层拦截，不发 SQL。
 func (m *Module) onApply(ctx *module.Context, body []byte) error {
 	var req gamev1.FriendApplyReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -162,6 +168,7 @@ func (m *Module) onApply(ctx *module.Context, body []byte) error {
 	return reply(ctx, msgIDApplyResp, resp)
 }
 
+// onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
 func (m *Module) onHandle(ctx *module.Context, body []byte) error {
 	var req gamev1.FriendHandleReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -183,6 +190,7 @@ func (m *Module) onHandle(ctx *module.Context, body []byte) error {
 	return reply(ctx, msgIDHandleResp, resp)
 }
 
+// onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
 func (m *Module) onDelete(ctx *module.Context, body []byte) error {
 	var req gamev1.FriendDeleteReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -203,6 +211,7 @@ func (m *Module) onDelete(ctx *module.Context, body []byte) error {
 	return reply(ctx, msgIDDeleteResp, resp)
 }
 
+// reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 	raw, err := proto.Marshal(msg)
 	if err != nil {

@@ -17,6 +17,11 @@ import (
 //
 // 真实压测里 300 次登录会挂 2-3 次，且与并发度不单调相关（是竞争窗口，不是负载）。
 // 修法是加载密钥时先 Precompute()，本测试保证这条不变量不被改回去。
+//
+// 覆盖场景与构造：200 个 goroutine 并发跑完整握手，**共用同一对 RSA 密钥**
+// ——复现网关「一把私钥服务全部连接」的真实拓扑；errs 只保留前 5 条错误，
+// 防止失败时输出爆炸看不到结论。200 轮是经验值：竞争是概率性的，
+// 轮数太低可能「碰巧通过」，200 能把窗口命中概率推到稳定可观测。
 func TestHandshakeConcurrentIntegrity(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

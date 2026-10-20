@@ -55,6 +55,8 @@ func (d *fakeDLQ) DeadLetter(_ context.Context, env *Envelope, cause error) erro
 	return nil
 }
 
+// validMessage 构造一条可被 Unmarshal 解析的合法消息（信封 + 指定 offset），
+// 让提交规则测试聚焦在 commit/DLQ 行为，而不是消息构造细节。
 func validMessage(t *testing.T, offset int64) kafka.Message {
 	t.Helper()
 	env, err := NewEnvelope("biz-1", "gs.test", "k1", map[string]string{"v": "1"})
@@ -68,6 +70,8 @@ func validMessage(t *testing.T, offset int64) kafka.Message {
 	return kafka.Message{Topic: "gs.test", Partition: 0, Offset: offset, Key: []byte("k1"), Value: raw}
 }
 
+// newTestConsumer 用注入的 reader/deadLetterWriter 组装 Consumer，
+// 完全不碰真实 Kafka；retries 显式指定，避开 NewConsumer 的默认值干扰断言。
 func newTestConsumer(r messageReader, d deadLetterWriter, retries int) *Consumer {
 	return &Consumer{reader: r, producer: d, maxRetry: retries, topic: "gs.test"}
 }
