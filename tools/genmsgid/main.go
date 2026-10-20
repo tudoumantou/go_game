@@ -1,5 +1,9 @@
 // tools/genmsgid —— 从 proto 注解生成消息号注册表（R10.1）
 //
+// 工程链位置：对应 Makefile target `make gen-msgid`（= `go run ./tools/genmsgid`），
+// 也是 `make gen` 的一环；CI 的 `make gen-check` 以 -check 模式运行
+// （= `go run ./tools/genmsgid -check`），发现「改了 proto 忘了重新生成」即卡点。
+//
 // 声明方式：在 message 上一行写 `// @msg <id>`。
 //
 //	// @msg 3001
@@ -15,6 +19,7 @@
 //   - 号越界：不在 internal/common/constant 声明的任何号段内，或落在内部 gRPC 段；
 //   - 注解悬空：`// @msg` 之后不是 message 声明。
 //
+// 输入：api/proto/game/v1/**/*.proto + internal/common/constant 的号段常量。
 // 产物：pkg/codec/msgids_gen.go（常量 + id↔名字 反查）。
 package main
 
@@ -32,6 +37,8 @@ import (
 )
 
 // decl 一条消息号声明。
+// File/Line 指向 proto 里的 @msg 注解行（不是 message 行）：改号要改的是
+// 注解，错误报告必须把人带到注解处。Packet 仅用于报告占位，见 rePackage 说明。
 type decl struct {
 	ID     uint32
 	Name   string
@@ -41,6 +48,8 @@ type decl struct {
 }
 
 // segment 号段（来自 internal/common/constant）。
+// Min/Max 为闭区间（lookupSegment 用 >= && <= 判定）；号段互不重叠是约定，
+// 重叠时线性扫描取第一个命中的段，报告可能与预期不符。
 type segment struct {
 	Name     string
 	Min, Max uint32
@@ -50,6 +59,11 @@ type segment struct {
 //
 // -check 模式不写文件：把内存里的生成结果与磁盘上的 msgids_gen.go 逐字节比对，
 // 供 CI（make gen-check）发现「改了 proto 忘了跑 make gen-msgid」。
+//
+// 错误处理：所有失败路径统一「stderr 打日志 + os.Exit(1)」。
+// Go 知识点：os.Exit 立刻终止进程，已注册的 defer 全部不执行 —— 本工具没有
+// 需要清理的资源（未开连接/未持锁），这样比层层返回 err 简单；若将来 main 里
+// 加了 defer，必须改成返回错误、由调用方决定退出。
 func main() {
 	in := flag.String("in", "api/proto/game/v1", "proto 输入目录（递归）")
 	goOut := flag.String("out", "pkg/codec/msgids_gen.go", "生成的 Go 文件")
@@ -120,6 +134,10 @@ func main() {
 }
 
 // scanProtos 遍历目录下全部 .proto，收集 `// @msg` 声明。
+//
+// filepath.Walk 递归整个目录树：proto 按业务分子目录（bag/battle/...），
+// 新目录无需在工具里注册。收集完统一按 ID 排序，保证 generate 的输出稳定
+// （排序在 generate 里还会再做一次，见其注释）。
 func scanProtos(dir string) ([]decl, error) {
 	var decls []decl
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -150,6 +168,8 @@ var (
 	reMessage = regexp.MustCompile(`^\s*message\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
 	// rePackage 匹配 proto package 行；当前仅声明未使用（package 级变量不报编译错误），
 	// 留给将来按包分组的报告。
+	// Go 编译规则：包级变量声明后不使用不算错误（只有局部变量会报
+	// declared and not used），所以预留的正则可以安全挂着。
 	rePackage = regexp.MustCompile(`^\s*package\s+([A-Za-z_][A-Za-z0-9_.]*)\s*;`)
 )
 
@@ -166,11 +186,17 @@ func scanFile(path string) ([]decl, error) {
 	defer f.Close()
 
 	var out []decl
+	// 「注解悬停」状态机：pendingID/pendingLine 记住待绑定的号与位置，
+	// hasPending 是显式状态位（不能靠 pendingID != 0 判断，0 号虽然非法，
+	// 但解析发生在校验之前，悬停态必须独立于号的取值）
 	var pendingID uint32
 	var pendingLine int
 	hasPending := false
 
 	sc := bufio.NewScanner(f)
+	// 显式放大 buffer：bufio.Scanner 默认单行上限 64KiB，proto 里出现过
+	// 超长行（大 message 的枚举/一行注释）会直接返回 ErrTooLong；
+	// 初始 64KiB、上限 1MiB 对当前工程足够
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	lineNo := 0
 	for sc.Scan() {
@@ -196,6 +222,7 @@ func scanFile(path string) ([]decl, error) {
 		}
 		if m := reMessage.FindStringSubmatch(line); m != nil {
 			if !hasPending {
+				// 没有悬停注解的 message 是普通声明，跳过
 				continue
 			}
 			out = append(out, decl{ID: pendingID, Name: m[1], File: path, Line: pendingLine})
@@ -221,6 +248,10 @@ var reSegMin = regexp.MustCompile(`^\s*(MsgID([A-Za-z]+))Min\s*=\s*(\d+)`)
 var reSegMax = regexp.MustCompile(`^\s*(MsgID([A-Za-z]+))Max\s*=\s*(\d+)`)
 
 // parseSegments 从 constant 包读号段，段边界只有这一处来源。
+//
+// 扫全部非 _test.go 的 .go 文件：号段常量加在哪个文件都行，新增号段不需要
+// 改本工具。逐行正则抓取而不是 import 该包 —— 工具进程不必编译 internal
+// 业务包，保持「读文本生成」与 proto 侧同样的轻依赖。
 func parseSegments(dir string) ([]segment, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -270,9 +301,15 @@ func parseSegments(dir string) ([]segment, error) {
 }
 
 // validate 做重复号、重名、越界三类检查。
+//
+// 收集式报告（不遇错即停）：与 gendata 的 validateTable 同一哲学 —— 一次列全
+// 问题，改一轮再跑；所有信息带 文件:行号（shortPath 缩短路径），直接指回
+// proto 声明点。
 func validate(decls []decl, segs []segment) []string {
 	var problems []string
 
+	// 两个反查表各管一类冲突：byID 号 → 首次出现的声明（报「谁与谁撞号」），
+	// byName 名 → 首次出现的声明（报「生成的 Go 常量冲突」）
 	byID := map[uint32]decl{}
 	byName := map[string]decl{}
 	for _, d := range decls {
@@ -298,6 +335,9 @@ func validate(decls []decl, segs []segment) []string {
 				"%s(%s:%d) 号 %d 不在任何号段内（见 internal/common/constant 的 MsgID*Min/Max）",
 				d.Name, shortPath(d.File), d.Line, d.ID))
 		case seg.Name == "Internal":
+			// 内部 gRPC 段（Internal）是服务间通信专用，客户端协议不得占用。
+			// 这是工程约定而不是格式问题，只能在这里用硬编码规则拦 ——
+			// 段名来自 constant 包的 MsgIDInternalMin/Max，改约定先改那边
 			problems = append(problems, fmt.Sprintf(
 				"%s(%s:%d) 号 %d 落在内部 gRPC 段 %d-%d，客户端协议不得使用",
 				d.Name, shortPath(d.File), d.Line, d.ID, seg.Min, seg.Max))
@@ -317,6 +357,10 @@ func lookupSegment(id uint32, segs []segment) (segment, bool) {
 }
 
 // generate 产出 Go 源码；顺序按号排序，保证生成结果稳定（可 diff、可 -check）。
+//
+// 同样用 strings.Builder 拼接，格式化交给调用方（-check 与写盘两条路径
+// 都调 format.Source）：常量块的 %-28s 对齐只为源码可读，gofmt 会重排，
+// 最终文件以 format 之后的内容为准。
 func generate(decls []decl, segs []segment) string {
 	// 排序放在这里而不是只放在调用方：任何入口都产出同样的文件，diff 才可信。
 	sorted := make([]decl, len(decls))

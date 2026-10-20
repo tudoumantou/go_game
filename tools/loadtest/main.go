@@ -1,5 +1,9 @@
 // tools/loadtest/main.go —— 网关连接压测与冒烟（设计文档 23.4 / 19.5）
 //
+// 工程链位置：对应 Makefile target `make loadtest`（默认 conn 模式，参数可被
+// N/HOLD 覆盖）与 `make bench`（scripts/bench.sh 驱动 login/biz/conn 三模式，
+// 产物汇总到 reports/）；smoke 模式对应 19.5 节第 6 条 E2E 冒烟。
+//
 // 四个子命令：
 //
 //	-mode conn   连接保持压测：批量建立 TCP 连接并保持，验证网关 10W 连接承载
@@ -39,6 +43,11 @@ import (
 //
 // 退出码约定：login/biz 模式只要有失败计数（或写 JSON 失败）就以非零码退出，
 // 便于 CI 与 scripts/bench.sh 判定；统计结果同时打印到控制台并落 -json。
+//
+// Go 知识点：flag 参数的默认值即「make loadtest 的常用档位」（-n 1000
+// 对应文档常规压测量级）；time.Duration 型参数直接接受 "30s"/"5m" 字面量，
+// 无需自己解析。错误统一走 `fmt.Fprintf(os.Stderr, ...) + os.Exit(1)`：
+// 诊断信息进 stderr，与 stdout 上的统计报告分流，bench.sh 可分别捕获。
 func main() {
 	var (
 		mode        = flag.String("mode", "smoke", "运行模式：conn | login | biz | smoke")
@@ -91,6 +100,13 @@ func main() {
 }
 
 // runConn 批量建立并保持 TCP 连接（23.4 表第 1 行：单网关 10W 连接保持）。
+//
+// 契约：
+//   - 返回 error 只表示「压测本身失败」（参数非法 / 写 JSON 失败 / 有连接
+//     建立失败），由 main 决定退出码；hold 阶段掉线不计入失败；
+//   - 统计口径：吞吐只算建连阶段（rec.Stop() 之后 hold 不再计入），
+//     延迟样本是单次 dial 的耗时；
+//   - 连接在返回前全部 Close：让服务端看到正常 FIN 而非进程退出的 RST。
 func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string, jsonOut string) error {
 	if total <= 0 {
 		return fmt.Errorf("-n must be > 0")
@@ -101,10 +117,16 @@ func runConn(total, batchSize int, batchDelay, hold time.Duration, addr string, 
 	// 软限制提示：10W 连接至少要 2 倍 fd（socket + epoll 等）
 	fmt.Printf("目标 %d 连接 → %s（保持 %s，每批 %d）\n", total, addr, hold, batchSize)
 
+	// signal.NotifyContext 把「收到 SIGINT/SIGTERM」变成一个可取消的 ctx：
+	// 压测中途 Ctrl-C 时，DialContext 与各 select 都能体面退出，
+	// 不会把上万个连接丢在半路；defer cancel 释放 ctx 关联的通知 goroutine
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	var (
+		// 计数器用 atomic.Int64（Go 1.19+ 的类型化原子）：dial goroutine 之间
+		// 无锁累加；conns 切片的追加仍需要 mu —— append 可能重新分配底层数组，
+		// 这与「单个计数器自增」不是一回事，不能只靠原子操作保护
 		established atomic.Int64
 		failed      atomic.Int64
 		mu          sync.Mutex
@@ -183,7 +205,10 @@ loop:
 		case <-holdTimer.C:
 			break loop
 		case <-tick.C:
-			// 用一次非阻塞读探测对端是否已关闭：SetReadDeadline(now) + Read
+			// 用一次非阻塞读探测对端是否已关闭：SetReadDeadline(now) + Read。
+			// 技巧：deadline 设为「now」时，若连接存活且无数据，Read 立刻返回
+			// timeout（net.Error.Timeout() == true，当作存活信号）；若对端已发
+			// FIN，Read 返回 EOF —— 不需要额外协议报文就能判断生死
 			var dead int64
 			for _, c := range conns {
 				_ = c.SetReadDeadline(time.Now())
@@ -200,7 +225,9 @@ loop:
 		}
 	}
 
-	// 收尾
+	// 收尾：此刻建连 goroutine 已全部 wg.Wait 过，本可无锁访问 conns；
+	// 保持 Lock 是为了与建连阶段同一套访问约定（将来若收尾前启动探测
+	// goroutine，不会因为「这里曾经不用锁」而踩坑）
 	mu.Lock()
 	for _, c := range conns {
 		_ = c.Close()
@@ -220,6 +247,10 @@ loop:
 }
 
 // runSmoke E2E 冒烟（19.5 第 6 条五步）：登录 → 握手 → 创角 → 进游戏 → 角色信息。
+//
+// 串行执行 devices 个角色：冒烟验证的是「正确性」而不是吞吐，串行失败时
+// 错误信息直指具体步骤，不会与并发失败纠缠。2003 = 无角色（首次登录的
+// 正常路径）走创角分支；其余非零码即失败。
 func runSmoke(loginURL, gatewayAddr string, devices int) error {
 	if devices <= 0 {
 		devices = 1
@@ -230,6 +261,9 @@ func runSmoke(loginURL, gatewayAddr string, devices int) error {
 		roleName := fmt.Sprintf("压测%d", time.Now().UnixNano()%1000000)
 
 		c := robot.New(loginURL, gatewayAddr)
+		// 错误分支逐个显式 Close，而不是在循环里 defer c.Close()：
+		// 循环内的 defer 会全部堆积到函数返回才执行，期间连接一直挂着；
+		// 显式关闭让失败路径立即释放，意图与时机都可预期
 		if err := c.GuestLogin(deviceID); err != nil {
 			return fmt.Errorf("[%d] guest login: %w", i, err)
 		}
@@ -272,6 +306,8 @@ func runSmoke(loginURL, gatewayAddr string, devices int) error {
 		}
 
 		info, err := c.PlayerInfo()
+		// 无论 PlayerInfo 成败都先 Close 再判错：连接的使命已经完成，
+		// 错误处理路径不该继续持有它；Close 只断连接，不影响已返回的 info
 		c.Close()
 		if err != nil {
 			return fmt.Errorf("[%d] player info: %w", i, err)

@@ -7,6 +7,13 @@
 //   - 同意/删除都在一个事务里完成「两行都写」或「两行都删」，任一步失败整体回滚，
 //     不会出现单边好友。
 //   - 缓存只用于在线状态展示，不参与关系判定：Redis 挂了顶多显示离线，关系仍正确。
+//
+// 架构职责：好友关系全生命周期（申请/同意/拒绝/删除）。
+// Ext 槽位：无——关系数据在 MySQL，玩家快照不存好友列表。
+// 事件订阅：无。
+// 配置表：friend_limit.xml（col1=好友上限，col2=待处理申请上限）。
+// 懒初始化：不适用（关系型数据，无「空行」概念）；
+// 每个请求带 3s 超时的 DB context，慢 SQL 不会拖死玩家 Actor。
 package friend
 
 import (
@@ -38,6 +45,8 @@ const (
 )
 
 // 业务码。
+//
+// 好友段从 6801 起：与背包/装备等错开，客户端按号段定位玩法。
 const (
 	codeOK             int32 = 0
 	codeSelf           int32 = 6801 // 不能加自己
@@ -53,10 +62,13 @@ const (
 // applyTTL 申请有效期：超过后同意会被拒绝，需重新申请。
 //
 // 选 7 天：足够覆盖「对方隔几天上线」，又不至于让申请列表永久堆积。
-// 过期判定在同意时做，不依赖定时清理任务。
+// 过期判定在同意时做，不依赖定时清理任务——少一个后台作业，
+// 少一类「任务没跑」的故障模式。
 const applyTTL = 7 * 24 * time.Hour
 
 // onlineChecker 在线状态查询（*cache.Presence 实现；测试可注入）。
+//
+// 接口而非具体类型：单测可注入假实现，也隔离了 Redis 故障面。
 type onlineChecker interface {
 	IsOnline(ctx context.Context, playerID int64) (string, bool)
 }
@@ -107,6 +119,9 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 
 // onList 好友 + 待处理申请列表；在线状态只作展示，不影响关系判定。
 func (m *Module) onList(ctx *module.Context) error {
+	// Go 知识点：context.WithTimeout 派生带超时的 ctx，
+	// defer cancel() 保证函数返回时释放定时器资源（取消会沿 context
+	// 树传播到 database/sql 的驱动层，中断慢查询）。
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -143,6 +158,9 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onApply 发起好友申请；自加/非法目标在模块层拦截，不发 SQL。
+//
+// 参数校验前置：非法的请求（PlayerId<=0、加自己）连库都不查，
+// 既省一次往返，也避免把无意义查询打到 DB。
 func (m *Module) onApply(ctx *module.Context, body []byte) error {
 	var req gamev1.FriendApplyReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -315,6 +333,11 @@ func (r *Repo) List(ctx context.Context, playerID int64) ([]FriendRow, []ApplyRo
 //   - 对方已经申请我 → 直接成为好友（不必等对方再点一次同意）；
 //   - 我已申请且待处理 → 幂等返回「已申请」，不重复插入；
 //   - 我之前被拒绝 → 复用同一行回到待处理（唯一键保证一对人只有一行）。
+//
+// Go 知识点：整个方法体是 r.db.Tx(ctx, func(tx *sql.Tx) error {...})——
+// 闭包内 return nil = 提交，return err = 回滚。业务码不用 error 传出
+// （error 保留给真失败），而是通过闭包捕获的外部变量 code 回传，
+// 这样「拒绝」与「出错」不会混在一个返回值里。
 func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 	var code = codeOK
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
@@ -401,6 +424,9 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 }
 
 // Handle 处理申请：同意建立双向关系，拒绝只改状态。
+//
+// 状态机：0=待处理 → 1=已同意 / 2=已拒绝。status=1 再点是幂等成功，
+// status=2 需要重新申请——与 onAccept 的「已领任务可重接」同思路。
 func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time.Duration) (int32, error) {
 	var code = codeOK
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
@@ -427,6 +453,7 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 		}
 
 		if time.Since(createdAt) > ttl {
+			// 过期：顺手置为已拒绝（状态收敛），下次要重新申请
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE friend_apply SET status = 2 WHERE from_id = ? AND to_id = ?`, from, to); err != nil {
 				return err
@@ -454,6 +481,10 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 }
 
 // becomeFriends 双向插入并在双方都未超限时把两条申请置为已同意。
+//
+// errFriendFull 是「事务内信号错误」：在闭包深处返回、由外层转业务码。
+// Go 知识点：用 errors.New 造一个包内哨兵值 + errors.Is 判定，
+// 比返回裸 bool 多带了错误链语义，也不必为每种业务拒绝都定义一个 error。
 func (r *Repo) becomeFriends(ctx context.Context, tx *sql.Tx, a, b int64) error {
 	limit := int(friendLimit())
 	ca, err := lockFriendCount(ctx, tx, a)
@@ -488,6 +519,8 @@ var errFriendFull = errors.New("friend full")
 //
 // 用 `SELECT id ... FOR UPDATE` 而不是 COUNT(*) FOR UPDATE：
 // 需要在 REPEATABLE READ 下拿到 next-key lock，防止两个并发同意同时穿透上限。
+// 这是 MySQL 间隙锁的典型用法——锁住「现有行 + 行间空隙」，
+// 让并发 INSERT 在唯一键冲突前就被挡下。
 func lockFriendCount(ctx context.Context, tx *sql.Tx, playerID int64) (int, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id FROM friend WHERE player_id = ? FOR UPDATE`, playerID)

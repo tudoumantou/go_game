@@ -1,4 +1,27 @@
 // internal/game/module/team/team.go —— 组队模块（6201-6208）
+//
+// 架构职责：队伍的信息/创建/加入/退出，对应设计文档 4.9.3。
+//  1. 信息：onInfo 查队伍 + 成员（联 player 表取昵称）；
+//  2. 创建：onCreate 事务建队（队长自动入队）；
+//  3. 加入/退出：onJoin/onLeave，人数上限在事务内加锁判定；
+//  4. 掉线：OnLogout 自动退队——队伍是临时关系，防挂机占位。
+//
+// Ext 槽位：无。队伍数据全在 MySQL（team / team_member 两表），
+// 与公会/好友同属「MySQL 直写模块」——不过 Persister 快照链路。
+//
+// 事件订阅：无。
+//
+// 配置表关系：team_limit.xml（第一行 Col1=队伍人数上限），
+// 经 gamedata.TeamLimitCfgList() 读取，见 maxMembers。
+//
+// 懒初始化：不适用（无 Ext 行；队伍行由创建动作显式产生）。
+//
+// 跨切约定：仓储调用一律传 context.Background()——请求 ctx 在回包后
+// 即取消，沿用会把这些 DB 读写误杀。
+//
+// 与公会模块的关键差异：公会解散是硬删（DELETE 行），队伍解散是
+// 软删（status=2，查询统一过滤）——保留行供对账排查，且自增 id
+// 不复用，旧客户端拿着旧 teamId 不会蒙到一支新队伍。
 package team
 
 import (
@@ -30,7 +53,7 @@ const (
 	msgIDLeaveResp  = codec.MsgTeamLeaveResp
 )
 
-// 业务码（4.10）。
+// 业务码（4.10：0 成功，非 0 为可预期失败）。
 const (
 	codeOK           int32 = 0
 	codeNotInTeam    int32 = 6201
@@ -40,6 +63,10 @@ const (
 )
 
 // maxMembers 队伍上限（team_limit.xml 第一行 col1；缺配置回退 5）。
+//
+// 与 guild.maxMembers 的差异：队伍上限是全局唯一配置（取第一行），
+// 公会是按等级查表（Col2 匹配）。双层 if 先查存在再查有效性，
+// 防御「表为空」和「首行 Col1=0」两种脏配置。
 func maxMembers() int {
 	if len(gamedata.TeamLimitCfgList()) > 0 {
 		if n := gamedata.TeamLimitCfgList()[0].Col1; n > 0 {
@@ -51,9 +78,13 @@ func maxMembers() int {
 
 // Member 队伍成员。
 type Member struct {
+	// PlayerID 成员 player_id
 	PlayerID int64
-	Name     string
-	Ready    bool
+	// Name 昵称（LEFT JOIN player + COALESCE，玩家行缺失时回空串）
+	Name string
+	// Ready 是否已准备（开房 readiness，demo 期只存不校验）
+	Ready bool
+	// IsLeader 是否队长（由 leader_id 逐行折算，见 Members）
 	IsLeader bool
 }
 
@@ -62,13 +93,20 @@ type Member struct {
 // 字段语义：Status 0=正常，2=已解散（软删，查询一律过滤）；
 // CopyID 是队伍要打的副本配置 ID。
 type Team struct {
-	ID       int64
+	// ID 队伍自增主键
+	ID int64
+	// LeaderID 队长 player_id（队长退队即触发解散）
 	LeaderID int64
-	CopyID   int32
-	Status   int32
+	// CopyID 目标副本配置 id（创建时指定，决定成员匹配意图）
+	CopyID int32
+	// Status 0=正常 2=已解散（软删标记，物理行保留）
+	Status int32
 }
 
 // Repo 组队仓储。
+//
+// db 可为 nil（无 DB 环境）：模块层入口判空后按「降级成功/不在队」回包，
+// 保证无依赖环境下协议演示不中断。
 type Repo struct {
 	db *db.DB
 }
@@ -77,6 +115,10 @@ type Repo struct {
 func NewRepo(database *db.DB) *Repo { return &Repo{db: database} }
 
 // FindByPlayer 查询玩家所在队伍。
+//
+// 返回 (nil, nil) 表示「不在队」：sql.ErrNoRows 翻译成 nil 而非错误。
+// status != 2 过滤必须显式写：解散是软删，team_member 行还在，
+// 不过滤会让已解散队伍的「幽灵成员」照样查到队伍。
 func (r *Repo) FindByPlayer(ctx context.Context, playerID int64) (*Team, error) {
 	const q = `SELECT t.id, t.leader_id, t.copy_id, t.status
 	           FROM team t JOIN team_member m ON m.team_id = t.id
@@ -93,6 +135,10 @@ func (r *Repo) FindByPlayer(ctx context.Context, playerID int64) (*Team, error) 
 }
 
 // Create 创建队伍并把队长加入。
+//
+// 两条 INSERT 必须同事务：只建队伍行不插队长成员行，中间态下队长
+// 自己都查不到这个队（与 guild.Create 同构）。status=0 显式写入，
+// 不依赖数据库 DEFAULT——SQL 可读性优先。
 func (r *Repo) Create(ctx context.Context, leaderID int64, copyID int32) (int64, error) {
 	var teamID int64
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
@@ -113,6 +159,16 @@ func (r *Repo) Create(ctx context.Context, leaderID int64, copyID int32) (int64,
 }
 
 // Join 加入队伍（事务：人数校验 + 插入，防并发超员）。
+//
+// 与 guild.Join 同构但有两处差异：
+//  1. FOR UPDATE 锁 team 行（而非 count 行）——队伍没有冗余计数，
+//     锁主行即可让随后的 COUNT(*) 看到一致快照；
+//  2. COUNT(*) 实时统计而非读冗余字段——队伍上限只有 5 人，
+//     锁内 count 的成本可忽略，换来少一个需要维护的计数器
+//     （公会动辄几百人才值得用冗余 member_count）。
+//
+// status==2 的软删行与不存在的行同判 ErrTeamNotExist：对加入者而言
+// 已解散的队伍就是不存在。
 func (r *Repo) Join(ctx context.Context, teamID, playerID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var leaderID int64
@@ -135,6 +191,7 @@ func (r *Repo) Join(ctx context.Context, teamID, playerID int64) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO team_member (team_id, player_id, ready) VALUES (?, ?, 0)`, teamID, playerID); err != nil {
 			// 唯一键冲突 = 重复加入；MySQL 错误码 1062 是唯一途径（driver 不暴露类型）。
+			// 这是双端并发加入同一队伍的兜底（模块层前置查询挡掉常见情况）。
 			if strings.Contains(err.Error(), "1062") {
 				return ErrAlreadyIn
 			}
@@ -145,6 +202,11 @@ func (r *Repo) Join(ctx context.Context, teamID, playerID int64) error {
 }
 
 // Leave 退出队伍（队长退出则解散）。
+//
+// 解散路径：删全部成员行 + 软删队伍行（status=2）——物理行保留，
+// 与 guild.Quit 的硬删解散刻意不同（见文件头说明）。
+// JOIN 查询同样带 status != 2：已解散队伍的残留成员行视同不在队，
+// 不会重复触发解散逻辑。
 func (r *Repo) Leave(ctx context.Context, playerID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var teamID, leaderID int64
@@ -173,6 +235,13 @@ func (r *Repo) Leave(ctx context.Context, playerID int64) error {
 }
 
 // Members 查询队伍成员（联 player 取名字）。
+//
+// LEFT JOIN player 而非 INNER：玩家行可能缺失（注销/数据迁移期），
+// INNER 会因一个成员的 player 行丢失把整队查不出来；LEFT JOIN +
+// COALESCE 保证「队还在，名字为空」的降级展示。
+// ORDER BY m.id：自增 id 即入队顺序，队内展示稳定且复用主键索引。
+// IsLeader 用 JOIN 结果里的 leader_id 逐行折算：不用再查一次 team 表，
+// 也避免「两次查询之间队长变更」的读数分歧。
 func (r *Repo) Members(ctx context.Context, teamID int64) ([]Member, error) {
 	const q = `SELECT m.player_id, COALESCE(p.name, ''), m.ready, t.leader_id
 	           FROM team_member m
@@ -199,6 +268,9 @@ func (r *Repo) Members(ctx context.Context, teamID int64) ([]Member, error) {
 }
 
 // 仓储错误。
+//
+// 哨兵 error：模块层只认 errors.Is，仓储层裸返回不 %w 包装，
+// 保证哨兵链可读（与 guild 同一约定）。
 var (
 	ErrTeamNotExist = errors.New("team not exist")
 	ErrTeamFull     = errors.New("team full")
@@ -207,7 +279,11 @@ var (
 )
 
 // Module 组队模块。
+//
+// 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
+// 串行执行；跨玩家的并发安全由数据库（唯一键 + FOR UPDATE）保证。
 type Module struct {
+	// repo 仓储；nil 表示无 DB 环境，入口降级为「直接成功/不在队」回包
 	repo   *Repo
 	logger *log.Logger
 }
@@ -249,6 +325,12 @@ func (m *Module) OnSave(ctx context.Context) error { return nil }
 func (m *Module) OnLogin(ctx *module.Context) error { return nil }
 
 // OnLogout 实现 module.Module：掉线自动退队。
+//
+// 与公会的关键语义差异：公会掉线不退会（持久社交关系，防误退），
+// 队伍掉线退队（临时关系，防挂机占位坑队友）——同一生命周期钩子
+// 在不同模块承载相反的产品决策。
+// _ = 忽略 Leave 错误：掉线清理尽力而为，登出流程不能被 DB 抖动卡住；
+// repo nil（无 DB 环境）时无需清理。
 func (m *Module) OnLogout(ctx *module.Context) error {
 	if m.repo == nil {
 		return nil
@@ -258,9 +340,14 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 }
 
 // onInfo 查询当前队伍信息；不在队回 codeNotInTeam。
+//
+// 两次查询（队伍 → 成员）：先查队伍，t==nil 时省掉第二次；
+// 队伍上限 5 人，分两次查的代价可接受（合并成一条 JOIN 会把
+// 「不在队」和「在队无成员」两种语义搅在一起）。
 func (m *Module) onInfo(ctx *module.Context) error {
 	resp := &gamev1.TeamInfoResp{}
 	if m.repo == nil {
+		// 无 DB 环境按「不在队」回：与 (nil, nil) 同码
 		resp.Code = codeNotInTeam
 		return m.reply(ctx, msgIDInfoResp, resp)
 	}
@@ -291,6 +378,9 @@ func (m *Module) onInfo(ctx *module.Context) error {
 }
 
 // onCreate 创建队伍；repo 缺失（单机/测试）时按成功降级。
+//
+// 前置 FindByPlayer 挡「已有队伍再创建」：仓储层只管建队，
+// 「一个人只能在一队」的约束在模块层显式声明（与 guild 同构）。
 func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 	var req gamev1.TeamCreateReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -317,6 +407,10 @@ func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 }
 
 // onJoin 加入指定队伍；已在别的队先拒绝，超员/不存在由仓储错误码转换。
+//
+// 前置查询的意义：Join 仓储层只保证「进这个队」的原子性，
+// 「你原来在别的队」需要先退再进——模块层显式拒绝跨队直加，
+// demo 期不做自动换队（避免两个队伍的成员行竞态）。
 func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 	var req gamev1.TeamJoinReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -351,6 +445,9 @@ func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 }
 
 // onLeave 主动退队；队长退队 = 解散（仓储层保证）。
+//
+// 解散的原子性在仓储事务内：删队长行 → 删全员 → 软删队伍，
+// 任一步失败整体回滚，不会出现「队长退了、队伍还在」的半解散态。
 func (m *Module) onLeave(ctx *module.Context) error {
 	resp := &gamev1.TeamLeaveResp{}
 	if m.repo == nil {

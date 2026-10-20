@@ -12,6 +12,10 @@
 //   - 不重试跨实例投递：Kafka 已 ack，本地投递失败由业务层幂等/重查兜底；
 //   - 丢消息可接受，重复消息不可接受 → 靠 OriginInstance 跳过自发自收，
 //     靠「只投递自己承载的节点」避免多实例重复推送。
+//
+// 与 relay.go（同实例内存路由）的分工：relay.go 管「一跳可达」的目标，
+// bridge.go 管「目标在别的实例」的场景；两者由 server.OnRelayRequest
+// 按目标归属二选一，互不重叠。
 package relay
 
 import (
@@ -28,6 +32,8 @@ import (
 // DeliverFunc 在本实例内投递一条跨实例中转消息，返回实际投递成功的节点数。
 //
 // 返回 0 是正常情况（目标节点不在本实例上，由另一个实例负责）。
+// 由 server.deliverLocal 实现——它只投本地注册表里的节点，
+// 投不出去的返回 0 而不是错误。
 type DeliverFunc func(p Payload) int
 
 // BridgeConfig 中转桥配置。
@@ -42,10 +48,19 @@ type BridgeConfig struct {
 	//
 	// 生产必须用 last：实例重启会创建新消费组，从 first 会把历史中转全部重放一遍。
 	// 测试用 first 是为了避开「消费组初始化晚于消息写入」的竞态。
+	//
+	// 注意消费组名 = Topic + "." + InstanceID：每个实例一个独立组，
+	// 同一条消息被所有组各收一份——这正是「广播给所有实例、各自投本地」的
+	// 实现基础；代价是实例数 × 消息量的放大，实例规模必须受控。
 	StartOffset string
 }
 
 // Bridge 跨实例中转桥。
+//
+// 四个计数器用 atomic.Int64 而非 mutex+int：它们被 Forward（写路径）
+// 与消费回调（读路径）并发触碰，且只增不减——atomic 的 RMW 语义正好，
+// 还省去一把锁。注意 Go 1.19+ 的 atomic.Int64 是结构体，不可拷贝，
+// Bridge 必须指针使用（本包全部方法都是指针接收者）。
 type Bridge struct {
 	cfg      BridgeConfig
 	producer *pkgmq.Producer
@@ -60,6 +75,11 @@ type Bridge struct {
 }
 
 // NewBridge 创建中转桥（未配置 brokers 时返回 nil，调用方按「单实例模式」处理）。
+//
+// 返回 nil 而不是 error：未配 Kafka 是合法的部署形态（单实例中心服），
+// 调用方用 Enabled() 判断走不走跨实例路径，不需要把「没配」当故障处理。
+// 过滤空串是必须的：${VAR} 未设置时展开成 [""]，不过滤会让 Kafka client
+// 拿着空 broker 地址重试到超时。
 func NewBridge(cfg BridgeConfig, deliver DeliverFunc, logger *log.Logger) *Bridge {
 	// 过滤空串：配置里写 ${KAFKA_BROKERS} 而环境变量未设置时，展开结果是 [""]
 	brokers := make([]string, 0, len(cfg.Brokers))
@@ -96,6 +116,8 @@ func NewBridge(cfg BridgeConfig, deliver DeliverFunc, logger *log.Logger) *Bridg
 }
 
 // Forward 把一条中转请求写入 Kafka，由承载目标节点的实例消费后投递。
+// nil 接收者返回错误而非 panic：server 侧对 bridge 可空的调用点很多，
+// 统一用「 Enabled 检查 + nil 安全方法」双保险，漏检查时至少不崩。
 func (b *Bridge) Forward(ctx context.Context, p Payload) error {
 	if b == nil {
 		return fmt.Errorf("relay bridge not configured")
@@ -130,6 +152,9 @@ func (b *Bridge) Forward(ctx context.Context, p Payload) error {
 }
 
 // Run 阻塞消费跨实例中转消息，直到 ctx 取消。
+// nil 接收者返回 nil：未启用时 server 直接不调用，但防御性 nil 检查
+// 让「忘了判断 Enabled」也安全。整个处理函数永不返回 error——
+// 见下面各分支的注释，中转链路刻意不重试。
 func (b *Bridge) Run(ctx context.Context) error {
 	if b == nil {
 		return nil
@@ -143,11 +168,13 @@ func (b *Bridge) Run(ctx context.Context) error {
 		var msg pkgmq.RelayCrossMsg
 		if err := env.DecodePayload(&msg); err != nil {
 			// 非法消息直接丢弃：中转不能因为一条坏消息阻塞分区
+			// 返回 nil（不返回 error）——消费框架不会重投，坏消息自然跳过
 			b.logger.Warn("bad relay message", "relay_id", env.BizID, "err", err)
 			return nil
 		}
 
 		// 自发自收：本实例已经把消息投给本地目标了，跳过
+		// OriginInstance 由 Forward 打上，是整个「不重复投递」约定的核心
 		if msg.OriginInstance == b.cfg.InstanceID {
 			b.skipped.Add(1)
 			return nil
@@ -163,6 +190,8 @@ func (b *Bridge) Run(ctx context.Context) error {
 		})
 		if n == 0 {
 			// 目标节点不归本实例管 —— 正常情况，另一个实例会处理
+			// 这里正是「广播语义」的关键：每个实例都收到全部中转消息，
+			// 但只投递本地节点，合起来恰好每个目标收一次
 			b.skipped.Add(1)
 			if metrics.Enabled() {
 				metrics.KafkaConsumed(b.cfg.Topic, "skip")
@@ -182,6 +211,8 @@ func (b *Bridge) Run(ctx context.Context) error {
 }
 
 // Close 释放 Kafka 资源。
+// 先 consumer 后 producer：关闭顺序与启动相反；nil 检查让未启用的
+// bridge 也能安全调 Close（server 关闭路径统一调用，不逐个判空）。
 func (b *Bridge) Close() {
 	if b == nil {
 		return
@@ -195,6 +226,9 @@ func (b *Bridge) Close() {
 }
 
 // Stats 中转桥统计（指标/诊断用）。
+// 四个计数器的语义：forwarded=本实例发出的、received=本实例收到的、
+// delivered=收到后投递成功的节点数、skipped=跳过数（自发自收 + 非本地目标）。
+// 健康画像：delivered 长期为 0 说明本实例总在替别人做嫁衣（分组不均）。
 func (b *Bridge) Stats() (forwarded, received, delivered, skipped int64) {
 	if b == nil {
 		return 0, 0, 0, 0
@@ -203,9 +237,14 @@ func (b *Bridge) Stats() (forwarded, received, delivered, skipped int64) {
 }
 
 // Enabled 是否启用跨实例中转。
+// 用 nil 接收者判断（b != nil）：NewBridge 在无 Kafka 配置时返回 nil，
+// 一个方法同时表达「未启用」与「已启用」，省一个 bool 字段。
 func (b *Bridge) Enabled() bool { return b != nil }
 
 // relayKey 分区键：点对点按目标节点，广播按分组 —— 同类消息落同一分区，保证有序。
+//
+// 同一 key 必落同一分区（Kafka 按 key hash 选分区）：中转消息的顺序性
+// 完全依赖这一点——先到先得的邀请/后到先得的解散，乱序会出逻辑事故。
 func relayKey(p Payload) string {
 	if p.Broadcast {
 		if p.GroupID != "" {

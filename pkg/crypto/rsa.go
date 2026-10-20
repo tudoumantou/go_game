@@ -1,4 +1,14 @@
 // pkg/crypto/rsa.go —— RSA 非对称加密（用于握手阶段交换 AES 会话密钥）
+//
+// 架构职责：握手期的密钥运输工具——服务端持私钥，客户端用公钥加密
+// pre-master；同时负责 PEM 密钥文件的加载与解析。
+// 协作关系：handshake.go 的状态机调用 RSAEncrypt/RSADecrypt；keygen
+// 工具产出的 PEM 文件由 LoadRSAKeyPair 读取；RSAKeyPair 在网关启动时
+// 加载一次、全连接共享。
+// 关键取舍：OAEP-SHA256 而非 PKCS#1 v1.5——v1.5 的填充可被
+// Bleichenbacher 类填充预言攻击逐步破解，OAEP 可证明安全；加载即
+// Precompute——把惰性 CRT 预计算挪到单线程启动期，避免并发首解密时
+// 的 data race（详见 LoadRSAKeyPair 注释）。
 package crypto
 
 import (
@@ -17,6 +27,9 @@ import (
 // 网关进程内存（PEM 文件权限 600，不进镜像 layer、不打日志）。
 // 线程安全：Precompute 后两个字段均为只读，可被所有连接并发共享——
 // 这也是网关用一把密钥服务全部连接的原因。
+// Go 知识点：「初始化后只读」的对象并发共享是安全的——没有写就没有
+// 竞争，race detector 也安静；一旦某天加了可写字段（如使用计数），
+// 就必须重新评估同步方案。
 type RSAKeyPair struct {
 	Public  *rsa.PublicKey
 	Private *rsa.PrivateKey
@@ -33,6 +46,9 @@ type RSAKeyPair struct {
 // handshake_concurrency_test.go 的回归背景）。因此**任何拿到私钥的路径
 // 都必须先 Precompute**，本函数是唯一入口。
 // 错误语义：读取/解析任一文件失败即返回 error，不会返回半成品 KeyPair。
+// Go 知识点：这个 race 是 Go data race 的典型「安静腐败」——不 panic、
+// 不报错，只是结果偶发错误，且离开 -race 后极难复现；修复靠「把初始化
+// 挪到并发开始之前」，而不是加锁。
 func LoadRSAKeyPair(publicPath, privatePath string) (*RSAKeyPair, error) {
 	pubPEM, err := os.ReadFile(publicPath)
 	if err != nil {
@@ -66,6 +82,9 @@ func LoadRSAKeyPair(publicPath, privatePath string) (*RSAKeyPair, error) {
 // 与 PublicKeyToPEM 的输出互为逆运算；客户端拿到的 PEM 就是这几种之一。
 // 错误语义：PEM 解码失败、非 X.509 公钥、非 RSA 公钥分别报不同错误，
 // 便于区分「文件不对」与「算法不对」。
+// Go 知识点：x509.ParsePKIXPublicKey 返回 any（算法无关），需用
+// comma-ok 类型断言收窄到 *rsa.PublicKey——`pub.(*rsa.PublicKey)` 的
+// ok 模式失败时返回零值而非 panic，正好转成错误返回。
 func ParsePublicKey(pemData []byte) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
@@ -89,6 +108,8 @@ func ParsePublicKey(pemData []byte) (*rsa.PublicKey, error) {
 // 同样在返回前 Precompute()——与 LoadRSAKeyPair 同一不变量：任何
 // 并发使用私钥的路径，拿到的实例必须已预计算（见该函数注释）。
 // 错误语义：两种格式都解析失败时报 PKCS1 的错误（更常见，信息更有用）。
+// Go 知识点：内层错误用 err2 而非 := 遮蔽 err——外层 err 要在最终错误
+// 信息里用 %w 呈现「主尝试（PKCS1）为什么失败」。
 func ParsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
@@ -118,6 +139,9 @@ func ParsePrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 // （pre-master 32B），不放业务数据。OAEP 自带随机填充，同一明文两次
 // 加密输出不同，不能把密文当去重键。
 // 并发：只读公钥，可并发；rand.Reader 阻塞时会体现在 error 上。
+// Go 知识点：长度上限 = 模长字节数 - 2*hashLen - 2（2048bit=256B，
+// SHA256=32B → 256-66=190）——这是 OAEP 的结构性开销，超长明文直接
+// error；握手约定 32B 远在下界内，不会触界。
 func RSAEncrypt(pub *rsa.PublicKey, plaintext []byte) ([]byte, error) {
 	return rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, plaintext, nil)
 }

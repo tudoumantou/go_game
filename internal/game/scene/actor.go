@@ -1,7 +1,21 @@
-// Package scene 场景 Actor：地图边界、实体进出、位置与 AOI 广播（R9）。
+// internal/game/scene/actor.go —— 场景 Actor：实体进出、移动校验与 AOI 广播（R9）
 //
-// 权威边界：**位置只由本 Actor 修改**。玩家 Actor 只发消息、收推送，
-// 不持有可写坐标——这条约束避免了两个 goroutine 同时改同一份场景数据。
+// 架构职责：一个场景一个 Actor，独占该地图的全部权威状态（实体表 ents +
+// 九宫格索引 grid），处理进入/移动/离开/同步/心跳五类入站消息，并把视野
+// 差集广播推给相关玩家。
+//
+// 协作关系：玩家 Actor 经 Enter/Move/Leave/Sync/Heartbeat 消息与本 Actor
+// 交互；回执走 player.SceneResult（可能触发玩家快照 CAS），广播走
+// player.ScenePush（纯下行，不触发）；manager.go 提供启动装配与查找。
+//
+// 设计取舍：
+//   - 为什么位置权威只在场景：客户端上报的坐标只是「意图」，若两个
+//     goroutine（玩家/场景）都能写坐标，超速与穿墙校验就形同虚设；
+//     玩家侧连可写坐标都不持有，从结构上消除竞态；
+//   - 为什么移动要限频 + 测速双保险：测速防瞬移，限频防「原地高频小步」
+//     ——后者测速完全合法，但会把分片信箱与同屏玩家的收件箱打满；
+//   - 为什么 sweep 兜底清理必须有：玩家 Actor 终止时的 LeaveMsg 可能因
+//     信箱满/对端已停而丢失，只靠「下线通知」会留下永久幽灵实体。
 package scene
 
 import (
@@ -69,6 +83,9 @@ type Config struct {
 }
 
 // entity 场景内实体。只存广播必需的最小信息。
+//
+// 不存玩家业务状态（等级/背包在玩家 Actor）：场景只需要「谁在哪、推给谁」，
+// 多存一份就会多一套一致性负担。
 type entity struct {
 	id       int64
 	pid      *actor.PID // 广播目标；玩家重连后会更新
@@ -155,6 +172,9 @@ type CountMsg struct {
 }
 
 // Receive 实现 actor.Actor。
+//
+// 全部消息在同一分片 goroutine 内串行处理，因此下面的 handler 可以直接
+// 读写 ents/grid 而不加锁；跨 Actor 的访问一律走消息，没有共享内存。
 func (a *Actor) Receive(ctx *actor.Context) {
 	switch msg := ctx.Message().(type) {
 	case *EnterMsg:
@@ -179,6 +199,8 @@ func (a *Actor) Receive(ctx *actor.Context) {
 	}
 }
 
+// onEnter 进入场景：重复进入只刷新绑定，名额满直接拒绝，成功后先回本人
+// 视野快照、再向邻居广播出现。
 func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 	// 重复进入（重连、客户端重发）：更新绑定与在场时间，不重复占名额。
 	if e, ok := a.ents[msg.PlayerID]; ok {
@@ -228,6 +250,10 @@ func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 	}
 }
 
+// replyEnter 回进入结果：成功时附带视野内实体列表（玩家据此渲染同屏人）。
+//
+// existing=true 表示重复进入（重连）：此时不置 SetScene——Profile.SceneID
+// 本来就对，重复置位会白走一次快照 CAS。
 func (a *Actor) replyEnter(ctx *actor.Context, pid *actor.PID, code int32, self *entity, existing bool) {
 	resp := &gamev1.SceneEnterResp{
 		Code:    code,
@@ -264,6 +290,10 @@ func (a *Actor) replyEnter(ctx *actor.Context, pid *actor.PID, code int32, self 
 	})
 }
 
+// onMove 移动处理流水线：存在性 → 限频 → 原地判定 → 测速 → 移格 → 视野差集。
+//
+// 顺序是性能与安全的权衡：限频最便宜且防放大，放在最前；测速要算时间差，
+// 放在限频后；移格与广播最贵，只有全部校验通过才做。
 func (a *Actor) onMove(ctx *actor.Context, msg *MoveMsg) {
 	e, ok := a.ents[msg.PlayerID]
 	if !ok {
@@ -333,6 +363,7 @@ func (a *Actor) replyMove(ctx *actor.Context, playerID int64, seq, code, x, y in
 	})
 }
 
+// onLeave 主动离场；幂等——重复 Leave 不报错（重连/ sweep 可能已清过）。
 func (a *Actor) onLeave(ctx *actor.Context, msg *LeaveMsg) {
 	e, ok := a.ents[msg.PlayerID]
 	if !ok {
@@ -384,6 +415,7 @@ func (a *Actor) sweep(now time.Time) {
 	}
 }
 
+// onSync 全量视野兜底：断线/序号断档时客户端与服务端重新对齐。
 func (a *Actor) onSync(ctx *actor.Context, msg *SyncMsg) {
 	e, ok := a.ents[msg.PlayerID]
 	if !ok {
@@ -496,6 +528,7 @@ func leaveNotice(playerID int64) []byte {
 	return body
 }
 
+// abs32 曼哈顿距离用的绝对值；int32 版避免 int 转换噪音。
 func abs32(v int32) int32 {
 	if v < 0 {
 		return -v

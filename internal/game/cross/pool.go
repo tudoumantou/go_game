@@ -1,4 +1,24 @@
 // internal/game/cross/pool.go —— 游戏服侧跨服连接池 + battle.CrossCaller 实现
+//
+// 架构职责：三张表 + 一条等待通道构成全部状态——
+//
+//	clients  addr → Client（每个跨服节点一条常驻流）
+//	conns    addr → grpc.ClientConn（流的底层连接，Stop 时统一关闭）
+//	rooms    room_id → addr（建房时记录，结算/透传必须回到同一节点）
+//	pending  reqID → chan（建房响应的「请求-响应」配对）
+//
+// 协作关系：battle 模块经 Pool 的 CreateRoom/SendSnapshot/SendOp/SendResult
+// 完成跨服战斗；下行帧由 pool 自身实现 cross.Handler 接住并回填 pending。
+//
+// 设计取舍：
+//   - 为什么 rooms 路由表必须有：同一场战斗的快照/操作/结算必须落在同一
+//     个跨服节点（房间状态在它内存里），负载到别的节点就是「无房间」错误；
+//   - 为什么用 reqID → chan 而不是共享流上的 broadcast：多个 battle
+//     goroutine 并发建房，channel 把响应精确交回请求方，无需全局锁着
+//     回调表逐个比对；容量 1 + defer 删除保证迟到响应不阻塞、不泄漏；
+//   - 为什么 ensure 用「先建后检」的双检：grpc.NewClient 与 map 插入
+//     之间有两个并发调用时，后到者关闭自己多建的 conn、复用先到者的，
+//     比全局锁住整个建连过程更省等待。
 package cross
 
 import (
@@ -27,6 +47,8 @@ type Pool struct {
 	h      Handler
 	logger *log.Logger
 
+	// mu 保护三张主表；pending 单独用 pendingMu——两者的临界区没有重叠，
+	// 分开可以减小锁竞争（建房等待不阻塞节点查找）
 	mu      sync.RWMutex
 	clients map[string]*Client          // addr -> client
 	conns   map[string]*grpc.ClientConn // addr -> 连接（Stop 时关闭，否则对端 GracefulStop 会一直等）
@@ -35,6 +57,7 @@ type Pool struct {
 	pendingMu sync.Mutex
 	pending   map[string]chan *internalv2.RoomCreateResp
 
+	// reqSeq 只被 nextReqID 在 pendingMu 内自增，无需额外原子操作
 	reqSeq uint64
 }
 
@@ -64,6 +87,9 @@ func (p *Pool) Start(ctx context.Context, addrs []string) {
 }
 
 // ensure 不存在则建连并后台起流。
+//
+// 双检锁的第二半（写锁内再查一次）处理并发 Start：后到者发现已存在时，
+// 关掉自己刚建的 conn 再返回既有 client——多建的那条 TCP 连接不会泄漏。
 func (p *Pool) ensure(ctx context.Context, addr string) (*Client, error) {
 	p.mu.RLock()
 	c, ok := p.clients[addr]
@@ -91,6 +117,8 @@ func (p *Pool) ensure(ctx context.Context, addr string) (*Client, error) {
 	p.conns[addr] = conn
 	p.mu.Unlock()
 
+	// 流的自维持重连在独立 goroutine：Pool 的调用方（Start/OnGroupUpdate）
+	// 不被阻塞；ctx 取消时 Start 内部循环退出
 	go c.Start(ctx, conn)
 	return c, nil
 }
@@ -118,6 +146,9 @@ func (p *Pool) ReadyCount() int {
 // CreateRoom 申请建房（轮询选一个就绪节点）。
 //
 // req.RoomID 非 0 时表示使用中心服分配的房间号（多参战方各自请求同一号，CrossServer 幂等）。
+//
+// 等待策略：先按地址顺序找已就绪节点；全未就绪时给每个节点一次最多 3s
+// 的 WaitReady——首个 BIND 完成的节点胜出，而不是死等某一个。
 func (p *Pool) CreateRoom(ctx context.Context, req battle.CreateRoomReq) (uint64, map[int64]string, error) {
 	c, addr, err := p.pickReady(ctx)
 	if err != nil {
@@ -125,10 +156,13 @@ func (p *Pool) CreateRoom(ctx context.Context, req battle.CreateRoomReq) (uint64
 	}
 
 	reqID := p.nextReqID()
+	// 容量 1：OnCreateResp 的发送永不阻塞（见其 select default），
+	// 本函数超时离开后 channel 被 GC，无 goroutine 泄漏
 	ch := make(chan *internalv2.RoomCreateResp, 1)
 	p.pendingMu.Lock()
 	p.pending[reqID] = ch
 	p.pendingMu.Unlock()
+	// defer 删除是幂等收尾：无论成功/失败/超时，pending 表都不留残项
 	defer func() {
 		p.pendingMu.Lock()
 		delete(p.pending, reqID)
@@ -154,6 +188,7 @@ func (p *Pool) CreateRoom(ctx context.Context, req battle.CreateRoomReq) (uint64
 		if resp.GetCode() != 0 {
 			return 0, nil, fmt.Errorf("cross rejected room creation (code=%d)", resp.GetCode())
 		}
+		// 建房成功才记录路由：失败房间不占 rooms 表
 		p.mu.Lock()
 		p.rooms[resp.GetRoomId()] = addr
 		p.mu.Unlock()
@@ -230,6 +265,9 @@ func (p *Pool) SendResult(roomID uint64, playerID int64, token string, result in
 }
 
 // OnRoomClosed 房间结算后清理路由。
+//
+// 由 crossHandler.OnBattleResult 触发；漏清理的后果是 rooms 表无限增长
+// （每场战斗永久占一项）。
 func (p *Pool) OnRoomClosed(roomID uint64) {
 	p.mu.Lock()
 	delete(p.rooms, roomID)
@@ -241,6 +279,7 @@ func (p *Pool) OnRoomClosed(roomID uint64) {
 // 必须同时关 grpc.ClientConn：只关 stopCh 的话流不会断，
 // 对端 CrossServer 的 GracefulStop 会一直等这条流（曾导致优雅关闭卡 5 分钟）。
 func (p *Pool) Stop() {
+	// 先在锁内快照再锁外关闭：Close 可能阻塞，持锁关会把并发查询堵死
 	p.mu.Lock()
 	clients := make([]*Client, 0, len(p.clients))
 	conns := make([]*grpc.ClientConn, 0, len(p.conns))
@@ -292,6 +331,8 @@ func (p *Pool) pickReady(ctx context.Context) (*Client, string, error) {
 	return nil, "", fmt.Errorf("no cross node ready")
 }
 
+// nextReqID 生成建房请求 ID：时间戳 + 序号，保证跨重启不重复
+// （CrossServer 侧按 reqID 回填，重复 ID 会串响应）。
 func (p *Pool) nextReqID() string {
 	p.pendingMu.Lock()
 	defer p.pendingMu.Unlock()

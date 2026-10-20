@@ -4,6 +4,14 @@
 //  2. ClientKeyExchange: 客户端生成 pre-master，用 RSA 公钥加密后发回
 //  3. 双方用 HKDF(pre-master, salt) 派生 AES-256 会话密钥
 //  4. Finished:       客户端用会话密钥加密 finished 标记，网关验证后握手完成
+//
+// 架构职责：把「一次连接握手」建模成显式状态机——顺序错乱、重放、畸形
+// 长度都在状态转换点被拒绝，而不是带病进入会话期。
+// 协作关系：RSA 加解密用 rsa.go 的 RSAEncrypt/RSADecrypt（私钥已
+// Precompute）；会话密钥派生后交给 aes.go/session_cipher.go 使用。
+// 关键取舍：仿 TLS 的「客户端本地立即派生」——服务端确认通过 Finished
+// 的 GCM 校验隐式完成，省一个 RTT；状态机只前进不后退，每步的副作用
+// （置密钥/置 finished）不可撤销。
 package crypto
 
 import (
@@ -24,7 +32,8 @@ const (
 	PreMasterSize = 32
 	// SaltSize 随机盐长度。
 	// 每次握手由服务端重新生成（crypto/rand），防跨会话密钥关联；
-	// 客户端对盐长度做显式校验（见 HandshakeClient.OnServerHello）。
+	// 客户端对盐长度做显式校验（见 HandshakeClient.OnServerHello）——
+	// 长度不对说明流切分错了，早失败比「Finished 认证失败」好排查。
 	SaltSize = 32
 )
 
@@ -37,6 +46,9 @@ const (
 // 多实例并发解密安全，见 rsa.go）。
 // 不变量：secret/derivedKey 一旦置上不可改（状态机只前进不后退），
 // finished 只可能由 false 变 true。
+// Go 知识点：单 goroutine 独占的字段（salt/secret/derivedKey/finished）
+// 不需要任何同步原语——「不共享的可变状态」比「加了锁的共享状态」
+// 更快也更简单；对比 session_cipher.go：那里多写者共存才需要 mu。
 type HandshakeServer struct {
 	publicKey  *rsa.PublicKey
 	privateKey *rsa.PrivateKey
@@ -52,6 +64,9 @@ type HandshakeServer struct {
 // 且之后不可更换（客户端拿到盐就算出密钥，换盐 = 双方密钥不一致）。
 // rand.Read 失败被忽略：概率约 2^-200 量级，且失败时 salt 全零仍有
 // 随机性来源 pre-master，不构成实际风险。
+// Go 知识点：crypto/rand.Read 的契约是「要么填满要么返回 error」，
+// 不会部分填充——所以 `_, _ = rand.Read(salt)` 忽略错误时，salt
+// 要么全随机要么全零，不存在「半个随机」的中间态。
 func NewHandshakeServer(publicKey *rsa.PublicKey, privateKey *rsa.PrivateKey) *HandshakeServer {
 	salt := make([]byte, SaltSize)
 	_, _ = rand.Read(salt) // 失败概率极低，忽略
@@ -67,6 +82,8 @@ func NewHandshakeServer(publicKey *rsa.PublicKey, privateKey *rsa.PrivateKey) *H
 // 幂等：重复调用返回同一份 salt（客户端重试/重连同一握手时不能换盐，
 // 否则两边派生密钥不一致）；公钥 PEM 可重复序列化，无副作用。
 // 调用顺序约束：必须在 OnClientKeyExchange 之前（客户端要靠盐算密钥）。
+// 契约注意：返回的 salt 是内部切片的直接引用（未做防御性拷贝）——
+// 调用方只能序列化发送，不得修改其内容。
 func (h *HandshakeServer) ServerHello() (pubKeyPEM []byte, salt []byte) {
 	return PublicKeyToPEM(h.publicKey), h.salt
 }
@@ -79,6 +96,9 @@ func (h *HandshakeServer) ServerHello() (pubKeyPEM []byte, salt []byte) {
 // 防畸形客户端发送超长/过短密钥材料（HKDF 对任意长度都「成功」，
 // 不校验就会静默派生出一个双方不一致的密钥）。
 // 成功副作用：置 secret 与 derivedKey；此后 VerifyFinished 才可用。
+// Go 知识点：h.secret != nil 作「已接收」判据——解密成功路径下 secret
+// 必为 32 字节非 nil；nil 与空切片语义不同，这里用 nil 判空即可
+// （长度 0 的明文已被上面的显式校验拦掉）。
 func (h *HandshakeServer) OnClientKeyExchange(encryptedPreMaster []byte) error {
 	if h.secret != nil {
 		return fmt.Errorf("pre-master already received")
@@ -127,11 +147,15 @@ func (h *HandshakeServer) VerifyFinished(encryptedFinished []byte) error {
 // 未完成握手（OnClientKeyExchange 未成功）时返回 nil——调用方应先
 // IsFinished() 或判空，不要把 nil 当空密钥传给 NewAESGCM（会得到
 // 「key must be 32 bytes, got 0」的误导性错误）。
+// 同样返回内部引用：调用方只读（用于构造 SessionCipher）。
 func (h *HandshakeServer) SessionKey() []byte {
 	return h.derivedKey
 }
 
 // IsFinished 返回握手是否完成。
+//
+// 会话期入口应检查它：false 时收到的任何「业务报文」都应丢弃——
+// 未完成握手的连接不存在合法会话状态。
 func (h *HandshakeServer) IsFinished() bool { return h.finished }
 
 // HandshakeClient 客户端（机器人/真实客户端）握手状态机。
@@ -149,6 +173,9 @@ type HandshakeClient struct {
 }
 
 // NewHandshakeClient 创建客户端握手状态机。
+//
+// 构造即生成 pre-master：自己那一半随机材料先备好，再进入交换，
+// 与收 ServerHello 解耦——少一个等待往返。
 func NewHandshakeClient() (*HandshakeClient, error) {
 	pm := make([]byte, PreMasterSize)
 	if _, err := rand.Read(pm); err != nil {
@@ -164,9 +191,11 @@ func NewHandshakeClient() (*HandshakeClient, error) {
 // 早失败比晚失败好排查（错误信息直接指向盐长度）。
 // 成功副作用：置 pubKey/salt 并立即本地派生 derivedKey。
 // 前置顺序约束：必须先于 ClientKeyExchange（没有公钥无法加密 pre-master）。
+// Go 知识点：ParsePublicKey 的错误直接 return 不包装——握手阶段的
+// 错误会呈现给客户端/机器人，原始错误信息定位问题更直接。
 func (c *HandshakeClient) OnServerHello(pubKeyPEM, salt []byte) error {
 	if len(salt) != SaltSize {
-		// 长度不对说明切分错了，继续下去只会得到「密钥不一致 → finished 认证失败」，
+		// 长度不对说明切分错了，继续走下去只会得到「密钥不一致 → finished 认证失败」，
 		// 早失败比晚失败好排查
 		return fmt.Errorf("invalid salt size %d, want %d", len(salt), SaltSize)
 	}
@@ -186,6 +215,8 @@ func (c *HandshakeClient) OnServerHello(pubKeyPEM, salt []byte) error {
 // （没有公钥时加密无从谈起）。
 // 输出是 RSA-OAEP 密文，长度 = 模长（2048 → 256 字节），不是 32 字节——
 // 接收端按密文长度读取，不要按 PreMasterSize 假设。
+// OAEP 随机填充导致同一 pre-master 每次加密输出不同——重放这帧解密
+// 出的明文相同，但服务端状态机「只接受一次」兜底拦截。
 func (c *HandshakeClient) ClientKeyExchange() ([]byte, error) {
 	if c.pubKey == nil {
 		return nil, fmt.Errorf("server hello not received")
@@ -221,6 +252,9 @@ func (c *HandshakeClient) SessionKey() []byte {
 // 与 ParsePublicKey 严格互逆（客户端解析服务端 PEM 的同一对函数）。
 // 序列化不会失败到需要返回 error 的程度（x509.MarshalPKIXPublicKey 对
 // 合法 *rsa.PublicKey 只可能因接口为 nil 出错，那属于调用方 bug）。
+// Go 知识点：函数签名不返回 error 是刻意的契约——「不可能失败」的
+// 操作硬造 error 只会把负担转嫁给每个调用方；`b, _ :=` 的显式忽略
+// 表明这是深思熟虑而非遗漏。
 func PublicKeyToPEM(pub *rsa.PublicKey) []byte {
 	b, _ := x509.MarshalPKIXPublicKey(pub)
 	return pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: b})
@@ -235,6 +269,9 @@ func PublicKeyToPEM(pub *rsa.PublicKey) []byte {
 // （pre-master 长度、salt 长度、info 常量）。
 // hkdf.Read 在参数合法时不会失败；panic 仅用于暴露编程错误（如 key 长度
 // 写错），不应用于运行期错误处理。
+// Go 知识点：hkdf.New 返回 io.Reader，Read 保证填满整个 key（内部循环
+// 直到 32 字节）——「Reader 契约 + panic 暴露不变量破坏」比返回 error
+// 更合适：这里失败只可能是代码写错，不是环境问题。
 func deriveKey(secret, salt []byte) []byte {
 	hk := hkdf.New(sha256.New, secret, salt, []byte("game-study-session-key"))
 	key := make([]byte, 32)

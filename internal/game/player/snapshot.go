@@ -1,3 +1,18 @@
+// internal/game/player/snapshot.go —— State ↔ writebehind.Snapshot 转换与深拷贝
+//
+// 架构职责：把内存 State 序列化成可提交/可落库的 Snapshot，以及反向还原；
+// clone()  additionally 保留派生属性与脏标记，供提交失败时整体回退。
+//
+// 协作关系：cache_actor.go 的「克隆 → diff → CAS」流程完全建立在本文件的
+// 三个函数上；cache_load.go 用 stateFromSnapshot 把读到的快照还原成 State。
+//
+// 设计取舍：
+//   - 为什么必须深拷贝而不是共享引用：回滚靠的是「换回 previous 指针」，
+//     若 Ext 的 json.RawMessage（底层是 []byte）与快照共享底层数组，
+//     回滚后业务再改同一个数组，previous 会被悄悄改写，回滚形同虚设；
+//   - 为什么 diff 只比较快照 JSON：字段级比对要为每个新字段加代码，
+//     JSON 字节比对自动覆盖所有字段；Ext 里模块私有状态的键序由
+//     encoding/json 保证稳定（map 键排序输出），不会误报差异。
 package player
 
 import (
@@ -7,6 +22,10 @@ import (
 )
 
 // cloneExt 深拷贝模块私有状态，避免 Actor 回滚时与快照共享底层数组。
+//
+// Go 知识点：append(json.RawMessage(nil), raw...) 分配新数组再拷贝，
+// 得到的是副本而非别名；直接 out[name] = raw 会让两个 map 指向同一块
+// 内存，一方写入另一方「见鬼」。
 func cloneExt(src map[string]json.RawMessage) map[string]json.RawMessage {
 	if len(src) == 0 {
 		return nil
@@ -18,6 +37,11 @@ func cloneExt(src map[string]json.RawMessage) map[string]json.RawMessage {
 	return out
 }
 
+// snapshot 产出当前状态的持久化视图（RLock 下读取，外部拿到的是副本）。
+//
+// 只含持久化字段：Profile/Attr/Items/Ext/AppliedGrants——即与 DB 列一一
+// 对应的部分（player / player_attr / player_item / 模块 Persister /
+// player_writebehind.applied_grants）；bonus（装备加成）与脏标记不落库。
 func (s *State) snapshot() writebehind.Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -34,6 +58,11 @@ func (s *State) snapshot() writebehind.Snapshot {
 	return out
 }
 
+// stateFromSnapshot 用快照还原一个全新 State。
+//
+// 注意 baseAttr 也初始化为快照的 Attr：落库值就是「职业基础属性」，
+// 等级成长与 bonus 由登录流程重算（state.go RecalcAttrs / ClearBonus），
+// 不从快照恢复。
 func stateFromSnapshot(snapshot writebehind.Snapshot) *State {
 	s := NewState(snapshot.PlayerID)
 	s.profile = snapshot.Profile
@@ -56,6 +85,10 @@ func stateFromSnapshot(snapshot writebehind.Snapshot) *State {
 }
 
 // clone 包含派生属性和脏标记，用于未成功写缓存时恢复本次内存修改。
+//
+// 与 snapshot() 的差别：clone 走的是「全量拷贝」语义——除了持久化字段，
+// 还带回 bonus（在线装备加成）与 dirty/dirtyItems（落库 diff 的依据），
+// 否则回滚会把玩家身上的装备加成一起抹掉。
 func (s *State) clone() *State {
 	out := stateFromSnapshot(s.snapshot())
 	s.mu.RLock()

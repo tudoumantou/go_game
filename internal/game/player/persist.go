@@ -1,4 +1,19 @@
-// internal/game/player/persist.go —— 玩家数据加载与落库
+// internal/game/player/persist.go —— 直连 MySQL 的加载与落库（非缓存权威模式）
+//
+// 架构职责：Repository 是玩家持久化在 SQL 形态下的唯一出入口：
+// Load 全量读、Save 增量写、CacheEnabled 决定走哪条权威链路。
+//
+// 协作关系：actor.go 的 preload/savePlayer 调用 Load/Save；
+// cache_load.go 在缓存模式下只借它的 db 句柄做冷启动。
+//
+// 设计取舍：
+//   - 为什么道具从「先删后插」改成「只写脏项 + 合批 UPSERT」：50 格背包
+//     每次保存都全表重写，落库量随背包规模线性膨胀，而实际每轮通常只变
+//     1-2 格；脏标记 diff 后，语句数从 1+N 降到 1+批次数；
+//   - 为什么 SeedItem 不标脏：预加载灌数据是「把库搬进内存」，不是变更，
+//     标脏会让每次登录都把全背包重写一遍；
+//   - 失败保留脏标记：Save 失败时 dirtyItems 不清，下轮 flusher 重试同一
+//     批数据，不会出现「保存失败但标记已清」的静默丢失。
 package player
 
 import (
@@ -20,7 +35,13 @@ type Repository struct {
 }
 
 func (r *Repository) SetCache(store *writebehind.Store) { r.cache = store }
-func (r *Repository) CacheEnabled() bool                { return r != nil && r.cache != nil }
+
+// CacheEnabled 是否启用缓存权威模式。
+//
+// 接收者为 nil 时返回 false：actor.go 在无 DB 的单测环境里会拿到 nil
+// Repository，方法内先判 r != nil 是防御性写法（nil 接收者上调用方法是
+// 合法的，只要不解引用字段）。
+func (r *Repository) CacheEnabled() bool { return r != nil && r.cache != nil }
 
 // NewRepository 创建仓储。
 func NewRepository(database *db.DB) *Repository {
@@ -28,6 +49,9 @@ func NewRepository(database *db.DB) *Repository {
 }
 
 // Load 从 MySQL 加载玩家状态（角色信息 + 属性 + 道具）。
+//
+// ErrNoRows 不当错误：player/attr 缺行按空状态继续（创角事务异常时也能
+// 登录自愈），只有其它 SQL 错误才中断加载。
 func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 	state := NewState(playerID)
 
@@ -78,6 +102,7 @@ func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]i
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
+	// defer 保证遍历中途 return（Scan 失败）时连接不泄漏
 	defer func() { _ = rows.Close() }()
 
 	out := make(map[int32]int64)
@@ -89,6 +114,8 @@ func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]i
 		}
 		out[itemID] = int64(count)
 	}
+	// rows.Err 不能省：Next 返回 false 可能是正常结束也可能是驱动错误，
+	// 不检查会把查询失败静默当成「背包为空」
 	return out, rows.Err()
 }
 
@@ -141,6 +168,9 @@ func (r *Repository) Save(ctx context.Context, state *State) error {
 }
 
 // saveDirtyItems 写本次变更的道具（合批 UPSERT + 合批 DELETE）。
+//
+// 拆两类：count>0 走 UPSERT、count<=0 走 DELETE（RemoveItem 归零时
+// DirtyItems 返回 0，语义即「删行」）。
 func saveDirtyItems(ctx context.Context, tx *sql.Tx, playerID int64, dirty map[int32]int64) error {
 	if len(dirty) == 0 {
 		return nil

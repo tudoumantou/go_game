@@ -7,6 +7,14 @@
 // 合计 5 次串行往返，本地约 10ms+，跨机房可达 50ms+。
 //
 // P12 后：5 个查询全部并行，耗时 ≈ 单次最慢查询；结果存入 Prefetch，模块 OnLogin 直接读。
+//
+// 架构职责与协作：本文件只服务**非缓存模式**（缓存模式的等价物是一次
+// LoadCached）；产物 Prefetch 经 module.Context.Prefetch 被各模块消费，
+// 框架不替模块解释数据格式。
+//
+// 设计取舍：为什么创角后不立即预加载/建 Actor（延迟到首个业务包），
+// 见 server.go OnClientPacket 的懒加载注释——那是组装层的决策，这里只
+// 提供「已决定加载时如何最快加载」的能力。
 package player
 
 import (
@@ -28,6 +36,9 @@ import (
 const DefaultPreloadTimeout = 5 * time.Second
 
 // Prefetch 预加载结果（一次并行拉取的全部数据）。
+//
+// 字段按「框架资产 / 模块资产」分两组：Player/Attr/Items 由框架组装进
+// State，EquipList/ActList 原样透传给模块——框架不解析模块私有结构。
 type Prefetch struct {
 	Player    *model.Player
 	Attr      *model.PlayerAttr
@@ -60,6 +71,12 @@ func NewPreloader(database *db.DB, logger *log.Logger, timeout time.Duration) *P
 // Load 并行拉取玩家全部登录数据并组装 State。
 //
 // 任一必需项（player）缺失视为错误；其余表缺失按空处理（新角色无装备/活动记录是正常的）。
+//
+// Go 知识点：
+//   - wg.Add(N) 必须在所有 go 语句**之前**调用：Add 在 goroutine 里做会
+//     有「Wait 已返回、Add 又来」的竞态；这里集中 Add(5) 再逐个放 goroutine；
+//   - 每个 goroutine 只写自己的 err 变量、只读共享的 pf 的不同字段，
+//     没有数据竞争；ctx 超时由 database/sql 的驱动层负责取消在途查询。
 func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch, error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)

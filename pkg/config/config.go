@@ -5,6 +5,15 @@
 //   - 支持 ${VAR} 环境变量注入（敏感信息如 MySQL DSN 不入库，见 3.2 目录铁律）；
 //   - 时间类字段统一用字符串（"45s"），由 ParseDuration 解析，避免 yaml 库
 //     将 Duration 当纳秒整数解析的坑。
+//
+// 架构位置：五个进程（gateway/game/center/cross/login）的启动入口都先
+// Load 本包——它是全项目唯一读 YAML 的地方，其余组件只吃 *Config。
+// 协作关系：Config 各段被对应包校验/消费（actor 段→pkg/actor、redis
+// 段→pkg/cache、crypto 段→pkg/crypto……）；本包不反向依赖任何业务包，
+// 保持「叶子层」。
+// 关键取舍：Load = 读文件 → ExpandEnv → Unmarshal → normalize →
+// Validate 五步，前四步容错（缺省/空值有默认或降级），Validate 一步
+// 硬失败——启动期把配置错误全部暴露，不留到运行期。
 package config
 
 import (
@@ -15,7 +24,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config 全服务配置（各服务只使用自己需要的段，未用段留空）
 // PayConfig 支付渠道配置（R3.3）。
 //
 // channel 目前只支持 "sandbox"（HMAC 模拟渠道，供联调与测试）；
@@ -26,7 +34,14 @@ type PayConfig struct {
 	SignWindow    string `yaml:"sign_window"`    // 回调时间窗，默认 5m
 }
 
+// Config 全服务配置（各服务只使用自己需要的段，未用段留空）
+//
+// 分段按「公共 → 登录服 → 游戏服 → 中心服 → 跨服」组织，与五个进程
+// 的职责一一对应；一个进程只填自己那几段，其余留零值。
+// Go 知识点：各段是嵌套**值**字段（非指针）——YAML 缺段时自动为零值，
+// 业务侧读出来就是「未配置」，不需要判指针 nil。
 type Config struct {
+	// 公共段：五个进程都可能用到
 	Server   ServerConfig   `yaml:"server"`
 	Crypto   CryptoConfig   `yaml:"crypto"`
 	RPC      RPCConfig      `yaml:"rpc"`
@@ -58,97 +73,97 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Name             string `yaml:"name"`
-	Env              string `yaml:"env"`
-	TCPAddr          string `yaml:"tcp_addr"`  // 网关：客户端长连接
-	HTTPAddr         string `yaml:"http_addr"` // 登录服：HTTPS API
-	GRPCAddr         string `yaml:"grpc_addr"` // 游戏/中心/跨服：gRPC
-	MaxConns         int    `yaml:"max_conns"` // 单网关最大连接
-	MaxPacketSize    int    `yaml:"max_packet_size"`
-	ReadTimeout      string `yaml:"read_timeout"`
-	WriteQueueSize   int    `yaml:"write_queue_size"`
-	SessionReconnTTL string `yaml:"session_reconnect_ttl"`
+	Name             string `yaml:"name"`                  // 服务名，日志/指标标签
+	Env              string `yaml:"env"`                   // dev/staging/prod
+	TCPAddr          string `yaml:"tcp_addr"`              // 网关：客户端长连接
+	HTTPAddr         string `yaml:"http_addr"`             // 登录服：HTTPS API
+	GRPCAddr         string `yaml:"grpc_addr"`             // 游戏/中心/跨服：gRPC
+	MaxConns         int    `yaml:"max_conns"`             // 单网关最大连接
+	MaxPacketSize    int    `yaml:"max_packet_size"`       // 含加密开销（NonceSize+Overhead）的上限
+	ReadTimeout      string `yaml:"read_timeout"`          // 空闲读超时（心跳保活依据）
+	WriteQueueSize   int    `yaml:"write_queue_size"`      // 每连接写队列；满则背压/断连
+	SessionReconnTTL string `yaml:"session_reconnect_ttl"` // 断线重连会话保留窗
 }
 
 type CryptoConfig struct {
-	Enabled          bool   `yaml:"enabled"`
-	RSAPrivateKey    string `yaml:"rsa_private_key"`
-	RSAKeyID         string `yaml:"rsa_key_id"`
-	PrevRSAPublicKey string `yaml:"prev_rsa_public_key"` // 轮换期上一把公钥
+	Enabled          bool   `yaml:"enabled"`             // 关闭后走明文（仅内网联调）
+	RSAPrivateKey    string `yaml:"rsa_private_key"`     // PEM 路径；私钥只进网关进程
+	RSAKeyID         string `yaml:"rsa_key_id"`          // 密钥标识，日志/对账用
+	PrevRSAPublicKey string `yaml:"prev_rsa_public_key"` // 轮换期上一把公钥（客户端过渡期兼容）
 }
 
 type RPCConfig struct {
-	EtcdEndpoints     []string `yaml:"etcd_endpoints"`
-	ServicePrefix     string   `yaml:"service_prefix"`
-	ChannelPerTarget  int      `yaml:"channel_per_target"`
+	EtcdEndpoints     []string `yaml:"etcd_endpoints"`     // 服务发现地址
+	ServicePrefix     string   `yaml:"service_prefix"`     // etcd key 前缀
+	ChannelPerTarget  int      `yaml:"channel_per_target"` // 每目标几条 gRPC 流（并发上限）
 	MaxStreamsPerChan int      `yaml:"max_streams_per_channel"`
-	DialTimeout       string   `yaml:"dial_timeout"`
-	Keepalive         string   `yaml:"keepalive"`
+	DialTimeout       string   `yaml:"dial_timeout"` // 默认 5s（GetDialTimeout）
+	Keepalive         string   `yaml:"keepalive"`    // 连接保活参数
 }
 
 type RedisConfig struct {
-	Addrs       []string `yaml:"addrs"`
-	Password    string   `yaml:"password"`
-	DB          int      `yaml:"db"`
-	PoolSize    int      `yaml:"pool_size"`
+	Addrs       []string `yaml:"addrs"`          // 多地址 = 集群模式
+	Password    string   `yaml:"password"`       // 经 ${VAR} 注入，不入库
+	DB          int      `yaml:"db"`             // 仅单点模式有效
+	PoolSize    int      `yaml:"pool_size"`      // 连接池上限
 	MinIdleConn int      `yaml:"min_idle_conns"` // 必须 ≤ PoolSize（19.1）
 }
 
 type KafkaConfig struct {
-	Brokers              []string `yaml:"brokers"`
-	ProducerRequiredAcks string   `yaml:"producer_required_acks"`
+	Brokers              []string `yaml:"brokers"`                // 空 = 自动禁用 Kafka
+	ProducerRequiredAcks string   `yaml:"producer_required_acks"` // all/1/0
 	ConsumerGroup        string   `yaml:"consumer_group"`
 }
 
 type EtcdConfig struct {
-	Endpoints         []string `yaml:"endpoints"`
+	Endpoints         []string `yaml:"endpoints"`          // 注册/选主/配置中心
 	LeaseTTL          int64    `yaml:"lease_ttl"`          // 秒
 	KeepaliveInterval int64    `yaml:"keepalive_interval"` // 秒
 	LeaderKey         string   `yaml:"leader_key"`         // 中心服选主
 }
 
 type MySQLConfig struct {
-	DSN          string `yaml:"dsn"`
+	DSN          string `yaml:"dsn"`            // 经 ${VAR} 注入
 	MaxOpenConns int    `yaml:"max_open_conns"` // 业务池（第 14 章容量推导）
 	MaxIdleConns int    `yaml:"max_idle_conns"`
 }
 
 type LogConfig struct {
-	Level       string `yaml:"level"`
-	Format      string `yaml:"format"` // json / text
-	SampleFirst int    `yaml:"sample_first"`
+	Level       string `yaml:"level"`        // debug/info/warn/error
+	Format      string `yaml:"format"`       // json / text
+	SampleFirst int    `yaml:"sample_first"` // 启动期前 N 条全量，之后采样
 }
 
 type MetricsConfig struct {
 	Enable bool   `yaml:"enable"`
-	Addr   string `yaml:"addr"`
+	Addr   string `yaml:"addr"` // /metrics 暴露地址
 }
 
 type ShutdownConfig struct {
-	TotalTimeout string `yaml:"total_timeout"`
-	DrainTimeout string `yaml:"drain_timeout"`
-	FlushTimeout string `yaml:"flush_timeout"`
+	TotalTimeout string `yaml:"total_timeout"` // 关闭总预算，超时强退
+	DrainTimeout string `yaml:"drain_timeout"` // 等在途消息（actor.Drain）
+	FlushTimeout string `yaml:"flush_timeout"` // 等 Redis 脏数据落库
 	// RegisterDrain 摘注册后等待网关 resolver 感知的时间（默认 3s）。
 	// 立即停 RPC 会让这段时间的请求打到已关闭实例——滚动发布实测约 0.6% 失败。
 	RegisterDrain string `yaml:"register_drain"`
 }
 
 type TokenConfig struct {
-	TTL           string `yaml:"ttl"`
+	TTL           string `yaml:"ttl"`             // Token 有效期
 	RSAPrivateKey string `yaml:"rsa_private_key"` // 签发 Token 用，与网关握手密钥分离
 }
 
 type ActorConfig struct {
-	ShardCount  int `yaml:"shard_count"` // 2 的幂
-	MailboxSize int `yaml:"mailbox_size"`
+	ShardCount  int `yaml:"shard_count"`  // 2 的幂（位掩码寻址，Validate 强校验）
+	MailboxSize int `yaml:"mailbox_size"` // 每 Actor 有界信箱容量
 }
 
 type FlushConfig struct {
 	ShardCount int    `yaml:"shard_count"` // 10 分片分时落库（worker 共享连接池）
 	Interval   string `yaml:"interval"`
-	Stagger    string `yaml:"stagger"` // 相邻 worker 唤醒间隔
-	BatchRows  int    `yaml:"batch_rows"`
-	DirtyTTL   string `yaml:"dirty_ttl"`
+	Stagger    string `yaml:"stagger"`    // 相邻 worker 唤醒间隔
+	BatchRows  int    `yaml:"batch_rows"` // 单批写回行数
+	DirtyTTL   string `yaml:"dirty_ttl"`  // 脏 key 存活上限（异常兜底）
 	// DisableInlineWritebehind 关闭游戏服进程内的写穿 worker。
 	//
 	// Redis 权威状态下，脏队列的唯一消费者是 writebehind worker。默认开启进程内
@@ -158,21 +173,21 @@ type FlushConfig struct {
 }
 
 type IDTabConfig struct {
-	BuildOnStart      bool   `yaml:"build_on_start"`
-	BuildPageSize     int    `yaml:"build_page_size"`
-	ReconcileInterval string `yaml:"reconcile_interval"`
+	BuildOnStart      bool   `yaml:"build_on_start"`     // 启动时构建 ID 表
+	BuildPageSize     int    `yaml:"build_page_size"`    // 构建分页（对应 IDTable.SetPageSize）
+	ReconcileInterval string `yaml:"reconcile_interval"` // 数量核对周期（默认 10m）
 }
 
 type CenterConfig struct {
 	Addr             string `yaml:"addr"` // 多地址逗号分隔，故障自动切换
 	ReconnectMaxWait string `yaml:"reconnect_max_wait"`
-	ReportBuffer     int    `yaml:"report_buffer"`
+	ReportBuffer     int    `yaml:"report_buffer"` // 上报队列深度，满则丢弃/背压
 }
 
 type ReportConfig struct {
-	HeartbeatInterval string `yaml:"heartbeat_interval"`
-	HeartbeatTimeout  string `yaml:"heartbeat_timeout"`
-	RelayRetry        int    `yaml:"relay_retry"`
+	HeartbeatInterval string `yaml:"heartbeat_interval"` // 心跳上报周期
+	HeartbeatTimeout  string `yaml:"heartbeat_timeout"`  // 超时判定掉线
+	RelayRetry        int    `yaml:"relay_retry"`        // 转发重试次数
 }
 
 type RankConfig struct {
@@ -187,9 +202,9 @@ type RankConfig struct {
 }
 
 type StatsConfig struct {
-	AggregateWindows []string `yaml:"aggregate_windows"`
-	SnapshotInterval string   `yaml:"snapshot_interval"`
-	MySQLShard       int      `yaml:"mysql_shard"`
+	AggregateWindows []string `yaml:"aggregate_windows"` // 聚合窗口（如 1m/5m/1h）
+	SnapshotInterval string   `yaml:"snapshot_interval"` // 快照落库周期
+	MySQLShard       int      `yaml:"mysql_shard"`       // 统计库分片序号
 }
 
 type RelayKafkaConfig struct {
@@ -198,8 +213,8 @@ type RelayKafkaConfig struct {
 }
 
 type BattleConfig struct {
-	RoomMaxIdle string `yaml:"room_max_idle"`
-	ResultRetry int    `yaml:"result_retry"`
+	RoomMaxIdle string `yaml:"room_max_idle"` // 房间空闲回收时限
+	ResultRetry int    `yaml:"result_retry"`  // 战绩回写重试次数
 }
 
 // CrossConfig 小组跨服节点地址（10.2：生产由中心服 GroupUpdate 下发，此处为
@@ -215,6 +230,19 @@ type XServiceConfig struct {
 }
 
 // Load 读取配置文件：先展开 ${VAR} 环境变量，再 YAML 解析
+//
+// 五步流水线（任一步失败即返回 error，进程应直接退出——配置错不是
+// 能「带病运行」的问题）：
+//  1. ReadFile：文件不存在/权限错在此暴露；
+//  2. ExpandEnv：${VAR} 替换为环境变量值，**未设置的变量展开为空串**
+//     （不是报错）——这正是 normalize 要过滤空值的原因；
+//  3. yaml.Unmarshal：按 struct tag 映射，类型不符在此暴露；
+//  4. normalize：清理空值，让「未配置」归一成空列表；
+//  5. Validate：跨字段约束（如 min_idle ≤ pool_size）。
+//
+// Go 知识点：错误链全程 %w 包装，运维看到的是一条完整路径
+// （read config x: ... / validate config x: server.name 不能为空），
+// 而不是孤立的底层错误。
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -236,6 +264,12 @@ func Load(path string) (*Config, error) {
 // normalize 清理空值：
 //   - 环境变量未设置时 ${KAFKA_BROKERS} 会展开为空串，过滤后 broker 列表为空 → Kafka 自动降级禁用
 //   - 其余列表字段同理
+//
+// 为什么不在解析前就报错：本地开发/单功能部署经常不配 Kafka/Etcd，
+// 「空列表 = 功能关闭」让同一份配置骨架适配多种部署形态。
+// Go 知识点：filterNonEmpty 返回空 slice（非 nil）——len()==0 的判断
+// 对两者等价，但空 slice 更友好（序列化成 [] 而非 null，日志与调试
+// 输出更干净）。
 func (c *Config) normalize() {
 	c.Kafka.Brokers = filterNonEmpty(c.Kafka.Brokers)
 	c.Redis.Addrs = filterNonEmpty(c.Redis.Addrs)
@@ -243,6 +277,10 @@ func (c *Config) normalize() {
 	c.RPC.EtcdEndpoints = filterNonEmpty(c.RPC.EtcdEndpoints)
 }
 
+// filterNonEmpty 移除空串元素，保持原顺序。
+//
+// 预分配 cap=len(in)：最坏情况（无空串）一次分配到位，不触发 append
+// 扩容——slice 扩容是翻倍式增长，会白白多分配一倍内存。
 func filterNonEmpty(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, s := range in {
@@ -254,6 +292,12 @@ func filterNonEmpty(in []string) []string {
 }
 
 // Validate 必填字段校验（与 19.1 端口规划/字段对齐）
+//
+// 分两类：存在性（name/env/监听地址必须有）与跨字段约束（min_idle ≤
+// pool_size、shard_count 为 2 的幂）。
+// Go 知识点：`x&(x-1) != 0` 是判 2 的幂的经典位运算——2 的幂二进制
+// 只有一位 1，减 1 后低位全变 1，相与为 0；外层 `> 0` 必须保留：
+// 0 的 0&-1 也是 0，会被误判为 2 的幂。
 func (c *Config) Validate() error {
 	if c.Server.Name == "" {
 		return fmt.Errorf("server.name 不能为空")
@@ -280,6 +324,13 @@ func (c *Config) Validate() error {
 }
 
 // ParseDuration 解析 "45s" / "10m" / "24h" 等时长字段
+//
+// 空串返回 (0, nil)：约定「未配置」= 零时长，调用方用 GetXxx 系列
+// 方法再套默认值——解析层不塞默认，默认集中在取值处，避免两套默认
+// 值各自漂移。
+// 为什么 Duration 字段在 YAML 里是字符串：yaml.v3 对 time.Duration
+// 只认 int64（纳秒），写 "45s" 会直接类型报错；用字符串 + 显式
+// ParseDuration 把格式控制权拿回来。
 func ParseDuration(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, nil
@@ -288,6 +339,10 @@ func ParseDuration(s string) (time.Duration, error) {
 }
 
 // GetDialTimeout 返回 RPC 拨号超时，未配置默认 5s。
+//
+// err != nil || d == 0 双条件兜底：解析失败（配了非法值如 "abc"）与
+// 未配置（空串 → 0）都回落默认——拨号超时是安全参数，配错时用默认
+// 值比启动失败更合理（其余关键字段仍由 Validate 拦）。
 func (c *Config) GetDialTimeout() time.Duration {
 	d, err := ParseDuration(c.RPC.DialTimeout)
 	if err != nil || d == 0 {

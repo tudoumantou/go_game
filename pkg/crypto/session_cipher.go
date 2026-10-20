@@ -1,6 +1,16 @@
 // pkg/crypto/session_cipher.go —— 会话加密 + Seq 计数 + 防重放窗口
 // 外层包格式：Length(2B) | MsgID(2B) | Seq(4B) | AES-GCM Body
 // Seq 单调递增，接收端用 64 位滑动窗口检测重放。
+//
+// 架构职责：握手完成后接管一条连接的所有加解密——Encrypt/Decrypt 对
+// 业务透明，同时用 Seq 提供「防重放 + 乱序检测」。
+// 协作关系：密钥来自 handshake 状态机的 SessionKey；GCM 原语来自
+// aes.go；外层 Length|MsgID|Seq 由网关 packet 层组帧（与本文件内层
+// 头相同，见 Encrypt 注释）。
+// 关键取舍：MsgID/Seq 放进密文保护范围（而非 AAD）——解密端无需调用
+// 方重新提供这些字段即可校验，篡改任一字节都会认证失败；窗口取 64 位
+// 而非文档的 1024——一个 uint64 + 一次加锁完成全部判断，覆盖网关内
+// 多路径投递的乱序已够用。
 package crypto
 
 import (
@@ -20,6 +30,10 @@ import (
 //   - sendSeq 从 1 开始严格递增、不复用（0 被保留为「非法值」，见 checkSeq）；
 //   - recvSeq 单调不回退，window 只随高水位前进；
 //   - gcm 实例不可更换。
+//
+// Go 知识点：用 sync.Mutex 而非 RWMutex——Seq 的读与写都伴随状态修改
+// （sendSeq++ / window 变更），没有「只读不改」的路径，互斥锁更简单
+// 且不存在读写锁升级问题。
 type SessionCipher struct {
 	gcm     *AESGCM
 	sendSeq uint32
@@ -53,6 +67,9 @@ func NewSessionCipher(key []byte) (*SessionCipher, error) {
 // 以内层为准校验，见设计文档 4.2/15）。
 // Seq 分配与加密在同一把锁内完成顺序取出，但加密本身在锁外——
 // 允许并发加密不同包，Seq 仍严格不重复。
+// Go 知识点：锁内只做「取号」（临界区压到最小），耗时的 GCM 加密放
+// 锁外——多写者并发时取号串行、加密并行；binary.BigEndian 即网络
+// 字节序，收发两端必须一致（大端）才能互解。
 func (s *SessionCipher) Encrypt(msgID uint16, plaintext []byte) ([]byte, uint32, error) {
 	s.mu.Lock()
 	seq := s.sendSeq
@@ -81,6 +98,9 @@ func (s *SessionCipher) Encrypt(msgID uint16, plaintext []byte) ([]byte, uint32,
 // （即调用方 Encrypt 时传入的 proto body，**不含** msgID/seq 头）。
 // 错误语义：解密失败（密钥错/被篡改）或 Seq 非法（0/过老/重放）
 // 均返回 error；网关侧应累计失败次数并按设计文档 15.2 断连。
+// Go 知识点：plaintext = body[6:] 是**别名切片**（与 body 共享底层
+// 数组）——零拷贝切分；body 是本函数新分配的局部变量，调用方持有
+// plaintext 期间无人改写 body，别名安全。
 func (s *SessionCipher) Decrypt(ciphertext []byte) (msgID uint16, seq uint32, plaintext []byte, err error) {
 	body, err := s.gcm.Decrypt(ciphertext)
 	if err != nil {
@@ -112,6 +132,9 @@ func (s *SessionCipher) Decrypt(ciphertext []byte) (msgID uint16, seq uint32, pl
 // （一个 uint64，加锁一次完成全部判断）。设计文档 15.2 写的窗口为
 // 1024，实现取 64——以本文件为准，文档差异已记录待同步。
 // 调用方持锁进入，窗口与 recvSeq 的更新原子完成。
+// Go 知识点：window 是一个 64 位位图——bit i 表示 recvSeq-i 是否已见
+// （1<<diff 定位、& 查询、|= 置位），用整数移位与按位或把「集合
+// 操作」压缩成几条 CPU 指令，不需要 map/slice。
 func (s *SessionCipher) checkSeq(seq uint32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

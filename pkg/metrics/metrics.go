@@ -6,6 +6,20 @@
 //   - 指标命名遵循 Prometheus 最佳实践：<namespace>_<subsystem>_<name>_<unit>；
 //   - 全部指标在包初始化时注册一次，业务侧只调用 Set/Inc/Observe，不做动态注册
 //     （动态注册会在高基数标签下泄漏内存）。
+//
+// 架构位置：所有进程（gate/game/center/cross/login/flusher）共享本包；
+// 存储链路的消费者是 flush 与 writebehind——它们只调用 FlushObserve/
+// FlushDirty/FlushTombstone 等emit 函数，不接触 prometheus 类型，
+// 指标定义的增改因此不影响业务代码。
+//
+// 使用模式（本文件所有 emit 函数的统一形状）：
+//
+//	if metrics.Enabled() {                       // 热路径先查开关，未启用零开销
+//	    metrics.FlushObserve(d)                  // 函数内部 WithLabelValues(Service())
+//	}
+//
+// 开关语义：Enabled() 为 false 时所有 emit 函数立即返回——单测/CLI
+// 不初始化指标时不会 panic（指标指针为 nil），也没有无谓的 label 查找。
 package metrics
 
 import (
@@ -24,14 +38,32 @@ import (
 )
 
 // Namespace 指标前缀（gs = game server）。
+//
+// 出现在每个指标名最前（gs_gateway_connections_total），Grafana 里按
+// 前缀过滤即可只看本项目的指标，避免与 node_exporter 等混淆。
 const Namespace = "gs"
 
 // registry 全局注册表（本包唯一）。
+//
+// 用 NewRegistry 而非 prometheus 默认注册表：默认表是进程级全局单例，
+// 单测多次 Init/重复注册会 panic，自定义表把注册行为关进包内可控。
+// 一个进程一个 registry，Register() 暴露给 /metrics handler 使用。
 var registry = prometheus.NewRegistry()
 
+// registerOnce 保证指标只注册一次。
+//
+// Init 可能被多处调用（各组件启动时），Once 把「注册 + enabled=true」
+// 收敛为一次性动作；注意 Once.Do 内若 panic，Go 认为该 Once 已执行
+// 完毕（后续 Do 直接返回不重试）——注册代码必须自身不 panic，
+// MustRegister 的重复注册错误在 Once 保护下不会触发。
 var registerOnce sync.Once
 
 // serviceLabels 当前进程的服务名（由 Init 注入）。
+//
+// serviceName 用 RWMutex 保护：string 不能原子读写，且「一次写入 +
+// 极多次读取」正是读写锁的最佳场景；enabled 用 atomic.Bool：
+// 单字读可原子，Enabled() 在每条消息的热路径上调用，无锁读更快。
+// 两种原语的选择依据是「值的大小与访问模式」，不是偏好。
 var (
 	serviceMu   sync.RWMutex
 	serviceName = "unknown"
@@ -44,12 +76,20 @@ var (
 // 关键顺序：enabled 必须在**全部指标注册完成后**才置 true。
 // 否则存在竞态窗口 —— 其他 goroutine 看到 enabled=true 提前调用
 // ConnInc() 等函数时，指标指针仍为 nil，会触发 SIGSEGV。
+//
+// Go 细节：atomic.Bool 的 Store/Load 在 Go 内存模型下建立
+// happens-before 关系——enabled.Store(true) 之前的所有写
+// （各 register* 函数对包级指针的赋值）对随后 Load 到 true 的
+// goroutine 可见，这就是「先注册后开开关」无需额外锁的原因。
 func Init(service string) {
+	// 先记服务名（RLock 读取方立刻能看到新值），再做一次性注册
 	serviceMu.Lock()
 	serviceName = service
 	serviceMu.Unlock()
 
 	registerOnce.Do(func() {
+		// Go 运行时 + 进程级指标：GC、goroutine 数、CPU、内存、fd 等，
+		// 排查落库延迟类问题时的第一手上下文
 		registry.MustRegister(
 			collectors.NewGoCollector(),
 			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -64,11 +104,15 @@ func Init(service string) {
 		registerIDTab()
 		registerCenter()
 		registerKafka()
+		// 开关最后置 true：见函数注释的竞态窗口说明
 		enabled.Store(true)
 	})
 }
 
 // Service 返回当前服务名（供其他包拼标签）。
+//
+// 未 Init 时返回 "unknown"（零值兜底），保证 emit 函数在未初始化
+// 场景也不会因为空 service 标签而难排查。
 func Service() string {
 	serviceMu.RLock()
 	defer serviceMu.RUnlock()
@@ -78,13 +122,22 @@ func Service() string {
 // Enabled 指标是否已初始化。
 // 各组件在热路径（Actor 每轮循环、每条消息）先判断此开关，
 // 避免未启用指标的场景（单测、CLI 工具）产生无谓开销。
+//
+// 单次原子读约几 ns，远低于一次 WithLabelValues 的 map 查找 +
+// 互斥锁开销——这正是热路径前置开关的理由。
 func Enabled() bool { return enabled.Load() }
 
 // Registry 返回指标注册表（测试用）。
+//
+// 测试用它 Gather 断言指标值（如 flusher_test 验证 dirty 计数）；
+// 业务代码不应直接接触，统一走 emit 函数。
 func Registry() *prometheus.Registry { return registry }
 
 // ============================ 连接与消息 ============================
 
+// 连接/消息指标的 label 语义：service 恒定（本进程名），
+// direction/result 是低基数枚举——label 基数直接决定 Prometheus 的
+// 时间序列数量与内存，绝不放 player_id 之类的高基数值进 label。
 var (
 	connGauge   *prometheus.GaugeVec
 	connTotal   *prometheus.CounterVec
@@ -94,6 +147,9 @@ var (
 	msgSize     *prometheus.HistogramVec
 )
 
+// registerConn 注册网关连接指标（Gauge 当前值 + Counter 累计）。
+//
+// 选型依据：当前连接数可增可减 → Gauge；累计接受数只增不减 → Counter。
 func registerConn() {
 	connGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "gateway", Name: "connections",
@@ -106,6 +162,11 @@ func registerConn() {
 	registry.MustRegister(connGauge, connTotal)
 }
 
+// registerMessage 注册消息计数/在途/延迟/大小指标。
+//
+// Histogram 的桶按「目标 SLO 附近密、两端疏」的原则选：latency 桶
+// 覆盖 1ms~2.5s（20.1 目标 P99<50ms，50ms 附近有 25/50 两个桶），
+// size 桶对齐协议层 64B~64KB 的常见包型。
 func registerMessage() {
 	msgCounter = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: Namespace, Subsystem: "message", Name: "total",
@@ -129,6 +190,9 @@ func registerMessage() {
 }
 
 // ConnInc 连接建立。
+//
+// Gauge +1、Counter +1 成对出现：回答「现在多少连接」与「累计接过
+// 多少连接」两个问题（连接数下降时前者降、后者不降）。
 func ConnInc() {
 	if !enabled.Load() {
 		return
@@ -138,6 +202,9 @@ func ConnInc() {
 }
 
 // ConnDec 连接关闭。
+//
+// 与 ConnInc 严格配对调用（网关连接生命周期两端），否则 Gauge 会漂移
+// 成负数——漂移的连接数指标比没有指标更误导。
 func ConnDec() {
 	if !enabled.Load() {
 		return
@@ -146,6 +213,9 @@ func ConnDec() {
 }
 
 // ConnRejected 拒绝连接（超 max_conns / 握手失败等）。
+//
+// result 标签是 rejected_<reason> 拼接：reason 是封闭枚举
+// （代码内固定几种），不是用户输入——高基数的 reason 会引爆序列数。
 func ConnRejected(reason string) {
 	if !enabled.Load() {
 		return
@@ -154,6 +224,9 @@ func ConnRejected(reason string) {
 }
 
 // MsgInc 消息计数（direction: in/out；result: ok/error）。
+//
+// direction/result 都是调用方传入的封闭枚举；按结果拆分是告警的
+// 输入（error 率突增 = 协议或业务异常）。
 func MsgInc(direction, result string) {
 	if !enabled.Load() {
 		return
@@ -162,6 +235,9 @@ func MsgInc(direction, result string) {
 }
 
 // MsgObserve 消息处理耗时与大小。
+//
+// 一条消息只 Observe 一次（发送前或接收后，由调用方选定点）；
+// size<=0 时跳过大小观测（部分消息无 body，如纯 ACK）。
 func MsgObserve(direction string, d time.Duration, size int) {
 	if !enabled.Load() {
 		return
@@ -173,6 +249,9 @@ func MsgObserve(direction string, d time.Duration, size int) {
 }
 
 // MsgInflightInc 进入处理。
+//
+// 与 MsgInflightDec 配对；两者之差即「正在处理的消息数」，
+// 持续增长说明 handler 集体变慢（背压信号）。
 func MsgInflightInc() {
 	if !enabled.Load() {
 		return
@@ -199,6 +278,11 @@ var (
 	actorCountGauge prometheus.Gauge
 )
 
+// registerActor 注册 Actor 模型指标（信箱深度/处理/延迟/panic/拒绝/存活数）。
+//
+// mailbox_depth 与 rejected_total 是一对背压观测点：信箱满时拒绝
+// **新**消息、保留旧消息——深度上涨 + 拒绝计数上涨 = 消费者跟不上，
+// 是扩容或降级的触发信号。
 func registerActor() {
 	actorMailbox = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "actor", Name: "mailbox_depth",
@@ -229,6 +313,10 @@ func registerActor() {
 }
 
 // ActorMailbox 设置某分片信箱深度（只在分片循环里低频调用，避免锁竞争）。
+//
+// Set 而非 Inc：深度是「当前值」，每轮循环重设即可，不需要增减配对；
+// 低频调用是因为 WithLabelValues 内部有 map+锁，热路径逐消息调用
+// 会与业务争锁。
 func ActorMailbox(shard int, depth int) {
 	if !enabled.Load() {
 		return
@@ -237,6 +325,9 @@ func ActorMailbox(shard int, depth int) {
 }
 
 // ActorProcessed 处理计数。
+//
+// ok=false 记 error：与 MsgInc 的 result 拆分同理，错误率是告警输入；
+// panic 不计入 error（单独走 ActorPanicInc，避免掩盖崩溃）。
 func ActorProcessed(ok bool) {
 	if !enabled.Load() {
 		return
@@ -249,6 +340,9 @@ func ActorProcessed(ok bool) {
 }
 
 // ActorObserve 处理耗时。
+//
+// 与 MsgObserve 的区别：这里只测 Actor 内处理段，不含网关排队与
+// 网络往返——两者对比可定位延迟出在队列还是处理。
 func ActorObserve(d time.Duration) {
 	if !enabled.Load() {
 		return
@@ -257,6 +351,9 @@ func ActorObserve(d time.Duration) {
 }
 
 // ActorPanicInc panic 计数。
+//
+// Actor 循环 recover 后调用：panic 被吞掉但必须留痕，否则
+// 「偶发丢消息」类故障永远查不到根因。
 func ActorPanicInc() {
 	if !enabled.Load() {
 		return
@@ -265,6 +362,9 @@ func ActorPanicInc() {
 }
 
 // ActorRejectedAdd 信箱背压拒绝计数（满队列拒绝新消息，旧消息保留）。
+//
+// 用 Add(n) 而非 Inc()：一次拒绝可能批量上报（分片循环攒了一轮
+// 的拒绝数），Add 支持一次性加 N。
 func ActorRejectedAdd(n int64) {
 	if !enabled.Load() {
 		return
@@ -275,6 +375,9 @@ func ActorRejectedAdd(n int64) {
 }
 
 // ActorCountAdd 存活 Actor 数变化。
+//
+// delta 可正可负（上线/下线），是进程级单 Gauge（无 label）——
+// 按分片拆没有意义，Actor 总数才是容量信号。
 func ActorCountAdd(delta float64) {
 	if !enabled.Load() {
 		return
@@ -284,6 +387,8 @@ func ActorCountAdd(delta float64) {
 
 // ============================ Flusher ============================
 
+// flush 子系统指标：供 pkg/flush 分片落库与 20.3 告警项使用。
+// lag_seconds 是核心告警源（落库延迟超过 2 个周期即触发）。
 var (
 	flushDirty    *prometheus.GaugeVec
 	flushDuration *prometheus.HistogramVec
@@ -293,6 +398,10 @@ var (
 	flushTomb     *prometheus.CounterVec
 )
 
+// registerFlush 注册落库指标（按 shard 标签拆分各分片）。
+//
+// duration 桶覆盖 5ms~5s：单分片单轮落库正常在百 ms 级，超过 1s
+// 说明数据库侧已吃力（或 batch 过大），是需要扩容/降配的信号。
 func registerFlush() {
 	flushDirty = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "flush", Name: "dirty_entities",
@@ -323,6 +432,10 @@ func registerFlush() {
 }
 
 // FlushTombstone 墓碑删除计数。
+//
+// result 三态：ok（删除成功）/ fail（失败回填重试）/ dropped
+// （未注入 DeleteFn 被丢弃）——dropped 持续上涨说明删除链路没接，
+// 数据只删内存不删库，属于必须修通的配置问题。
 func FlushTombstone(shard int, result string, n int) {
 	if !enabled.Load() {
 		return
@@ -331,6 +444,9 @@ func FlushTombstone(shard int, result string, n int) {
 }
 
 // FlushDirty 设置分片脏实体数。
+//
+// 每轮 flush 后重设（当前值语义）；持续高位不降 = 落库吞吐跟不上
+// 写入速度，是 20.3 的容量告警输入。
 func FlushDirty(shard, n int) {
 	if !enabled.Load() {
 		return
@@ -339,6 +455,9 @@ func FlushDirty(shard, n int) {
 }
 
 // FlushObserve 单轮落库耗时。
+//
+// 无 shard 标签：耗时分布按进程聚合更有意义（分片级噪音大），
+// 需要分片下钻时看 duration 的分位数 + dirty 指标交叉分析。
 func FlushObserve(d time.Duration) {
 	if !enabled.Load() {
 		return
@@ -347,6 +466,9 @@ func FlushObserve(d time.Duration) {
 }
 
 // FlushRows 落库行数（ok/fail）。
+//
+// 只累计 ok 分支：失败行数由 FlushFail 按轮次计数，两个指标口径
+// 不同（行 vs 轮），混在一个 Counter 里会算错速率。
 func FlushRows(ok bool, n int) {
 	if !enabled.Load() {
 		return
@@ -358,6 +480,9 @@ func FlushRows(ok bool, n int) {
 }
 
 // FlushFail 落库失败。
+//
+// 同时把 lag 归零重算：失败时刻即「新起算点」，否则 lag 会在
+// 持续失败中越拖越大、失去「距上次成功」的语义。
 func FlushFail(shard int) {
 	if !enabled.Load() {
 		return
@@ -368,6 +493,9 @@ func FlushFail(shard int) {
 }
 
 // FlushLag 设置落库延迟（秒）。
+//
+// 调用方（flusher.runShard）传入 now-lastSuccess；本函数只负责
+// 落值。告警规则：lag > 2×interval 即触发（20.3）。
 func FlushLag(shard int, seconds float64) {
 	if !enabled.Load() {
 		return
@@ -383,6 +511,11 @@ var (
 	channelErr     *prometheus.CounterVec
 )
 
+// registerChannel 注册 Channel 池指标（gateway ↔ backend 的长连接池）。
+//
+// streams 是「当前活跃流」（有界资源，上限 2000），pool_size 是
+// 「池内物理连接数」——两个数接近上限说明需要扩容池，错误计数
+// 上涨说明 backend 侧不健康。
 func registerChannel() {
 	channelStreams = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "channel", Name: "streams",
@@ -400,6 +533,9 @@ func registerChannel() {
 }
 
 // ChannelStreams 活跃 stream 数。
+//
+// 由池按周期重设（当前值语义）；接近 2000 上限时应告警——
+// 再涨会被动拒绝新流，表现为玩家连不上。
 func ChannelStreams(n int) {
 	if !enabled.Load() {
 		return
@@ -416,6 +552,9 @@ func ChannelPoolSize(n int) {
 }
 
 // ChannelError 建流/发送失败。
+//
+// op 是封闭枚举（dial/send/recv 等），低基数；按 op 拆分可定位
+// 失败发生在建链还是收发阶段。
 func ChannelError(op string) {
 	if !enabled.Load() {
 		return
@@ -430,6 +569,11 @@ var (
 	crossSettled *prometheus.CounterVec
 )
 
+// registerCross 注册跨服房间指标（center/cross 进程）。
+//
+// rooms 按 state 标签拆分（等待/进行中/结算中），settled 按 reason
+// 拆分（all_reported/timeout/closed）——timeout 占比是跨服链路
+// 健康度的直接信号（timeout 多说明有节点不上报）。
 func registerCross() {
 	crossRooms = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "cross", Name: "rooms",
@@ -451,6 +595,9 @@ func CrossRooms(state string, n int) {
 }
 
 // CrossSettled 结算计数。
+//
+// reason=timeout 的持续上涨意味着跨服节点失联或变慢，需要结合
+// 各 game 服的 flush/kafka 指标联合排查。
 func CrossSettled(reason string) {
 	if !enabled.Load() {
 		return
@@ -462,6 +609,10 @@ func CrossSettled(reason string) {
 
 var loginPreload *prometheus.HistogramVec
 
+// registerLogin 注册登录预加载耗时（login/game 进程共用）。
+//
+// 桶覆盖 1ms~5s：20.1 目标 P99 < 2s，2s 处有桶边界；按 result
+// 拆分（ok/error）避免失败重试把 P99 抬失真。
 func registerLogin() {
 	loginPreload = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: Namespace, Subsystem: "login", Name: "preload_duration_seconds",
@@ -472,6 +623,9 @@ func registerLogin() {
 }
 
 // LoginPreloadObserve 记录一次预加载耗时。
+//
+// ok=false 也要 Observe：失败路径的耗时分布是区分「慢失败」
+// （等超时）与「快失败」（参数错）的依据。
 func LoginPreloadObserve(d time.Duration, ok bool) {
 	if !enabled.Load() {
 		return
@@ -492,6 +646,11 @@ var (
 	idtabBuildDur  *prometheus.HistogramVec
 )
 
+// registerIDTab 注册 ID 表（存在性判断内存集）指标。
+//
+// ready=0 表示该表还在构建，存在性判断回落 MySQL——是「缓存未热」
+// 的明确信号；reconcile_mismatch 是 20.3 告警项：对账不一致说明
+// 缓存与库已漂移，需要触发重建。
 func registerIDTab() {
 	idtabSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "idtab", Name: "size",
@@ -514,6 +673,10 @@ func registerIDTab() {
 }
 
 // IDTabState 上报某张表 ID 集合的状态。
+//
+// size 与 ready 一起 Set（一个调用两指标），保证两者在时间点上
+// 一致——分两次 Set 会让抓取窗口看到「size 已更新但 ready 仍 0」
+// 的矛盾态。
 func IDTabState(table string, size int64, ready bool) {
 	if !enabled.Load() {
 		return
@@ -535,6 +698,9 @@ func IDTabReconcileMismatch(table string) {
 }
 
 // IDTabBuildObserve 记录单表构建耗时。
+//
+// 构建在启动/重建时发生（分钟级也可能），桶到 60s；
+// 耗时突增 = 表数据量异常增长或数据库变慢。
 func IDTabBuildObserve(table string, d time.Duration) {
 	if !enabled.Load() {
 		return
@@ -552,6 +718,11 @@ var (
 	centerIsLeader     prometheus.Gauge
 )
 
+// registerCenter 注册中心服指标（节点/匹配队列/中转/统计序列/选主）。
+//
+// is_leader 是单 Gauge（选主状态进程级唯一，不需要 label）；
+// relay_pending 持续上涨说明中转消息发不出去（backend 不可达），
+// 是跨服链路的先行故障信号。
 func registerCenter() {
 	centerNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "center", Name: "nodes",
@@ -602,6 +773,9 @@ func CenterRelayPending(n int) {
 }
 
 // CenterStatsSeries 设置统计序列数。
+//
+// 序列数 = group × feature 的基数，持续上涨预示内存压力——
+// 应在采集端对 group 基数做上限（高基数同样是指标/内存杀手）。
 func CenterStatsSeries(n int) {
 	if !enabled.Load() {
 		return
@@ -610,6 +784,9 @@ func CenterStatsSeries(n int) {
 }
 
 // CenterIsLeader 设置选主状态。
+//
+// 0/1 而非 true/false：Gauge 只吃 float64，布尔转 0/1 是
+// Prometheus 的惯例（方便直接当开关查询：== 1）。
 func CenterIsLeader(v bool) {
 	if !enabled.Load() {
 		return
@@ -629,6 +806,10 @@ var (
 	kafkaProduced *prometheus.CounterVec
 )
 
+// registerKafka 注册 MQ 指标（pkg/mq 的消费者/生产者共用）。
+//
+// consumer_lag 是 20.3 告警项：lag 持续上涨 = 消费速度跟不上生产，
+// 最终表现为业务延迟（如落库排队）；按 topic 拆分定位哪个主题堵。
 func registerKafka() {
 	kafkaLag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "kafka", Name: "consumer_lag",
@@ -646,6 +827,9 @@ func registerKafka() {
 }
 
 // KafkaLag 设置 topic 消费 lag。
+//
+// 由消费者周期采样上报（非每条消息）——lag 本身是 broker 侧累计值，
+// 重设即可，不需要增减配对。
 func KafkaLag(topic string, lag int64) {
 	if !enabled.Load() {
 		return
@@ -654,6 +838,9 @@ func KafkaLag(topic string, lag int64) {
 }
 
 // KafkaConsumed 消费计数（result: ok/retry/dead）。
+//
+// retry/dead 占比是消息质量信号：dead 上涨说明幂等表或业务
+// 校验持续拒绝，需要人工介入（死信不再自动重投）。
 func KafkaConsumed(topic, result string) {
 	if !enabled.Load() {
 		return
@@ -676,17 +863,44 @@ func KafkaProduced(topic string, ok bool) {
 // ============================ HTTP 端点 ============================
 
 // Server 指标 HTTP 服务（/metrics + /healthz + /readyz）。
+//
+// 三端点分工（k8s 探针语义）：
+//   - /metrics：Prometheus 抓取；
+//   - /healthz：存活探针——进程活着即 200，**不查依赖**，避免中间件
+//     抖动引发重启风暴（重启解决不了 DB/Redis 故障，只会放大）；
+//   - /readyz：就绪探针——依赖（etcd 注册、DB、Redis）可用才 200，
+//     不可用时返回 503 让负载均衡摘流，比「活着但服务不了」更诚实。
+//
+// nil 接收者宽容：所有方法都容忍 s == nil（addr 为空即不启动），
+// 调用方无需到处判空——这是 Go 的常见防御式 API 姿态。
 type Server struct {
-	srv      *http.Server
+	// srv 底层 http.Server（Handler 为上面的 mux）。
+	srv *http.Server
+	// listener 启动时 bind 的监听器；持有它是为了 Addr() 能回报
+	// :0 场景下的实际端口，也为了让 Stop 精确关闭这一个 server。
 	listener net.Listener
 }
 
 // HealthFunc 健康检查函数（返回 nil 表示健康）。
+//
+// 由进程注入（查 DB/Redis/etcd）；被 /readyz 以 2s 超时调用——
+// 超时同样按不健康处理（慢依赖也是不就绪）。
 type HealthFunc func(ctx context.Context) error
 
 // NewServer 创建指标服务。
 //   - addr 为空时不启动（返回 nil, nil）；
 //   - health 返回 nil 表示 ready，非 nil 则 /readyz 返回 503。
+//
+// 流程：先 Listen（bind 失败尽早暴露，比 Serve 时才报错好）→
+// 组 mux 注册三端点 → 组装 Server。
+//
+// Go 细节：
+//   - 返回 (*Server)(nil), nil 的「nil, nil」组合配合下面的 nil 接收者
+//     方法，让「不启用指标服务」的配置路径零分支；
+//   - ReadHeaderTimeout 防 Slowloris 类攻击（只发半截头不发的
+//     慢客户端会占用连接）；
+//   - promhttp.ContinueOnError：单个指标采集出错只跳过该指标，
+//     不让整个 /metrics 失败——一个坏指标不该拖垮全部可观测性。
 func NewServer(addr string, health HealthFunc) (*Server, error) {
 	if addr == "" {
 		return nil, nil
@@ -731,6 +945,14 @@ func NewServer(addr string, health HealthFunc) (*Server, error) {
 }
 
 // Start 启动（非阻塞）。
+//
+// Serve 放进独立 goroutine；ErrServerClosed 是 Shutdown 的正常
+// 返回，用 errors.Is 判定后忽略——把「主动关闭」与「真的服务
+// 失败」区分开。其余错误只记录（_ = err 占位，由调用方需要时
+// 扩展为日志），不拖垮主服务：指标端点挂不影响游戏逻辑。
+//
+// Go 细节：nil 接收者检查让「未启动的 Server」调用 Start 成为
+// 安全的 no-op（NewServer 返回 nil 时调用方常常忘了判空）。
 func (s *Server) Start() {
 	if s == nil {
 		return
@@ -744,6 +966,9 @@ func (s *Server) Start() {
 }
 
 // Addr 返回实际监听地址（addr 传 :0 时用于测试）。
+//
+// :0 让内核自动选端口，测试用本方法拿真实端口拼 URL；
+// nil 安全检查同 Start。
 func (s *Server) Addr() string {
 	if s == nil || s.listener == nil {
 		return ""
@@ -752,6 +977,11 @@ func (s *Server) Addr() string {
 }
 
 // Stop 优雅关闭。
+//
+// Shutdown 等待在途请求处理完再关（区别于暴力 Close）：
+// 进行中的 /metrics 抓取不会被切断。ctx 控制等待上限——
+// 超时未完成则放弃等待返回 error（停机不能无限等一个
+// 卡住的抓取连接）。nil 安全同 Start。
 func (s *Server) Stop(ctx context.Context) error {
 	if s == nil {
 		return nil

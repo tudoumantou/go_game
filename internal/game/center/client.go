@@ -4,6 +4,20 @@
 // （MatchResult / RelayPush / GroupUpdate / KickNode 下发）。
 //
 // 断流后指数退避重连（1s→2s→4s…→30s 封顶），重连后补发 Register + 全量状态（9.2）。
+//
+// 架构职责与协作：battle 模块经 centerMatchAdapter/rankReporter/rankQuerier
+// 三个适配器使用本客户端（server.go 接线）；Handler 接口由 server.go 的
+// centerHandler 实现，把下行指令转成模块调用。
+//
+// 设计取舍：
+//   - 为什么心跳数据用 atomic 而不是锁：SetPlayerNum/SetQPS 由业务侧高频
+//     调用，读侧只有心跳 goroutine——atomic.Int32/Int64 让两侧都无锁；
+//   - 为什么 ready 是 chan struct{} 而不是 bool：多个 goroutine 可能同时
+//     等流就绪，channel 的关闭广播语义天然支持「一次关闭、全员唤醒」，
+//     bool + 轮询要么忙等要么漏唤醒；sync.Once 保证关闭只发生一次
+//     （重复 close channel 会 panic）；
+//   - QueryRank 不走 Report 流而复用 conn 起独立 RPC：查询是请求-响应
+//     语义，塞进单向流需要自己维护 reqID ↔ 响应 的配对，反而更复杂。
 package center
 
 import (
@@ -50,6 +64,8 @@ type Client struct {
 	h        Handler
 	logger   *log.Logger
 
+	// mu 保护 stream/conn 的替换：重连 goroutine 写、Send/QueryRank 读，
+	// 不用 atomic 是因为要同时维护两个字段的一致性
 	mu     sync.RWMutex
 	stream internalv2.CenterService_ReportClient
 	conn   *grpc.ClientConn
@@ -60,6 +76,9 @@ type Client struct {
 	stopOnce  sync.Once
 
 	// 心跳数据（由业务侧更新）
+	//
+	// atomic 而非锁：写侧是业务 goroutine（SetPlayerNum），读侧只有
+	// heartbeatLoop 一个 goroutine，单写单读用原子操作最便宜
 	playerNum atomic.Int32
 	qps       atomic.Int64
 	version   string
@@ -92,6 +111,9 @@ func (c *Client) SetPlayerNum(n int) { c.playerNum.Store(int32(n)) }
 func (c *Client) SetQPS(q int64) { c.qps.Store(q) }
 
 // Start 建流并常驻重连（阻塞至 ctx 取消或 Stop）。
+//
+// 退避只在「真的断过」时翻倍：runOnce 正常返回（ctx 取消）时 err 为 nil，
+// 不会打 Warn 也不会继续退避——循环直接退出。
 func (c *Client) Start(ctx context.Context) {
 	backoff := minBackoff
 	for {
@@ -126,6 +148,9 @@ func (c *Client) Start(ctx context.Context) {
 }
 
 // runOnce 建一次流并跑到断开。
+//
+// 每次重连都新建 ClientConn（不复用旧 conn）：旧 conn 可能处于半开状态，
+// 复用会把上一次的故障带进来；defer Close 保证 attempts 不泄漏连接。
 func (c *Client) runOnce(ctx context.Context) error {
 	conn, err := grpc.NewClient(c.addr,
 		grpc.WithTransportCredentials(insecureCreds()),
@@ -160,6 +185,8 @@ func (c *Client) runOnce(ctx context.Context) error {
 	c.conn = conn
 	c.mu.Unlock()
 
+	// sync.Once 保证 ready 只 close 一次：重连后 Ready() 已为 true，
+	// 无需（也不能）再次关闭 channel
 	c.readyOnce.Do(func() { close(c.ready) })
 	c.logger.Info("center report stream established", "center", c.addr, "node", c.selfID)
 
@@ -170,6 +197,8 @@ func (c *Client) runOnce(ctx context.Context) error {
 	for {
 		cmd, err := stream.Recv()
 		if err != nil {
+			// 只清「自己还是当前流」的标记：期间若已重连过，
+			// c.stream 指向新流，不能把新流误置 nil
 			c.mu.Lock()
 			if c.stream == stream {
 				c.stream = nil
@@ -182,6 +211,9 @@ func (c *Client) runOnce(ctx context.Context) error {
 }
 
 // heartbeatLoop 周期心跳（间隔取服务端期望值的一半，容忍一次丢失）。
+//
+// goroutine 生命周期：随本次 runOnce 的 stream 生死——stream 断开后
+// Send 必失败并 return；ctx/stopCh 取消时同样退出，不会泄漏。
 func (c *Client) heartbeatLoop(ctx context.Context, stream internalv2.CenterService_ReportClient) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -208,6 +240,9 @@ func (c *Client) heartbeatLoop(ctx context.Context, stream internalv2.CenterServ
 }
 
 // dispatch 分发下行指令。
+//
+// 只在本 goroutine（runOnce 的 Recv 循环）内调用，Handler 实现不需要
+// 考虑并发；每个分支判 nil 是因为 oneof 的 payload 可能显式为 nil。
 func (c *Client) dispatch(cmd *internalv2.CenterCommand) {
 	if cmd == nil || c.h == nil {
 		return
@@ -237,6 +272,9 @@ func (c *Client) dispatch(cmd *internalv2.CenterCommand) {
 }
 
 // Send 上报一条消息（流未就绪返回错误，调用方决定是否降级）。
+//
+// RLock 只保护「取 stream」这一下：stream.Send 在锁外执行，否则慢对端
+// 会把所有上报方堵死在锁上。
 func (c *Client) Send(rep *internalv2.NodeReport) error {
 	c.mu.RLock()
 	stream := c.stream
@@ -322,6 +360,9 @@ func (c *Client) SendFeature(groupID, feature string, metrics map[string]int64) 
 }
 
 // Ready 流是否已建立过。
+//
+// 语义是「曾经就绪」而非「此刻就绪」：重连窗口内 Ready() 仍为 true，
+// 调用方（battle 的 Available）应容忍短时不可用，由 Send 的错误兜底。
 func (c *Client) Ready() bool {
 	select {
 	case <-c.ready:

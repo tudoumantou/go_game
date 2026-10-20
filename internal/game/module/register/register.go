@@ -5,6 +5,11 @@
 // 未注册的模块状态会拒绝落库 —— 这是刻意的：宁可整批回滚，也不静默丢数据。
 //
 // 新增玩法时在这里补一行空白导入即可，不需要改 writebehind 或 flusher 的实现。
+//
+// Go 知识点：下面是「空白导入」（_ "pkg"）——只执行目标包的 init，
+// 不引入任何标识符。各玩法包在 init 里调 writebehind.RegisterFlat，
+// 把「Ext 槽位名 → 表行类型 → 落库函数」登记进全局注册表，这正是
+// 「注册表模式 + init 副作用」的典型用法。
 package register
 
 import (

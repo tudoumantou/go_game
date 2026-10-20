@@ -6,6 +6,11 @@
 //
 // 选主用 etcd 的 concurrency.Election（基于租约 + 前缀比较），
 // leader 失联时租约过期 → 其余实例自动抢主，回调通知上层切换状态。
+//
+// 协作关系：本包只依赖 etcd client，不反向依赖 center 的任何子系统；
+// center 通过 onChange 回调把「成为主/失去主」接到归档/调度/里程碑的
+// isLeader 开关上，依赖方向无环。IsLeader 用 atomic 无锁读，
+// 供 30s 一次的 tick 循环高频查询。
 package leader
 
 import (
@@ -22,6 +27,7 @@ import (
 )
 
 // DefaultKey 默认选主 key。
+// 该 key 下挂竞选者条目（按创建 revision 排序比大小），换 key 等于换一套竞选组。
 const DefaultKey = "/game_study/leader/center"
 
 // Election 选主管理器。
@@ -29,6 +35,12 @@ const DefaultKey = "/game_study/leader/center"
 // 基于 etcd concurrency.Election（租约 + 前缀比较）：抢到主的实例把 selfID
 // 写入选主 key，租约到期自动让位。isLeader 用 atomic.Bool 暴露供无锁读取；
 // 回调只在状态变化时触发，避免网络抖动导致上层反复切换。
+//
+// 字段分两组：
+//   - 配置（New 之后不变）：client/key/selfID/ttl/logger/onChange；
+//   - 运行时：mu 保护 session/election 的读写（LeaderID/Resign 与 campaign
+//     并发访问）；isLeader 用 atomic 供高频无锁读取；stopOnce 保证 stopCh
+//     只关一次——对已关闭的 channel 再 close 会直接 panic。
 type Election struct {
 	client   *clientv3.Client
 	key      string
@@ -50,6 +62,7 @@ type Election struct {
 //
 // Key 为 etcd 选主 key（空用 DefaultKey）；SelfID 应稳定唯一（推荐
 // StatefulSet Pod 名），etcd 侧才能把重启前后的竞选者视为同一个参与者。
+// OnChange 在状态翻转时调用，可能在任意 goroutine 触发，实现方需自行保证线程安全。
 type Config struct {
 	Key      string
 	SelfID   string
@@ -61,6 +74,8 @@ type Config struct {
 //
 // Key/TTL 为空或非正时落默认值（DefaultKey / 10s）。返回的 Election 尚未
 // 参与竞选，需调用 Run 才会抢主。
+// stopCh 在 New 里就建好：Stop 可能在 Run 之前被调用（启动即关闭的场景），
+// 迟一点创建会让 Stop 空转甚至 panic。
 func New(client *clientv3.Client, cfg Config, logger *log.Logger) *Election {
 	if cfg.Key == "" {
 		cfg.Key = DefaultKey
@@ -85,6 +100,9 @@ func New(client *clientv3.Client, cfg Config, logger *log.Logger) *Election {
 //
 // 竞选中断（session 过期/etcd 故障）时按指数退避重试，上限 30s：etcd
 // 抖动期间不疯狂重连，恢复后又能及时抢回。ctx 取消或 Stop 时返回。
+//
+// 循环结构：开头非阻塞 select 查退出信号 → campaign 阻塞到任期结束 →
+// 退避等待 → 回到开头。campaign 返回 nil 只可能是主动退出，错误则走退避。
 func (e *Election) Run(ctx context.Context) error {
 	backoff := time.Second
 	for {
@@ -97,6 +115,8 @@ func (e *Election) Run(ctx context.Context) error {
 		}
 
 		err := e.campaign(ctx)
+		// ctx.Err() == nil 才记日志：主动取消时 campaign 返回错误是预期内的，
+		// 记了只会误导排查（把正常退出当故障）
 		if err != nil && ctx.Err() == nil {
 			e.logger.Warn("leader campaign broke, retrying",
 				"self", e.selfID, "backoff", backoff.String(), "err", err)
@@ -110,6 +130,8 @@ func (e *Election) Run(ctx context.Context) error {
 		case <-time.After(backoff):
 		}
 		if backoff < 30*time.Second {
+			// 指数退避封顶 30s：etcd 长时间故障时避免间隔无意义拉长，
+			// 恢复后最多等 30s 即可抢回主
 			backoff *= 2
 		}
 	}
@@ -121,6 +143,10 @@ func (e *Election) Run(ctx context.Context) error {
 // 随后阻塞等待三种结局——ctx 取消/Stop（主动让位）或 session.Done
 // （租约过期被动下台）。session 过期不是错误而是正常轮转：交回控制权
 // 由 Run 的退避重试循环接手。
+//
+// defer 顺序（LIFO）：后注册的 session.Close 先执行不到——实际是先跑
+// setLeader(false)（上层先看到失主），函数返回前才释放 etcd 租约，
+// 避免「回调还没发出就丢租约」的窗口。
 func (e *Election) campaign(ctx context.Context) error {
 	session, err := concurrency.NewSession(e.client, concurrency.WithTTL(int(e.ttl)), concurrency.WithContext(ctx))
 	if err != nil {
@@ -139,11 +165,15 @@ func (e *Election) campaign(ctx context.Context) error {
 	}
 
 	e.setLeader(true)
+	// defer 保证任何退出路径（含 panic 后的正常返回）都发出失主回调；
+	// 先 true 后注册 false，LIFO 下 false 先执行，配对完整
 	defer e.setLeader(false)
 
 	// 阻塞至租约失效 / ctx 取消
 	select {
 	case <-ctx.Done():
+		// 主动退出用 Background 做 Resign：ctx 已取消，让位请求必须还能
+		// 发出去并等 etcd 响应，否则其他实例要等满一个 TTL 才能抢主
 		_ = election.Resign(context.Background())
 		return ctx.Err()
 	case <-e.stopCh:
@@ -156,12 +186,18 @@ func (e *Election) campaign(ctx context.Context) error {
 }
 
 // IsLeader 当前是否为主。
+// atomic.Bool.Load 无锁：归档/调度/里程碑的 tick 循环高频轮询，
+// 加锁会把选主状态变成热点。读到的是「最近一次确认」的近似值，
+// 短暂滞后（租约已过期但回调未到）由各任务的幂等设计兜底。
 func (e *Election) IsLeader() bool { return e.isLeader.Load() }
 
 // LeaderID 查询当前 leader（用于诊断）。
 //
 // 返回 etcd 选主 key 当前的值（即 leader 的 SelfID）。竞选未开始或尚无
 // leader 时返回错误，调用方应把错误当作「未知」而非「无主」。
+//
+// 实现上先拷贝 election 指针再调用：etcd 的 Leader() 是阻塞 RPC，
+// 持锁等待会把 Resign/Stop 全部堵住。
 func (e *Election) LeaderID(ctx context.Context) (string, error) {
 	e.mu.Lock()
 	election := e.election
@@ -183,6 +219,9 @@ func (e *Election) LeaderID(ctx context.Context) (string, error) {
 //
 // 先 Resign 再关 session：顺序反了会让租约直接过期，其他实例要等一个
 // TTL 才能抢主，滚动重启期间的有主任务空窗更长。重复调用安全。
+//
+// 恒返回 nil：让位是尽力而为，关闭流程不应被它卡住（底层错误已由
+// etcd client 内部记录）。
 func (e *Election) Resign(ctx context.Context) error {
 	e.mu.Lock()
 	election := e.election
@@ -200,6 +239,7 @@ func (e *Election) Resign(ctx context.Context) error {
 }
 
 // Stop 停止参与选举。
+// sync.Once 包住 close：Run 与外部可能并发调用，重复 close channel 会 panic。
 func (e *Election) Stop() {
 	e.stopOnce.Do(func() { close(e.stopCh) })
 }
@@ -209,6 +249,9 @@ func (e *Election) Stop() {
 // Swap 返回旧值：与目标相同说明是重复设置（重试路径常见），直接返回不
 // 触发回调——上层（归档/调度）以回调为唯一切换信号，重复回调会导致
 // 任务循环空转重启。
+//
+// 日志与回调都只发一次：etcd 抖动时状态可能高频翻转，去重是刚需；
+// logger/onChange 都可为 nil（测试构造半成品 Election 的场景）。
 func (e *Election) setLeader(v bool) {
 	if e.isLeader.Swap(v) == v {
 		return

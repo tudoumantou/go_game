@@ -3,6 +3,14 @@
 // 状态（进度 + 领取事实）整体放在玩家快照的 Ext["quest"] 里：领奖时改内存、
 // 与道具经验一起提交，Redis CAS 失败则整批回滚（契约见 docs/R2.1-缓存原子变更契约.md）。
 // 不再直接写 MySQL 业务事实。
+//
+// 架构职责：任务进度推进 + 领奖。任务列表由 quest.xml 配置派生，
+// 模块只存「接取/进度/领取」三态，不存任务定义。
+// 事件订阅：消费方（EventAware）。监听 kill/use_item/copy_pass 等事件，
+// 按配置 Col2 匹配后推进进度。
+// 配置表：quest.xml（Col1=名称，Col2=监听事件类型，Col3=目标次数）。
+// 懒初始化：未接取的任务在 Records map 里不存在，接取时才建键；
+// 列表请求把「配置全集」与「已有记录」join 后下发。
 package quest
 
 import (
@@ -21,6 +29,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "quest"
 
 // 协议号（4.9：7101/7102 列表，7103/7104 接取，7105/7106 领奖）。
@@ -33,7 +42,7 @@ const (
 	msgIDClaimResp  = codec.MsgQuestClaimResp
 )
 
-// 业务码（4.10）。
+// 业务码（4.10）：任务段 7101-7105。
 const (
 	codeOK              int32 = 0
 	codeQuestNotExist   int32 = 7101
@@ -44,6 +53,10 @@ const (
 )
 
 // 任务状态（与快照内 JSON 一致）。
+//
+// Go 知识点：这是一组「状态机常量」——显式赋值而非 iota，
+// 因为取值同时是线上 JSON 契约（旧快照里躺着的数字），
+// 一旦改成 iota 自动编号，历史数据全部错位。
 const (
 	statusDoing   int32 = 0 // 进行中
 	statusDone    int32 = 1 // 已完成（可领奖）
@@ -61,6 +74,9 @@ type Record struct {
 }
 
 // Data 是任务模块的私有状态：quest_id -> 进度与领取事实。
+//
+// 「没接取」用「map 里没有这个键」表达，而不是 Status=-1——
+// 少一种状态，领取事实的判定（claimed）就不会有第三态。
 type Data struct {
 	Quests map[int32]Record `json:"quests"`
 }
@@ -71,6 +87,9 @@ func init() {
 }
 
 // validate 落库前校验状态取值与进度范围，坏数据整批回滚。
+//
+// Status 上界是 statusClaimed：超范围说明快照被改坏，
+// 宁可这批写回失败，也不把非法状态带进数据库。
 func validate(row *model.PlayerQuest) error {
 	d, err := decode(row)
 	if err != nil {
@@ -127,6 +146,8 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 func (m *Module) OnSave(context.Context) error { return nil }
 
 // OnLogin 实现 module.Module。
+//
+// 不做预加载：任务数据随 Ext 懒加载，列表请求时才解码 JSON。
 func (m *Module) OnLogin(*module.Context) error { return nil }
 
 // OnLogout 实现 module.Module。
@@ -139,9 +160,15 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 //
 // 一次事件只解析一次状态、只写回一次；进度与状态都在内存里改，
 // 快照提交失败时随整条消息回滚。
+//
+// Go 知识点：EventAware 是可选接口，Registry 用类型断言探测
+// （见 module.go DispatchEvent）——本模块实现它即「订阅全部事件」，
+// 事件过滤在函数体内按 cfg.Col2 做。
 func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 	d, err := load(ctx.State)
 	if err != nil {
+		// 状态损坏只告警不抛错：OnEvent 没有返回值，
+		// 不能让一个坏任务把整条业务消息的响应搞失败。
 		m.warn("quest state load failed", ctx, err)
 		return
 	}
@@ -158,6 +185,8 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 		}
 		target := int32(cfg.Col3)
 		next := rec.Progress + int32(evt.Delta)
+		// 到达目标即置完成态并截断：超额计数没有意义，
+		// 截断还能防止 int32 被恶意大 Delta 冲爆。
 		if next >= target {
 			next = target
 			rec.Status = statusDone
@@ -175,6 +204,10 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 }
 
 // onList 任务列表（未接/进行中/可领奖/已领奖四态）。
+//
+// 注意内部 status（0/1/2）与协议 status（0-3）是两套编码：
+// 内部没有「未接」状态（用键不存在表达），协议需要显式 0，
+// 所以这里做一次映射，而不是把内部状态直接下发。
 func (m *Module) onList(ctx *module.Context) error {
 	resp := &gamev1.QuestListResp{Code: codeOK}
 	d, err := load(ctx.State)
@@ -209,6 +242,9 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onAccept 接取任务。
+//
+// 已领奖的任务允许重新接取（日常任务的设计前提）：Status==claimed
+// 时覆盖为 doing 并清零进度，实现「每日刷新」而不需要删键。
 func (m *Module) onAccept(ctx *module.Context, body []byte) error {
 	var req gamev1.QuestAcceptReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -272,6 +308,7 @@ func (m *Module) onClaim(ctx *module.Context, body []byte) error {
 	expGain := int64(cfg.Col3) * 100
 	itemCount := int64(cfg.Col3) * 10
 	grants := []module.ItemGrant{{ItemID: 1001, Count: itemCount}}
+	// 先预检容量：满包时整个领取被拒，不会出现「状态已置领、道具没发」。
 	if !ctx.State.CanHold(grants) {
 		resp.Code = codeBagFull
 		return reply(ctx, msgIDClaimResp, resp)
@@ -353,6 +390,9 @@ func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
 }
 
 // warn 统一告警入口（logger 可为 nil）。
+//
+// logger 判空是依赖注入的常见形态：测试传 nil 也不 panic，
+// 生产由组装层注入真实 logger。
 func (m *Module) warn(msg string, ctx *module.Context, err error) {
 	if m.logger != nil {
 		m.logger.Warn(msg, "player_id", ctx.State.PlayerID(), "err", err)

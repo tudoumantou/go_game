@@ -6,6 +6,14 @@
 // 幂等靠状态本身：LastDay 与奖励在同一次快照 CAS 里提交，重连、换服、
 // 进程重启都不会重复发。不占用 AppliedGrants —— 那是订单级业务键的地盘，
 // 每天一个键会让快照无限膨胀（见 docs/R2.1-缓存原子变更契约.md）。
+//
+// 架构职责：登录时自动发奖（无客户端协议）。这是「OnLogin 侧写模块」的
+// 范本——没有 MsgIDs，逻辑全部挂在登录钩子上。
+// Ext 槽位：player_login（LastDay + Streak 两列）。
+// 事件订阅：无。
+// 配置表：login_reward.xml（col1=第几天，col2="item_id,count"）。
+// 懒初始化：从未登录过返回零值 Data（LastDay=0 不等于任何自然日序号），
+// 首次登录才产生第一行记录。
 package loginreward
 
 import (
@@ -26,9 +34,13 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "login"
 
 // businessZone 固定 UTC+8：与签到共用同一套业务日口径。
+//
+// 用 FixedZone 而不是 LoadLocation：不依赖容器里有没有 tzdata，
+// 也不会因系统时区变化改变「今天」的判定。
 var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // Data 是登录礼包的私有状态。
@@ -39,6 +51,9 @@ var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 //
 // 两者与道具在同一次快照 CAS 提交，是本模块唯一的幂等依据——
 // 刻意不占用 AppliedGrants：每天一个业务键会让 applied_grants 无限膨胀。
+//
+// Go 知识点：零值即合法初始态（LastDay=0 表示「从未发放」），
+// 所以 load 对空行直接返回 &Data{}，不需要额外的 initialized 标志位。
 type Data struct {
 	LastDay int64 `json:"last_day"`
 	Streak  int32 `json:"streak"`
@@ -50,6 +65,8 @@ func init() {
 }
 
 // validate 落库前校验：天数与连续计数不能为负。
+//
+// 零值合法（未发放过），负数一定是数据损坏。
 func validate(row *model.PlayerLogin) error {
 	if row.LastDay < 0 || row.Streak < 0 {
 		return fmt.Errorf("invalid login state: day=%d streak=%d", row.LastDay, row.Streak)
@@ -60,10 +77,13 @@ func validate(row *model.PlayerLogin) error {
 // Module 登录礼包模块（无协议：登录时自动发放）。
 type Module struct {
 	logger *log.Logger
-	now    func() time.Time
+	now    func() time.Time // 时钟可注入：测试跨日/断签边界，生产用 time.Now
 }
 
 // New 的可选时钟用于测试跨日与断签；生产默认服务器时间。
+//
+// Go 知识点：clock ...func() time.Time 是「可选依赖」的惯用法——
+// 可变参数 + nil 检查，比再提供一个 NewWithClock 更省 API 面积。
 func New(logger *log.Logger, clock ...func() time.Time) *Module {
 	m := &Module{logger: logger, now: time.Now}
 	if len(clock) > 0 && clock[0] != nil {
@@ -79,6 +99,9 @@ func (m *Module) Name() string { return stateKey }
 func (m *Module) MsgIDs() []uint32 { return nil }
 
 // Init 启动期校验配置可用。
+//
+// 配置错误在这里暴露而不是玩家登录时：启动期失败会中断发布，
+// 线上失败则影响每个登录玩家——失败要早、要响。
 func (m *Module) Init(*module.Context) error {
 	if len(gamedata.LoginRewardCfgList()) == 0 {
 		return fmt.Errorf("login_reward.xml is empty")
@@ -95,6 +118,9 @@ func (m *Module) Init(*module.Context) error {
 }
 
 // OnMessage 实现 module.Module：不处理任何协议。
+//
+// 走到这里说明路由配错了（Registry 只按 MsgIDs 分发，而本模块返回 nil），
+// 返回错误让问题在测试/监控里暴露，而不是静默吞掉。
 func (m *Module) OnMessage(*module.Context, uint32, []byte) error {
 	return fmt.Errorf("loginreward: no client protocol expected")
 }
@@ -105,6 +131,7 @@ func (m *Module) OnSave(context.Context) error { return nil }
 // OnLogin 发放当日登录礼包。
 //
 // 重连会再次触发 OnLogin，但 LastDay 已是今天时直接返回，不会重复发奖。
+// 这是本模块幂等的全部机制：状态即事实，不需要额外业务键。
 func (m *Module) OnLogin(ctx *module.Context) error {
 	day := businessDay(m.now())
 	d, err := load(ctx.State)
@@ -129,10 +156,14 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 		return nil
 	}
 	// 满包时不前进状态：下次登录会重新发放，不会吞掉当天奖励。
+	// 与 quest/copy 的「满包拒绝」不同：那边是玩家主动重试，
+	// 这里连「重试入口」都没有，只能靠状态不前进来保奖励。
 	if !ctx.State.CanHold(grants) {
 		m.warn("login reward deferred: bag full", ctx, module.ErrBagFull)
 		return nil
 	}
+	// save 与 AddItem 都只改内存，同一次快照 CAS 提交：
+	// CAS 失败则「已发当天」的事实与道具一起回滚，不会吞奖。
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
@@ -167,6 +198,11 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 func (m *Module) OnLogout(*module.Context) error { return nil }
 
 // rewardForStreak 取连续第 streak 天的奖励；超过最大档按最后一档发。
+//
+// Go 知识点：先 make+copy 再排序，是因为 gamedata.LoginRewardCfgList()
+// 返回的是配置包的内部切片——直接 sort.Slice 会把它按 Col1 重排，
+// 污染所有后续读取方。copy 出私有副本再排序，是「不信任外部切片
+// 所有权」的标准防护（与共享底层数组相关的经典坑）。
 func rewardForStreak(streak int32) ([]module.ItemGrant, error) {
 	cfgs := make([]gamedata.LoginRewardCfg, len(gamedata.LoginRewardCfgList()))
 	copy(cfgs, gamedata.LoginRewardCfgList())
@@ -174,6 +210,8 @@ func rewardForStreak(streak int32) ([]module.ItemGrant, error) {
 	if len(cfgs) == 0 {
 		return nil, fmt.Errorf("login_reward.xml is empty")
 	}
+	// 默认取最大档：连续天数超过配置上限时「按最大档发」，
+	// 老玩家不会被惩罚。
 	pick := cfgs[len(cfgs)-1]
 	for _, cfg := range cfgs {
 		if cfg.Col1 >= int64(streak) {
@@ -189,6 +227,9 @@ func rewardForStreak(streak int32) ([]module.ItemGrant, error) {
 }
 
 // parseReward 解析 "item_id,count"。
+//
+// 道具必须存在于 item.xml：配置引用不存在的道具要在启动期
+// （Init 调本函数）暴露，而不是发奖时静默发 0 个。
 func parseReward(s string) (module.ItemGrant, error) {
 	parts := strings.Split(s, ",")
 	if len(parts) != 2 {
@@ -209,6 +250,9 @@ func parseReward(s string) (module.ItemGrant, error) {
 }
 
 // businessDay 北京时间自然日序号。
+//
+// 1970-01-01 是第 0 天；LastDay=0 的零值语义因此不等于任何自然日
+// （真正的第 0 天早已过去），可以安全表示「从未发放」。
 func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }
 
 // load 读取登录状态；从未登录过返回零值（LastDay=0 不等于任何自然日序号）。

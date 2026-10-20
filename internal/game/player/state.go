@@ -1,4 +1,30 @@
-// internal/game/player/state.go —— 玩家内存状态
+// internal/game/player/state.go —— 玩家内存状态（唯一可写的数据本体）
+//
+// 架构职责：State 是玩家全部内存数据的单一事实源——Profile/Attr/Items/
+// Ext/appliedGrants 五类资产 + 两套脏标记，所有模块都经由它读写。
+//
+// 协作关系：Actor 持有并单线程操作它；snapshot.go 把它序列化进
+// writebehind.Snapshot（Redis/落库的格式）；模块经 module.Context.State
+// 访问，不直接持有字段。
+//
+// 设计取舍：
+//   - 为什么锁只服务「Actor 外只读」：Actor 内单线程串行，加锁反而拖慢
+//     且掩盖「谁在改」的问题；锁的存在是为了探针/测试/统计这类外部
+//     读者不与写路径竞争（map 并发读写会直接 panic，见下方注释）；
+//   - 为什么属性分三层（baseAttr/attr/bonus）：落库的只有职业基础值，
+//     等级成长每次从 baseAttr 重算（幂等），bonus 登录时由装备模块重算
+//     ——三层分离后，「升级」「换装」「重登」互不污染；
+//   - 为什么 dirty 分模块级与道具级：模块级驱动 flusher 排轮，道具级
+//     决定 Save 写哪几行——粒度不同，混用一张表会要么全量重写要么漏写。
+//
+// DB 列映射（与 snapshot/persist 一一对应）：
+//
+//	profile  → player(name, level, exp, coin, scene_id)
+//	attr     → player_attr(career, hp, mp, atk, def, spd)
+//	items    → player_item(item_id, count)
+//	ext      → 各模块 Persister 的私有表（键 = Persister.Name）
+//	appliedGrants → player_writebehind.applied_grants (JSON)
+//	bonus/dirty*   → 不落库（在线派生状态与调度标记）
 package player
 
 import (
@@ -14,6 +40,12 @@ import (
 type Attr = writebehind.Attr
 
 // State 玩家内存状态（Actor 内单线程访问，外部只读时加锁）。
+//
+// 三层属性的语义与落库边界：
+//
+//	baseAttr：职业初始值（player_attr 行），唯一落库的属性；
+//	attr：    baseAttr + 等级成长，当前生效值，不落库；
+//	bonus：   装备/伙伴加成，登录时重算，不落库（快照刻意不含它）。
 type State struct {
 	playerID      int64
 	profile       module.Profile
@@ -33,6 +65,9 @@ type State struct {
 	// 所有改动都不会落库**，进程崩溃即全部丢失。P4 的 Write-Behind 一直缺这一环。
 	dirtyHook func()
 
+	// mu 保护所有字段。Actor 内串行访问本可不加锁，但探针/测试会在
+	// Actor 外读状态；且 Go 的 map 并发读写会抛不可恢复的
+	// 「concurrent map read and map write」fatal error，必须显式互斥。
 	mu sync.RWMutex
 }
 
@@ -48,6 +83,9 @@ func NewState(playerID int64) *State {
 }
 
 // Ext 返回模块私有状态的副本；未设置过时返回 nil。
+//
+// 返回副本而非原值：模块拿到 raw 后可能改写底层数组，副本保证 State 内
+// 的快照不被外部污染（与 cloneExt 同理）。
 func (s *State) Ext(name string) json.RawMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -70,6 +108,8 @@ func (s *State) SetExt(name string, raw json.RawMessage) {
 	}
 	s.dirty[name] = true
 	s.mu.Unlock()
+	// notifyDirty 在锁外调用：持锁执行外部回调有死锁风险
+	// （回调方若回头读 State 会与 Lock 自锁）
 	s.notifyDirty()
 }
 
@@ -148,6 +188,10 @@ func (s *State) RecalcAttrs() {
 	s.recalcLocked()
 }
 
+// recalcLocked 重算主体（调用方已持锁）。
+//
+// 先拷贝 a := s.baseAttr 再累加：Attr 是值类型，直接改 s.baseAttr 会把
+// 「成长」永久焊进基础值，下次重算重复叠加。
 func (s *State) recalcLocked() {
 	a := s.baseAttr
 	levels := int64(s.profile.Level) - 1
@@ -238,6 +282,8 @@ func (s *State) ClearBonus() {
 	s.bonus = Attr{}
 }
 
+// attrValue 按字符串键取属性值；未知键返回 0（配置错误的兜底，
+// 由调用方表现为「加成无效」而不是 panic）。
 func attrValue(a Attr, key string) int64 {
 	switch key {
 	case "hp":
@@ -389,6 +435,7 @@ func (s *State) RemoveItem(itemID int32, count int64) bool {
 // DirtyItems 返回变更过的道具及其当前数量（0 表示应删除该行）。
 //
 // 落库只需处理这部分，而不是整包重写：背包 50 个道具里通常只有 1-2 个变化。
+// 返回新 map：调用方（persist/grant）会遍历甚至修改它，不能直接给内部 map。
 func (s *State) DirtyItems() map[int32]int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

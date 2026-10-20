@@ -9,6 +9,10 @@
 //
 // 为什么不用 Redis 直接做计数器：每个 rank/feature 上报都走 Redis 会增加中心服的
 // 网络往返；内存聚合后批量快照，写入成本从 O(N 条上报) 降到 O(1 次快照)。
+//
+// 多实例协作（R8.4）：各实例快照写 Redis Hash 的**不同 field**（field=实例ID），
+// 读取时（MergedMetrics）逐 field 求和——合并而不是覆盖。早期实现用窗口名
+// 做 field，多实例互相抹掉对方的数据，落库值偏小且无法察觉。
 package stats
 
 import (
@@ -39,6 +43,10 @@ const (
 //	5m  → 60 个 5s 桶
 //	1h  → 60 个 1m 桶
 //	1d  → 24 个 1h 桶
+//
+// 统一「约 60 桶」的形状：内存占用可预测（每 series 约 200 个 int64），
+// 桶数少则粒度粗、多则浪费——60 桶 × 4 窗口是精度与内存的平衡点。
+// 匿名结构体做 spec 值：轻量、无需再命名一个类型。
 var windowSpec = map[string]struct {
 	bucket time.Duration
 	count  int
@@ -50,6 +58,10 @@ var windowSpec = map[string]struct {
 }
 
 // Series 一个 (group, feature) 的时间序列（多窗口）。
+//
+// 自带一把 Mutex 而不是共用 Service 的大锁：不同 (group, feature) 的
+// 上报彼此无关，按 series 加锁让并发上报真正并行——锁粒度从
+// 「整个服务」细到「一条序列」，QPS 上限提高一个量级。
 type Series struct {
 	mu      sync.Mutex
 	windows map[string]*ring
@@ -58,6 +70,11 @@ type Series struct {
 }
 
 // ring 环形桶。
+//
+// 定长数组 + 取模寻址：O(1) 写入、O(1) 内存，永不增长。
+// slotTS 是「槽位卫生」的关键：数组复用导致旧槽里可能躺着上个周期的
+// 数据，靠「槽位记录的时间片 ≠ 当前时间片」判定过期并清零——
+// 没有它，本周期的查询会把上周期的残值加进来。
 type ring struct {
 	bucketSize time.Duration
 	buckets    []int64
@@ -78,6 +95,8 @@ func newRing(spec struct {
 }
 
 // add 累加到当前时间片；跨片时先把该槽位清零。
+// slot = 秒数 / 桶宽，idx = slot % count：同一物理槽位每 count 个
+// 时间片轮回一次；slotTS 不匹配说明这是新一轮的第一笔，先清零再累加。
 func (r *ring) add(now time.Time, delta int64) {
 	slot := now.Unix() / int64(r.bucketSize.Seconds())
 	idx := int(slot % int64(len(r.buckets)))
@@ -90,6 +109,9 @@ func (r *ring) add(now time.Time, delta int64) {
 }
 
 // sumWindow 汇总 [since, now] 内的累计值。
+// 从当前片往回数 slots 个：slotTS 对不上的槽直接跳过——
+// 环形数组里「位置有值」不等于「时间属于窗口内」，这是环形缓冲的
+// 经典陷阱，靠每槽带时间戳解决。
 func (r *ring) sumWindow(now time.Time, dur time.Duration) int64 {
 	cur := now.Unix() / int64(r.bucketSize.Seconds())
 	slots := int64(dur / r.bucketSize)
@@ -105,6 +127,11 @@ func (r *ring) sumWindow(now time.Time, dur time.Duration) int64 {
 }
 
 // Service 统计服务。
+//
+// 两级锁：s.mu（RWMutex）保护 series/features 两张 map 的结构
+// （增删 key），每个 Series 自带 mu 保护自己的环形桶。读路径
+// （Query/Features）只碰 s.mu，写路径（Write）短暂持 s.mu 建 series
+// 后即释放，再持 series 级锁累加——不会出现「一次上报堵住所有查询」。
 type Service struct {
 	rdb    redis.UniversalClient
 	logger *log.Logger
@@ -121,6 +148,9 @@ type Service struct {
 
 // SetInstanceID 设置实例标识（center 启动时注入）。为空时退化为 "default"，
 // 单实例部署下行为不变；多实例必须各用不同 ID，否则仍会覆盖。
+//
+// 幂等且忽略空值：启动时序上可能被调用多次（center.Start 里一次），
+// 传空是调用方没拿到 hostname 的情况，保留现值更安全。
 func (s *Service) SetInstanceID(id string) {
 	if id != "" {
 		s.instanceID = id
@@ -138,6 +168,10 @@ func New(rdb redis.UniversalClient, logger *log.Logger) *Service {
 }
 
 // Write 累计一条功能上报（实现 center/rpc.StatsWriter）。
+//
+// ts 为 0 时用本地时钟：上报方（游戏服）可能不填时间戳，此时以
+// 「到达时间」近似——统计是聚合语义，秒级误差可接受。
+// group 空兜底 group-01：与 center 的默认分组一致，避免空 key。
 func (s *Service) Write(rep *internalv2.FeatureReport) {
 	if rep == nil || rep.Feature == "" {
 		return
@@ -169,6 +203,8 @@ func (s *Service) Write(rep *internalv2.FeatureReport) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
 	// 每个 metric 独立累加（metrics 里可能既有计数也有求和）
+	// 注意写的是全部 4 个窗口：一次上报同时喂 1m/5m/1h/1d，
+	// 查询时按需取窗口——用写入时的固定成本换查询时的零计算
 	for _, v := range rep.Metrics {
 		for name := range windowSpec {
 			se.windows[name].add(now, v)
@@ -180,6 +216,10 @@ func (s *Service) Write(rep *internalv2.FeatureReport) {
 // Query 查询统计（实现 center/rpc.StatsQuerier）。
 //
 // 返回每个 (group, feature) 在 [from, to] 内的累计值，按 window=1h 聚合。
+//
+// to 为 0 时用「现在」：调用方（GM 工具）常常只传 from；to 是历史
+// 回溯点（审计用）。先快照 key 列表再逐个处理：避免持锁遍历 map
+// 的同时被 Write 修改（Go map 遍历中增删未定义）。
 func (s *Service) Query(groupID, feature string, from, to int64) []*internalv2.FeatureReport {
 	now := time.Now()
 	if to > 0 {
@@ -210,12 +250,15 @@ func (s *Service) Query(groupID, feature string, from, to int64) []*internalv2.F
 		s.mu.RLock()
 		se := s.series[k]
 		s.mu.RUnlock()
+		// 二次检查：快照与加锁之间该 series 理论上不会消失（没有删除路径），
+		// nil 检查是防御未来的删除逻辑
 		if se == nil {
 			continue
 		}
 
 		se.mu.Lock()
 		// 用 1h 窗口作为「近期累计」的代表值；更长区间需 P15 的 MySQL 归档
+		// sumWindow 会跳过过期槽位：窗口内无数据时返回 0，不是脏值
 		val := se.windows[Window1h].sumWindow(now, time.Hour)
 		last := se.lastTS
 		se.mu.Unlock()
@@ -233,6 +276,10 @@ func (s *Service) Query(groupID, feature string, from, to int64) []*internalv2.F
 // Snapshot 把内存统计写入 Redis（供多实例共享 / GM 跨实例查询）。
 //
 // key 形如 stats:{group}:{feature}，field 为窗口名，value 为当前窗口累计。
+//
+// 用 Pipeline 批量 HSet：每个 series 一条命令，N 个 series 一次往返
+// （pipe.Exec）——快照每 5 分钟一次但 series 可能上百，逐条发会把
+// 中心服与 Redis 间的连接占满。注意实际 field 是实例 ID（见下面注释）。
 func (s *Service) Snapshot(ctx context.Context) error {
 	now := time.Now()
 
@@ -267,12 +314,16 @@ func (s *Service) Snapshot(ctx context.Context) error {
 		// field = 实例 ID，value = 该实例各窗口的 JSON。
 		// 早期实现是 HSet(窗口名 → 值)：多个中心服实例写同一 field 会互相覆盖，
 		// 后写者把先写者的量抹掉，落库值偏小且无法察觉。
+		// JSON 而非多 field：四个窗口一次序列化，读取端一次解析，
+		// 且将来加窗口不用改 Redis 数据结构
 		raw, err := json.Marshal(vals)
 		if err != nil {
 			continue
 		}
 		pipe.HSet(ctx, redisKey, s.instanceOf(), string(raw))
 	}
+	// 空 series 提前返回：pipe.Exec 空管道会直接报错，
+	// 且没数据时不该产生一次 Redis 往返
 	if len(entries) == 0 {
 		return nil
 	}
@@ -302,6 +353,8 @@ func (s *Service) Features() []string {
 }
 
 func splitKey(k string) (groupID, feature string, ok bool) {
+	// 按第一个 '|' 切分：group 或 feature 里含 '|' 时归属于前段，
+	// 约定 group/feature 命名不带 '|'，切分无歧义
 	for i := 0; i < len(k); i++ {
 		if k[i] == '|' {
 			return k[:i], k[i+1:], true
@@ -323,6 +376,9 @@ func (s *Service) instanceOf() string {
 // 每个实例只写自己那份，这里逐个相加——这是 R8.4 要求的「合并而不是覆盖」。
 // 某个实例的 JSON 解析失败只跳过该实例并记日志：宁可少算一份，也不要整体失败
 // 导致所有实例的数据都落不了库。
+//
+// HGetAll 一次取回全部实例的 field：合并是读多写少路径（归档时一次），
+// 一次往返优于逐 field HGet。
 func (s *Service) MergedMetrics(ctx context.Context, groupID, feature string) map[string]int64 {
 	key := fmt.Sprintf("stats:%s:%s", groupID, feature)
 	fields, err := s.rdb.HGetAll(ctx, key).Result()
@@ -345,6 +401,9 @@ func (s *Service) MergedMetrics(ctx context.Context, groupID, feature string) ma
 }
 
 // InstanceCount 某 (group, feature) 的已上报实例数（诊断多实例合并是否生效）。
+// HLen 取 field 数 = 活着的实例数：新实例上线/旧实例停写都会体现在这，
+// 是「合并到底合了几个」的唯一直接证据。Redis 出错返回 0——
+// 诊断接口，调用方（GM）看到 0 会去查 Redis，不会误判成「没数据」。
 func (s *Service) InstanceCount(ctx context.Context, groupID, feature string) int64 {
 	n, err := s.rdb.HLen(ctx, fmt.Sprintf("stats:%s:%s", groupID, feature)).Result()
 	if err != nil {

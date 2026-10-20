@@ -3,6 +3,14 @@
 // 状态只有「已领取天数 + 已领取奖励汇总」，持久化由 FlatPersister 一行注册，
 // 不再有独立的仓储/持久化/日历文件。周切换的清零属于周期回调模块的职责，
 // 本模块不持有时钟锚点、不做定时重置；回调模块上线时调用 Reset 即可。
+//
+// 架构职责：签到信息查询 + 当日领取。与 loginreward 同为「协议少、
+// 规则强」的日历玩法，但周期单位是周（weekday 1-7）而非日。
+// Ext 槽位：player_signin（ClaimedDays + ClaimedRewards 两列 JSON）。
+// 事件订阅：无（签到不消费行为事件，也不产生）。
+// 配置表：signin_reward.xml（day=周几，item_id/count）。
+// 懒初始化：从未签到返回空 Data（Days 空切片）；跨周清零由外部
+// 调用 Reset 完成，读取路径不自动清——这是「模块不持时钟锚点」的取舍。
 package signin
 
 import (
@@ -41,6 +49,9 @@ const (
 )
 
 // businessZone 固定 UTC+8：进程或容器时区不同不该改变「今天周几」。
+//
+// 与 loginreward 同一常量：两个日历玩法必须同口径，否则会出现
+// 「登录礼包按 UTC 已跨天、签到还没跨周」的错位。
 var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // Data 是签到的业务视图：本周已领取天数（1=周一…7=周日）与已领取奖励汇总。
@@ -51,6 +62,10 @@ var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 //
 // 跨周后本结构不会被自动清零——清空由周期回调模块调用 Reset 完成，
 // 这是「模块不持时钟锚点」设计的已知取舍（见 docs/signin.md）。
+//
+// Go 知识点：两个字段都没有 json tag，序列化用 Go 字段名（"Days"/"Rewards"）。
+// 这是历史契约（表里已存的数据按这个键名），补 tag 会让旧快照读不出来，
+// 所以注释里显式记录「无 tag 是故意的」。
 type Data struct {
 	Days    []int32
 	Rewards map[int32]int64
@@ -62,6 +77,8 @@ func init() {
 }
 
 // validate 落库前校验：天数在 1-7，奖励数量为正，坏数据整批回滚。
+//
+// 天数上界 weekDays 同时约束「周序号」语义——8 号不存在于任何一周。
 func validate(row *model.PlayerSignin) error {
 	d, err := decode(row)
 	if err != nil {
@@ -81,6 +98,9 @@ func validate(row *model.PlayerSignin) error {
 }
 
 // Reset 清空签到状态，供周期回调模块在周切换时调用；本模块自身不触发重置。
+//
+// SetExt(key, nil) 是「删除槽位」语义：下次 load 会走 row == nil 分支
+// 返回空 Data，等价于重新初始化，但不需要写一行空记录。
 func Reset(state writebehind.ExtState) { state.SetExt(stateKey, nil) }
 
 // Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
@@ -104,9 +124,15 @@ func (*Module) Name() string     { return stateKey }
 func (*Module) MsgIDs() []uint32 { return []uint32{MsgInfoReq, MsgClaimReq} }
 
 // Rollbackable 签到请求只改内存且可幂等重放，写缓存失败时可以丢弃本次改动。
+//
+// 可重放的底气在 claim：已领过的天会命中 d.has(today) 直接返回，
+// 重放不会第二次发奖——「幂等」让「可回滚」成立，两者是配套的。
 func (*Module) Rollbackable(msgID uint32) bool { return msgID == MsgInfoReq || msgID == MsgClaimReq }
 
 // CacheFailureReply 缓存不可用时返回业务错误码，客户端无需处理通用错误通知。
+//
+// 实现 CacheFailureAware 的收益：错误码用模块自己的 codeSystem，
+// 客户端能显示「签到系统维护中」而不是通用「系统错误」。
 func (*Module) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
 	var out proto.Message
 	var id uint32
@@ -144,6 +170,9 @@ func (*Module) OnLogout(*module.Context) error { return nil }
 
 // OnMessage 协议入口：先解码，再确认缓存权威路径可用（旧直写 MySQL 路径已移除），
 // 然后每个请求只采样一次时钟，防止处理途中跨过周零点。
+//
+// 「只采样一次时钟」是关键正确性细节：若在 has() 判断后重新取时间，
+// 跨过周日 24 点的请求会出现「按旧周几判定已领、按新周几发奖」的错位。
 func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
 	var req proto.Message
 	switch msgID {
@@ -158,6 +187,8 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 		return m.failure(ctx, msgID, err)
 	}
 	if ctx.State == nil || !ctx.CacheEnabled {
+		// 缓存权威路径未就绪时一律拒绝：签到发奖必须走快照 CAS，
+		// 直写路径已移除，没有降级方案——宁可不可用，不可双写。
 		return m.failure(ctx, msgID, fmt.Errorf("signin state unavailable"))
 	}
 	// 每个请求只采样一次，防止处理途中跨周零点。
@@ -184,6 +215,7 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeConfig, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 	}
 	if d.has(today) {
+		// 幂等：重复领取回「已领」状态 + 奖励预览，不再发奖
 		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
 			Already: true, Day: today, Rewards: protoRewards(grants),
 			ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
@@ -193,6 +225,8 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 		current := ctx.State.GetItemCount(g.ItemID)
 		// 持有量已达 int32 上限时不能再发：协议里的 Count 是 int32，
 		// 溢出会变成负数，必须在发奖前拦住。
+		// 这是「协议宽度 < 存储宽度」的经典溢出点：内存是 int64，
+		// 序列化进 proto 会静默截断，所以发奖前显式校验。
 		if current < 0 || g.Count > math.MaxInt32-current {
 			return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 		}
@@ -245,6 +279,9 @@ func (d *Data) has(day int32) bool {
 }
 
 // add 登记领取事实：天数保持升序落库，奖励按道具累加。
+//
+// Days 升序是落库契约：JSON diff 与人工对账时顺序稳定；
+// append 后 sort.Slice 保证这一点（天数最多 7 个，排序成本可忽略）。
 func (d *Data) add(day int32, grants []module.ItemGrant) {
 	if d.Rewards == nil {
 		d.Rewards = make(map[int32]int64, len(grants))
@@ -259,6 +296,10 @@ func (d *Data) add(day int32, grants []module.ItemGrant) {
 }
 
 // weekdayOf 返回北京时间下的周几：1=周一…7=周日。
+//
+// Go 知识点：time.Weekday 的零值是 Sunday（0），与「周一=1」差一天，
+// 所以周日要单独映射成 7；In(zone) 把时间切到固定时区再取 Weekday，
+// 避免服务器 UTC 时把周一算成周日。
 func weekdayOf(now time.Time) int32 {
 	wd := now.In(businessZone).Weekday()
 	if wd == time.Sunday {
@@ -331,6 +372,11 @@ func protoRewards(grants []module.ItemGrant) []*gamev1.SigninReward {
 }
 
 // rewardsForDay 汇总配置里某一天的奖励（同一天可配多种道具）。
+//
+// Go 知识点：先汇总进 map[int32]int64 再按 ItemID 排序输出——
+// map 的 range 顺序随机，直接 append 会让每次领取的奖励顺序不同，
+// 客户端展示会抖动；排序后输出稳定。同时这里做两级溢出防护：
+// 单项 Count 与累计和都不得超过 int32（协议字段宽度）。
 func rewardsForDay(day int32) ([]module.ItemGrant, error) {
 	counts := make(map[int32]int64)
 	for _, cfg := range gamedata.SigninRewardCfgList() {

@@ -1,14 +1,18 @@
-// internal/game/player/actor.go —— 玩家 Actor
-
-// Package player 玩家 Actor 及其状态、缓存路径与持久化的实现。
+// internal/game/player/actor.go —— 玩家 Actor：生命周期、消息分发与场景接线
 //
-// 关键约定：
-//   - 一个玩家一个 Actor，Actor 内单线程处理消息；State 的锁只服务于
-//     「Actor 外的只读访问」（探针/测试），写路径一律发生在消息处理里；
-//   - 缓存权威模式下遵守 R2.1 契约「一次消息 = 一份快照 = 一次 CAS」：
-//     业务 handler 只改内存，提交/回滚/pending 收尾由 cache_actor.go 负责；
-//   - player 包不依赖 scene/gateway：场景连接经 SceneLink 注入、下行经
-//     SendFunc 注入，接线由组装层（internal/game/server.go）完成。
+// 架构职责：
+//   - 每个在线玩家恰好一个 Actor，由 pkg/actor 的 mailbox（有界 channel）+
+//     分片 goroutine 串行化该玩家的全部消息——业务侧因此完全不用加锁，
+//     State 内的 RWMutex 只服务 Actor 外的只读访问（探针/测试）；
+//   - 本文件管「进程编排」：Bind/Unbind/保存/发奖/场景心跳/经验；
+//     缓存权威模式的「克隆 → 业务 → diff → CAS → 回滚/保留」流程在
+//     cache_actor.go，Receive 按 repo.CacheEnabled() 二选一；
+//   - 不依赖 scene/gateway 包：场景连接经 SceneLink 注入、下行经 SendFunc
+//     注入，反向接线由组装层 internal/game/server.go 完成。
+//
+// 设计取舍：为什么发奖/移动等「可能失败的写」必须先克隆再业务，见
+// cache_actor.go 文件头；为什么登录失败要拒绝上线而不是放行半成品
+// Actor，见 onBind 注释。
 package player
 
 import (
@@ -28,10 +32,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// 下行推送协议号（4.9：2011 等级变化）。
+// 下行推送协议号（4.9：2011 等级变化）。数值与客户端协议表绑定，
+// 改动前先确认 Demo 客户端已同步。
 const msgIDLevelInfoNotify uint32 = 2011
 
 // Message 类型常量。
+//
+// 字符串即消息的类型标识：actor.System 不做反射分发，这些常量只用于
+// 日志与测试断言，实际路由靠 Receive 里的类型 switch。
 const (
 	MsgBind   = "player.bind"
 	MsgUnbind = "player.unbind"
@@ -126,6 +134,9 @@ type GrantItemsMsg struct {
 type SendFunc func(sessionID uint64, msgID uint32, body []byte) error
 
 // Actor 玩家 Actor。
+//
+// 约定：全部字段只在 Actor 自己的分片 goroutine 内读写（mailbox 串行化
+// 保证），不存在字段级并发；唯一的例外是 State，它的锁只给外部只读探针。
 type Actor struct {
 	// playerID 只读标识；logger 已携带该字段，排错时无需再翻调用栈。
 	playerID int64
@@ -174,6 +185,8 @@ func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, rep
 	// 任何变更立刻标记落库（12.4.1 ①）：不这样的话在线玩家数据只在离线时才写，
 	// 进程崩溃会丢掉全部在线会话的进度。
 	if onDirty != nil {
+		// 闭包捕获 playerID：State 会被整体替换（setState），但回调永远
+		// 指向同一个玩家，不随 State 实例轮换而失效。
 		state.SetDirtyHook(func() { onDirty(playerID) })
 	}
 	return &Actor{
@@ -193,7 +206,7 @@ func (a *Actor) WithSceneLink(l SceneLink) *Actor {
 	return a
 }
 
-// WithPreloader 注入预加载器（12.6：一次往返拿完全部登录数据）。
+// WithPreloader 注入预加载器（12.6）。
 func (a *Actor) WithPreloader(p *Preloader) *Actor {
 	a.preloader = p
 	return a
@@ -206,6 +219,10 @@ func (a *Actor) State() *State { return a.state }
 //
 // 分发逻辑：缓存权威模式下，纯下行消息（Push/ScenePush/心跳）不参与快照
 // 提交，直接进 receive；其余消息进 receiveCached 的「克隆→业务→CAS」流程。
+//
+// Go 知识点：Receive 由 actor.System 的分片 goroutine 调用，同一 Actor 的
+// 消息在 mailbox channel 上 FIFO 串行——这是「业务无锁」的前提；类型
+// switch 的 default 分支兜住未知消息，避免新增消息类型时静默丢包。
 func (a *Actor) Receive(ctx *actor.Context) {
 	if a.repo.CacheEnabled() {
 		// 纯下行消息不参与「克隆快照 → 提交」流程：它们只读状态、不改状态。
@@ -317,7 +334,8 @@ type SaveMsg struct {
 
 // onBind 登录/重连入口：预加载（仅首次）→ 属性重算 → 模块 OnLogin → 场景同步。
 //
-// 失败即回 BindResult{Code:1}：半成品 Actor 上线比拒绝登录更危险。
+// 失败即回 BindResult{Code:1}：半成品 Actor 上线比拒绝登录更危险——
+// 空状态上一条业务包就能写坏数据，且没有任何报错。
 func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	a.sessionID = msg.SessionID
 	a.online = true
@@ -370,6 +388,10 @@ func (a *Actor) startSceneLink(ctx *actor.Context) {
 //
 // 不做心跳的后果：挂机不动的玩家会被场景的「90 秒无消息」兜底当成幽灵清掉，
 // 但人其实还在线——下一次移动就收到 4005（不在场景中），表现为「原地卡住」。
+//
+// Go 知识点：自调度用 ScheduleOnce 消息而不是 time.Ticker goroutine——
+// 心跳状态活在 Actor 里，不需要额外 goroutine，也就不存在「Actor 停了
+// ticker  goroutine 忘记回收」的泄漏路径；间隔到期前的取消由信箱丢弃兜底。
 func (a *Actor) onSceneHeartbeat(ctx *actor.Context) {
 	if a.online && a.sceneLink != nil {
 		if sceneID := a.state.Profile().SceneID; sceneID > 0 {
@@ -402,6 +424,9 @@ func (a *Actor) setState(state *State) {
 // preload 登录数据加载（12.6）。
 //
 // 优先用 Preloader（5 查询并行 + 超时保护）；未注入时退回逐表串行加载。
+//
+// 三条路径的差别只在「怎么读」：读到的都是全新 State，统一经 setState 挂回
+// dirtyHook；cacheVersion 是后续 CAS 的期望值起点，必须与读到的版本一致。
 func (a *Actor) preload(ctx *actor.Context) error {
 	if a.repo.CacheEnabled() {
 		loadCtx, cancel := context.WithTimeout(context.Background(), DefaultPreloadTimeout)
@@ -493,6 +518,9 @@ func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 }
 
 // onGrantItems 发放奖励（Actor 内单线程执行，无需加锁）。
+//
+// BizID 非空时走「与资产同快照」的 A 类幂等；空 BizID（B 类，主动领取）
+// 由业务自身保证只领一次，键表不记录——否则表会被领取记录无限撑大。
 func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 	if msg.BizID != "" {
 		// A 类幂等（R2.1 §2.2）：键 = source:bizID，与快照同一次 CAS、
@@ -505,6 +533,7 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 			}
 			return
 		}
+		// nil map 写入会 panic，懒初始化；ClaimBiz 同理（state.go）
 		if a.state.appliedGrants == nil {
 			a.state.appliedGrants = make(map[string]bool)
 		}
@@ -523,6 +552,8 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 	}
 	a.logger.Info("grant items", "source", msg.Source, "count", len(msg.Items))
 	if msg.Done != nil && !a.bufferReplies {
+		// bufferReplies 置位时（缓存提交窗口）不回执：结果要等 CAS 落定，
+		// 由 receiveCached 在提交成功后统一回，失败则回 err。
 		msg.Done <- nil
 	}
 }
@@ -559,6 +590,9 @@ func (a *Actor) savePlayer(ctx *actor.Context) error {
 }
 
 // replySave 向调用方回报保存结果；Done 容量应为 1，非阻塞写避免拖住 Actor。
+//
+// Go 知识点：select + default 的非阻塞发送。调用方超时离开后通道无人读，
+// 若用阻塞发送，这条迟到回执会把 Actor 的 goroutine 卡死在下一个消息上。
 func replySave(done chan error, err error) {
 	if done == nil {
 		return
@@ -585,6 +619,8 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 	mctx.AddExp = a.addExp
 	mctx.CacheEnabled = a.repo.CacheEnabled()
 	if a.repo != nil && !a.repo.CacheEnabled() {
+		// 闭包捕获 a 与 a.state：事务内业务与背包共享同一份内存快照，
+		// 提交结果未知时置 needsReload，下一条消息先 ReloadItems 再进业务。
 		mctx.CommitItems = func(ctx context.Context, grants []module.ItemGrant, business func(*sql.Tx) error) error {
 			// 先保存已有玩法变更，提交结果未知后重载也不会丢掉此前的背包进度。
 			if err := a.repo.Save(ctx, a.state); err != nil {
@@ -630,8 +666,13 @@ func (a *Actor) addExp(n int64) (bool, int32) {
 }
 
 // send 包装为模块可用的下行发送（携带当前 sessionID）。
+//
+// bufferReplies 置位时（缓存提交窗口）消息不直发，先入 queuedReplies——
+// 顺序即产生顺序，CAS 成功后再按序补发（cache_actor.go）。
 func (a *Actor) send(msgID uint32, body []byte) error {
 	if a.bufferReplies {
+		// append([]byte(nil), body...) 是拷贝而非别名：业务层的 body 多来自
+		// 可复用的解码缓冲，不拷贝的话提交窗口内的内容可能被后续消息改写。
 		a.queuedReplies = append(a.queuedReplies, cachedReply{id: msgID, body: append([]byte(nil), body...)})
 		return nil
 	}

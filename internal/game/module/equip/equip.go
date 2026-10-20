@@ -2,6 +2,13 @@
 //
 // 装备实例放在玩家快照 Ext["equip"]：穿戴/卸下只改内存，属性加成随同一次
 // 提交生效，Redis CAS 失败时装备状态与加成一起回滚（契约见 docs/R2.1-缓存原子变更契约.md）。
+//
+// 架构职责：装备的协议面 + 属性加成的维护方之一。穿戴状态是「玩法进度」，
+// 因此整包进 Ext 槽位；加成是派生值只进内存，登录时按已穿戴件重算。
+// 事件订阅：无（穿戴不产生行为事件；P7 可加 equip_change 驱动任务）。
+// 配置表：equip.xml（Col2=等级门槛，Col3=部位，Col4=攻击加成）。
+// 懒初始化：玩家从未获得装备时 Ext 槽位为空行，load() 返回空 Data，
+// 不会为「空装备列表」预建行——首次穿戴才产生第一行快照数据。
 package equip
 
 import (
@@ -20,6 +27,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// stateKey 同时是 Ext 槽位键与模块名：Ext/SetExt、落库归属、日志标签
+// 三处共用同一个字符串，改一处即可全局一致（各玩法模块的同一约定）。
 const stateKey = "equip"
 
 // 协议号（4.9：3101/3102 列表，3103/3104 穿戴，3105/3106 脱下）。
@@ -32,7 +41,7 @@ const (
 	msgIDTakeOffResp = codec.MsgEquipTakeOffResp
 )
 
-// 业务码（4.10）。
+// 业务码（4.10）：装备段 3101-3104。
 const (
 	codeOK           int32 = 0
 	codeNotExist     int32 = 3101
@@ -48,6 +57,11 @@ const (
 //   - EnhanceLevel：强化等级；
 //   - Quality：品质（配置派生，预留强化差异）；
 //   - Equipped：是否已穿戴；加成只由已穿戴件提供。
+//
+// Go 知识点：每个字段都带 json tag——快照里存的是 JSON 字符串，
+// tag 即「线上契约」。零值语义：EnhanceLevel=0 表示未强化，
+// Equipped=false 表示未穿戴，omitempty 一概不加——省略 false/0
+// 会让「未强化」和「字段缺失」无法区分。
 type Entry struct {
 	UID          int64 `json:"uid"`
 	EquipID      int32 `json:"equip_id"`
@@ -57,16 +71,27 @@ type Entry struct {
 }
 
 // Data 是装备模块的私有状态：玩家全部装备实例。
+//
+// 用切片而非 map：持有量小（几十件）、顺序即获得顺序，
+// 且 UID 查找是线性扫描也够快（findEquip）。
 type Data struct {
 	Equips []Entry `json:"equips"`
 }
 
 // init 注册持久化：player_equip 主键为 (player_id)。
+//
+// Go 知识点：init 是包级副作用入口，import 本包即执行；
+// RegisterFlat 是泛型函数[T any]，把「表行类型 T + FlatOps + 校验函数」
+// 登记进 writebehind 全局注册表——类型参数让同一份注册逻辑复用于
+// 所有玩法表，无需反射或代码生成。
 func init() {
 	writebehind.RegisterFlat[model.PlayerEquip](stateKey, model.PlayerEquipFlat, validate)
 }
 
 // validate 落库前校验：UID 唯一、强化等级非负。
+//
+// 这是快照落库前的最后一道闸：校验失败会让整批写回失败（宁可丢一批
+// 也不写坏数据），因此只查「结构性不变量」，不查业务规则。
 func validate(row *model.PlayerEquip) error {
 	d, err := decode(row)
 	if err != nil {
@@ -94,6 +119,8 @@ type Module struct {
 func New(logger *log.Logger) *Module { return &Module{logger: logger} }
 
 // Name 实现 module.Module。
+//
+// 返回值就是 stateKey：Ext 槽位键、MarkDirty 标签、落库归属三处同源。
 func (m *Module) Name() string { return stateKey }
 
 // MsgIDs 实现 module.Module。
@@ -122,6 +149,8 @@ func (m *Module) OnSave(context.Context) error { return nil }
 // OnLogin 按已穿戴装备重算属性加成。
 //
 // 加成是派生值，不落库：每次登录从快照里的装备列表重算，避免重复累加。
+// 时序契约：玩家层在 LoginAll 之前统一 ClearBonus，本模块只叠加自己的部分；
+// 若不先清空，重连一次就会把 atk 加成翻倍。
 func (m *Module) OnLogin(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
@@ -194,6 +223,8 @@ func (m *Module) onWear(ctx *module.Context, body []byte) error {
 		return reply(ctx, msgIDWearResp, resp)
 	}
 	// 同部位冲突检查（Col3=部位）
+	// 反查「同部位全部配置 ID」而不是逐件读对方配置：装备表很小，
+	// 一次遍历建集合，比 N 次查配置 + 比较更直观。
 	sameSlot := sameSlotEquipIDs(cfg.Col3)
 	for _, other := range d.Equips {
 		if !other.Equipped || other.UID == e.UID {
@@ -209,6 +240,8 @@ func (m *Module) onWear(ctx *module.Context, body []byte) error {
 
 	e.Equipped = true
 	d.Equips[idx] = e
+	// save 与 AddBonus 都只改内存，真正生效是同一条消息结束时的快照 CAS：
+	// CAS 失败则 Equipped 与加成一起回滚，不会「状态说穿了、属性没加」。
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
@@ -221,6 +254,9 @@ func (m *Module) onWear(ctx *module.Context, body []byte) error {
 }
 
 // onTakeOff 卸下：装备仍在列表里，只置 equipped=false 并扣回加成。
+//
+// 卸下不删除实例——「拥有」与「穿戴」是两个事实，分别由列表存在性
+// 与 Equipped 字段表达。
 func (m *Module) onTakeOff(ctx *module.Context, body []byte) error {
 	var req gamev1.EquipTakeOffReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -252,6 +288,7 @@ func (m *Module) onTakeOff(ctx *module.Context, body []byte) error {
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
+	// 加成取负扣回：与穿戴时的 +Col4 精确对冲，登录重算前不会残留。
 	ctx.State.AddBonus("atk", -cfg.Col4)
 	ctx.State.MarkDirty(stateKey)
 
@@ -261,6 +298,9 @@ func (m *Module) onTakeOff(ctx *module.Context, body []byte) error {
 }
 
 // findEquip 按实例 UID 找下标；找不到返回 -1。
+//
+// 返回下标而非 *Entry：调用方要改写后写回切片（d.Equips[idx] = e），
+// 直接给指针会绕过「整份 Data 重新序列化」的提交路径。
 func findEquip(d *Data, uid int64) int {
 	for i, e := range d.Equips {
 		if e.UID == uid {
@@ -282,6 +322,9 @@ func sameSlotEquipIDs(slot string) []int32 {
 }
 
 // load 读取装备状态；从未获得装备返回空结构。
+//
+// 懒初始化落点：row == nil 时返回空 Data 而不写库——
+// 「没有装备」不需要一行记录，第一次穿戴才产生行。
 func load(state writebehind.ExtState) (*Data, error) {
 	row, err := writebehind.LoadExt[model.PlayerEquip](state, stateKey)
 	if err != nil {
@@ -294,6 +337,9 @@ func load(state writebehind.ExtState) (*Data, error) {
 }
 
 // decode 把表行 JSON 解成业务视图；保证切片非 nil。
+//
+// nil 切片与空切片的区别：JSON 里 null 解出来是 nil，直接 append 虽也能用，
+// 但序列化回库会变成 null 而非 "[]"，diff 与对账时不直观，所以统一归一。
 func decode(row *model.PlayerEquip) (*Data, error) {
 	d := &Data{Equips: []Entry{}}
 	if row.Equips != "" {
@@ -307,6 +353,7 @@ func decode(row *model.PlayerEquip) (*Data, error) {
 	return d, nil
 }
 
+// save 把装备列表编码回 Ext 槽位；落库调度由 Write-Behind 负责。
 func save(state writebehind.ExtState, playerID int64, d *Data) error {
 	raw, err := json.Marshal(d.Equips)
 	if err != nil {
@@ -319,6 +366,9 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 }
 
 // attrPairs 把五维属性打包成协议对（AttrId 约定见 profile 模块 1-5）。
+//
+// 取 GetAttr 而不是基础值：装备/伙伴的 bonus 已经加在最终值里，
+// 客户端据此刷新面板，不需要知道加成来自哪个模块。
 func attrPairs(ctx *module.Context) []*gamev1.AttrPair {
 	return []*gamev1.AttrPair{
 		{AttrId: 1, Value: ctx.State.GetAttr("hp")},

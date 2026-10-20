@@ -22,6 +22,9 @@ func Clamp(v, max int32) int32 {
 }
 
 // InBounds 坐标是否在地图内。
+//
+// 供测试与配置校验使用；热路径（Enter/Move）一律走 Clamp——「先校正再
+// 使用」比「校验后拒绝」对客户端更友好（见 Clamp 注释）。
 func InBounds(x, y, width, height int32) bool {
 	return x >= 0 && x < width && y >= 0 && y < height
 }

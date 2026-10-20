@@ -1,4 +1,14 @@
 // flusher 是独立的 Tier-2 玩家状态合批落库进程，不承载客户端业务。
+//
+// 架构职责：把游戏服写穿透到 Redis 任务队列的脏数据合批刷进 MySQL，
+// 与游戏服解耦——游戏服只负责「标记脏」，落库节奏由本进程统一控制。
+// 协作关系：与游戏服共用同一套 Redis/MySQL/Flush 配置（Tier-2 同库同参），
+// 靠 pkg/writebehind 的 partition 队列与游戏服的生产端对接；游戏服重启不影响
+// 本进程，Redis 里未消费的任务会被继续处理。
+// 设计取舍：不读独立配置而是复用游戏服配置，保证两侧对「批量大小、间隔」的
+// 认知一致；不导入任何业务模块（仅 blank import 注册 Persister），
+// 防止业务演化拖着落库进程一起改；signal.NotifyContext 取消后停止取新任务，
+// 已取出未落库的任务保留在 Redis，重启后续跑，不丢数据。
 package main
 
 import (
@@ -17,6 +27,7 @@ import (
 
 	// 落库进程不导入业务模块，靠这里注册各模块的 Persister，
 	// 否则框架会拒绝写入未注册的模块状态（防静默丢数据）。
+	// blank import（_）：只触发包的 init 注册副作用，不引入任何标识符
 	_ "game_study/internal/game/module/register"
 )
 
@@ -26,9 +37,10 @@ func main() {
 	path := flag.String("config", "configs/game/game-dev.yaml", "复用游戏服 Redis/MySQL/Flush 配置")
 	flag.Parse()
 	logger := log.New("flusher")
+	// run 返回错误才退出：把编排收进函数而不是堆在 main 里，退出码语义更清晰
 	if err := run(*path, logger); err != nil {
 		logger.Error("flusher stopped", "err", err)
-		os.Exit(1)
+		os.Exit(1) // 落库进程退出会被进程管理器拉起，Redis 里的任务不会丢
 	}
 }
 
@@ -48,6 +60,7 @@ func run(path string, logger *log.Logger) error {
 	if err != nil {
 		return err
 	}
+	// defer 后注册的先执行（LIFO）：db 先于 rdb 关闭，与下面打开顺序相反
 	defer database.Close()
 	// ③ Redis：取任务队列的连接（defer 保证停机时归还）
 	rdb, err := cache.New(cache.RedisConfig{Addrs: cfg.Redis.Addrs, Password: cfg.Redis.Password, DB: cfg.Redis.DB, PoolSize: cfg.Redis.PoolSize, MinIdle: cfg.Redis.MinIdleConn})
@@ -68,5 +81,6 @@ func run(path string, logger *log.Logger) error {
 	//    失败仅记警告并保留任务，靠下一轮重试（见 pkg/writebehind）
 	worker := writebehind.NewWorker(writebehind.NewStore(rdb.GetClient()), database.DB, cfg.Flush.BatchRows)
 	logger.Info("writebehind worker started", "partitions", writebehind.Partitions, "interval", interval)
+	// worker.Run 阻塞至 ctx 取消；回调只在单轮合批失败时触发（任务已保留，下一轮重试）
 	return worker.Run(ctx, interval, func(err error) { logger.Warn("flush failed; Redis task retained", "err", err) })
 }

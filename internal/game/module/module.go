@@ -1,4 +1,10 @@
-// Package module 游戏服业务模块接口（设计文档 17.2 模块标准结构）
+// Package module 玩法模块层的公共契约（设计文档 17.2 模块标准结构）。
+//
+// 每个玩法（背包/装备/任务/签到…）都是一个 Module：Init 注册协议与校验配置，
+// OnMessage 在玩家 Actor 内单线程处理协议，OnLogin/OnLogout 挂接上下线钩子，
+// OnSave 由 flusher 触达。模块与 MySQL 落库完全解耦——私有状态走玩家快照的
+// Ext 槽位（writebehind.LoadExt/SaveExt），由 Persister 异步写回；只有关系型
+// 数据（好友/公会/队伍）才在模块内直写事务。
 package module
 
 import (
@@ -14,12 +20,23 @@ import (
 
 // ErrBagFull 背包已满：新增道具种类超过容量。模块用它作为「发奖被拒」的信号，
 // 由玩家层回滚整条消息，保证不会出现扣了费却发不出货。
+//
+// 调用约定：发奖前先用 State.CanHold 预检；在 ApplyOnce 的 fn 里返回本错误时
+// 不会占用业务键——玩家清空背包后可重新领取，不会被「已申请」永久卡死。
 var ErrBagFull = errors.New("bag full")
 
-// Profile 角色基础信息。
+// Profile 角色基础信息（writebehind.Profile 的别名）。
+//
+// 用类型别名而非新定义：模块看到的字段与落库结构完全一致，
+// 省去 player 包与 module 包之间的循环依赖。
 type Profile = writebehind.Profile
 
 // PlayerState 玩家内存状态接口（由 player.State 实现，模块通过它读写数据）。
+//
+// 契约：所有方法只会在玩家 Actor 的单线程内被调用，实现方无需加锁；
+// 跨 Actor 的读取一律走快照序列化通道，不直接持有本接口。
+// 资产类改动（AddItem/AddBonus/SetAttr）只改内存，权威提交是整份快照的
+// Redis CAS——任一改动失败则同一条消息内的全部改动一起回滚。
 type PlayerState interface {
 	// PlayerID 玩家 ID：快照主键，日志与业务键（biz key）都基于它派生。
 	PlayerID() int64
@@ -62,15 +79,27 @@ type PlayerState interface {
 }
 
 // Sender 下行发送能力（由游戏服组装层实现，写回网关）。
+//
+// 约定：返回 error 仅表示「本次发送失败」（连接已断等），模块记日志即可，
+// 不重试也不缓存——客户端重连后会主动重新拉取权威状态。
 type Sender func(msgID uint32, body []byte) error
 
-// ItemGrant 一次原子发奖中的道具增量。
+// ItemGrant 一次原子发奖中的道具增量（writebehind.ItemGrant 别名）。
+//
+// 「原子」的含义：一批 Grant 与业务状态（领取事实/扣费）在同一次快照 CAS 里
+// 提交，要么全部到账，要么全部回滚，不会出现发到一半。
 type ItemGrant = writebehind.ItemGrant
 
 // AddExpFunc 增加经验并按配置连续升级，返回是否升级与当前等级。
+//
+// 由玩家层注入（依赖倒置）：模块只声明「我要加经验」，升级规则、
+// 等级上限与升级推送都由玩家层统一处理，避免每个模块各写一套。
 type AddExpFunc func(n int64) (levelUp bool, level int32)
 
 // Event 玩家行为事件（模块间解耦：产生方 Emit，消费方 OnEvent）。
+//
+// 例：背包 use_item、副本 copy_pass、商店 buy。任务/活动模块订阅后推进进度，
+// 产生方不需要知道谁在听——新增消费方只改 Registry.DispatchEvent 的遍历。
 type Event struct {
 	Type  string // use_item / kill / login / ...
 	Key   string // 事件主体（道具 ID / 怪物 ID）
@@ -78,46 +107,55 @@ type Event struct {
 }
 
 // EquipSnapshot 预加载的装备行（避免模块 OnLogin 再查一次库）。
+//
+// 登录时由 player.Repository 并行拉取（12.6），随 Context.Prefetch 下发；
+// 这样装备模块的 OnLogin 只做纯内存重算，不产生额外 SQL。
 type EquipSnapshot struct {
-	UID          int64
-	EquipID      int32
-	EnhanceLevel int32
-	Quality      int32
-	Equipped     bool
+	UID          int64 // 实例唯一 ID（同一配置 ID 可持有多件）
+	EquipID      int32 // 装备配置 ID（equip.xml）
+	EnhanceLevel int32 // 强化等级
+	Quality      int32 // 品质
+	Equipped     bool  // 是否已穿戴（只有 true 的行提供属性加成）
 }
 
 // ActivitySnapshot 预加载的活动进度行。
 type ActivitySnapshot struct {
-	ActivityID int32
-	Progress   int32
-	RewardMask int64
+	ActivityID int32 // 活动配置 ID
+	Progress   int32 // 当前进度
+	RewardMask int64 // 领取位图（bit0=第一档已领）
 }
 
 // PrefetchSource 登录预加载结果（12.6：全部并行拉取，模块 OnLogin 直接读）。
 //
 // 实现方是 player.Repository。返回 nil 表示未预取（降级为模块自行查库），
-// 模块必须同时支持两条路径。
+// 模块必须同时支持两条路径——预加载是优化，不是正确性前提。
 type PrefetchSource interface {
 	Equips() []EquipSnapshot
 	Activities() []ActivitySnapshot
 }
 
 // Context 模块上下文：Actor 上下文 + 玩家状态 + 下行发送。
+//
+// 每条玩家消息都会新建一个 Context（轻量值对象），字段由玩家层注入：
+// 模块不直接依赖 player 包，只依赖这里声明的接口，便于单测替换。
 type Context struct {
-	Actor        *actor.Context
-	State        PlayerState
-	Prefetch     PrefetchSource // 登录预加载结果（可能为 nil）
-	TraceID      string
-	Send         Sender
-	Emit         func(evt Event)
-	AddExp       AddExpFunc
-	CacheEnabled bool // Redis 权威状态已接入，成功响应在缓存提交后发送。
+	Actor        *actor.Context  // 当前玩家 Actor 的上下文（Send 给其他 Actor）
+	State        PlayerState     // 玩家内存状态（模块的主读写面）
+	Prefetch     PrefetchSource  // 登录预加载结果（可能为 nil）
+	TraceID      string          // 链路追踪 ID（日志关联一次登录会话）
+	Send         Sender          // 下行发送（nil 时 Reply 静默丢弃，便于单测）
+	Emit         func(evt Event) // 事件广播（nil 表示无订阅方，产生方需判空）
+	AddExp       AddExpFunc      // 加经验回调（nil 表示玩家层未注入，模块需判空）
+	CacheEnabled bool            // Redis 权威状态已接入，成功响应在缓存提交后发送。
 	// CommitItems 在玩家 Actor 内将业务操作与背包奖励放入同一事务。
 	// 只有事务提交成功后才修改内存；业务操作必须仅通过传入的 tx 写库。
 	CommitItems func(context.Context, []ItemGrant, func(*sql.Tx) error) error
 }
 
 // Reply 向客户端回包（Send 未注入时静默忽略，便于单测）。
+//
+// 模块统一走这里而不是直接调 Send：测试里不注入 Send 也不会 panic，
+// 生产里 Send 瞬时失败也不向上抛——协议处理已经成功，不该让整条消息报错。
 func (c *Context) Reply(msgID uint32, body []byte) error {
 	if c.Send == nil {
 		return nil
@@ -151,6 +189,10 @@ func (c *Context) ApplyOnce(key string, fn func() error) (applied bool, err erro
 }
 
 // Module 业务功能模块统一接口（每个功能 = Init/OnMessage/OnSave/OnLogin/OnLogout）。
+//
+// 生命周期由 Registry 驱动：InitAll → LoginAll →（OnMessage 循环）→ LogoutAll → OnSave。
+// 实现方通常是包级单例（New 返回 *Module），因为模块只持有配置与仓储，
+// 玩家状态全部来自 Context.State——同一模块实例服务所有玩家。
 type Module interface {
 	// Name 模块名（日志/指标标签）
 	Name() string
@@ -169,6 +211,10 @@ type Module interface {
 }
 
 // EventAware 可选接口：关心玩家行为事件的模块实现它。
+//
+// Go 知识点：这是「可选能力」惯用法——Registry 用类型断言
+// （m.(EventAware)）探测，未实现的模块不会收到事件，
+// 比在 Module 里塞一个空的 OnEvent 更省调用。
 type EventAware interface {
 	// OnEvent 消费一个玩家行为事件；在玩家 Actor 内单线程调用，可无锁读写 state。
 	OnEvent(ctx *Context, evt Event)
@@ -193,6 +239,10 @@ type CacheFailureAware interface {
 }
 
 // Registry 模块注册表（含 msgID 路由索引）。
+//
+// 设计：modules 切片保序（Init/Login 按 17.1 的顺序），route map 提供
+// O(1) 协议分发。注册表模式让组装层（server.go）只面对一个入口，
+// 新增玩法 = 调一次 Register，不需要改分发代码。
 type Registry struct {
 	modules []Module
 	route   map[uint32]Module
@@ -222,6 +272,9 @@ func (r *Registry) Register(m Module) {
 func (r *Registry) All() []Module { return r.modules }
 
 // Dispatch 按 msgID 分发到对应模块。
+//
+// 错误用 %w 包装 ErrNoRoute：调用方可用 errors.Is 区分「没有路由」
+// 与「模块内部错误」，前者通常是协议号配错，后者是业务 bug。
 func (r *Registry) Dispatch(ctx *Context, msgID uint32, body []byte) error {
 	m, ok := r.route[msgID]
 	if !ok {
@@ -286,6 +339,9 @@ func (r *Registry) LoginAll(ctx *Context) error {
 }
 
 // LogoutAll 通知全部模块玩家下线。
+//
+// 顺序与 LoginAll 相反：后登录的先下线（场景模块最后清理实体），
+// 任一模块报错也继续跑完——下线路径不能半途中断。
 func (r *Registry) LogoutAll(ctx *Context) error {
 	for _, m := range r.modules {
 		if err := m.OnLogout(ctx); err != nil {

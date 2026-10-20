@@ -2,6 +2,15 @@
 //
 // 中心服调度把活动实例（窗口起止 + 版本号）下发到本进程；活动模块与
 // 窗口自算路径共用同一份注册表，保证「下发」与「按配置自算」不打架。
+//
+// 架构职责：进程级单例，持有「中心服已下发的活动窗口」。
+// 写入方是调度消费者（Kafka/长连接回调，多 goroutine），
+// 读取方是各玩家 Actor 的协议处理（大量并发读）——读写比悬殊，
+// 所以用 RWMutex 而不是 Mutex。
+// Ext 槽位：无（进程级状态，不属于任何玩家）。
+// 事件订阅：无（由调度消费者直接调 Apply）。
+// 懒初始化：允许为空表——中心服消息未到或未部署调度时，
+// 读取方降级为按配置周期自算（见 ActiveWindow/openNow）。
 package activity
 
 import (
@@ -12,6 +21,9 @@ import (
 )
 
 // Window 一个活动实例的时间窗（由中心服下发）。
+//
+// Version 是单调递增的版本号：乱序/重复消息靠它幂等
+// （旧版本不覆盖新版本），不需要额外去重表。
 type Window struct {
 	InstanceID string
 	ActivityID int32
@@ -25,6 +37,10 @@ type Window struct {
 // 为什么允许为空：中心服消息可能还没到，也可能整个调度没部署。
 // 读取方先查这里，查不到就按配置自己算——两条路算出的窗口必须一致，
 // 因为用的是同一个 pkg/activity.Window。
+//
+// Go 知识点：sync.RWMutex 的「读多写少」优化——RLock 允许多个读者
+// 并行，只有写（Lock）才互斥。本表的写只发生在调度消息到达时
+// （分钟级），读发生在每个活动请求（秒级），用 RWMutex 正好。
 type Registry struct {
 	mu sync.RWMutex
 	m  map[int32]Window
@@ -36,6 +52,9 @@ func NewRegistry() *Registry {
 }
 
 // Apply 应用一条下发；版本更旧或相同则忽略（乱序/重复消息幂等）。
+//
+// 返回值表示「是否真的发生了变更」：调用方（调度消费者）可据此打日志，
+// 不需要自己再比对版本。
 func (r *Registry) Apply(w Window) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -63,6 +82,10 @@ func (r *Registry) Len() int {
 }
 
 // defaultRegistry 进程级注册表：调度消费者写入，活动模块读取。
+//
+// Go 知识点：包级单例 var + init 期构造。与 writebehind 的模块注册表
+// 同一模式——跨模块共享的进程级状态用包级变量承载，
+// 避免层层传递；测试可用 NewRegistry 建独立实例隔离。
 var defaultRegistry = NewRegistry()
 
 // DefaultRegistry 返回进程级注册表。

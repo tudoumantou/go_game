@@ -3,6 +3,12 @@
 // Package session 网关会话层：一个 Session 跟踪一条客户端连接从 TCP 建立、
 // 加密握手、鉴权到绑定游戏服的完整状态机；Manager 提供 SID/数值 ID/连接/
 // 玩家四维索引与超时回收。本包是「谁在线」的唯一事实源。
+// 协作关系：conn 层每接受一个连接由 Manager.NewSession 创建会话；
+// router 驱动状态推进（握手/鉴权）并调用 Send/Decrypt；server 在
+// bindToGame 成功后由 Manager.BindPlayer 置 BOUND。
+// 设计取舍：会话纯内存、不持久化——网关无状态，断线重连 = 新会话
+// 重走握手（token 仍在 Redis 所以玩家无感）；reconnect 窗口
+// （DefaultSessionReconnectTTL）只用于回收半开连接，不恢复旧会话。
 package session
 
 import (
@@ -20,6 +26,8 @@ import (
 //
 // 状态机单向推进：CONNECTED → HELLO_SENT →（密钥交换/Finished 后）
 // AUTHED → BOUND → CLOSED。IsAuthed 用 >= 判断，因此「已绑定」也视为已鉴权。
+// 知识点：iota 从 0 递增定义有序枚举，配合 >= 比较表达「达到某阶段」，
+// 比布尔标志位组合（hasKey && authed）更不易出现非法中间态。
 type State int
 
 const (
@@ -36,6 +44,8 @@ const (
 )
 
 // String 返回状态名的稳定字符串（日志与 /status 输出用，勿随意改文案）。
+// 知识点：实现 fmt.Stringer 后，%v/%s 打印 State 会自动走本方法，
+// 日志里看到的是 CONNECTED 而不是 0，排障时省一次查表。
 func (s State) String() string {
 	switch s {
 	case StateConnected:
@@ -59,6 +69,9 @@ func (s State) String() string {
 // 认证（token/playerID）。所有可变字段受 mu 保护；conn 创建后不变。
 // 不变量：cipher 在握手完成后非 nil，此前 Send/Decrypt 必须报错
 // （防止明文期误把业务包当密文处理）。
+// 知识点：RWMutex 读多写少——状态/密钥查询远多于推进，读锁之间不
+// 互斥；但 SetCipher 与读 cipher 之间必须互斥，否则可能读到半个指针
+// （指针大小的写在 amd64 上原子，但 Go 内存模型不保证，必须加锁）。
 type Session struct {
 	// id/numID/conn 三种标识：id 用于日志，numID 用于 gRPC 与下行路由，
 	// conn 回指底层 TCP 连接（New 后不变）
@@ -69,11 +82,13 @@ type Session struct {
 	createdAt time.Time
 	lastAlive time.Time
 
-	// 握手相关
+	// 握手相关：serverHS 是 RSA 握手状态机（ServerHello 时创建），
+	// cipher 是密钥交换完成后的 AES-GCM 会话加密器（此前为 nil）
 	serverHS *crypto.HandshakeServer
 	cipher   *crypto.SessionCipher
 
-	// 认证相关
+	// 认证相关：token 即 login 服签发的字符串，playerID 鉴权后置入
+	// （早期版本语义为 player_id，现为 account_id，字段名保留兼容）
 	token    string
 	playerID int64
 
@@ -83,6 +98,8 @@ type Session struct {
 }
 
 // New 创建 Session。
+// createdAt/lastAlive 同初始化为 now：GC 的「半开连接超时」从建立时刻
+// 起算，不是从最后一个包起算——只连上不发包的连接也必须被回收。
 func New(id string, c *conn.Conn, logger *log.Logger) *Session {
 	now := time.Now()
 	return &Session{
@@ -96,12 +113,15 @@ func New(id string, c *conn.Conn, logger *log.Logger) *Session {
 }
 
 // ID 返回会话 ID。
+// 只读字段无需加锁：id 在 New 后不再变化（不可变对象线程安全）。
 func (s *Session) ID() string { return s.id }
 
 // NumID 返回数值会话 ID（gRPC 用）。
+// 与 conn.ID() 同值，是 backend.Pool / BIND 帧 / 下行路由的统一寻址键。
 func (s *Session) NumID() uint64 { return s.numID }
 
 // SetNumID 设置数值会话 ID。
+// 仅在 Manager.NewSession 装配期调用一次，运行期不变（与 ID() 同理免锁）。
 func (s *Session) SetNumID(id uint64) { s.numID = id }
 
 // Conn 返回底层连接。
@@ -115,6 +135,7 @@ func (s *Session) State() State {
 }
 
 // SetState 设置状态。
+// 状态机只前进不后退（Close 置 CLOSED 例外，见 Close 注释）。
 func (s *Session) SetState(st State) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -122,6 +143,8 @@ func (s *Session) SetState(st State) {
 }
 
 // IsAuthed 是否已认证。
+// 用 >= 判断：BOUND 是 AUTHED 之后的状态，语义上「已绑定必然已鉴权」，
+// 这样新增更高状态时无需修改所有判断点。
 func (s *Session) IsAuthed() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -136,6 +159,7 @@ func (s *Session) IsBound() bool {
 }
 
 // SetHandshakeServer 设置服务端握手状态机。
+// server.onAccept 在发 ServerHello 前注入；之后只读。
 func (s *Session) SetHandshakeServer(hs *crypto.HandshakeServer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,6 +174,7 @@ func (s *Session) HandshakeServer() *crypto.HandshakeServer {
 }
 
 // SetCipher 设置会话加密器。
+// ClientKeyExchange 处理成功后调用一次；此后该会话所有收发都走 AES-GCM。
 func (s *Session) SetCipher(c *crypto.SessionCipher) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -157,6 +182,8 @@ func (s *Session) SetCipher(c *crypto.SessionCipher) {
 }
 
 // Cipher 获取会话加密器。
+// 返回 nil 表示握手未完成——调用方（Send/Decrypt/router）必须判空，
+// 这是「接口/指针 nil 陷阱」的典型防守点。
 func (s *Session) Cipher() *crypto.SessionCipher {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -164,6 +191,8 @@ func (s *Session) Cipher() *crypto.SessionCipher {
 }
 
 // SetAuth 设置认证信息。
+// token 校验通过时调用，同时把状态推到 AUTHED——「置认证信息」与
+// 「状态推进」在同一把锁里完成，避免中间态被并发读到。
 func (s *Session) SetAuth(token string, playerID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -173,6 +202,7 @@ func (s *Session) SetAuth(token string, playerID int64) {
 }
 
 // PlayerID 返回玩家 ID。
+// 鉴权前为 0（调用方需区分「未鉴权」与「id=0 的玩家」）。
 func (s *Session) PlayerID() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -187,6 +217,8 @@ func (s *Session) Token() string {
 }
 
 // Touch 更新活跃时间。
+// 每收到一个包调用（router.OnPacket）；写锁路径频率高但临界区极短
+// （一次赋值），不会成为瓶颈。
 func (s *Session) Touch() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -194,6 +226,7 @@ func (s *Session) Touch() {
 }
 
 // LastAlive 返回最后活跃时间。
+// GC 据此判断半开连接是否超过 reconnect 窗口。
 func (s *Session) LastAlive() time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -201,6 +234,9 @@ func (s *Session) LastAlive() time.Time {
 }
 
 // Close 关闭会话。
+// 先置 CLOSED 再关连接：反序的话 OnClose 回调里读到的状态还是活的，
+// 清理逻辑（如 Manager.Remove）会基于错误状态决策。conn.Close 幂等，
+// 重复调用安全。
 func (s *Session) Close(err error) {
 	s.SetState(StateClosed)
 	if s.conn != nil {
@@ -212,6 +248,9 @@ func (s *Session) Close(err error) {
 //
 // cipher 未就绪（握手未完成）时直接报错：握手期的系统消息由 router 走
 // 明文通道（conn.Send 原始包），业务下行只可能发生在握手完成后。
+// 知识点：先在读锁下快照 cipher 再出锁使用——加密是 CPU 密集操作
+// （AES-GCM 每秒可做数十万次，但持锁做仍会阻塞其他读者），出锁
+// 后 cipher 对象本身不可变，快照安全。
 func (s *Session) Send(msgID uint16, plaintext []byte) error {
 	s.mu.RLock()
 	cipher := s.cipher

@@ -11,7 +11,9 @@
 //     Actor 系统、Kafka 消费组需要 PlayerManager），调整前先对照
 //     docs/游戏服启动流程解析.md 第 3 节的顺序表；
 //   - 缓存权威模式下进程内默认起 inline writebehind worker：避免忘记部署独立
-//     flusher 时脏数据永远不落库；两者并行也安全（版本栅栏保证）。
+//     flusher 时脏数据永远不落库；两者并行也安全（版本栅栏保证）；
+//   - 会话编排（顶号/下行/懒加载）在本文件，玩家状态在 player 包，离线补投
+//     在 offline.go——组装层只做「翻译」，不持有任何玩家业务数据。
 
 // Package game 游戏服（设计文档第 8 章）
 package game
@@ -77,6 +79,10 @@ import (
 const onlineTTL = 45 * time.Second
 
 // Server 游戏服（组装层入口，职责见设计文档 3.1 目录树）
+//
+// 字段按「启动顺序」大致分组：基础设施（db/redis/actorSys）→ 业务容器
+// （modules/players/sceneMgr）→ 持久化（repo/flusher/wbWorker）→ 外联
+// （crossPool/centerCli/producer/consumers）→ 会话表（见下方 mu 注释）。
 type Server struct {
 	cfg        *config.Config
 	logger     *log.Logger
@@ -205,6 +211,9 @@ func (s *Server) Start(ctx context.Context) error {
 		if s.roleSvc != nil {
 			s.roleSvc.SetIDTable(s.idTable)
 		}
+		// 两个后台 goroutine 的退出都只依赖 runCtx：Start 返回前 started
+		// 未置位时 defer 会 cancel 掉它们，不会泄漏；内部循环均以
+		// ctx.Done() 为终止条件（见 buildIDTables/maintainIDTables）。
 		go s.buildIDTables(s.runCtx)
 		go s.maintainIDTables(s.runCtx)
 	}
@@ -585,6 +594,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // chatMessenger 实现 chat.Messenger（在线判定/本服推送/跨服生产/离线暂存）。
+//
+// 四个方法对应私聊的完整生命周期：找节点 → 推在线 → 跨服转发 → 离线暂存。
 type chatMessenger struct {
 	srv *Server
 }
@@ -593,6 +604,9 @@ type chatMessenger struct {
 func (m chatMessenger) SelfNode() string { return m.srv.cfg.Server.Name }
 
 // OnlineNode 实现 chat.Messenger。
+//
+// 无 Redis 时退化为「本地 PlayerManager 有没有这个 Actor」——本地判断的
+// 精度低于全局 presence，但保证无依赖环境仍可运行。
 func (m chatMessenger) OnlineNode(ctx context.Context, playerID int64) (string, bool) {
 	if m.srv.presence == nil {
 		// 无 Redis：退化为本地在线判断
@@ -606,6 +620,9 @@ func (m chatMessenger) OnlineNode(ctx context.Context, playerID int64) (string, 
 //
 // 优先走 Actor（保证与玩家自身消息的处理顺序一致）；Actor 尚未创建时
 // （玩家只登录、还没发过业务包）直接走会话下行 —— 推送是纯下行，不需要业务状态。
+//
+// 顺序敏感的根源：聊天回包与玩家自己的业务回包若走两条通道，客户端可能
+// 看到「先收到回复、后收到请求响应」的乱序。
 func (m chatMessenger) Push(ctx context.Context, playerID int64, msgID uint32, body []byte) bool {
 	if pid, ok := m.srv.players.Get(playerID); ok {
 		if err := m.srv.actorSys.Send(pid, &player.PushMsg{MsgID: msgID, Body: body}); err == nil {
@@ -616,6 +633,9 @@ func (m chatMessenger) Push(ctx context.Context, playerID int64, msgID uint32, b
 }
 
 // ProduceCross 实现 chat.Messenger。
+//
+// 按 ToID 分区：同一接收方的消息落到同一 Kafka 分区，跨服消费者侧即可
+// 按 msg_id 幂等且保持相对顺序。
 func (m chatMessenger) ProduceCross(ctx context.Context, msg *pkgmq.ChatCrossMsg) error {
 	if m.srv.producer == nil {
 		return fmt.Errorf("kafka producer not available")
@@ -628,6 +648,10 @@ func (m chatMessenger) ProduceCross(ctx context.Context, msg *pkgmq.ChatCrossMsg
 }
 
 // PendOffline 实现 chat.Messenger。
+//
+// 接收方不在线时把消息暂存进 Redis List（有上限 + TTL，防止无限堆积）；
+// 登录后由 offline.go 的 drainOffline 补投。暂存失败不影响发送方体验——
+// 私聊尽力而为，丢消息比卡住发送方更可接受。
 func (m chatMessenger) PendOffline(ctx context.Context, playerID int64, msg *pkgmq.ChatCrossMsg) error {
 	if m.srv.presence == nil {
 		return nil
@@ -708,6 +732,9 @@ const (
 )
 
 // OnBind 实现 rpc.StreamHandler：按 account_id 查角色，有角色才拉起 Actor。
+//
+// playerID>0 时（网关已做过选角）直接绑定；否则按账号查唯一角色，
+// 查不到属于正常情况——等客户端发 CreateRoleReq / EnterGameReq。
 func (s *Server) OnBind(ctx context.Context, sessionID uint64, accountID, playerID int64) error {
 	s.mu.Lock()
 	s.accounts[sessionID] = accountID
@@ -860,6 +887,10 @@ func (s *Server) markOnline(ctx context.Context, playerID int64) {
 }
 
 // OnUnbind 实现 rpc.StreamHandler。
+//
+// 三段式：摘本地映射 → 判定是否被顶号 → 权威会话才解 Actor + 清在线归属。
+// 「被顶号的旧会话」是最容易写错的分支：它的一切副作用都必须跳过，
+// 否则会把仍在线的权威会话打成离线（见下方 stale 注释）。
 func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	s.mu.Lock()
 	playerID := s.sessions[sessionID]
@@ -1022,6 +1053,9 @@ func mapCreateRoleErr(err error) int32 {
 }
 
 // gamePusher 实现 battle.Pusher：把推送转成对玩家会话的下行。
+//
+// 与 chatMessenger.Push 的差别：战斗推送不经过 Actor——结算/匹配是纯下行
+// 事件，不需要（也不应该）排在玩家业务消息队列里。
 type gamePusher struct {
 	srv *Server
 }
@@ -1068,6 +1102,9 @@ func (h crossHandler) OnBattleSync(msg *internalv2.BattleMsg) {
 }
 
 // OnBattleResult 实现 cross.Handler。
+//
+// 两个动作都做：battle 模块给玩家发结算，pool 清掉房间路由——
+// 只做前者会让 rooms 表无限增长（每个房间永久占一个 map 项）。
 func (h crossHandler) OnBattleResult(res *internalv2.BattleResult) {
 	if h.srv.battleMod != nil {
 		h.srv.battleMod.OnBattleResult(res)
@@ -1089,6 +1126,10 @@ func (s *Server) CrossReady() int {
 func (s *Server) BattleModule() *battle.Module { return s.battleMod }
 
 // centerMatchAdapter 把中心服客户端适配为 battle.CenterMatcher。
+//
+// 适配器存在的意义：battle 模块只依赖「能不能匹配」的抽象，不关心背后是
+// 中心服还是本服降级逻辑——未配置中心服时 Available() 为 false，battle
+// 自动走本服匹配。
 type centerMatchAdapter struct {
 	cli *gamecenter.Client
 }
@@ -1119,6 +1160,9 @@ func (h centerHandler) OnMatchResult(res *internalv2.MatchResult) {
 }
 
 // OnRelayPush 实现 center.Handler（P9 中转业务接入前只记日志）。
+//
+// 当前只观测不落地：中转是中心服代多节点互投消息的通道，业务接入前
+// 记下流量规模即可用于容量评估。
 func (h centerHandler) OnRelayPush(push *internalv2.RelayPush) {
 	h.srv.logger.Debug("relay push received", "from", push.GetFromNode(),
 		"relay_id", push.GetRelayId(), "bytes", len(push.GetPayload()))
@@ -1155,6 +1199,9 @@ type rankReporter struct {
 }
 
 // ReportArenaScore 实现 battle.RankReporter。
+//
+// bizID 透传给中心服去重：同一场结算因重投/补发被上报多次时，中心服按
+// bizID 只认第一次，排名不会重复加分。
 func (r rankReporter) ReportArenaScore(playerID int64, score int64, bizID string) error {
 	if r.cli == nil {
 		return fmt.Errorf("center client not configured")

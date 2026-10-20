@@ -13,7 +13,7 @@ import (
 	"game_study/pkg/log"
 )
 
-// Manager 场景 Actor 的创建与查找。
+// Manager 场景管理器。
 //
 // 场景数量固定（配置表规模），启动时一次性 Spawn，之后只读——
 // 因此查找不需要加锁，也不存在「并发创建同一场景」的问题。
@@ -29,6 +29,9 @@ func NewManager(sys *actor.System, logger *log.Logger) *Manager {
 }
 
 // Boot 按配置启动全部场景 Actor。配置非法时返回错误（启动期暴露，不留到运行期）。
+//
+// 同时负责投递每个场景的首帧 SweepMsg——这是自维持扫描链的起点
+// （见 SweepMsg 注释与 Actor.Receive 的续期逻辑）。
 func (m *Manager) Boot() error {
 	for _, cfg := range gamedata.SceneCfgList() {
 		sc, err := fromConfig(cfg)
@@ -77,6 +80,8 @@ func (m *Manager) Resync(playerID int64, sceneID int32, playerPID *actor.PID) {
 }
 
 // PID 场景 Actor 的 PID；场景不存在返回 nil。
+//
+// 无锁读：Boot 之后 pids 只读（见 Manager 注释），不需要加锁。
 func (m *Manager) PID(sceneID int32) *actor.PID {
 	return m.pids[sceneID]
 }

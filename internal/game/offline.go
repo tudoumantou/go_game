@@ -2,6 +2,16 @@
 //
 // 玩家离线期间，跨服私聊等消息进 `pend:{biz}:{pid}` 队列（Redis List，有上限 + TTL）。
 // 登录后统一消费并补投，避免「离线期间的消息永远不会到」。
+//
+// 架构职责：只做「搬运」——把暂存队列里的消息翻译成协议推送，不改任何
+// 玩家状态，因此不经过 Actor（不占玩家处理窗口，也不需要快照 CAS）。
+//
+// 协作关系：chat.Messenger.PendOffline 负责「存」（server.go），
+// handleEnterGame 在进游戏回执后触发本文件的「取」。
+//
+// 设计取舍：drain 是尽力而为——PendDrain 取出即清空（至少一次语义），
+// 推送失败不重试、剩余消息随清空丢弃；用短超时的独立 ctx，Redis 卡住
+// 不能无限拖住登录流程。
 package game
 
 import (
@@ -41,6 +51,9 @@ func (s *Server) drainOffline(playerID int64, sessionID uint64) {
 }
 
 // drainOfflineChat 补投离线私聊。
+//
+// 由 handleEnterGame 以 goroutine 触发（登录流程不阻塞在补投上）；
+// ctx 的短超时保证这个 goroutine 最迟 2 秒内退出，不会泄漏。
 func (s *Server) drainOfflineChat(ctx context.Context, playerID int64, sessionID uint64) {
 	// PendDrain 在同一个管道里 LRange + Del：取出即清空，语义是「至少一次」
 	// 而非「恰好一次」。所以推送失败不重试——消息已离开 Redis，重试只会放大

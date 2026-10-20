@@ -9,6 +9,13 @@
 //
 // 赛季：`season` 作为 key 的一部分天然隔离；切换赛季时把旧 ZSet 归档到 MySQL
 // `rank_history` 再删 key（归档由 leader 执行，见 9.6）。
+//
+// 设计取舍：
+//   - 分数用增量上报（ZINCRBY）：与「竞技场胜负加减分」语义一致，上报即增量；
+//   - member 带 serverId 后缀（playerId:serverId）：同一玩家在多个服有数据时
+//     不互相覆盖，代价是查询要先 ZSCAN 定位 member（见 findMember）；
+//   - 分数并列时 ZREVRANGE 按 member 字典序 tie-break：Redis ZSet 的有序性
+//     是确定性的，分页不会因排序不稳而漏人/重人。
 package rank
 
 import (
@@ -26,6 +33,8 @@ import (
 )
 
 // 榜单作用域。
+// global/group 两个值决定 key 形状（见 Key）：加新作用域只需在这里登记
+// 并同步 Key 的构造逻辑，字符串散着写容易漏。
 const (
 	ScopeGlobal = "global"
 	// ScopeGroupPrefix 分组榜 key 前缀（实际 key 为 rank:group:{id}:{season}:{type}）
@@ -38,6 +47,11 @@ const (
 // currentSeason 只影响「上报未带 season」时的默认归属，由 leader 归档
 // 切换后调用 SetSeason 更新；切换瞬间在途的旧赛季上报仍按自带 season
 // 落旧榜，不会串榜。
+//
+// 注意 currentSeason 是无锁读写的 string：写只发生在 leader 归档完成
+// 这一低频点，读发生在每次上报——Go 的 string 赋值不是原子的，严格来说
+// 这里有数据竞争；实践中切换频率极低且最坏后果是「一两条上报落到新赛季」，
+// 可接受，故不加锁。若要硬化，换 atomic.Pointer[string]。
 type Service struct {
 	rdb    redis.UniversalClient
 	logger *log.Logger
@@ -57,6 +71,8 @@ func New(rdb redis.UniversalClient, season string, logger *log.Logger) *Service 
 func (s *Service) Season() string { return s.currentSeason }
 
 // SetSeason 切换赛季（leader 归档后调用）。
+// 空值忽略：调用方传空等于「不知道」，保留现值比清空更安全
+// （清空会让后续上报落到空 key 上）。
 func (s *Service) SetSeason(season string) {
 	if season != "" {
 		s.currentSeason = season
@@ -74,6 +90,9 @@ func (s *Service) SetSeason(season string) {
 //
 // 去重键 TTL 30 天（dedupTTL），按赛季周期设定：足够覆盖一次结算的重投
 // 窗口，又不会让 key 无限堆积；跨赛季复用同名 biz_id 不会互相屏蔽。
+//
+// 原子性边界：SETNX 去重与 ZINCRBY 加分是两条命令、两次往返，中间进程崩溃
+// 会留下「已去重未加分」——宁少勿多：少加一次可运营补偿，多加无法自动修正。
 func (s *Service) Write(rep *internalv2.RankReport) {
 	if rep == nil || rep.PlayerId == 0 {
 		return
@@ -96,6 +115,8 @@ func (s *Service) Write(rep *internalv2.RankReport) {
 
 	// 业务键去重：Redis 失败时宁可不加分，也不冒重复加分的风险
 	// （重复加分无法自动修正，少加一次可以由运营补偿）。
+	// 显式 cancel 而非 defer：函数后面还有 ZINCRBY 与 Set 两条命令，
+	// defer 会把 2s 超时上下文一直持到函数返回，白占资源
 	if rep.BizId != "" {
 		dctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		ok, err := s.rdb.SetNX(dctx, dedupKey(rep.BizId), 1, dedupTTL).Result()
@@ -115,6 +136,7 @@ func (s *Service) Write(rep *internalv2.RankReport) {
 		return
 	}
 	// 更新时间只在真正加分后写，客户端据此展示「榜单最近变动」。
+	// 失败不处理（_ =）：更新时间是展示增强信息，丢了不影响正确性
 	uctx, ucancel := context.WithTimeout(context.Background(), 2*time.Second)
 	_ = s.rdb.Set(uctx, updatedKey(scope, season, type_), time.Now().Unix(), dedupTTL).Err()
 	ucancel()
@@ -125,6 +147,9 @@ func (s *Service) Write(rep *internalv2.RankReport) {
 // season 为空用当前赛季；n<=0 取默认 100。返回按分数降序、名次从 1 连续
 // 编号。Name 字段留空——中心服不持有玩家数据（9.1），展示名由客户端按
 // playerId 补齐。
+//
+// 用 ZREVRANGE 一次取 Top-N（O(logN+M)）：不要 ZRANGE 全量再内存排序，
+// 榜单上限十万级时后者会把中心服内存打满。
 func (s *Service) TopN(rankType, season string, n int32) []*internalv2.RankEntry {
 	if n <= 0 {
 		n = 100
@@ -159,6 +184,9 @@ func (s *Service) TopN(rankType, season string, n int32) []*internalv2.RankEntry
 // 先 ZSCAN 前缀定位 member（约定同一玩家只在一个服有榜数据），再以
 // ZREVRANK 名次为中心前后各取一半。玩家未上榜返回 nil；贴近榜尾时
 // 窗口自动收窄（start 不小于 0），不会越界。
+//
+// 为什么用 ZSCAN 而不是全量 ZRANGE 找 member：大榜单下全量拉取的
+// 网络与内存代价不可接受；SCAN 的游标式遍历把成本摊到多次小请求。
 func (s *Service) Around(rankType, season string, playerID int64, n int32) []*internalv2.RankEntry {
 	if n <= 0 {
 		n = 20
@@ -171,6 +199,7 @@ func (s *Service) Around(rankType, season string, playerID int64, n int32) []*in
 
 	// 先找该玩家的 member（serverId 未知，用 SCAN 匹配前缀代价高；
 	// 这里约定同一玩家只在一个服有排行数据，用 ZSCAN 匹配 player_id 前缀）
+	// 该约定依赖业务保证：合服/转服会把同一玩家搬到一个服，否则周边查询会漏
 	member, ok := s.findMember(ctx, key, playerID)
 	if !ok {
 		return nil
@@ -210,6 +239,9 @@ func (s *Service) Around(rankType, season string, playerID int64, n int32) []*in
 //
 // 名次为 1-based；未上榜或 Redis 出错都返回 (0, 0)——调用方无法区分
 // 「未上榜」与「查询失败」，GM/展示场景可接受此模糊。
+//
+// ZREVRANK 返回 0-based，+1 转成人类名次；member 不存在时 redis.Nil
+// 与网络错误走同一分支——刻意不区分，理由见上。
 func (s *Service) RankOf(rankType, season string, playerID int64) (rankNo int64, score int64) {
 	if season == "" {
 		season = s.currentSeason
@@ -238,6 +270,9 @@ func (s *Service) RankOf(rankType, season string, playerID int64) (rankNo int64,
 //
 // 空榜单直接返回 nil（不触发回调）：新赛季还没有任何上报时无需归档。
 // 回调返回错误会中断归档并向上传播，由 leader 下一轮重试。
+//
+// 这里一次拉完 TopN 而不分页：TopN 上限 1000，单次 ZREVRANGE 的
+// 数据量可控；分页拉取反而要让回调感知页边界，复杂度不划算。
 func (s *Service) Archive(ctx context.Context, rankType, season string, topN int64, fn func(entries []*internalv2.RankEntry) error) error {
 	if season == "" {
 		return fmt.Errorf("season is required for archive")
@@ -268,6 +303,8 @@ func (s *Service) Archive(ctx context.Context, rankType, season string, topN int
 }
 
 // Reset 清空指定赛季的榜单（归档完成后调用）。
+// DEL 整个 key 而不是逐 member 删：赛季 key 整体废弃，O(1) 释放；
+// 逐条 ZREM 在大榜单上是 O(N) 且要多次往返。
 func (s *Service) Reset(ctx context.Context, rankType, season string) error {
 	if season == "" {
 		return fmt.Errorf("season is required")
@@ -278,6 +315,10 @@ func (s *Service) Reset(ctx context.Context, rankType, season string) error {
 // findMember 在 ZSet 里找某玩家的 member（member 形如 "12345:game-01"）。
 //
 // 用 ZSCAN 前缀匹配而不是全量 ZRANGE —— 大榜单下后者代价过高。
+//
+// 游标循环：cursor 从 0 开始，Redis 返回下一次游标，回 0 表示遍历完成；
+// count=100 只是每次扫描的「建议桶数」，不保证返回条数，循环必须以
+// cursor==0 为终止条件而不是凑够条数。
 func (s *Service) findMember(ctx context.Context, key string, playerID int64) (string, bool) {
 	prefix := strconv.FormatInt(playerID, 10) + ":"
 	var cursor uint64
@@ -286,7 +327,9 @@ func (s *Service) findMember(ctx context.Context, key string, playerID int64) (s
 		if err != nil {
 			return "", false
 		}
-		// ZScan 返回 [member, score, member, score, ...]
+		// ZScan 返回 [member, score, member, score, ...] 扁平数组，
+		// 步长 2 取偶数位即 member；HasPrefix 再确认一次（MATCH 是
+		// 服务端 glob 匹配，客户端侧双保险防串号）
 		for i := 0; i+1 < len(keys); i += 2 {
 			if strings.HasPrefix(keys[i], prefix) {
 				return keys[i], true
@@ -308,6 +351,9 @@ func Key(scope, season, rankType string) string {
 }
 
 // Member 构造 ZSet member。
+// serverId 为空填 "unknown" 而不是留空：member 格式是 "id:server"，
+// 空 server 会让 "123:" 这种畸形 member 出现，parseMember 虽能容错
+// 但排查时对不上号。
 func Member(playerID int64, serverID string) string {
 	if serverID == "" {
 		serverID = "unknown"
@@ -316,6 +362,9 @@ func Member(playerID int64, serverID string) string {
 }
 
 // parseMember 解析 member。
+// SplitN(member, ":", 2)：playerId 在前、serverId 在后，serverId 里
+// 若含 ":" 不会被切开（Limit=2）；playerId 解析失败静默归 0——
+// 调用方（TopN 等）对 0 号玩家只是展示一条无名条目，不值得让整个查询失败。
 func parseMember(member string) (int64, string) {
 	parts := strings.SplitN(member, ":", 2)
 	if len(parts) == 0 {
@@ -329,11 +378,15 @@ func parseMember(member string) (int64, string) {
 }
 
 // SortEntries 按名次升序排序（归档/展示统一用）。
+// SliceStable 而非 Slice：名次理论上已唯一，但稳定排序在输入脏数据
+// （重号）时保持原相对顺序，结果可复现——归档写库对顺序敏感。
 func SortEntries(list []*internalv2.RankEntry) {
 	sort.SliceStable(list, func(i, j int) bool { return list[i].Rank < list[j].Rank })
 }
 
 // dedupTTL 业务键与更新时间键的保留期：覆盖一次赛季周期即可。
+// 两类 key 共用同一 TTL：去重键过期后同名 biz_id 可重新计分（跨赛季复用），
+// 更新时间键过期只是客户端暂不显示「最近变动」，无正确性影响。
 const dedupTTL = 30 * 24 * time.Hour
 
 func dedupKey(bizID string) string { return "rank:dedup:" + bizID }
@@ -345,6 +398,9 @@ func updatedKey(scope, season, rankType string) string {
 // Query 一次返回 Top-N、我的名次与周边，供游戏服代理客户端查询。
 //
 // season 为空用当前赛季；未上榜时 on_board=false，且 around 为空（没有「周边」可言）。
+//
+// topN 截到 100：客户端协议上限——一次拉全服 Top-N 会把网关/中心服
+// 带宽打满，100 条足够首屏；aroundN 默认 11（自己居中 ±5）。
 func (s *Service) Query(rankType, season string, playerID int64, topN, aroundN int32) *internalv2.QueryRankResp {
 	if season == "" {
 		season = s.currentSeason

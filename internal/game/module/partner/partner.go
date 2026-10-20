@@ -4,6 +4,14 @@
 // 激活/升星要「扣金币 + 改状态」同成同败，走快照 CAS 天然满足；
 // 拆成多行实体表反而要自己维护事务。
 //
+// 架构职责：伙伴收集度 + 上阵编成 + 攻击加成维护。
+// Ext 槽位：player_partner.Partners 单列 JSON（stars + field）。
+// 事件订阅：无。
+// 配置表：partner.xml（Col1=名称，Col2=品质，Col3=每星攻击加成）、
+// partner_star.xml（col1=伙伴，col2=当前星级，col3=升下一星消耗）。
+// 懒初始化：未激活任何伙伴时 Ext 为空，load 返回空 Data；
+// 「上阵位」上限 fieldLimit 是玩法常量而非配置。
+//
 // 属性加成只由**已上阵**伙伴提供，且只在「登录 / 上阵 / 下阵 / 升星」四个时点
 // 精确增减一次，不在每次读列表时重算——避免反复累加（R6.3）。
 package partner
@@ -52,6 +60,9 @@ const (
 )
 
 // Data 伙伴状态：partner_id → 星级；Field 是上阵顺序。
+//
+// 两个容器分工：Stars 是 map（稀疏、按 ID 随机访问），
+// Field 是 slice（稠密、保序、最多 3 个元素）——用对容器比用对算法重要。
 type Data struct {
 	Stars map[int32]int32 `json:"stars"`
 	Field []int32         `json:"field"`
@@ -71,6 +82,10 @@ func validate(row *model.PlayerPartner) error {
 // decode 把表行 JSON 解成业务视图，并拦住坏快照：
 // 上阵位超限、上阵未拥有、重复上阵都会让登录给出错误加成且无法自愈，
 // 宁可整批落库失败，也不把坏状态放进出战计算。
+//
+// Go 知识点：这是「可信边界」模式——Ext 数据可能来自旧版本、
+// 手工改库或传输损坏，decode 是第一个接触点，把不变量检查
+// 集中在读取路径，比在每个使用点防御更可靠。
 func decode(row *model.PlayerPartner) (*Data, error) {
 	d := &Data{Stars: map[int32]int32{}, Field: []int32{}}
 	if row == nil || row.Partners == "" {
@@ -146,6 +161,8 @@ func (*Module) OnSave(context.Context) error { return nil }
 // OnLogin 重新叠加已上阵伙伴的加成。
 //
 // 玩家层在 LoginAll 之前已 ClearBonus，所以这里是「从零叠加」，不会与上次登录累加。
+// 状态损坏时吞掉错误继续登录：加成可以下次写操作时修复，
+// 但把玩家拦在登录外的影响更大（可用性优先）。
 func (m *Module) OnLogin(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
@@ -178,6 +195,9 @@ func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error
 }
 
 // onList 伙伴列表：全部配置都下发，未拥有（星级 0）不带加成字段。
+//
+// 与任务/副本同构：列表 = 配置全集 JOIN 玩家进度，未解锁项也展示
+// （星级 0），客户端可渲染「可激活」入口。
 func (m *Module) onList(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
@@ -203,6 +223,8 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onActivate 激活：消耗配置里的 col3 金币，状态置为 1 星（不上阵）。
+//
+// 扣费与置星都在内存：CAS 失败一起回滚，不会「扣了钱没激活」。
 func (m *Module) onActivate(ctx *module.Context, body []byte) error {
 	var req gamev1.PartnerActivateReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -240,6 +262,10 @@ func (m *Module) onActivate(ctx *module.Context, body []byte) error {
 }
 
 // onStarUp 升星：按 partner_star 的「当前星级 → 下一星」消耗金币。
+//
+// 已上阵的伙伴升星要同步改加成：先记旧加成，扣费置新星后
+// 加「新星加成 - 旧星加成」的差值——净变化只发生一次，
+// 比「先减后加」少一次中间态。
 func (m *Module) onStarUp(ctx *module.Context, body []byte) error {
 	var req gamev1.PartnerStarUpReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -258,6 +284,7 @@ func (m *Module) onStarUp(ctx *module.Context, body []byte) error {
 	}
 	cost, ok := starCost(req.PartnerId, star)
 	if !ok {
+		// 配置里没有「当前星 → 下一星」行 = 已满星
 		resp.Code = codeMaxStar
 		return reply(ctx, msgIDStarUpResp, resp)
 	}
@@ -285,6 +312,11 @@ func (m *Module) onStarUp(ctx *module.Context, body []byte) error {
 }
 
 // onField 上阵/下阵；幂等，重复请求不重复加/减属性。
+//
+// Go 知识点：switch 不带表达式（switch true 的省略写法）+ case 布尔条件，
+// 把「请求态 × 当前态」的四种组合平铺成四个分支，比 if-else 嵌套
+// 更能表达「状态机」语义。两个「已是目标态」的分支故意空转——
+// 幂等成功但不做任何内存改动。
 func (m *Module) onField(ctx *module.Context, body []byte) error {
 	var req gamev1.PartnerFieldReq
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -368,6 +400,11 @@ func contains(list []int32, v int32) bool {
 }
 
 // remove 原地过滤掉指定成员并返回同一底层数组的新切片（调用方立即覆盖原字段）。
+//
+// Go 知识点：out := list[:0] 是经典的「原地过滤」——复用同一底层数组，
+// 零分配。坑在于返回的切片与入参共享数组：调用方若还持有旧切片
+// （比如另一处 defer 里读它），会看到被覆写的数据。这里调用方
+// 立即 d.Field = remove(...) 覆盖原字段，没有第二个引用，所以安全。
 func remove(list []int32, v int32) []int32 {
 	out := list[:0]
 	for _, x := range list {

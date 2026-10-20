@@ -4,6 +4,17 @@
 // 流的用途：
 //   - 上行：送玩家战斗快照、转发客户端战斗操作与结算上报；
 //   - 下行：收房间就绪、对手战斗消息、兜底结算结果。
+//
+// 架构职责与协作：本文件只管单条流的生命周期与帧收发；多节点池化、
+// 房间路由、建房等待在 pool.go；Handler 由 server.go 的 crossHandler 实现。
+//
+// 设计取舍：
+//   - 首帧必须 BIND：CrossServer 靠 NodeId 把房间/结算精确回推到本节点，
+//     没有 BIND 的对端只能广播或丢弃；
+//   - ready 语义同 center 客户端：chan struct{} + select 非毒化的
+//     「一次关闭、多方等待」，markReady 里再判一次防重复 close；
+//   - conn 由 Pool 传入而非本文件自建：多个流可共享同一 conn 的成本
+//     由池统一摊薄，Stop 只关流不关 conn（见 pool.Stop 注释）。
 package cross
 
 import (
@@ -64,6 +75,9 @@ func NewClient(selfID, nodeAddr string, h Handler, logger *log.Logger) *Client {
 }
 
 // Start 建立流并常驻重连（阻塞，直到 ctx 取消或 Stop）。
+//
+// 退避从 500ms 起（比 center 短）：跨服节点滚动重启更频繁，快速重连能
+// 减少战斗房间的转移窗口。
 func (c *Client) Start(ctx context.Context, conn *grpc.ClientConn) {
 	backoff := minBackoff
 	for {
@@ -126,6 +140,7 @@ func (c *Client) runOnce(ctx context.Context, conn *grpc.ClientConn) error {
 	for {
 		frame, err := stream.Recv()
 		if err != nil {
+			// 同 center：只清理「仍是当前流」的标记，防止误清新流
 			c.mu.Lock()
 			if c.stream == stream {
 				c.stream = nil
@@ -212,6 +227,9 @@ func (c *Client) Ready() bool {
 }
 
 // WaitReady 等待流就绪或超时。
+//
+// select 同时等 ready 与 ctx.Done：建房时若目标节点还没 BIND 成功，
+// 调用方靠这个等待而不是轮询；ctx 取消立即返回错误。
 func (c *Client) WaitReady(ctx context.Context) error {
 	select {
 	case <-c.ready:
@@ -227,6 +245,9 @@ func (c *Client) Stop() {
 }
 
 // markReady 只关闭一次 ready。
+//
+// select + default 是「非毒化探测」：已关闭时走 default 什么都不做；
+// 直接 close 会因重复关闭 channel 而 panic。
 func (c *Client) markReady() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
