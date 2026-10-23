@@ -5,7 +5,7 @@ BIN     := bin
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db keygen db-init db-migrate db-seed build test test-race test-integration lint fmt vet dev run-all \
+.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db new-module keygen db-init db-migrate db-seed build test test-race test-integration lint fmt vet dev run-all \
         monitoring smoke loadtest bench drill-crash drill-suite clean
 
 help: ## 查看全部命令
@@ -49,6 +49,10 @@ db-init: ## DDL → MySQL 建表（首次部署）
 
 db-seed: ## sql/seed → 初始数据（道具/等级等安全表 + 测试账号）
 	./scripts/db-seed.sh
+
+new-module: ## 生成模块骨架（NAME=mailbox [MSGS=MailboxListReq:MailboxListResp,...] [TABLE=player_mailbox]）
+	@test -n "$(NAME)" || (echo "用法: make new-module NAME=mailbox [MSGS=Req:Resp,...] [TABLE=player_mailbox]"; exit 1)
+	@go run ./tools/newmodule -name=$(NAME) -msgs="$(MSGS)" -table="$(TABLE)"
 
 build: ## 交叉编译六进程（五服务 + map + flusher）→ bin/
 	./scripts/build.sh
