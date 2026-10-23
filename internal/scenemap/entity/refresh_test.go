@@ -5,6 +5,7 @@ import (
 
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/grid"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRefreshNUMSpawnsOnce(t *testing.T) {
@@ -23,18 +24,12 @@ func TestRefreshNUMSpawnsOnce(t *testing.T) {
 	}
 
 	got := TickRefresh(s, 0)
-	if len(got) != 3 {
-		t.Fatalf("NUM 应一次补足 3 只, got %d", len(got))
-	}
-	if len(s.NPES) != 3 {
-		t.Fatalf("NPES 数量不对: %d", len(s.NPES))
-	}
+	require.Len(t, got, 3)
+	require.Len(t, s.NPES, 3)
 	// 刷出来的怪必须带刷怪器 ID（存活统计按它精确归属）。
 	for _, id := range got {
 		info := s.NPES[id]
-		if info.TemplateID != 501 {
-			t.Fatalf("配置 ID 不对: %d", info.TemplateID)
-		}
+		require.EqualValues(t, 501, info.TemplateID)
 		if rt := runtimeOf(s, id); rt == nil || rt.spec.RefreshID != r.ID {
 			t.Fatalf("运行时里的 RefreshID 不对: %+v", rt)
 		}
@@ -70,9 +65,7 @@ func TestRefreshTIMERefillsAndReschedules(t *testing.T) {
 	if got := TickRefresh(s, 0); len(got) != 2 {
 		t.Fatalf("首次应刷 2 只, got %d", len(got))
 	}
-	if r.NextAtMS != 1000 {
-		t.Fatalf("TIME 型应重排到 1000, got %d", r.NextAtMS)
-	}
+	require.EqualValues(t, 1000, r.NextAtMS)
 
 	// 未到期：不刷。
 	if got := TickRefresh(s, 500); len(got) != 0 {
@@ -89,12 +82,8 @@ func TestRefreshTIMERefillsAndReschedules(t *testing.T) {
 		t.Fatal("Despawn 失败")
 	}
 	got := TickRefresh(s, 1000)
-	if len(got) != 1 {
-		t.Fatalf("应补足 1 只, got %d", len(got))
-	}
-	if r.NextAtMS != 2000 {
-		t.Fatalf("下一次应为 2000, got %d", r.NextAtMS)
-	}
+	require.Len(t, got, 1)
+	require.EqualValues(t, 2000, r.NextAtMS)
 	if n := len(s.NPES); n != 2 {
 		t.Fatalf("存活数应回到 2, got %d", n)
 	}
@@ -144,7 +133,5 @@ func TestAddRefresherRejectsBadInput(t *testing.T) {
 		t.Fatal("重复 ID 应返回 ErrAlreadyExists")
 	}
 	RemoveRefresher(s, ok.ID)
-	if RefresherOf(s, ok.ID) != nil {
-		t.Fatal("RemoveRefresher 后仍能查到")
-	}
+	require.Nil(t, RefresherOf(s, ok.ID), "RemoveRefresher 后仍能查到")
 }

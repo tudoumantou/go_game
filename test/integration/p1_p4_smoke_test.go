@@ -166,9 +166,7 @@ func TestP1toP4Smoke(t *testing.T) {
 	}
 	resp, err := r.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, "handshake req")
-	if resp.Code != 0 {
-		t.Fatalf("handshake resp code=%d", resp.Code)
-	}
+	require.EqualValues(t, 0, resp.Code)
 
 	// 心跳
 	hb, err := r.Heartbeat()
@@ -225,9 +223,7 @@ func initSchema(t *testing.T, dsn string) {
 	}
 	for _, f := range files {
 		content, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("read %s: %v", f, err)
-		}
+		require.NoError(t, err)
 		if _, err := database.Exec(string(content)); err != nil {
 			t.Fatalf("exec %s: %v", f, err)
 		}

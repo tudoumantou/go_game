@@ -101,9 +101,7 @@ func TestInSector(t *testing.T) {
 
 func TestRectClipAndContains(t *testing.T) {
 	r := Rect{MinX: -5, MinY: -5, MaxX: 15, MaxY: 15}.Clip(Size{Width: 10, Height: 8})
-	if r != (Rect{MinX: 0, MinY: 0, MaxX: 10, MaxY: 8}) {
-		t.Fatalf("Clip = %+v", r)
-	}
+	require.EqualValues(t, (Rect{MinX: 0, MinY: 0, MaxX: 10, MaxY: 8}), r)
 	// 左闭右开：MaxX 本身不在矩形内
 	if r.Contains(scenemap.GridPos{X: 10, Y: 0}) {
 		t.Fatal("右边界应开区间")
@@ -144,14 +142,10 @@ func TestBlockerStaticDynamicAndFootprint(t *testing.T) {
 	}
 	// 体积：4×3 的地图上，中心 (1,1) 半径 2 的 5×5 会被裁剪到 12 格
 	fp := b.Footprint(scenemap.GridPos{X: 1, Y: 1}, 2)
-	if len(fp) != 12 {
-		t.Fatalf("Footprint 在 4x3 地图上应裁到 12 格，实际 %d", len(fp))
-	}
+	require.Len(t, fp, 12)
 	// 角上的体积被裁剪
 	fp = b.Footprint(scenemap.GridPos{X: 0, Y: 0}, 1)
-	if len(fp) != 4 {
-		t.Fatalf("角落 Footprint 应裁到 4 格，实际 %d", len(fp))
-	}
+	require.Len(t, fp, 4)
 }
 
 func TestBlockerRejectsBadMatrix(t *testing.T) {
@@ -184,9 +178,7 @@ func TestAStarStraightAndAroundWall(t *testing.T) {
 			t.Fatalf("路径穿墙: %s", p)
 		}
 	}
-	if path[len(path)-1] != (scenemap.GridPos{X: 4, Y: 2}) {
-		t.Fatalf("终点不对: %v", path)
-	}
+	require.EqualValues(t, (scenemap.GridPos{X: 4, Y: 2}), path[len(path)-1])
 }
 
 func TestAStarRejectsBlockedTargetAndBudget(t *testing.T) {
@@ -223,17 +215,13 @@ func TestAStarNoDiagonalCornerCutting(t *testing.T) {
 
 func TestRingAndRandomCell(t *testing.T) {
 	ring := Ring(scenemap.GridPos{X: 5, Y: 5}, 2)
-	if len(ring) != 16 {
-		t.Fatalf("半径 2 的环应有 16 格，实际 %d", len(ring))
-	}
+	require.Len(t, ring, 16)
 	if got := Ring(scenemap.GridPos{X: 5, Y: 5}, 0); len(got) != 1 || got[0] != (scenemap.GridPos{X: 5, Y: 5}) {
 		t.Fatalf("半径 0 应只有中心: %v", got)
 	}
 	// 全部格都在切比雪夫距离 2 上
 	for _, p := range ring {
-		if Chebyshev(p, scenemap.GridPos{X: 5, Y: 5}) != 2 {
-			t.Fatalf("环上格 %s 距离不是 2", p)
-		}
+		require.EqualValues(t, 2, Chebyshev(p, scenemap.GridPos{X: 5, Y: 5}))
 	}
 
 	size := Size{Width: 10, Height: 10}
@@ -260,14 +248,10 @@ func TestStraightStepAndReachable(t *testing.T) {
 	})
 	// 朝目标走一步
 	next := StraightStep(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 2, Y: 0})
-	if next != (scenemap.GridPos{X: 1, Y: 0}) {
-		t.Fatalf("StraightStep = %s", next)
-	}
+	require.EqualValues(t, (scenemap.GridPos{X: 1, Y: 0}), next)
 	// 前方是墙：原地不动
 	next = StraightStep(b, scenemap.GridPos{X: 1, Y: 1}, scenemap.GridPos{X: 3, Y: 1})
-	if next != (scenemap.GridPos{X: 1, Y: 1}) {
-		t.Fatalf("撞墙应原地, got %s", next)
-	}
+	require.EqualValues(t, (scenemap.GridPos{X: 1, Y: 1}), next)
 	// 绕行可达
 	if !Reachable(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 2}, 100) {
 		t.Fatal("应可达")

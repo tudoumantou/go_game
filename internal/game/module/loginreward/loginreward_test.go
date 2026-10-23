@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeState 是 module.PlayerState 的内存实现，只保留礼包用到的能力。
@@ -77,9 +78,7 @@ func TestFirstLoginGrants(t *testing.T) {
 	if err := m.OnLogin(newCtx(st)); err != nil {
 		t.Fatal(err)
 	}
-	if st.GetItemCount(1001) != 100 {
-		t.Fatalf("first day reward: %d", st.GetItemCount(1001))
-	}
+	require.EqualValues(t, 100, st.GetItemCount(1001))
 	d, _ := load(st)
 	if d.Streak != 1 || d.LastDay != businessDay(day(0)) {
 		t.Fatalf("state: %+v", d)
@@ -98,13 +97,9 @@ func TestConsecutiveStreak(t *testing.T) {
 	if err := New(nil, func() time.Time { return day(1) }).OnLogin(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if st.GetItemCount(1002) != 5 {
-		t.Fatalf("second day reward: %d", st.GetItemCount(1002))
-	}
+	require.EqualValues(t, 5, st.GetItemCount(1002))
 	d, _ := load(st)
-	if d.Streak != 2 {
-		t.Fatalf("streak: %d", d.Streak)
-	}
+	require.EqualValues(t, 2, d.Streak)
 }
 
 // TestSameDayReconnectNoDoubleGrant 同一天重连（OnLogin 再次触发）不重复发奖。
@@ -117,12 +112,8 @@ func TestSameDayReconnectNoDoubleGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if st.GetItemCount(1001) != 100 {
-		t.Fatalf("reconnect granted again: %d", st.GetItemCount(1001))
-	}
-	if len(st.biz) != 0 {
-		t.Fatalf("login reward must not consume AppliedGrants: %v", st.biz)
-	}
+	require.EqualValues(t, 100, st.GetItemCount(1001))
+	require.Len(t, st.biz, 0)
 }
 
 // TestBreakResetsStreak 断签一天后重置为第 1 档。
@@ -137,12 +128,8 @@ func TestBreakResetsStreak(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := load(st)
-	if d.Streak != 1 {
-		t.Fatalf("streak should reset: %d", d.Streak)
-	}
-	if st.GetItemCount(1001) != 200 {
-		t.Fatalf("day-1 reward should be granted again: %d", st.GetItemCount(1001))
-	}
+	require.EqualValues(t, 1, d.Streak)
+	require.EqualValues(t, 200, st.GetItemCount(1001))
 }
 
 // TestBeyondMaxTier 超过最大档按最后一档发。
@@ -154,9 +141,7 @@ func TestBeyondMaxTier(t *testing.T) {
 	if err := New(nil, func() time.Time { return day(1) }).OnLogin(newCtx(st)); err != nil {
 		t.Fatal(err)
 	}
-	if st.GetItemCount(1002) != 5 {
-		t.Fatalf("beyond max tier reward: %d", st.GetItemCount(1002))
-	}
+	require.EqualValues(t, 5, st.GetItemCount(1002))
 }
 
 // TestParseRewardRejectsBadConfig 配置格式错误在 Init 期暴露。

@@ -123,9 +123,7 @@ func TestDeliveryCursorAdvance(t *testing.T) {
 	// nil 不前移（空批次不应打乱扫描位置）。
 	before := c
 	c.Advance(nil)
-	if c != before {
-		t.Fatalf("nil 推进改变了游标: %+v", c)
-	}
+	require.EqualValues(t, before, c)
 }
 
 // fakeDeliveryApplier 是 DeliveryApplier 的内存替身，
@@ -210,27 +208,17 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		d := testDelivery()
 		first, err := app.Apply(ctx, d)
 		require.NoError(t, err, "Apply 失败")
-		if first.Status != DeliveryApplyApplied {
-			t.Fatalf("首次状态 = %d, want APPLIED", int32(first.Status))
-		}
+		require.EqualValues(t, DeliveryApplyApplied, first.Status)
 		second, err := app.Apply(ctx, d)
 		require.NoError(t, err, "重复 Apply 失败")
-		if second.Status != DeliveryApplyAlreadyApplied {
-			t.Fatalf("重复状态 = %d, want ALREADY_APPLIED", int32(second.Status))
-		}
+		require.EqualValues(t, DeliveryApplyAlreadyApplied, second.Status)
 		// 回执只应存在一条：玩家侧最多加一次奖。
-		if len(app.receipts) != 1 {
-			t.Fatalf("回执数量 = %d, want 1", len(app.receipts))
-		}
-		if second.PlayerVersion != 42 {
-			t.Fatalf("PlayerVersion = %d, want 42", second.PlayerVersion)
-		}
+		require.Len(t, app.receipts, 1)
+		require.EqualValues(t, 42, second.PlayerVersion)
 		// Query 命中的是同一份回执。
 		q, err := app.Query(ctx, DeliveryReceiptQuery{WorldID: 1, DeliveryID: d.DeliveryID, PayloadHash: d.PayloadHash})
 		require.NoError(t, err, "Query 失败")
-		if q.Status != DeliveryApplyAlreadyApplied {
-			t.Fatalf("Query 状态 = %d, want ALREADY_APPLIED", int32(q.Status))
-		}
+		require.EqualValues(t, DeliveryApplyAlreadyApplied, q.Status)
 	})
 
 	t.Run("背包满返回可重试阻塞", func(t *testing.T) {
@@ -238,15 +226,11 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		app.blocked = "背包已满"
 		got, err := app.Apply(ctx, testDelivery())
 		require.NoError(t, err, "Apply 失败")
-		if got.Status != DeliveryApplyRetryableBlocked {
-			t.Fatalf("状态 = %d, want RETRYABLE_BLOCKED", int32(got.Status))
-		}
+		require.EqualValues(t, DeliveryApplyRetryableBlocked, got.Status)
 		if got.Reason == "" {
 			t.Fatal("阻塞必须带原因")
 		}
-		if len(app.receipts) != 0 {
-			t.Fatal("阻塞时不应写回执")
-		}
+		require.Len(t, app.receipts, 0, "阻塞时不应写回执")
 	})
 
 	t.Run("payload 冲突隔离", func(t *testing.T) {
@@ -260,9 +244,7 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		tampered.PayloadHash = PayloadHashOf([]byte("d-1|4001|100|9001:999"))
 		got, err := app.Apply(ctx, tampered)
 		require.NoError(t, err, "Apply 失败")
-		if got.Status != DeliveryApplyQuarantined {
-			t.Fatalf("状态 = %d, want QUARANTINED", int32(got.Status))
-		}
+		require.EqualValues(t, DeliveryApplyQuarantined, got.Status)
 	})
 
 	t.Run("Query 无回执返回可重试", func(t *testing.T) {
@@ -270,9 +252,7 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		d := testDelivery()
 		got, err := app.Query(ctx, DeliveryReceiptQuery{WorldID: 1, DeliveryID: d.DeliveryID, PayloadHash: d.PayloadHash})
 		require.NoError(t, err, "Query 失败")
-		if got.Status != DeliveryApplyRetryableBlocked {
-			t.Fatalf("状态 = %d, want RETRYABLE_BLOCKED", int32(got.Status))
-		}
+		require.EqualValues(t, DeliveryApplyRetryableBlocked, got.Status)
 	})
 }
 

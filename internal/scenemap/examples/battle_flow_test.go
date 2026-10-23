@@ -49,13 +49,9 @@ func TestBattleFlowDungeon(t *testing.T) {
 	// 第一波已由 MgrInit 刷出。
 	v, err := h.Read(func(s *mgr.State) any { return len(s.NPES) })
 	require.NoError(t, err, "读状态失败")
-	if v.(int) != 1 {
-		t.Fatalf("第一波应刷出 1 只怪，实际 %d", v.(int))
-	}
+	require.EqualValues(t, 1, v.(int))
 	ids := h.monsterIDs(t)
-	if len(ids) != 1 {
-		t.Fatalf("应只有一只怪，实际 %v", ids)
-	}
+	require.Len(t, ids, 1)
 
 	res, err := h.Cast(1, 6001, ids[0], nil)
 	require.NoError(t, err, "施法失败")
@@ -68,9 +64,7 @@ func TestBattleFlowDungeon(t *testing.T) {
 		return len(h.Events.MonsterDeaths()) == 1
 	})
 	dead := h.Events.MonsterDeaths()[0]
-	if dead.NpcID != 9001 {
-		t.Fatalf("死亡事件 npcID 错误: %+v", dead)
-	}
+	require.EqualValues(t, 9001, dead.NpcID)
 	// 表现回路：玩家视野内应收到飘字广播。
 	// 广播走 AOI 的异步 mailbox，必须轮询等待（结果事件是同步投递的，
 	// 先到不代表广播已送达）。
@@ -143,9 +137,7 @@ func TestCityBlocksSkill(t *testing.T) {
 	if res.Accepted || res.Code != battle.ErrCodeNoBattle {
 		t.Fatalf("主城应拒绝: %+v", res)
 	}
-	if h.Events.Len() != 0 {
-		t.Fatalf("主城不应产生结果事件: %d", h.Events.Len())
-	}
+	require.EqualValues(t, 0, h.Events.Len())
 }
 
 // monsterIDs 读出当前怪物的 UUID 列表。

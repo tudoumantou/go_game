@@ -124,9 +124,7 @@ func TestSessionCipherRoundTripAndReplay(t *testing.T) {
 	plain := []byte("payload")
 	ct1, seq1, err := s.Encrypt(1001, plain)
 	require.NoError(t, err, "encrypt")
-	if seq1 != 1 {
-		t.Fatalf("first seq should be 1, got %d", seq1)
-	}
+	require.EqualValues(t, 1, seq1)
 
 	gotID, gotSeq, gotPlain, err := s.Decrypt(ct1)
 	require.NoError(t, err, "decrypt")
@@ -145,11 +143,7 @@ func TestSessionCipherRoundTripAndReplay(t *testing.T) {
 	// 这里无法直接改密文里的 seq，但可测 seq 单调递增
 	for i := 0; i < 3; i++ {
 		_, seq, err := s.Encrypt(uint16(1001+i), plain)
-		if err != nil {
-			t.Fatalf("encrypt %d: %v", i, err)
-		}
-		if seq != uint32(i+2) {
-			t.Fatalf("seq should be %d, got %d", i+2, seq)
-		}
+		require.NoError(t, err)
+		require.EqualValues(t, uint32(i+2), seq)
 	}
 }

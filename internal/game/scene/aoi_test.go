@@ -10,6 +10,7 @@ import (
 
 	"game_study/pkg/actor"
 	"game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -87,9 +88,7 @@ func TestAdjacentCellNoFlicker(t *testing.T) {
 	aPushes := drainPushes(cols[1]) // A 自己收到什么
 	bPushes := drainPushes(cols[2]) // B 收到什么
 
-	if len(aPushes) != 0 {
-		t.Fatalf("A 不应收到任何 Enter/Leave（仍是同一视野），got types=%v", aPushes)
-	}
+	require.Len(t, aPushes, 0)
 	// B 只应收到一条「移动」通知。
 	if len(bPushes) != 1 || bPushes[0] != 2 {
 		t.Fatalf("B 应只收到 1 条移动通知，got types=%v", bPushes)
@@ -195,9 +194,7 @@ func TestThrottleRejectsBurst(t *testing.T) {
 			break
 		}
 	}
-	if !throttled {
-		t.Fatalf("超过 %d 次/秒的移动必须被限频", moveQuota)
-	}
+	require.True(t, throttled)
 }
 
 // TestBroadcastCoversViewOnly 广播量只与视野内人数有关，与场景总人数无关。
@@ -234,7 +231,5 @@ func TestBroadcastCoversViewOnly(t *testing.T) {
 		total += len(drainPushes(c))
 	}
 	// 视野内其他人 = 3，全场景其他人 = 9。
-	if total != 3 {
-		t.Fatalf("广播数 = %d, want 3（视野内 3 人，不是全场景 9 人）", total)
-	}
+	require.EqualValues(t, 3, total)
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 // TestRelayKey 分区键：同一目标必须落同一分区，否则消息乱序。
@@ -66,9 +67,7 @@ func TestBridgeNilSafe(t *testing.T) {
 	b.Close() // 不应 panic
 
 	fwd, recv, deliv, skip := b.Stats()
-	if fwd+recv+deliv+skip != 0 {
-		t.Fatal("nil bridge stats should be zero")
-	}
+	require.EqualValues(t, 0, fwd+recv+deliv+skip, "nil bridge stats should be zero")
 }
 
 // TestBridgeConfigDefaults topic 为空时落默认 topic（center.relay）。
@@ -77,14 +76,10 @@ func TestBridgeConfigDefaults(t *testing.T) {
 		Brokers:    []string{"127.0.0.1:9092"},
 		InstanceID: "center-01@pod-a",
 	}, func(Payload) int { return 0 }, log.New("test"))
-	if b == nil {
-		t.Fatal("bridge should be created")
-	}
+	require.NotNil(t, b, "bridge should be created")
 	defer b.Close()
 
-	if b.cfg.Topic != "center.relay" {
-		t.Fatalf("default topic = %q, want center.relay", b.cfg.Topic)
-	}
+	require.EqualValues(t, "center.relay", b.cfg.Topic)
 	if got := b.cfg.Topic + "." + b.cfg.InstanceID; got != "center.relay.center-01@pod-a" {
 		t.Fatalf("consumer group = %q", got)
 	}

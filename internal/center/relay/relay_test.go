@@ -3,6 +3,7 @@ package relay
 
 import (
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 	"time"
@@ -38,12 +39,8 @@ func TestRelayPointToPoint(t *testing.T) {
 	p := &fakePusher{id: "game-07"}
 
 	n := r.Relay(Payload{FromNode: "game-03", ToNode: "game-07", Body: []byte("hello")}, []Pusher{p})
-	if n != 1 {
-		t.Fatalf("expect 1 delivered, got %d", n)
-	}
-	if p.count() != 1 {
-		t.Fatalf("target should receive 1 push, got %d", p.count())
-	}
+	require.EqualValues(t, 1, n)
+	require.EqualValues(t, 1, p.count())
 	if got := p.got[0]; got.FromNode != "game-03" || string(got.Payload) != "hello" {
 		t.Fatalf("payload mismatch: %+v", got)
 	}
@@ -56,9 +53,7 @@ func TestRelayPointToPoint(t *testing.T) {
 	if sent != 1 || delivered != 1 || failed != 0 {
 		t.Fatalf("stats mismatch: sent=%d delivered=%d failed=%d", sent, delivered, failed)
 	}
-	if r.PendingCount() != 0 {
-		t.Fatalf("no pending expected, got %d", r.PendingCount())
-	}
+	require.EqualValues(t, 0, r.PendingCount())
 }
 
 func TestRelayRetriesOnFailure(t *testing.T) {
@@ -66,12 +61,8 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 	bad := &fakePusher{id: "game-07", fail: true}
 
 	n := r.Relay(Payload{RelayID: "r1", FromNode: "game-03", ToNode: "game-07"}, []Pusher{bad})
-	if n != 0 {
-		t.Fatalf("expect 0 delivered, got %d", n)
-	}
-	if r.PendingCount() != 1 {
-		t.Fatalf("failed relay should be pending, got %d", r.PendingCount())
-	}
+	require.EqualValues(t, 0, n)
+	require.EqualValues(t, 1, r.PendingCount())
 
 	// 到期后取重试队列
 	time.Sleep(15 * time.Millisecond)
@@ -81,9 +72,7 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 	}
 	// 重新投递仍失败 → 仍在 pending（等下一轮）
 	r.Relay(due[0], []Pusher{bad})
-	if r.PendingCount() != 1 {
-		t.Fatalf("still-failing relay should stay pending, got %d", r.PendingCount())
-	}
+	require.EqualValues(t, 1, r.PendingCount())
 
 	// 模拟真实循环：每次拿到到期条目就重新投递（仍失败），直到超过上限被丢弃
 	maxRounds := r.maxRetry + 3
@@ -94,9 +83,7 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 			r.Relay(payload, []Pusher{bad}) // 目标仍不可达
 		}
 	}
-	if r.PendingCount() != 0 {
-		t.Fatalf("pending should be cleared after max retries, got %d", r.PendingCount())
-	}
+	require.EqualValues(t, 0, r.PendingCount())
 	_, _, failed, _ := r.StatsSnapshot()
 	if failed == 0 {
 		t.Fatal("failed counter should be positive")
@@ -110,29 +97,17 @@ func TestRelayBroadcastNoRetry(t *testing.T) {
 
 	n := r.Relay(Payload{Broadcast: true, FromNode: "center", GroupID: "g1"},
 		[]Pusher{ok, bad})
-	if n != 1 {
-		t.Fatalf("expect 1 of 2 delivered, got %d", n)
-	}
+	require.EqualValues(t, 1, n)
 	// 广播不重试（避免故障时放大流量）
-	if r.PendingCount() != 0 {
-		t.Fatalf("broadcast must not be retried, got %d pending", r.PendingCount())
-	}
+	require.EqualValues(t, 0, r.PendingCount())
 	_, _, failed, bcast := r.StatsSnapshot()
-	if bcast != 1 {
-		t.Fatalf("broadcast counter should be 1, got %d", bcast)
-	}
-	if failed != 1 {
-		t.Fatalf("failed should be 1, got %d", failed)
-	}
+	require.EqualValues(t, 1, bcast)
+	require.EqualValues(t, 1, failed)
 }
 
 func TestRelayNoTargets(t *testing.T) {
 	r := NewRouter(3, 10*time.Millisecond)
 	n := r.Relay(Payload{ToNode: "ghost"}, nil)
-	if n != 0 {
-		t.Fatalf("expect 0 delivered with no targets, got %d", n)
-	}
-	if r.PendingCount() != 0 {
-		t.Fatal("no pending when there were no targets")
-	}
+	require.EqualValues(t, 0, n)
+	require.EqualValues(t, 0, r.PendingCount(), "no pending when there were no targets")
 }

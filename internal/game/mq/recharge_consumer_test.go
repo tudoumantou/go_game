@@ -179,9 +179,7 @@ func TestRechargeDeliversOnce(t *testing.T) {
 		t.Fatalf("handle: %v", err)
 	}
 	grants, items := act.snapshot()
-	if grants != 1 {
-		t.Fatalf("grants = %d, want 1", grants)
-	}
+	require.EqualValues(t, 1, grants)
 	if len(items) != 1 || items[0].ItemID != 1001 || items[0].Count != 600 {
 		t.Fatalf("items = %+v", items)
 	}
@@ -191,9 +189,7 @@ func TestRechargeDeliversOnce(t *testing.T) {
 		t.Fatalf("second handle: %v", err)
 	}
 	grants, _ = act.snapshot()
-	if grants != 1 {
-		t.Fatalf("duplicate delivery should be skipped, grants = %d", grants)
-	}
+	require.EqualValues(t, 1, grants)
 }
 
 func TestRechargeSkipOtherNode(t *testing.T) {

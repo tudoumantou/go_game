@@ -140,9 +140,7 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	scene, ok := world.Scene(testScene)
-	if !ok {
-		t.Fatalf("场景 %d 不存在", testScene)
-	}
+	require.True(t, ok)
 	if err := scene.Seed(ctx, seedObject(), nil, 1); err != nil {
 		t.Fatalf("注入种子失败: %v", err)
 	}
@@ -165,16 +163,10 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 		t.Fatalf("出征失败: %v", err)
 	}
 	troops := scene.QueryTroops(testPlayer)
-	if len(troops) != 1 {
-		t.Fatalf("出征后应有 1 支部队，实际 %d", len(troops))
-	}
+	require.Len(t, troops, 1)
 	troop := troops[0]
-	if troop.Phase != domain.TroopPhaseMarching {
-		t.Fatalf("出征后阶段应为 MARCHING，实际 %d", int32(troop.Phase))
-	}
-	if troop.Move == nil {
-		t.Fatal("出征后应存在 MoveSegment")
-	}
+	require.EqualValues(t, domain.TroopPhaseMarching, troop.Phase)
+	require.NotNil(t, troop.Move, "出征后应存在 MoveSegment")
 	// 距离 3000 units / 2000 units/s = 1.5s，按整秒向上取整为 2000ms
 	// （文档 9.1：end_at_ms = start + ceil(len/speed)*1000，不足一秒按一秒计）。
 	if got := troop.Move.EndAtMS - troop.Move.StartAtMS; got != 2000 {
@@ -189,9 +181,7 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 	})
 
 	res, ok := scene.Snapshot().Resource(testResID)
-	if !ok {
-		t.Fatal("资源点应存在")
-	}
+	require.True(t, ok, "资源点应存在")
 	if res.ActiveCollectID == "" {
 		t.Fatal("采集开始后资源点应有 active_collect_id")
 	}
@@ -211,22 +201,16 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 		t.Fatalf("召回失败: %v", err)
 	}
 	troops = scene.QueryTroops(testPlayer)
-	if len(troops) != 1 {
-		t.Fatalf("召回后应有 1 支部队，实际 %d", len(troops))
-	}
+	require.Len(t, troops, 1)
 	troop = troops[0]
-	if troop.Phase != domain.TroopPhaseReturning {
-		t.Fatalf("召回后阶段应为 RETURNING，实际 %d", int32(troop.Phase))
-	}
+	require.EqualValues(t, domain.TroopPhaseReturning, troop.Phase)
 	if got := troop.Cargo[1001]; got != 25 {
 		t.Fatalf("10 秒采集应得 25 个（floor），实际 %d", got)
 	}
 
 	// 资源余量应同步减少（INV-04：同事务扣减）。
 	res, _ = scene.Snapshot().Resource(testResID)
-	if res.Remaining != 975 {
-		t.Fatalf("资源余量应为 975，实际 %d", res.Remaining)
-	}
+	require.EqualValues(t, 975, res.Remaining)
 
 	// ---- 4. 回城：进入 SETTLING 并生成交接单 ----
 	clock.Advance(2100 * time.Millisecond)
@@ -238,9 +222,7 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 	if troop.SettlementID == "" {
 		t.Fatal("SETTLING 阶段应有 settlement_id（交接单先落再清货）")
 	}
-	if troop.Cargo[1001] != 25 {
-		t.Fatalf("交接前 Cargo 不应被清空，实际 %d", troop.Cargo[1001])
-	}
+	require.EqualValues(t, 25, troop.Cargo[1001])
 
 	// ---- 5. 事务确实落到了存储层 ----
 	if _, ok := srv.Store().Object(testResKey); !ok {

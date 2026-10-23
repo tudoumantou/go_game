@@ -30,9 +30,7 @@ func TestEmbeddedSnapshot(t *testing.T) {
 	if len(tableNames) < 34 {
 		t.Fatalf("table count = %d, want >= 34", len(tableNames))
 	}
-	if len(LoadedTables()) != len(tableNames) {
-		t.Fatalf("LoadedTables = %d, tableNames = %d", len(LoadedTables()), len(tableNames))
-	}
+	require.EqualValues(t, len(tableNames), len(LoadedTables()))
 	// validate 会逐表检查非空与主键唯一，等于把「生成物自洽」变成启动/测试期断言。
 	if err := s.validate(); err != nil {
 		t.Fatalf("embedded snapshot invalid: %v", err)
@@ -63,9 +61,7 @@ func TestReplaceAppliesAtomically(t *testing.T) {
 		t.Fatalf("item not updated: %+v", v)
 	}
 	// 未出现在 patch 里的表沿用旧快照，不能因为替换一张表就丢别的表。
-	if Cur().Quest.Len() != questLen {
-		t.Fatalf("quest table changed unexpectedly: %d -> %d", questLen, Cur().Quest.Len())
-	}
+	require.EqualValues(t, questLen, Cur().Quest.Len())
 	// 旧快照本身不受影响（读取方手里已拿到的指针语义仍是旧的一整套）。
 	if v, _ := before.Item.Get(1001); v.Col1 == "改名金币" {
 		t.Fatal("old snapshot must stay immutable")
@@ -92,9 +88,7 @@ func TestReplaceFailureKeepsOldSnapshot(t *testing.T) {
 			if _, err := Replace(c.patch); err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("err = %v, want contains %q", err, c.want)
 			}
-			if Version() != oldVersion {
-				t.Fatalf("failed replace must not change snapshot: %s -> %s", oldVersion, Version())
-			}
+			require.EqualValues(t, oldVersion, Version())
 			if v, _ := GetItemCfg(1001); v.Col1 == "" {
 				t.Fatal("snapshot content changed after failed replace")
 			}
@@ -116,9 +110,7 @@ func TestRollback(t *testing.T) {
 
 	ver, err := Rollback()
 	require.NoError(t, err, "rollback")
-	if ver != oldVersion {
-		t.Fatalf("rollback version = %s, want %s", ver, oldVersion)
-	}
+	require.EqualValues(t, oldVersion, ver)
 	if v, _ := GetItemCfg(1001); v.Col1 != oldName {
 		t.Fatalf("rollback content = %q, want %q", v.Col1, oldName)
 	}

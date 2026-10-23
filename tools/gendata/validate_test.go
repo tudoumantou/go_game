@@ -54,9 +54,7 @@ func TestParseXMLIgnoresRootAttributes(t *testing.T) {
   <row id="1" col1="a" />
   <row id="2" col1="b" />
 </item>`)
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2 (%+v)", len(rows), rows)
-	}
+	require.Len(t, rows, 2)
 	if rows[0].ID != "1" || rows[1].Vals["col1"] != "b" {
 		t.Fatalf("unexpected rows: %+v", rows)
 	}
@@ -91,9 +89,7 @@ func TestValidateDuplicatePrimaryKey(t *testing.T) {
 </item>`)
 	problems := validateTable(table{File: "item.xml", Rows: rows})
 	assertProblem(t, problems, "主键 id=1 重复")
-	if len(problems) != 1 {
-		t.Fatalf("duplicates should collapse into one problem, got %v", problems)
-	}
+	require.Len(t, problems, 1)
 }
 
 // TestValidatePrimaryKeyShape 主键三态各报一条：缺失 / 非正整数(0) / 非整数。
@@ -156,9 +152,7 @@ func TestValidateRefs(t *testing.T) {
 
 	problems := validateRefs([]table{items, rewards})
 	assertProblem(t, problems, "item_id=9999 在 item.xml 中不存在")
-	if len(problems) != 1 {
-		t.Fatalf("only the missing item should fail, got %v", problems)
-	}
+	require.Len(t, problems, 1)
 
 	// 目标表不存在时按普通数值列处理，不误报。
 	lonely := table{File: "other.xml", Rows: mustParse(t, "other.xml", `<other>
@@ -203,9 +197,7 @@ func TestValidatePassesRealConfig(t *testing.T) {
 			continue
 		}
 		rows, err := parseXML(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatalf("parse %s: %v", e.Name(), err)
-		}
+		require.NoError(t, err)
 		tables = append(tables, table{
 			Name: upperCamel(strings.TrimSuffix(e.Name(), ".xml")),
 			File: e.Name(),

@@ -76,32 +76,20 @@ func TestPlanBattleResultAttackerWinsOnResource(t *testing.T) {
 	}, 10000)
 	require.NoError(t, err, "裁决计划失败")
 
-	if len(plan.BattleUpsert) != 1 {
-		t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
-	}
+	require.Len(t, plan.BattleUpsert, 1)
 	rec := plan.BattleUpsert[0]
-	if rec.Status != domain.BattleStatusResolved {
-		t.Fatalf("战斗状态=%v, want RESOLVED", rec.Status)
-	}
+	require.EqualValues(t, domain.BattleStatusResolved, rec.Status)
 	if rec.Result == nil || rec.Result.WinnerID != 200 || rec.Result.AttackerWon != true {
 		t.Fatalf("结果未写入: %+v", rec.Result)
 	}
 	// INV-06 的落点：applied_operation_id 必须是命令的内部键，
 	// 迟到/重复命令据此识别"这个 battle 已有终态"。
-	if rec.AppliedOperationID != env.RequestID {
-		t.Fatalf("AppliedOperationID=%q, want %q", rec.AppliedOperationID, env.RequestID)
-	}
+	require.EqualValues(t, env.RequestID, rec.AppliedOperationID)
 
 	up, ok := findUpsert(plan, domain.ObjectKindTroop)
-	if !ok {
-		t.Fatalf("缺少部队 upsert")
-	}
-	if up.Troop.Phase != domain.TroopPhaseCollecting {
-		t.Fatalf("胜方攻方打资源点应准备采集, Phase=%v", up.Troop.Phase)
-	}
-	if up.Troop.Header.Version != attacker.Header.Version+1 {
-		t.Fatalf("Version=%d, want %d", up.Troop.Header.Version, attacker.Header.Version+1)
-	}
+	require.True(t, ok, "缺少部队 upsert")
+	require.EqualValues(t, domain.TroopPhaseCollecting, up.Troop.Phase)
+	require.EqualValues(t, attacker.Header.Version+1, up.Troop.Header.Version)
 	if up.Troop.BattleID != "" || up.Troop.Busy.Reason != domain.BusyReasonNone {
 		t.Fatalf("战斗态未解除: battle_id=%q busy=%+v", up.Troop.BattleID, up.Troop.Busy)
 	}
@@ -113,12 +101,8 @@ func TestPlanBattleResultAttackerWinsOnResource(t *testing.T) {
 	if jsonInt(t, m, "winner") != 200 || jsonInt(t, m, "loser") != 1000 {
 		t.Fatalf("回执胜负不符: %v", m)
 	}
-	if jsonStr(t, m, "queue_next") != "" {
-		t.Fatalf("没有排队者时 queue_next 应为空: %v", m)
-	}
-	if jsonStr(t, m, "status") != "RESOLVED" {
-		t.Fatalf("回执状态=%v", m["status"])
-	}
+	require.EqualValues(t, "", jsonStr(t, m, "queue_next"))
+	require.EqualValues(t, "RESOLVED", jsonStr(t, m, "status"))
 }
 
 // TestPlanBattleResultDefenderTroopWins 验证守方（部队）获胜：
@@ -144,39 +128,23 @@ func TestPlanBattleResultDefenderTroopWins(t *testing.T) {
 		BattleResult: BattleResultParams{BattleID: "b1", Winner: 900},
 	}, 10000)
 	require.NoError(t, err, "裁决计划失败")
-	if len(plan.ObjectsUpsert) != 2 {
-		t.Fatalf("双方都要落计划, got %+v", plan.ObjectsUpsert)
-	}
+	require.Len(t, plan.ObjectsUpsert, 2)
 	for _, o := range plan.ObjectsUpsert {
 		if o.Kind != domain.ObjectKindTroop {
 			continue
 		}
-		if o.Troop.Phase != domain.TroopPhaseReturning {
-			t.Errorf("部队 %d Phase=%v, want RETURNING", o.Troop.Header.ID, o.Troop.Phase)
-		}
-		if o.Troop.Move == nil {
-			t.Errorf("部队 %d 回城必须带移动段", o.Troop.Header.ID)
-		}
+		require.EqualValues(t, domain.TroopPhaseReturning, o.Troop.Phase)
+		require.NotNil(t, o.Troop.Move)
 		switch o.Troop.Header.ID {
 		case 200:
-			if o.Troop.Header.Version != 4 {
-				t.Errorf("攻方 Version=%d, want 4", o.Troop.Header.Version)
-			}
-			if o.Troop.Cargo[101] != 5 {
-				t.Errorf("败者 Cargo 被改动: %v", o.Troop.Cargo)
-			}
+			require.EqualValues(t, 4, o.Troop.Header.Version)
+			require.EqualValues(t, 5, o.Troop.Cargo[101])
 		case 900:
-			if o.Troop.Header.Version != 6 {
-				t.Errorf("守方 Version=%d, want 6", o.Troop.Header.Version)
-			}
-			if o.Troop.Cargo[102] != 8 {
-				t.Errorf("胜者也应保留 Cargo（无掠夺）: %v", o.Troop.Cargo)
-			}
+			require.EqualValues(t, 6, o.Troop.Header.Version)
+			require.EqualValues(t, 8, o.Troop.Cargo[102])
 		}
 	}
-	if len(plan.CollectStart) != 0 {
-		t.Fatalf("守方获胜不建采集会话（胜者不是攻方）: %+v", plan.CollectStart)
-	}
+	require.Len(t, plan.CollectStart, 0)
 	m := receiptMap(t, plan)
 	if jsonInt(t, m, "winner") != 900 || jsonStr(t, m, "defender_route") != "RETURNING" {
 		t.Fatalf("回执=%v", m)
@@ -328,16 +296,10 @@ func TestPlanBattleTimeoutNoDamage(t *testing.T) {
 		BattleTimeout: BattleTimeoutParams{BattleID: "b1"},
 	}, 40000)
 	require.NoError(t, err, "超时计划失败")
-	if len(plan.BattleUpsert) != 1 {
-		t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
-	}
+	require.Len(t, plan.BattleUpsert, 1)
 	rec := plan.BattleUpsert[0]
-	if rec.Status != domain.BattleStatusTimedOut {
-		t.Fatalf("状态=%v, want TIMED_OUT", rec.Status)
-	}
-	if rec.Result != nil {
-		t.Fatalf("超时不应写 Resolver 结果: %+v", rec.Result)
-	}
+	require.EqualValues(t, domain.BattleStatusTimedOut, rec.Status)
+	require.Nil(t, rec.Result)
 	if rec.AppliedOperationID != "req-battle-timeout" && rec.AppliedOperationID != domain.BattleResultKey("b1") {
 		t.Fatalf("AppliedOperationID=%q", rec.AppliedOperationID)
 	}
@@ -357,9 +319,7 @@ func TestPlanBattleTimeoutNoDamage(t *testing.T) {
 	if up.Troop.Phase != domain.TroopPhaseReturning || up.Troop.Move == nil {
 		t.Fatalf("攻方 Phase=%v move=%v, want RETURNING", up.Troop.Phase, up.Troop.Move)
 	}
-	if up.Troop.Cargo[101] != 7 {
-		t.Fatalf("超时无战损，Cargo 不应变化: %v", up.Troop.Cargo)
-	}
+	require.EqualValues(t, 7, up.Troop.Cargo[101])
 	if up.Troop.BattleID != "" || up.Troop.Busy.Reason != domain.BusyReasonNone {
 		t.Fatalf("战斗锁未解除: %+v", up.Troop)
 	}
@@ -397,9 +357,7 @@ func TestPlanBattleResultAdvancesQueue(t *testing.T) {
 	if len(plan.QueueDequeue) != 1 || plan.QueueDequeue[0].TroopID != 300 {
 		t.Fatalf("QueueDequeue=%+v, want 只有队首 300", plan.QueueDequeue)
 	}
-	if len(plan.QueueEnqueue) != 0 {
-		t.Fatalf("队列前进不应产生入队: %+v", plan.QueueEnqueue)
-	}
+	require.Len(t, plan.QueueEnqueue, 0)
 
 	var nextBattle *domain.BattleRecord
 	for i := range plan.BattleUpsert {
@@ -407,15 +365,9 @@ func TestPlanBattleResultAdvancesQueue(t *testing.T) {
 			nextBattle = &plan.BattleUpsert[i]
 		}
 	}
-	if nextBattle == nil {
-		t.Fatalf("队首应开新战斗: %+v", plan.BattleUpsert)
-	}
-	if nextBattle.Status != domain.BattleStatusPending {
-		t.Fatalf("新战斗必须 PENDING: %+v", nextBattle)
-	}
-	if nextBattle.DeadlineMS != 10000+h.rules.BattleTimeoutMS {
-		t.Fatalf("新战斗 deadline=%d, want %d", nextBattle.DeadlineMS, 10000+h.rules.BattleTimeoutMS)
-	}
+	require.NotNil(t, nextBattle)
+	require.EqualValues(t, domain.BattleStatusPending, nextBattle.Status)
+	require.EqualValues(t, 10000+h.rules.BattleTimeoutMS, nextBattle.DeadlineMS)
 	if nextBattle.BattleID == "b1" {
 		t.Fatalf("新战斗必须有新 BattleID")
 	}
@@ -439,9 +391,7 @@ func TestPlanBattleResultAdvancesQueue(t *testing.T) {
 			t.Fatalf("队首缺少战斗锁: %+v", o.Troop.Busy)
 		}
 	}
-	if !started {
-		t.Fatal("队首部队不在计划里")
-	}
+	require.True(t, started, "队首部队不在计划里")
 	if m := receiptMap(t, plan); jsonStr(t, m, "queue_next") != nextBattle.BattleID {
 		t.Fatalf("回执 queue_next=%v, want %s", m["queue_next"], nextBattle.BattleID)
 	}
@@ -484,9 +434,7 @@ func TestBattleQueueFIFO(t *testing.T) {
 		BattleTimeout: BattleTimeoutParams{BattleID: "b4"},
 	}, 30000)
 	require.NoError(t, err, "第二轮失败")
-	if len(second.QueueDequeue) != 0 {
-		t.Fatalf("空队列不应出队: %+v", second.QueueDequeue)
-	}
+	require.Len(t, second.QueueDequeue, 0)
 	if m := receiptMap(t, second); jsonStr(t, m, "queue_next") != "" {
 		t.Fatalf("没有下一名时 queue_next 应为空: %v", m)
 	}
@@ -525,16 +473,12 @@ func TestEnqueueSeqMonotonic(t *testing.T) {
 
 	first := arrivedTroop(t, 200, 1, 1000, domain.Pos{X: 10000, Y: 0}, "m-1", domain.MarchIntentAttack)
 	p1 := build(first, nil, testEnv(1, "req-q1", 31))
-	if len(p1.QueueEnqueue) != 1 {
-		t.Fatalf("QueueEnqueue=%+v", p1.QueueEnqueue)
-	}
+	require.Len(t, p1.QueueEnqueue, 1)
 	seq1 := p1.QueueEnqueue[0].Seq
 
 	second := arrivedTroop(t, 201, 1, 1000, domain.Pos{X: 10000, Y: 0}, "m-2", domain.MarchIntentAttack)
 	p2 := build(second, []domain.ObjectID{200}, testEnv(1, "req-q2", 32))
-	if len(p2.QueueEnqueue) != 1 {
-		t.Fatalf("QueueEnqueue=%+v", p2.QueueEnqueue)
-	}
+	require.Len(t, p2.QueueEnqueue, 1)
 	seq2 := p2.QueueEnqueue[0].Seq
 	if seq2 <= seq1 {
 		t.Fatalf("同一目标的入队序号必须严格递增: seq1=%d seq2=%d", seq1, seq2)

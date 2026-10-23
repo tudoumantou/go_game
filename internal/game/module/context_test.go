@@ -4,6 +4,7 @@ package module
 import (
 	"encoding/json"
 	"errors"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -108,12 +109,8 @@ func TestApplyOnceEmptyKeySkipsIdempotency(t *testing.T) {
 			t.Fatalf("empty key apply: applied=%v err=%v", applied, err)
 		}
 	}
-	if len(st.biz) != 0 {
-		t.Fatalf("empty key polluted applied_grants: %v", st.biz)
-	}
-	if st.GetItemCount(1001) != 2 {
-		t.Fatalf("empty key must run every time, count=%d", st.GetItemCount(1001))
-	}
+	require.Len(t, st.biz, 0)
+	require.EqualValues(t, 2, st.GetItemCount(1001))
 }
 
 // TestApplyOnceWithoutState Context 缺少玩家状态时明确报错，不静默成功。

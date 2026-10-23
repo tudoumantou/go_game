@@ -74,9 +74,7 @@ func TestPayCallbackRejectsAmountMismatch(t *testing.T) {
 		WillReturnRows(orderRow("O1", 9800, repo.OrderStatusPending))
 
 	_, err := svc.PayCallback(context.Background(), "O1", 1)
-	if err == nil {
-		t.Fatal("amount mismatch must be rejected")
-	}
+	require.Error(t, err, "amount mismatch must be rejected")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -91,9 +89,7 @@ func TestPayCallbackIdempotentOnPaid(t *testing.T) {
 
 	res, err := svc.PayCallback(context.Background(), "O1", 9800)
 	require.NoError(t, err, "idempotent callback")
-	if res.Code != 0 {
-		t.Fatalf("code=%d", res.Code)
-	}
+	require.EqualValues(t, 0, res.Code)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

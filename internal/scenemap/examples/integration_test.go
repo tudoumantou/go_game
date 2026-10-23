@@ -316,9 +316,7 @@ func TestCityRoomStaysOpenWhenEmpty(t *testing.T) {
 	if err := h.EnterPlayer(playerA, scenemap.GridPos{X: 1, Y: 1}); err != nil {
 		t.Fatalf("进图: %v", err)
 	}
-	if city.Players() != 1 {
-		t.Fatalf("主城人数 = %d", city.Players())
-	}
+	require.EqualValues(t, 1, city.Players())
 	if err := h.Leave(playerA, scenemap.LeaveReasonQuit); err != nil {
 		t.Fatalf("离图: %v", err)
 	}
@@ -344,13 +342,9 @@ func TestCityRoomStaysOpenWhenEmpty(t *testing.T) {
 
 func TestHarnessGeometryDefaults(t *testing.T) {
 	h := NewHarness(t, 1401, 1, WithSize(8, 8), WithEnterProtect(time.Minute))
-	if h.Geo != grid.DefaultGeometry() {
-		t.Fatalf("默认几何应为 %+v, got %+v", grid.DefaultGeometry(), h.Geo)
-	}
+	require.EqualValues(t, grid.DefaultGeometry(), h.Geo)
 	if h.AOI == nil || h.Mgr == nil {
 		t.Fatal("装配不完整：AOI/MGR 不能为 nil")
 	}
-	if cellPX(h, 1) != 1*48+24 {
-		t.Fatalf("像素换算不对: %d", cellPX(h, 1))
-	}
+	require.EqualValues(t, 1*48+24, cellPX(h, 1))
 }

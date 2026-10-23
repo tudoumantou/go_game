@@ -11,6 +11,7 @@ import (
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -49,9 +50,7 @@ func newCtx(id int64) (*module.Context, *[]byte) {
 
 func decodeApply(t *testing.T, raw []byte) *gamev1.FriendApplyResp {
 	t.Helper()
-	if raw == nil {
-		t.Fatal("no reply captured")
-	}
+	require.NotNil(t, raw, "no reply captured")
 	var resp gamev1.FriendApplyResp
 	if err := proto.Unmarshal(raw, &resp); err != nil {
 		t.Fatal(err)

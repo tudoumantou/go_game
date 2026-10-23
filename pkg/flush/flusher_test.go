@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 // TestNextTickAligned 唤醒时刻必须落在「interval 边界 + 分片偏移」，不能是「启动后 + interval」。
@@ -26,9 +27,7 @@ func TestNextTickAligned(t *testing.T) {
 		if got := next.Second(); got != int(offset/time.Second) {
 			t.Fatalf("offset %s: next tick second = %d", offset, got)
 		}
-		if next.Nanosecond() != 0 {
-			t.Fatalf("offset %s: next tick has sub-second component: %s", offset, next)
-		}
+		require.EqualValues(t, 0, next.Nanosecond())
 	}
 }
 
@@ -42,9 +41,7 @@ func TestNextTickFollowsInterval(t *testing.T) {
 	if d := next.Sub(now); d > 2*time.Second+100*time.Millisecond {
 		t.Fatalf("next tick with 2s interval should be within 2s, got %s", d)
 	}
-	if next.Nanosecond() != 0 {
-		t.Fatalf("next tick should align to interval boundary, got %s", next)
-	}
+	require.EqualValues(t, 0, next.Nanosecond())
 }
 
 // TestMarkDeleteFlush 墓碑在 flush 时被合批执行。
@@ -80,9 +77,7 @@ func TestMarkDeleteFlush(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(ids) != 3 {
-		t.Fatalf("deleted %d ids, want 3", len(ids))
-	}
+	require.Len(t, ids, 3)
 	count := map[string]int{}
 	for _, tb := range tables {
 		count[tb]++
@@ -90,9 +85,7 @@ func TestMarkDeleteFlush(t *testing.T) {
 	if count["mail"] != 1 || count["team_member"] != 1 {
 		t.Fatalf("expect one batch per table, got %v", count)
 	}
-	if f.PendingDeletes() != 0 {
-		t.Fatalf("pending deletes should be cleared, got %d", f.PendingDeletes())
-	}
+	require.EqualValues(t, 0, f.PendingDeletes())
 }
 
 // TestMarkDeleteFailureKeepsTombstone 删除失败必须回填，下轮重试。
@@ -162,15 +155,11 @@ func TestDeleteBeforeUpsert(t *testing.T) {
 func TestChunkIDs(t *testing.T) {
 	ids := []int64{1, 2, 3, 4, 5}
 	batches := chunkIDs(ids, 2)
-	if len(batches) != 3 {
-		t.Fatalf("batches = %d, want 3", len(batches))
-	}
+	require.Len(t, batches, 3)
 	if len(batches[0]) != 2 || len(batches[2]) != 1 {
 		t.Fatalf("batch sizes = %d/%d", len(batches[0]), len(batches[2]))
 	}
-	if len(chunkIDs(nil, 2)) != 0 {
-		t.Fatal("empty ids should produce no batches")
-	}
+	require.Len(t, chunkIDs(nil, 2), 0, "empty ids should produce no batches")
 }
 
 // TestShardIndexStable 同一 playerID 永远落同一分片（否则单实体写入无序）。
@@ -206,9 +195,7 @@ func TestFlushAllDrainsAllBatches(t *testing.T) {
 	if err := f.FlushAll(context.Background()); err != nil {
 		t.Fatalf("flush all: %v", err)
 	}
-	if len(persisted) != 5 {
-		t.Fatalf("persisted %d players, want 5", len(persisted))
-	}
+	require.Len(t, persisted, 5)
 	if got := f.shards[0].dirtyCount(); got != 0 {
 		t.Fatalf("dirty left after FlushAll: %d", got)
 	}

@@ -200,9 +200,7 @@ func newFixture(t *testing.T, verifier TokenVerifier) *fixture {
 	world, err := manager.LoadWorld(ctx, testWorld)
 	require.NoError(t, err, "加载世界失败")
 	scene, ok := world.Scene(testScene)
-	if !ok {
-		t.Fatalf("场景 %d 不存在", testScene)
-	}
+	require.True(t, ok)
 	if err := scene.Seed(ctx, seedObjects(), nil, 1); err != nil {
 		t.Fatalf("注入种子失败: %v", err)
 	}
@@ -315,9 +313,7 @@ func TestSubmitMarchThenQueryTroops(t *testing.T) {
 
 	reply, err := f.srv.Submit(ctx, marchRequest("req-march-1", 1))
 	require.NoError(t, err, "出征应被接受，实际 gRPC 错误")
-	if reply.GetCode() != domain.CodeOK {
-		t.Fatalf("出征业务码应为 0，实际 %d（%s）", reply.GetCode(), reply.GetMessage())
-	}
+	require.EqualValues(t, domain.CodeOK, reply.GetCode())
 	if reply.GetReplayed() {
 		t.Fatal("首次提交不应标记为重放")
 	}
@@ -334,16 +330,10 @@ func TestSubmitMarchThenQueryTroops(t *testing.T) {
 		t.Fatal("查询结果应带场景 revision")
 	}
 	troops := qr.GetTroops()
-	if len(troops) != 1 {
-		t.Fatalf("出征后应有 1 支部队，实际 %d", len(troops))
-	}
+	require.Len(t, troops, 1)
 	troop := troops[0]
-	if troop.GetPlayerId() != testPlayer {
-		t.Fatalf("部队归属玩家应为 %d，实际 %d", testPlayer, troop.GetPlayerId())
-	}
-	if troop.GetPhase() != int32(domain.TroopPhaseMarching) {
-		t.Fatalf("出征后阶段应为 MARCHING，实际 %d", troop.GetPhase())
-	}
+	require.EqualValues(t, testPlayer, troop.GetPlayerId())
+	require.EqualValues(t, int32(domain.TroopPhaseMarching), troop.GetPhase())
 	// 坐标是 MoveSegment 按快照 nowMS 推导的：起点即主堡位置。
 	if troop.GetX() != 5000 || troop.GetY() != 5000 {
 		t.Fatalf("出征瞬间坐标应为 (5000,5000)，实际 (%d,%d)", troop.GetX(), troop.GetY())
@@ -366,9 +356,7 @@ func TestSubmitReplayIsIdempotent(t *testing.T) {
 	if !second.GetReplayed() {
 		t.Fatal("第二次同 request_id 提交应标记 Replayed=true")
 	}
-	if second.GetCode() != domain.CodeOK {
-		t.Fatalf("重放业务码应为 0，实际 %d", second.GetCode())
-	}
+	require.EqualValues(t, domain.CodeOK, second.GetCode())
 	if second.GetCommandId() != first.GetCommandId() {
 		t.Fatalf("重放应复用首次 command_id：first=%q second=%q",
 			first.GetCommandId(), second.GetCommandId())
@@ -377,9 +365,7 @@ func TestSubmitReplayIsIdempotent(t *testing.T) {
 	// 重放不得产生第二支部队（否则幂等只是“看起来成功”）。
 	qr, err := f.srv.Query(ctx, troopsQuery(testPlayer))
 	require.NoError(t, err, "查询失败")
-	if len(qr.GetTroops()) != 1 {
-		t.Fatalf("重放后仍应只有 1 支部队，实际 %d", len(qr.GetTroops()))
-	}
+	require.Len(t, qr.GetTroops(), 1)
 }
 
 // ---- 5. 槽位占用：业务码 44005（不是 gRPC error） ----
@@ -469,9 +455,7 @@ func TestQueryCargoOrderIsStable(t *testing.T) {
 
 	idsOf := func(reply *internalv2.MapQueryReply) []int32 {
 		t.Helper()
-		if len(reply.GetTroops()) != 1 {
-			t.Fatalf("玩家 %d 应有 1 支部队，实际 %d", testOther, len(reply.GetTroops()))
-		}
+		require.Len(t, reply.GetTroops(), 1)
 		entries := reply.GetTroops()[0].GetCargo()
 		ids := make([]int32, 0, len(entries))
 		for _, e := range entries {
@@ -490,9 +474,7 @@ func TestQueryCargoOrderIsStable(t *testing.T) {
 	// 连续查询多次：Go map 的 range 顺序每轮随机，未排序时这里会抖动。
 	for i := 0; i < 5; i++ {
 		next, err := f.srv.Query(ctx, troopsQuery(testOther))
-		if err != nil {
-			t.Fatalf("第 %d 次查询失败: %v", i+1, err)
-		}
+		require.NoError(t, err)
 		if got := idsOf(next); !reflect.DeepEqual(got, want) {
 			t.Fatalf("第 %d 次查询顺序漂移: %v", i+1, got)
 		}
@@ -508,13 +490,9 @@ func TestQueryResourcesFiltersByCellRect(t *testing.T) {
 	// 资源点在 (5,8) 格。
 	inside, err := f.srv.Query(ctx, resourcesQuery(0, 0, 10, 10))
 	require.NoError(t, err, "查询资源失败")
-	if len(inside.GetResources()) != 1 {
-		t.Fatalf("矩形内应有 1 个资源点，实际 %d", len(inside.GetResources()))
-	}
+	require.Len(t, inside.GetResources(), 1)
 	res := inside.GetResources()[0]
-	if res.GetResourceId() != uint64(testResID) {
-		t.Fatalf("资源点 ID 应为 %d，实际 %d", testResID, res.GetResourceId())
-	}
+	require.EqualValues(t, uint64(testResID), res.GetResourceId())
 	if res.GetX() != 5000 || res.GetY() != 8000 {
 		t.Fatalf("资源点坐标应为 (5000,8000)，实际 (%d,%d)", res.GetX(), res.GetY())
 	}
@@ -525,9 +503,7 @@ func TestQueryResourcesFiltersByCellRect(t *testing.T) {
 	// 相邻矩形（左闭右开）不包含 (5,8)。
 	outside, err := f.srv.Query(ctx, resourcesQuery(10, 10, 20, 20))
 	require.NoError(t, err, "查询资源失败")
-	if len(outside.GetResources()) != 0 {
-		t.Fatalf("矩形外不应有资源点，实际 %d", len(outside.GetResources()))
-	}
+	require.Len(t, outside.GetResources(), 0)
 }
 
 // ---- 10. 世界未加载：NotFound（基础设施错误，不是业务码） ----
@@ -576,9 +552,7 @@ func TestStreamViewUnimplementedWithoutCoordinator(t *testing.T) {
 	if got := status.Code(err); got != codes.Unimplemented {
 		t.Fatalf("coordinator 为 nil 时应返回 Unimplemented，实际 %v (%v)", got, err)
 	}
-	if len(stream.sent) != 0 {
-		t.Fatalf("Unimplemented 时不应发送任何事件，实际 %d", len(stream.sent))
-	}
+	require.Len(t, stream.sent, 0)
 }
 
 // ---- 12. MarchIntent 双向映射对称（防止正向/反向漂移） ----
@@ -590,16 +564,10 @@ func TestMarchIntentRoundTrip(t *testing.T) {
 	}
 	for _, protoIntent := range cases {
 		domainIntent, err := toDomainIntent(protoIntent)
-		if err != nil {
-			t.Fatalf("正向映射 %v 失败: %v", protoIntent, err)
-		}
+		require.NoError(t, err)
 		back, err := toProtoIntent(domainIntent)
-		if err != nil {
-			t.Fatalf("反向映射 %v 失败: %v", domainIntent, err)
-		}
-		if back != protoIntent {
-			t.Fatalf("映射不对称: %v → %v → %v", protoIntent, domainIntent, back)
-		}
+		require.NoError(t, err)
+		require.EqualValues(t, protoIntent, back)
 	}
 
 	// 未知值必须报错，不能被默认成 COLLECT。

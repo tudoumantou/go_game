@@ -200,9 +200,7 @@ func TestP12LoginPreload(t *testing.T) {
 	}
 	eg, err := client2.EnterGame()
 	require.NoError(t, err, "enter game")
-	if eg.RoleId != roleID {
-		t.Fatalf("expect same role %d on reconnect, got %d", roleID, eg.RoleId)
-	}
+	require.EqualValues(t, roleID, eg.RoleId)
 
 	// ⑤ 校验装备加成（预加载路径生效）
 	info, err := client2.PlayerInfo()
@@ -213,9 +211,7 @@ func TestP12LoginPreload(t *testing.T) {
 			atk = a.Value
 		}
 	}
-	if atk != 60 {
-		t.Fatalf("atk should be 60 (base 50 + sword 10 from preload), got %d", atk)
-	}
+	require.EqualValues(t, 60, atk)
 	t.Logf("装备加成生效：atk=%d", atk)
 
 	// ⑥ 校验登录活动进度推进（预置 2，登录后 ≥3）
@@ -232,12 +228,8 @@ func TestP12LoginPreload(t *testing.T) {
 	// ⑦ 校验离线暂存被 drain 并补投
 	chat, err := client2.WaitChatNotify(10 * time.Second)
 	require.NoError(t, err, "expect offline chat redelivered")
-	if chat.Content != "你不在的时候我发了一条" {
-		t.Fatalf("offline chat content mismatch: %q", chat.Content)
-	}
-	if chat.SenderName != "离线发送者" {
-		t.Fatalf("offline chat sender mismatch: %q", chat.SenderName)
-	}
+	require.EqualValues(t, "你不在的时候我发了一条", chat.Content)
+	require.EqualValues(t, "离线发送者", chat.SenderName)
 	t.Logf("离线消息已补投：msg_id=%s from=%s", chat.MsgId, chat.SenderName)
 
 	// 队列应已清空
@@ -271,9 +263,7 @@ func createRoleWithDevice(t *testing.T, loginURL, gwAddr, deviceID, namePrefix s
 	}
 	roleName := fmt.Sprintf("%s%d", namePrefix, time.Now().UnixNano()%1000000)
 	cr, err := c.CreateRole(roleName, 1)
-	if err != nil {
-		t.Fatalf("%s create role: %v", namePrefix, err)
-	}
+	require.NoError(t, err)
 	if cr.Code != 0 || cr.RoleId == 0 {
 		t.Fatalf("%s create role code=%d role=%d", namePrefix, cr.Code, cr.RoleId)
 	}

@@ -62,9 +62,7 @@ func TestDecodePayloadEmpty(t *testing.T) {
 func TestIdemKey(t *testing.T) {
 	got := IdemKey(TopicRechargeOrder, "O123")
 	want := "idem:gs.recharge.order:O123"
-	if got != want {
-		t.Fatalf("idem key = %q, want %q", got, want)
-	}
+	require.EqualValues(t, want, got)
 }
 
 // TestNoopDeduperAlwaysFirst NoopDeduper 必须恒真：本地/单测场景不去重，

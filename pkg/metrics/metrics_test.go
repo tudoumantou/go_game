@@ -21,9 +21,7 @@ func TestInitRegisters(t *testing.T) {
 	if !Enabled() {
 		t.Fatal("metrics should be enabled after Init")
 	}
-	if Service() != "unit-test" {
-		t.Fatalf("service name mismatch: %s", Service())
-	}
+	require.EqualValues(t, "unit-test", Service())
 
 	// 计数器
 	before := testutil.ToFloat64(msgCounter.WithLabelValues("unit-test", "in", "ok"))
@@ -149,14 +147,10 @@ func TestServerEndpoints(t *testing.T) {
 func TestServerDisabled(t *testing.T) {
 	srv, err := NewServer("", nil)
 	require.NoError(t, err, "empty addr should not error")
-	if srv != nil {
-		t.Fatal("empty addr should return nil server")
-	}
+	require.Nil(t, srv, "empty addr should return nil server")
 	// nil server 上的方法调用必须安全
 	srv.Start()
-	if srv.Addr() != "" {
-		t.Fatal("nil server addr should be empty")
-	}
+	require.EqualValues(t, "", srv.Addr(), "nil server addr should be empty")
 	if err := srv.Stop(context.Background()); err != nil {
 		t.Fatalf("nil server stop: %v", err)
 	}
@@ -165,9 +159,7 @@ func TestServerDisabled(t *testing.T) {
 func mustGet(t *testing.T, url string) string {
 	t.Helper()
 	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	require.NoError(t, err, "read body")
@@ -177,9 +169,7 @@ func mustGet(t *testing.T, url string) string {
 func mustStatus(t *testing.T, url string) int {
 	t.Helper()
 	resp, err := http.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode
 }

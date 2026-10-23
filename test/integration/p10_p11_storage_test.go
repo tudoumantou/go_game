@@ -156,9 +156,7 @@ func TestP10IDTable(t *testing.T) {
 	}
 	rebuilt, err = it.Reconcile(ctx, meta)
 	require.NoError(t, err, "reconcile 2")
-	if !rebuilt {
-		t.Fatal("expect rebuild after manual removal")
-	}
+	require.True(t, rebuilt, "expect rebuild after manual removal")
 	if ok, _ := it.Exists(ctx, "player", playerID); !ok {
 		t.Fatal("id should be back after rebuild")
 	}
@@ -168,9 +166,7 @@ func TestP10IDTable(t *testing.T) {
 	_ = rdb.Del(ctx, key).Err()
 	row, err := it.LoadEntity(ctx, meta, playerID)
 	require.NoError(t, err, "load entity")
-	if row["name"] != "idtab_role_a" {
-		t.Fatalf("row name = %q", row["name"])
-	}
+	require.EqualValues(t, "idtab_role_a", row["name"])
 	if n, _ := rdb.HLen(ctx, key).Result(); n == 0 {
 		t.Fatal("entity hash should be filled back")
 	}
@@ -280,9 +276,7 @@ func TestP11IncrementalFlush(t *testing.T) {
 	if got := countItemRows(t, database, playerID); got != 0 {
 		t.Fatalf("row count after tombstone = %d, want 0", got)
 	}
-	if f.PendingDeletes() != 0 {
-		t.Fatalf("tombstone queue should be drained, got %d", f.PendingDeletes())
-	}
+	require.EqualValues(t, 0, f.PendingDeletes())
 }
 
 // countItemRows 读某玩家的道具行数（验证没有重复行）。

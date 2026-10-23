@@ -3,6 +3,7 @@ package module
 
 import (
 	"errors"
+	"github.com/stretchr/testify/require"
 	"math"
 	"testing"
 )
@@ -59,22 +60,14 @@ func TestGrantAppliesAndReports(t *testing.T) {
 		{ItemID: 1001, Count: 3},
 		{ItemID: 1002, Count: 7},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if st.items[1001] != 8 || st.items[1002] != 7 {
 		t.Fatalf("背包内容不符: %+v", st.items)
 	}
-	if len(changes) != 2 {
-		t.Fatalf("changes = %+v", changes)
-	}
+	require.Len(t, changes, 2)
 	// 顺序与入参一致，Count 是发放后存量而非本次数量。
-	if changes[0] != (BagChange{ItemID: 1001, Count: 8, Delta: 3}) {
-		t.Fatalf("changes[0] = %+v", changes[0])
-	}
-	if changes[1] != (BagChange{ItemID: 1002, Count: 7, Delta: 7}) {
-		t.Fatalf("changes[1] = %+v", changes[1])
-	}
+	require.EqualValues(t, (BagChange{ItemID: 1001, Count: 8, Delta: 3}), changes[0])
+	require.EqualValues(t, (BagChange{ItemID: 1002, Count: 7, Delta: 7}), changes[1])
 }
 
 // TestGrantRejectsBagFullWithoutSideEffect 满包时拒绝，且一个道具都不加。
@@ -93,9 +86,7 @@ func TestGrantRejectsBagFullWithoutSideEffect(t *testing.T) {
 	if _, err := Grant(st, []ItemGrant{{ItemID: 1001, Count: 1}}); err != nil {
 		t.Fatalf("同种道具追加被误拒: %v", err)
 	}
-	if st.items[1001] != 6 {
-		t.Fatalf("存量 = %d", st.items[1001])
-	}
+	require.EqualValues(t, 6, st.items[1001])
 }
 
 // TestGrantRejectsOverflowWithoutSideEffect 存量接近 int32 上限时拒绝整批。
@@ -128,9 +119,7 @@ func TestGrantIgnoresEmptyEntries(t *testing.T) {
 	if err != nil || changes != nil {
 		t.Fatalf("空配置应返回 nil,nil: %+v %v", changes, err)
 	}
-	if len(st.items) != 0 {
-		t.Fatalf("空配置不应写入: %+v", st.items)
-	}
+	require.Len(t, st.items, 0)
 }
 
 // TestPrecheckGrantDoesNotMutate 预检只读：商店路径靠它做到「先验后扣」。
@@ -157,9 +146,7 @@ func TestToItemChanges(t *testing.T) {
 		t.Fatalf("nil 输入应返回 nil: %v", got)
 	}
 	got := ToItemChanges([]BagChange{{ItemID: 1001, Count: 8, Delta: 3}})
-	if len(got) != 1 {
-		t.Fatalf("len = %d", len(got))
-	}
+	require.Len(t, got, 1)
 	c := got[0]
 	if c.ItemUid != 1001 || c.ItemId != 1001 || c.Count != 8 || c.Change != 1 {
 		t.Fatalf("字段映射不符: %+v", c)

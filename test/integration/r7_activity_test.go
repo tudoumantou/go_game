@@ -111,9 +111,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 		`SELECT COUNT(*) FROM activity_grant_task WHERE instance_id = ?`, instanceID).Scan(&tasks); err != nil {
 		t.Fatalf("count tasks: %v", err)
 	}
-	if tasks != 2 {
-		t.Fatalf("tasks = %d, want 2（两个贡献玩家各一条）", tasks)
-	}
+	require.EqualValues(t, 2, tasks)
 
 	// 第二次 Tick：发放并标记完成。
 	if err := svc.Tick(ctx); err != nil {
@@ -125,9 +123,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 		instanceID, 0).Scan(&pending); err != nil {
 		t.Fatalf("count pending: %v", err)
 	}
-	if pending != 0 {
-		t.Fatalf("pending tasks after grant = %d, want 0", pending)
-	}
+	require.EqualValues(t, 0, pending)
 
 	// 第三次 Tick：不得重复发（任务已全部完成，不会新建）。
 	var before int
@@ -137,9 +133,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 	}
 	var after int
 	_ = database.QueryRow(`SELECT COUNT(*) FROM activity_grant_task`).Scan(&after)
-	if after != before {
-		t.Fatalf("repeated tick must not create tasks: %d -> %d", before, after)
-	}
+	require.EqualValues(t, before, after)
 
 	// 里程碑 2（阈值 100）未达成，不应有对应任务。
 	var high int
@@ -148,9 +142,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 		instanceID).Scan(&high); err != nil {
 		t.Fatalf("count milestone2: %v", err)
 	}
-	if high != 0 {
-		t.Fatalf("milestone 2 must not trigger below threshold: %d", high)
-	}
+	require.EqualValues(t, 0, high)
 
 	_ = model.ActivityGrantTask{}
 }

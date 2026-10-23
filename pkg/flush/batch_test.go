@@ -19,12 +19,8 @@ func TestBuildBatchUpsert(t *testing.T) {
 
 	want := "INSERT INTO player_item (player_id, item_id, count) VALUES (?, ?, ?),(?, ?, ?)" +
 		" ON DUPLICATE KEY UPDATE item_id=VALUES(item_id), count=VALUES(count)"
-	if sql != want {
-		t.Fatalf("sql =\n%s\nwant\n%s", sql, want)
-	}
-	if len(args) != 6 {
-		t.Fatalf("args = %d, want 6", len(args))
-	}
+	require.EqualValues(t, want, sql)
+	require.Len(t, args, 6)
 	if args[0] != int64(1) || args[1] != int32(1001) || args[5] != int64(3) {
 		t.Fatalf("args order wrong: %v", args)
 	}
@@ -33,9 +29,7 @@ func TestBuildBatchUpsert(t *testing.T) {
 // TestBuildBatchUpsertRowMismatch 行内字段数不匹配必须报错，不能生成错位 SQL。
 func TestBuildBatchUpsertRowMismatch(t *testing.T) {
 	_, _, err := BuildBatchUpsert("t", []string{"a", "b"}, [][]any{{1}})
-	if err == nil {
-		t.Fatal("expect error for column count mismatch")
-	}
+	require.Error(t, err, "expect error for column count mismatch")
 	if !strings.Contains(err.Error(), "row 0") {
 		t.Fatalf("error should point at the bad row: %v", err)
 	}
@@ -64,21 +58,15 @@ func TestBuildBatchUpsertSingleColumn(t *testing.T) {
 func TestBuildBatchDelete(t *testing.T) {
 	sql, args, err := BuildBatchDelete("mail", "id", []any{1, 2, 3})
 	require.NoError(t, err, "build")
-	if sql != "DELETE FROM mail WHERE id IN (?,?,?)" {
-		t.Fatalf("sql = %s", sql)
-	}
-	if len(args) != 3 {
-		t.Fatalf("args = %d", len(args))
-	}
+	require.EqualValues(t, "DELETE FROM mail WHERE id IN (?,?,?)", sql)
+	require.Len(t, args, 3)
 }
 
 // TestBuildBatchDeleteWhere 带前置固定条件的删除（按玩家删道具）。
 func TestBuildBatchDeleteWhere(t *testing.T) {
 	sql, args, err := BuildBatchDeleteWhere("player_item", "player_id = ?", []any{int64(7)}, "item_id", []any{1001, 1002})
 	require.NoError(t, err, "build")
-	if sql != "DELETE FROM player_item WHERE player_id = ? AND item_id IN (?,?)" {
-		t.Fatalf("sql = %s", sql)
-	}
+	require.EqualValues(t, "DELETE FROM player_item WHERE player_id = ? AND item_id IN (?,?)", sql)
 	// 条件参数必须排在 id 之前
 	if len(args) != 3 || args[0] != int64(7) {
 		t.Fatalf("args = %v", args)
@@ -105,9 +93,7 @@ func TestChunkByRows(t *testing.T) {
 		rows[i] = []any{int64(i), int32(1)}
 	}
 	batches := Chunk(rows, 3, 0)
-	if len(batches) != 3 {
-		t.Fatalf("batches = %d, want 3", len(batches))
-	}
+	require.Len(t, batches, 3)
 	if len(batches[0]) != 3 || len(batches[1]) != 3 || len(batches[2]) != 1 {
 		t.Fatalf("batch sizes = %d/%d/%d", len(batches[0]), len(batches[1]), len(batches[2]))
 	}
@@ -140,12 +126,8 @@ func TestChunkSingleOversizeRow(t *testing.T) {
 		{int64(2), "small"},
 	}
 	batches := Chunk(rows, 100, 1000)
-	if len(batches) != 2 {
-		t.Fatalf("batches = %d, want 2", len(batches))
-	}
-	if len(batches[0]) != 1 {
-		t.Fatalf("oversize row should be alone, got %d", len(batches[0]))
-	}
+	require.Len(t, batches, 2)
+	require.Len(t, batches[0], 1)
 }
 
 // TestChunkEmpty 空输入返回空切片。

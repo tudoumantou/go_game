@@ -49,9 +49,7 @@ func TestBuildOneKeysetPaging(t *testing.T) {
 
 	n, err := it.BuildOne(context.Background(), meta)
 	require.NoError(t, err, "build")
-	if n != 3 {
-		t.Fatalf("count = %d, want 3", n)
-	}
+	require.EqualValues(t, 3, n)
 
 	// ready 置位 + 集合内容正确
 	if !it.Ready(context.Background(), "player") {
@@ -85,9 +83,7 @@ func TestBuildOneEmptyTable(t *testing.T) {
 
 	n, err := it.BuildOne(context.Background(), meta)
 	require.NoError(t, err, "build empty table")
-	if n != 0 {
-		t.Fatalf("count = %d, want 0", n)
-	}
+	require.EqualValues(t, 0, n)
 	if !it.Ready(context.Background(), "friend") {
 		t.Fatal("empty table should still be marked ready")
 	}
@@ -117,9 +113,7 @@ func TestBuildOneIdempotent(t *testing.T) {
 	// 第二次不再查库
 	n, err := it.BuildOne(context.Background(), meta)
 	require.NoError(t, err, "second build")
-	if n != 1 {
-		t.Fatalf("second build count = %d, want 1 (from SCARD)", n)
-	}
+	require.EqualValues(t, 1, n)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +131,7 @@ func TestExistsFallsBackWhenNotReady(t *testing.T) {
 
 	ok, err := it.Exists(context.Background(), "player", 42)
 	require.NoError(t, err, "exists")
-	if !ok {
-		t.Fatal("expect exists via DB fallback")
-	}
+	require.True(t, ok, "expect exists via DB fallback")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -155,9 +147,7 @@ func TestExistsHitsRedisWhenReady(t *testing.T) {
 
 	ok, err := it.Exists(context.Background(), "player", 42)
 	require.NoError(t, err, "exists")
-	if !ok {
-		t.Fatal("expect exists")
-	}
+	require.True(t, ok, "expect exists")
 
 	// 不存在的 ID 也不打库（这是 idtab 的核心价值）
 	ok, err = it.Exists(context.Background(), "player", 99)
@@ -239,9 +229,7 @@ func TestReconcileRebuild(t *testing.T) {
 
 	rebuilt, err := it.Reconcile(context.Background(), meta)
 	require.NoError(t, err, "reconcile")
-	if !rebuilt {
-		t.Fatal("expect rebuild")
-	}
+	require.True(t, rebuilt, "expect rebuild")
 	if n, _ := it.Count(context.Background(), "guild"); n != 2 {
 		t.Fatalf("count after rebuild = %d, want 2", n)
 	}
@@ -287,9 +275,7 @@ func TestLoadEntityCacheMissLoadsDB(t *testing.T) {
 	// 第二次读命中 Redis，不再查库
 	row2, err := it.LoadEntity(context.Background(), meta, 42)
 	require.NoError(t, err, "load 2")
-	if row2["name"] != "alice" {
-		t.Fatalf("cached row = %v", row2)
-	}
+	require.EqualValues(t, "alice", row2["name"])
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -339,9 +325,7 @@ func TestCleanOrphans(t *testing.T) {
 
 	removed, err := it.CleanOrphans(context.Background(), "player", 1000)
 	require.NoError(t, err, "clean")
-	if removed != 1 {
-		t.Fatalf("removed = %d, want 1", removed)
-	}
+	require.EqualValues(t, 1, removed)
 	if !mr.Exists(EntityKey("player", 1)) {
 		t.Fatal("live entity should be kept")
 	}

@@ -10,6 +10,7 @@ import (
 	"game_study/internal/worldmap/runtime"
 	"game_study/internal/worldmap/spatial"
 	"game_study/pkg/pb/internalv2"
+	"github.com/stretchr/testify/require"
 )
 
 const testUnits = int64(1000)
@@ -157,9 +158,7 @@ func recvEvent(t *testing.T, ch <-chan *internalv2.ViewEvent) *internalv2.ViewEv
 	t.Helper()
 	select {
 	case ev, ok := <-ch:
-		if !ok {
-			t.Fatal("订阅通道已关闭")
-		}
+		require.True(t, ok, "订阅通道已关闭")
 		return ev
 	case <-time.After(2 * time.Second):
 		t.Fatal("等待视野事件超时")
@@ -221,9 +220,7 @@ func TestSubscriptionLifecycle(t *testing.T) {
 	if ev.GetRevision() != 2 || ev.GetUpsert().GetX() != 40*testUnits {
 		t.Fatalf("进入事件不符: revision=%d x=%d", ev.GetRevision(), ev.GetUpsert().GetX())
 	}
-	if ev.GetUpsert().GetKind() != int32(domain.ObjectKindTroop) {
-		t.Fatalf("kind 应为 TROOP，got %d", ev.GetUpsert().GetKind())
-	}
+	require.EqualValues(t, int32(domain.ObjectKindTroop), ev.GetUpsert().GetKind())
 
 	// 移动：同一对象再次更新，事件里是最终坐标。
 	h.loader.put(troopUpsert(1001, 60, 60))
@@ -314,18 +311,14 @@ func TestProjectionMerge(t *testing.T) {
 			for {
 				select {
 				case ev, ok := <-h.sub.Events():
-					if !ok {
-						t.Fatal("订阅通道已关闭")
-					}
+					require.True(t, ok, "订阅通道已关闭")
 					got = append(got, ev)
 				default:
 					goto drained
 				}
 			}
 		drained:
-			if len(got) != tc.wantEvents {
-				t.Fatalf("事件数量 = %d, want %d（事件：%v）", len(got), tc.wantEvents, got)
-			}
+			require.Len(t, got, tc.wantEvents)
 			if tc.wantEvents == 0 {
 				return
 			}
@@ -363,9 +356,7 @@ func TestSlowConsumerResync(t *testing.T) {
 	for {
 		select {
 		case ev, ok := <-h.sub.Events():
-			if !ok {
-				t.Fatal("订阅通道已关闭")
-			}
+			require.True(t, ok, "订阅通道已关闭")
 			got = append(got, ev)
 		default:
 			goto drained
@@ -386,9 +377,7 @@ drained:
 		}
 	}
 	for _, ev := range got[lastResync+1:] {
-		if ev.GetRemove() != nil {
-			t.Fatalf("Resync 之后不应出现 Remove: %v", ev)
-		}
+		require.Nil(t, ev.GetRemove())
 	}
 
 	// 再更新一次：客户端应收到全量 Upsert（而非增量补丁）。
@@ -441,9 +430,7 @@ func TestViewClamp(t *testing.T) {
 
 	h.flush()
 	ev := recvEvent(t, h.sub.Events())
-	if ev.GetUpsert().GetObjectId() != 5001 {
-		t.Fatalf("裁剪后应只可见 5001，got %v", ev)
-	}
+	require.EqualValues(t, 5001, ev.GetUpsert().GetObjectId())
 	expectNoEvent(t, h.sub.Events())
 }
 
@@ -472,9 +459,7 @@ func TestLineCrossingViewport(t *testing.T) {
 	if up == nil || up.GetKind() != LineKind {
 		t.Fatalf("应收到 kind=%d 的线事件，got %v", LineKind, ev)
 	}
-	if up.GetObjectId() != lineObjectID("move-1") {
-		t.Fatalf("线 ObjectId 不稳定: %d", up.GetObjectId())
-	}
+	require.EqualValues(t, lineObjectID("move-1"), up.GetObjectId())
 	h.flush() // 线没变 → 不应重复下发
 	expectNoEvent(t, h.sub.Events())
 

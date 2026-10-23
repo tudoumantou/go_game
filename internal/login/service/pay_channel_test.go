@@ -91,9 +91,7 @@ func TestSandboxChannelRequiresSecret(t *testing.T) {
 func TestNewPayChannelDisabledWithoutSecret(t *testing.T) {
 	c, err := NewPayChannel("sandbox", "", time.Minute)
 	require.NoError(t, err, "disabled channel should not fail startup")
-	if c.Name() != "disabled" {
-		t.Fatalf("unexpected channel: %s", c.Name())
-	}
+	require.EqualValues(t, "disabled", c.Name())
 	if err := c.Verify(signedPayload("O1", 600)); err == nil {
 		t.Fatal("disabled channel must reject everything")
 	}

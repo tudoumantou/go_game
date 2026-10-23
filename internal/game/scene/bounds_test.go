@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"game_study/pkg/gamedata"
+	"github.com/stretchr/testify/require"
 )
 
 // TestClamp 钳制语义：下界钉 0、上界开区间（max-1）、非法宽度退化为 0。
@@ -57,9 +58,7 @@ func TestFromConfigRejects(t *testing.T) {
 func TestFromConfigLoadsRealConfig(t *testing.T) {
 	for _, cfg := range gamedata.SceneCfgList() {
 		sc, err := fromConfig(cfg)
-		if err != nil {
-			t.Fatalf("scene %d: %v", cfg.Id, err)
-		}
+		require.NoError(t, err)
 		if sc.Width <= 0 || sc.Height <= 0 || sc.MaxPlayers <= 0 {
 			t.Fatalf("scene %d not normalized: %+v", cfg.Id, sc)
 		}

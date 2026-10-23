@@ -113,9 +113,7 @@ func TestSigninActorFlow(t *testing.T) {
 		t.Helper()
 		out := &gamev1.SigninClaimResp{}
 		call(pid, signin.MsgClaimReq, out)
-		if out.Code != 0 {
-			t.Fatal(out)
-		}
+		require.EqualValues(t, 0, out.Code)
 		return out
 	}
 	sqlRow := func(id int64) (days, rewards string) {

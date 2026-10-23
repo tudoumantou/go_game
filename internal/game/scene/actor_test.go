@@ -121,9 +121,7 @@ func TestEnterClampsAndSnapshots(t *testing.T) {
 	send(t, sys, scPID, &EnterMsg{PlayerID: 1, PID: pid, Name: "a", Level: 1, X: -5, Y: 999})
 	r := waitResult(t, c)
 	resp := decodeEnter(t, r)
-	if resp.Code != codeOK {
-		t.Fatalf("code = %d", resp.Code)
-	}
+	require.EqualValues(t, codeOK, resp.Code)
 	if resp.X != 0 || resp.Y != 99 {
 		t.Fatalf("clamped = (%d,%d), want (0,99)", resp.X, resp.Y)
 	}
@@ -146,12 +144,8 @@ func TestEnterFull(t *testing.T) {
 
 	send(t, sys, scPID, &EnterMsg{PlayerID: 3, PID: p3, Name: "c", Level: 1, X: 30, Y: 30})
 	resp := decodeEnter(t, waitResult(t, c3))
-	if resp.Code != codeFull {
-		t.Fatalf("code = %d, want %d", resp.Code, codeFull)
-	}
-	if sc.Count() != 2 {
-		t.Fatalf("count = %d, want 2（被拒的玩家不能占位）", sc.Count())
-	}
+	require.EqualValues(t, codeFull, resp.Code)
+	require.EqualValues(t, 2, sc.Count())
 }
 
 // TestEnterTwiceDoesNotDoubleCount 重连/重发不重复占名额。
@@ -163,9 +157,7 @@ func TestEnterTwiceDoesNotDoubleCount(t *testing.T) {
 	waitResult(t, c1)
 	send(t, sys, scPID, &EnterMsg{PlayerID: 1, PID: p1, X: 12, Y: 12})
 	r := waitResult(t, c1)
-	if sc.Count() != 1 {
-		t.Fatalf("count = %d, want 1", sc.Count())
-	}
+	require.EqualValues(t, 1, sc.Count())
 	if r.SetScene {
 		t.Fatal("re-enter must not re-set scene（避免无意义的标脏）")
 	}
@@ -182,9 +174,7 @@ func TestMoveRejectsTeleport(t *testing.T) {
 	r := waitResult(t, c1)
 	var resp gamev1.SceneMoveResp
 	_ = proto.Unmarshal(r.Body, &resp)
-	if resp.Code != codeTooFast {
-		t.Fatalf("code = %d, want %d", resp.Code, codeTooFast)
-	}
+	require.EqualValues(t, codeTooFast, resp.Code)
 	if resp.X != 10 || resp.Y != 10 {
 		t.Fatalf("authority = (%d,%d), want (10,10)", resp.X, resp.Y)
 	}
@@ -249,9 +239,7 @@ func TestLeaveIsIdempotent(t *testing.T) {
 
 	// 重复离开：不报错、不广播。
 	send(t, sys, scPID, &LeaveMsg{PlayerID: 2})
-	if sc.Count() != 1 {
-		t.Fatalf("count = %d, want 1", sc.Count())
-	}
+	require.EqualValues(t, 1, sc.Count())
 	select {
 	case p := <-c1.pushes:
 		t.Fatalf("duplicate leave must not broadcast, got %T", p)

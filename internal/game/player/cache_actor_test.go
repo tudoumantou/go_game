@@ -88,9 +88,7 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	if id := send(); id != 20 {
 		t.Fatalf("unexpected success %d", id)
 	}
-	if a.state.GetItemCount(1001) != 60 {
-		t.Fatal("SQL-confirmed reward discarded")
-	}
+	require.EqualValues(t, 60, a.state.GetItemCount(1001), "SQL-confirmed reward discarded")
 	mr.SetError("")
 	if id := send(); id != 9002 {
 		t.Fatal(id)
@@ -135,9 +133,7 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	}
 	select {
 	case session := <-replies:
-		if session != 9 {
-			t.Fatal(session)
-		}
+		require.EqualValues(t, 9, session)
 	case <-time.After(time.Second):
 		t.Fatal("failed bind hid the cache error response")
 	}
@@ -233,9 +229,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 					t.Fatal(first)
 				}
 			} else {
-				if first.Code != 1 {
-					t.Fatalf("failed cache write replied success: %v", first)
-				}
+				require.EqualValues(t, 1, first.Code)
 				// R2.5：失败后不回滚内存，而是标记「下一条消息前整份重载」。
 				// 下一轮 retry 会走重载路径，其断言覆盖了「状态最终回到权威」。
 				if !a.cacheReload {
@@ -244,13 +238,9 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			}
 			mr.SetError("")
 			retry := call()
-			if retry.Code != 0 {
-				t.Fatal(retry)
-			}
+			require.EqualValues(t, 0, retry.Code)
 			expectedAlready := failure != "before"
-			if retry.Already != expectedAlready {
-				t.Fatalf("retry=%v", retry)
-			}
+			require.EqualValues(t, expectedAlready, retry.Already)
 			// 签到奖励按当天配置发（周一到周日不同），
 			// 不能写死 100——否则测试只在特定的星期几通过。
 			var want int64 = 10

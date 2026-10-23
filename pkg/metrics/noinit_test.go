@@ -6,6 +6,7 @@
 package metrics
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"os/exec"
 	"strings"
@@ -25,9 +26,7 @@ func TestNoInitIsSafeInChild(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=TestNoInitIsSafeInChild", "-test.v=false")
 	cmd.Env = append(os.Environ(), childEnv+"=1")
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("子进程在未初始化指标时崩溃（这正是要防的 SIGSEGV）:\n%s", out)
-	}
+	require.NoError(t, err)
 	if strings.Contains(string(out), "panic") {
 		t.Fatalf("子进程出现 panic:\n%s", out)
 	}

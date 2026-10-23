@@ -91,9 +91,7 @@ func TestRegisteredPersisterReceivesItsRows(t *testing.T) {
 	if len(got) != 2 || got[0].PlayerID != 7 || got[1].PlayerID != 8 {
 		t.Fatalf("persister rows = %+v", got)
 	}
-	if string(got[0].Data) != `{"counter":1}` {
-		t.Fatalf("row data = %s", got[0].Data)
-	}
+	require.EqualValues(t, `{"counter":1}`, string(got[0].Data))
 }
 
 // 未注册的模块状态必须拒绝写入：宁可整批回滚，也不能把数据写到没人认领的地方。
@@ -107,9 +105,7 @@ func TestUnregisteredModuleStateRejected(t *testing.T) {
 	}
 
 	database, mock, dbErr := sqlmock.New()
-	if dbErr != nil {
-		t.Fatal(dbErr)
-	}
+	require.Nil(t, dbErr)
 	defer database.Close()
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT IGNORE INTO player_writebehind").WillReturnResult(sqlmock.NewResult(0, 0))

@@ -115,15 +115,11 @@ func TestSendRoutesRemoteWhenNodeDiffers(t *testing.T) {
 		t.Fatal(err)
 	}
 	call, ok := rs.last()
-	if !ok {
-		t.Fatal("remote sender not called")
-	}
+	require.True(t, ok, "remote sender not called")
 	if call.to.Node != "game-02" || call.to.ID != "player:123" {
 		t.Fatalf("wrong target: %+v", call.to)
 	}
-	if call.msg != msg {
-		t.Fatal("message not passed through")
-	}
+	require.EqualValues(t, msg, call.msg, "message not passed through")
 }
 
 // TestSendStaysLocalForOwnNodeOrEmptyNode 验证本节点/空 Node 不走远程。
@@ -210,9 +206,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	actorID, msg, err := DecodeRemoteEnvelope(env)
 	require.NoError(t, err)
-	if actorID != "player:5" {
-		t.Fatalf("actorID = %q", actorID)
-	}
+	require.EqualValues(t, "player:5", actorID)
 	if got, ok := msg.(*remoteTestMsg); !ok || got.Text != "payload" {
 		t.Fatalf("wrong message: %+v", msg)
 	}

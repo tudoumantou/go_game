@@ -50,9 +50,7 @@ message UseItemResp {}
 `)
 	decls, err := scanFile(p)
 	require.NoError(t, err, "scan")
-	if len(decls) != 2 {
-		t.Fatalf("decls = %d, want 2 (%+v)", len(decls), decls)
-	}
+	require.Len(t, decls, 2)
 	if decls[0].ID != 3001 || decls[0].Name != "UseItemReq" {
 		t.Fatalf("unexpected first decl: %+v", decls[0])
 	}
@@ -98,9 +96,7 @@ func TestValidateDuplicateID(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("duplicate id not reported: %v", problems)
-	}
+	require.True(t, found)
 }
 
 // TestValidateDuplicateName message 重名必须报错：生成的 Go 常量（MsgXXX）会冲突，
@@ -147,9 +143,7 @@ func TestGenerateIsStable(t *testing.T) {
 	}
 	first := generate(decls, testSegs)
 	second := generate(decls, testSegs)
-	if first != second {
-		t.Fatal("generate must be deterministic")
-	}
+	require.EqualValues(t, second, first, "generate must be deterministic")
 	if strings.Index(first, "MsgA") > strings.Index(first, "MsgB") {
 		t.Fatal("constants should follow numeric order for stable diffs")
 	}

@@ -29,9 +29,7 @@ func TestPlanCollectStart(t *testing.T) {
 				}), Command{Kind: CmdCollectStart, CollectStart: CollectStartParams{TroopID: 200, ResourceID: 1000}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.CollectStart) != 1 {
-					t.Fatalf("CollectStart=%+v", plan.CollectStart)
-				}
+				require.Len(t, plan.CollectStart, 1)
 				sess := plan.CollectStart[0]
 				if sess.RateMilliItemsPerSec != h.rules.CollectRateMilliPerSec ||
 					sess.PlannedQty != 100 || sess.EndAtMS != 10000+40000 {
@@ -49,12 +47,8 @@ func TestPlanCollectStart(t *testing.T) {
 				if trUp.Troop.Phase != domain.TroopPhaseCollecting || trUp.Troop.Header.Version != 2 {
 					t.Fatalf("部队=%+v", trUp.Troop)
 				}
-				if trUp.Troop.Move != nil {
-					t.Fatalf("采集阶段应清 Move")
-				}
-				if plan.CommandReceipt.ResultCode != domain.CodeOK {
-					t.Fatalf("ResultCode=%d", plan.CommandReceipt.ResultCode)
-				}
+				require.Nil(t, trUp.Troop.Move, "采集阶段应清 Move")
+				require.EqualValues(t, domain.CodeOK, plan.CommandReceipt.ResultCode)
 			},
 		},
 		{
@@ -163,9 +157,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		if !ok || resUp.Resource.Remaining != 93 {
 			t.Fatalf("资源余量=%+v", resUp.Resource)
 		}
-		if resUp.Resource.ActiveCollectID != "" {
-			t.Fatalf("必须清 active_collect_id")
-		}
+		require.EqualValues(t, "", resUp.Resource.ActiveCollectID, "必须清 active_collect_id")
 		if resUp.Resource.PendingDestroy {
 			t.Fatalf("仍有剩余时不应标删除")
 		}
@@ -174,9 +166,7 @@ func TestPlanCollectSettle(t *testing.T) {
 			t.Fatalf("Cargo=%+v", trUp.Troop)
 		}
 		// 结算只做账务，阶段转换交给召回/回城命令。
-		if trUp.Troop.Phase != domain.TroopPhaseCollecting {
-			t.Fatalf("结算不应改 Phase: %v", trUp.Troop.Phase)
-		}
+		require.EqualValues(t, domain.TroopPhaseCollecting, trUp.Troop.Phase)
 	})
 
 	t.Run("余量为 0 标记删除", func(t *testing.T) {
@@ -184,9 +174,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		plan, err := h.planner.Plan(settleFixture(t, 5), testEnv(1, "req-settle-zero", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 3000}}, 3000)
 		require.NoError(t, err, "结算")
-		if plan.CollectSettle[0].SettledQty != 5 {
-			t.Fatalf("SettledQty=%d", plan.CollectSettle[0].SettledQty)
-		}
+		require.EqualValues(t, 5, plan.CollectSettle[0].SettledQty)
 		resUp, _ := findUpsert(plan, domain.ObjectKindResource)
 		if resUp.Resource.Remaining != 0 || !resUp.Resource.PendingDestroy {
 			t.Fatalf("资源=%+v", resUp.Resource)

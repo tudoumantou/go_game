@@ -2,6 +2,7 @@
 package match
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
@@ -22,9 +23,7 @@ func TestEnqueuePairSameBucket(t *testing.T) {
 	}
 
 	res := enqueue(m, "game-02", 1002, 1250) // 同桶（1200/200=6）
-	if len(res) != 2 {
-		t.Fatalf("expect 2 results (one per player), got %d", len(res))
-	}
+	require.Len(t, res, 2)
 
 	// 两条结果指向同一房间，令牌各不相同
 	if res[0].RoomID == 0 || res[0].RoomID != res[1].RoomID {
@@ -51,9 +50,7 @@ func TestEnqueueDifferentBucketNoImmediateMatch(t *testing.T) {
 
 	_ = enqueue(m, "game-01", 1001, 100)     // bucket 0
 	res := enqueue(m, "game-02", 1002, 5000) // bucket 25
-	if res != nil {
-		t.Fatalf("different buckets should not match immediately, got %d", len(res))
-	}
+	require.Nil(t, res)
 	if waiting, buckets := m.Stats(); waiting != 2 || buckets != 2 {
 		t.Fatalf("expect 2 waiting in 2 buckets, got %d/%d", waiting, buckets)
 	}
@@ -114,9 +111,7 @@ func TestNoCrossNodeNoMatch(t *testing.T) {
 
 	_ = enqueue(m, "game-01", 1001, 1000)
 	res := enqueue(m, "game-02", 1002, 1000)
-	if res != nil {
-		t.Fatalf("must not match without cross node, got %d", len(res))
-	}
+	require.Nil(t, res)
 	// 两人都应放回队列（不能丢）
 	if waiting, _ := m.Stats(); waiting != 2 {
 		t.Fatalf("both tickets must stay queued, got %d", waiting)

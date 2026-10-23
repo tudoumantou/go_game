@@ -113,9 +113,7 @@ func TestPlainLifecycleHooks(t *testing.T) {
 func TestPlainMsgIDsCopy(t *testing.T) {
 	m := newTestPlainModule(t)
 	ids := m.MsgIDs()
-	if len(ids) != 2 {
-		t.Fatalf("应注册 2 个协议，got %v", ids)
-	}
+	require.Len(t, ids, 2)
 	ids[0] = 1
 	if m.MsgIDs()[0] == 1 {
 		t.Fatal("MsgIDs 应返回副本")

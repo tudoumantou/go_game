@@ -101,9 +101,7 @@ func TestPutSceneMismatch(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := g.Put(tt.key, tt.kind, tt.scene, tt.pos)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("Put 期望报错但成功")
-				}
+				require.Error(t, err, "Put 期望报错但成功")
 				if !errors.Is(err, domain.ErrInvalidArgument) {
 					t.Fatalf("Put 错误应包装 ErrInvalidArgument, got %v", err)
 				}
@@ -117,9 +115,7 @@ func TestPutSceneMismatch(t *testing.T) {
 		})
 	}
 	// 合法写入的 2 个对象应在索引中。
-	if g.Len() != 2 {
-		t.Fatalf("Len = %d, want 2", g.Len())
-	}
+	require.EqualValues(t, 2, g.Len())
 }
 
 // TestQueryRectNoMissNoDup 覆盖"矩形查询不漏不重"与场景分块遍历：
@@ -230,19 +226,13 @@ func TestGridLifecycle(t *testing.T) {
 	if err := g.Put(key(3), domain.ObjectKindTroop, 1, posC); err != nil {
 		t.Fatalf("Put C: %v", err)
 	}
-	if g.Len() != 3 {
-		t.Fatalf("Len = %d, want 3", g.Len())
-	}
+	require.EqualValues(t, 3, g.Len())
 
 	// Get 返回值字段完整。
 	e, ok := g.Get(key(1))
-	if !ok {
-		t.Fatalf("Get(1) 应存在")
-	}
+	require.True(t, ok, "Get(1) 应存在")
 	want := Entry{Key: key(1), Kind: domain.ObjectKindCity, Pos: posA, Scene: 1}
-	if e != want {
-		t.Fatalf("Get(1) = %+v, want %+v", e, want)
-	}
+	require.EqualValues(t, want, e)
 
 	// SceneOf。
 	if got := g.SceneOf(key(1)); got != 1 {
@@ -282,9 +272,7 @@ func TestGridLifecycle(t *testing.T) {
 	if got := g.QueryRect(1000, 0, 2000, 1000); len(got) != 2 {
 		t.Fatalf("移动后场景2应有2个对象, got %v", got)
 	}
-	if g.Len() != 3 {
-		t.Fatalf("移动不应改变总数: Len = %d", g.Len())
-	}
+	require.EqualValues(t, 3, g.Len())
 
 	// Delete：之后 Get/SceneOf 查不到，QueryRect 不含。
 	g.Delete(key(1))
@@ -294,14 +282,10 @@ func TestGridLifecycle(t *testing.T) {
 	if got := g.SceneOf(key(1)); got != 0 {
 		t.Fatalf("Delete 后 SceneOf = %d, want 0", got)
 	}
-	if g.Len() != 2 {
-		t.Fatalf("Delete 后 Len = %d, want 2", g.Len())
-	}
+	require.EqualValues(t, 2, g.Len())
 	// 删除不存在的 key：幂等 no-op，不 panic。
 	g.Delete(key(999))
-	if g.Len() != 2 {
-		t.Fatalf("重复删除后 Len = %d, want 2", g.Len())
-	}
+	require.EqualValues(t, 2, g.Len())
 
 	// 删除后同 key 可重新 Put（复活）。
 	if err := g.Put(key(1), domain.ObjectKindCity, 1, posA); err != nil {
@@ -333,7 +317,5 @@ func TestQueryRectDoesNotScanWorld(t *testing.T) {
 		t.Fatalf("局部查询应只见场景1对象, got %v", got)
 	}
 	// byScene 桶数 = 2（两个非空场景），证明对象按场景隔离。
-	if len(g.byScene) != 2 {
-		t.Fatalf("byScene 桶数 = %d, want 2", len(g.byScene))
-	}
+	require.Len(t, g.byScene, 2)
 }

@@ -3,6 +3,7 @@ package module
 
 import (
 	"errors"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -12,9 +13,7 @@ func TestSpendDeducts(t *testing.T) {
 	if err := Spend(st, 1001, 30); err != nil {
 		t.Fatal(err)
 	}
-	if st.items[1001] != 70 {
-		t.Fatalf("余额 = %d, want 70", st.items[1001])
-	}
+	require.EqualValues(t, 70, st.items[1001])
 }
 
 // TestSpendRejectsShortfallWithoutSideEffect 余额不足时不扣、不改状态。
@@ -23,16 +22,12 @@ func TestSpendRejectsShortfallWithoutSideEffect(t *testing.T) {
 	if err := Spend(st, 1001, 11); !errors.Is(err, ErrNotEnough) {
 		t.Fatalf("err = %v, want ErrNotEnough", err)
 	}
-	if st.items[1001] != 10 {
-		t.Fatalf("余额被改了: %d", st.items[1001])
-	}
+	require.EqualValues(t, 10, st.items[1001])
 	// 恰好够：边界值必须放行。
 	if err := Spend(st, 1001, 10); err != nil {
 		t.Fatalf("余额刚好够却被拒: %v", err)
 	}
-	if st.items[1001] != 0 {
-		t.Fatalf("余额 = %d, want 0", st.items[1001])
-	}
+	require.EqualValues(t, 0, st.items[1001])
 }
 
 // TestSpendFreeIsNoop 消耗为 0（或负数配置）视为免费：不报错、不写状态。
@@ -43,9 +38,7 @@ func TestSpendFreeIsNoop(t *testing.T) {
 			t.Fatalf("cost=%d 应免费放行: %v", cost, err)
 		}
 	}
-	if st.items[1001] != 5 {
-		t.Fatalf("免费路径改了余额: %d", st.items[1001])
-	}
+	require.EqualValues(t, 5, st.items[1001])
 }
 
 // TestSpendRemoveFailureIsNotEnough RemoveItem 返回 false（校验后状态又变了）
@@ -56,7 +49,5 @@ func TestSpendRemoveFailureIsNotEnough(t *testing.T) {
 	if err := Spend(st, 1001, 10); !errors.Is(err, ErrNotEnough) {
 		t.Fatalf("err = %v, want ErrNotEnough", err)
 	}
-	if st.items[1001] != 100 {
-		t.Fatalf("余额被改了: %d", st.items[1001])
-	}
+	require.EqualValues(t, 100, st.items[1001])
 }

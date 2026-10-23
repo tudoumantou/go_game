@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"game_study/pkg/actor"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeSceneLink 记录玩家 Actor 发起的场景动作。
@@ -127,7 +128,5 @@ func TestHeartbeatStopsWhenOffline(t *testing.T) {
 	_, hbAfter := link.counts()
 	time.Sleep(250 * time.Millisecond)
 	_, hbLater := link.counts()
-	if hbLater != hbAfter {
-		t.Fatalf("解绑后不应再心跳：%d → %d", hbAfter, hbLater)
-	}
+	require.EqualValues(t, hbAfter, hbLater)
 }

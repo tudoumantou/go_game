@@ -182,18 +182,12 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	// ④ 双方发起匹配：A 先入队（等），B 入队触发建房
 	respA, err := clientA.Match("arena")
 	require.NoError(t, err, "match A")
-	if respA.Code != 0 {
-		t.Fatalf("match A code=%d", respA.Code)
-	}
-	if respA.Queued != 1 {
-		t.Fatalf("expect queue=1 after A, got %d", respA.Queued)
-	}
+	require.EqualValues(t, 0, respA.Code)
+	require.EqualValues(t, 1, respA.Queued)
 
 	respB, err := clientB.Match("arena")
 	require.NoError(t, err, "match B")
-	if respB.Code != 0 {
-		t.Fatalf("match B code=%d", respB.Code)
-	}
+	require.EqualValues(t, 0, respB.Code)
 
 	// ⑤ 双方收到开战通知
 	startA, err := clientA.WaitBattleStart(15 * time.Second)
@@ -221,15 +215,9 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	}
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
 	require.NoError(t, err, "wait battle sync")
-	if sync.RoomId != roomID {
-		t.Fatalf("sync room mismatch: %d != %d", sync.RoomId, roomID)
-	}
-	if sync.MsgId != 9001 {
-		t.Fatalf("sync msg_id: want 9001, got %d", sync.MsgId)
-	}
-	if string(sync.Body) != string(opBody) {
-		t.Fatalf("body must be relayed verbatim: want %q got %q", opBody, sync.Body)
-	}
+	require.EqualValues(t, roomID, sync.RoomId)
+	require.EqualValues(t, 9001, sync.MsgId)
+	require.EqualValues(t, string(opBody), string(sync.Body))
 	if sync.PlayerId == 0 {
 		t.Fatal("sync must carry source player id")
 	}
@@ -237,30 +225,22 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	// ⑦ 伪造令牌上报 → 被拒（6002）
 	bad, err := clientA.BattleResult(roomID, "forged-token", 0)
 	require.NoError(t, err, "bad token report")
-	if bad.Code != 6002 {
-		t.Fatalf("expect 6002 for forged token, got %d", bad.Code)
-	}
+	require.EqualValues(t, 6002, bad.Code)
 
 	// ⑧ 正常上报（A 胜）
 	resA, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
 	require.NoError(t, err, "result A")
-	if resA.Code != 0 {
-		t.Fatalf("result A code=%d", resA.Code)
-	}
+	require.EqualValues(t, 0, resA.Code)
 
 	// 重复上报 → 6003（幂等）
 	dup, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
 	require.NoError(t, err, "dup result A")
-	if dup.Code != 6003 {
-		t.Fatalf("expect 6003 for duplicate report, got %d", dup.Code)
-	}
+	require.EqualValues(t, 6003, dup.Code)
 
 	// B 上报（败）→ 房间收齐双方，CrossServer 结算回推
 	resB, err := clientB.BattleResult(roomID, startB.BattleToken, 1)
 	require.NoError(t, err, "result B")
-	if resB.Code != 0 {
-		t.Fatalf("result B code=%d", resB.Code)
-	}
+	require.EqualValues(t, 0, resB.Code)
 
 	// ⑨ 双方都收到兜底结算推送（5011）
 	settleA, err := clientA.WaitBattleSettle(15 * time.Second)

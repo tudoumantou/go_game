@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -20,9 +21,7 @@ func TestDueKindValues(t *testing.T) {
 		{DueKindRefresh, 50},
 	}
 	for _, tc := range tests {
-		if int32(tc.kind) != tc.want {
-			t.Errorf("DueKind %s = %d, want %d", tc.kind, int32(tc.kind), tc.want)
-		}
+		require.EqualValues(t, tc.want, int32(tc.kind))
 		if tc.kind == DueKindUnspecified {
 			continue
 		}
@@ -111,19 +110,15 @@ func TestSortDueEventsRepeatable(t *testing.T) {
 		{2, 0, 5, 1, 4, 3}, // 打乱
 		{3, 1, 5, 0, 4, 2}, // 再次打乱
 	}
-	for i, perm := range permutations {
+	for _, perm := range permutations {
 		shuffled := make([]DueEvent, len(events))
 		for j, idx := range perm {
 			shuffled[j] = events[idx]
 		}
 		SortDueEvents(shuffled)
-		if len(shuffled) != len(want) {
-			t.Fatalf("排列 %d 排序后长度 = %d", i, len(shuffled))
-		}
+		require.EqualValues(t, len(want), len(shuffled))
 		for j := range want {
-			if shuffled[j] != want[j] {
-				t.Fatalf("排列 %d 位置 %d 顺序不一致:\ngot  %+v\nwant %+v", i, j, shuffled[j], want[j])
-			}
+			require.EqualValues(t, want[j], shuffled[j])
 		}
 	}
 }
@@ -143,9 +138,7 @@ func TestEventKeys(t *testing.T) {
 		{"RefreshKey", RefreshKey(1, 100, 5, 2), "refresh:1:100:5:2"},
 	}
 	for _, tc := range tests {
-		if tc.got != tc.want {
-			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
-		}
+		require.EqualValues(t, tc.want, tc.got)
 	}
 	// 键的唯一性：不同 (troop, move) 不碰撞。
 	if ArriveKey(1, "2:x") == ArriveKey(12, "x") {

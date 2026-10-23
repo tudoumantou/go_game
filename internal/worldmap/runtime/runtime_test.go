@@ -107,15 +107,11 @@ func TestSceneAppliesCommittedPlan(t *testing.T) {
 		t.Fatalf("提交失败: %v", err)
 	}
 	troops := scene.QueryTroops(1001)
-	if len(troops) != 1 {
-		t.Fatalf("应应用 1 支部队，实际 %d", len(troops))
-	}
+	require.Len(t, troops, 1)
 	if got := scene.Snapshot().Revision(); got != 1 {
 		t.Fatalf("revision 应推进到 1，实际 %d", got)
 	}
-	if store.Commits() != 1 {
-		t.Fatalf("应有 1 次提交，实际 %d", store.Commits())
-	}
+	require.EqualValues(t, 1, store.Commits())
 }
 
 // TestSceneFreezesOnUnknownCommit 验证「结果未知 → 冻结 → 拒绝新写」。
@@ -194,9 +190,7 @@ func TestScenePanicTriggersFailStop(t *testing.T) {
 	_ = scene.Submit(envOf("r1"), application.Command{Kind: application.CmdMarchStart})
 	select {
 	case err := <-panicCh:
-		if err == nil {
-			t.Fatal("panic 回调应携带错误")
-		}
+		require.Error(t, err, "panic 回调应携带错误")
 	case <-time.After(3 * time.Second):
 		t.Fatal("panic 后应触发 fail-stop 回调")
 	}
@@ -224,12 +218,8 @@ func TestSceneMailboxOverload(t *testing.T) {
 			overloaded++
 		}
 	}
-	if overloaded != 3 {
-		t.Fatalf("邮箱容量 2，5 次提交应有 3 次被拒，实际 %d", overloaded)
-	}
-	if scene.cmdBox.Len() != 2 {
-		t.Fatalf("已入队的 2 条命令不应丢失，实际 %d", scene.cmdBox.Len())
-	}
+	require.EqualValues(t, 3, overloaded)
+	require.EqualValues(t, 2, scene.cmdBox.Len())
 }
 
 // TestDueQueueOrderAndCancel 验证到期堆的排序与懒删除。
@@ -241,16 +231,10 @@ func TestDueQueueOrderAndCancel(t *testing.T) {
 	q.Cancel(moveRef("m1"))
 
 	got := q.PopDue(1000, 10)
-	if len(got) != 2 {
-		t.Fatalf("取消后应剩 2 条，实际 %d", len(got))
-	}
+	require.Len(t, got, 2)
 	// REFRESH(50) 先出，COLLECT_END(100, kind=20) 后出。
-	if got[0].Kind != domain.DueKindRefresh {
-		t.Fatalf("首条应为 REFRESH，实际 %v", got[0].Kind)
-	}
-	if got[1].Kind != domain.DueKindCollectEnd {
-		t.Fatalf("次条应为 COLLECT_END，实际 %v", got[1].Kind)
-	}
+	require.EqualValues(t, domain.DueKindRefresh, got[0].Kind)
+	require.EqualValues(t, domain.DueKindCollectEnd, got[1].Kind)
 }
 
 // TestTxPoolReservation 验证回执名额与结果投递。
@@ -285,9 +269,7 @@ func TestTxPoolReservation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("结果未投递")
 	}
-	if got.Load() != 1 {
-		t.Fatalf("应投递 1 次，实际 %d", got.Load())
-	}
+	require.EqualValues(t, 1, got.Load())
 }
 
 // TestMemoryCommitterIdempotency 验证幂等表与故障注入。
@@ -310,9 +292,7 @@ func TestMemoryCommitterIdempotency(t *testing.T) {
 	if r := store.Commit(context.Background(), plan); !r.Committed {
 		t.Fatalf("重放应幂等成功: %v", r.Err)
 	}
-	if store.Commits() != 1 {
-		t.Fatalf("重放不应增加提交次数，实际 %d", store.Commits())
-	}
+	require.EqualValues(t, 1, store.Commits())
 	// 同键不同参：冲突。
 	other := *plan
 	other.PayloadHash = domain.PayloadHashOf([]byte("other"))

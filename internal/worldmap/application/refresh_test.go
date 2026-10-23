@@ -34,21 +34,15 @@ func TestPlanRefresh(t *testing.T) {
 		h := newHarness(t)
 		plan, err := h.planner.Plan(snapshot(SnapshotOptions{}), testEnv(1, "rf-batch", 1), refreshCmd(0, 1, 0), 1000)
 		require.NoError(t, err, "刷新")
-		if len(plan.ObjectsUpsert) != h.rules.RefreshBatchSize {
-			t.Fatalf("created=%d, want %d", len(plan.ObjectsUpsert), h.rules.RefreshBatchSize)
-		}
-		if len(plan.OccupancyClaims) != len(plan.ObjectsUpsert) {
-			t.Fatalf("每个新资源都要占位: %d/%d", len(plan.OccupancyClaims), len(plan.ObjectsUpsert))
-		}
+		require.Len(t, plan.ObjectsUpsert, h.rules.RefreshBatchSize)
+		require.EqualValues(t, len(plan.ObjectsUpsert), len(plan.OccupancyClaims))
 		seen := make(map[cellKey]struct{}, len(plan.ObjectsUpsert))
 		for _, o := range plan.ObjectsUpsert {
 			r := o.Resource
 			if r == nil || o.Kind != domain.ObjectKindResource {
 				t.Fatalf("对象种类=%s", o.Kind)
 			}
-			if r.Total != r.Remaining {
-				t.Fatalf("Total/Remaining 不一致: %+v", r)
-			}
+			require.EqualValues(t, r.Remaining, r.Total)
 			if r.RefreshGeneration != 1 || r.ConfigVersion != m1RuleVersion {
 				t.Fatalf("资源=%+v", r)
 			}
@@ -66,9 +60,7 @@ func TestPlanRefresh(t *testing.T) {
 			seen[cell] = struct{}{}
 		}
 		m := receiptMap(t, plan)
-		if jsonInt(t, m, "created") != int64(len(plan.ObjectsUpsert)) {
-			t.Fatalf("回执=%v", m)
-		}
+		require.EqualValues(t, int64(len(plan.ObjectsUpsert)), jsonInt(t, m, "created"))
 	})
 
 	t.Run("选址尝试上限（全块阻挡）", func(t *testing.T) {
@@ -82,13 +74,9 @@ func TestPlanRefresh(t *testing.T) {
 		snap := snapshot(SnapshotOptions{BlockedCells: blocked})
 		plan, err := h.planner.Plan(snap, testEnv(1, "rf-blocked", 1), refreshCmd(0, 2, 0), 1000)
 		require.NoError(t, err, "刷新")
-		if len(plan.ObjectsUpsert) != 0 {
-			t.Fatalf("全阻挡时不应创建对象, got %d", len(plan.ObjectsUpsert))
-		}
+		require.Len(t, plan.ObjectsUpsert, 0)
 		m := receiptMap(t, plan)
-		if jsonInt(t, m, "skipped") != int64(h.rules.RefreshBatchSize) {
-			t.Fatalf("skipped=%v, want %d", m["skipped"], h.rules.RefreshBatchSize)
-		}
+		require.EqualValues(t, int64(h.rules.RefreshBatchSize), jsonInt(t, m, "skipped"))
 	})
 
 	t.Run("幂等重放", func(t *testing.T) {
@@ -97,9 +85,7 @@ func TestPlanRefresh(t *testing.T) {
 		snap := snapshot(SnapshotOptions{Objects: blockResources(h.rules.RichBlock.MaxCount, 5)})
 		plan, err := h.planner.Plan(snap, testEnv(1, "rf-idem", 1), refreshCmd(0, 5, 0), 1000)
 		require.NoError(t, err, "刷新")
-		if len(plan.ObjectsUpsert) != 0 {
-			t.Fatalf("幂等分支不应创建对象")
-		}
+		require.Len(t, plan.ObjectsUpsert, 0, "幂等分支不应创建对象")
 		m := receiptMap(t, plan)
 		if !jsonBool(t, m, "idempotent") {
 			t.Fatalf("回执=%v", m)
@@ -128,9 +114,7 @@ func TestPlanRefresh(t *testing.T) {
 		snap := snapshot(SnapshotOptions{Objects: objs})
 		plan, err := h.planner.Plan(snap, testEnv(1, "rf-min", 1), refreshCmd(0, 5, 0), 1000)
 		require.NoError(t, err, "刷新")
-		if len(plan.ObjectsUpsert) != h.rules.RefreshBatchSize {
-			t.Fatalf("created=%d", len(plan.ObjectsUpsert))
-		}
+		require.Len(t, plan.ObjectsUpsert, h.rules.RefreshBatchSize)
 		// 批次 3 里前两个必须是 tier1（缺 2 个最低量），第三个按权重抽。
 		for i := 0; i < 2; i++ {
 			if got := plan.ObjectsUpsert[i].Resource.ResourceType; got != 1 {
@@ -151,9 +135,7 @@ func TestPlanRefresh(t *testing.T) {
 		}
 		for i := range p1.ObjectsUpsert {
 			a, b := p1.ObjectsUpsert[i].Resource, p2.ObjectsUpsert[i].Resource
-			if a.Position != b.Position {
-				t.Fatalf("第 %d 个位置不一致: %+v vs %+v", i, a.Position, b.Position)
-			}
+			require.EqualValues(t, b.Position, a.Position)
 			if a.ResourceType != b.ResourceType || a.ItemID != b.ItemID {
 				t.Fatalf("第 %d 个档位不一致: %+v vs %+v", i, a, b)
 			}

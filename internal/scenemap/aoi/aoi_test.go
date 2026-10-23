@@ -157,9 +157,7 @@ func put(t *testing.T, a *aoi.AOI, id int64, kind scenemap.EntityKind, cell aoi.
 		HP:    100,
 		MaxHP: 100,
 	})
-	if err != nil {
-		t.Fatalf("enter %d: %v", id, err)
-	}
+	require.NoError(t, err)
 }
 
 func moveTo(t *testing.T, a *aoi.AOI, id int64, cell aoi.CellKey) {
@@ -183,9 +181,7 @@ func TestViewGridIndex(t *testing.T) {
 	g.Add(2, a)
 	g.Add(3, b)
 
-	if g.Len() != 3 {
-		t.Fatalf("Len=%d, want 3", g.Len())
-	}
+	require.EqualValues(t, 3, g.Len())
 	// 同一格里的实体：去重后升序
 	if got := g.EntitiesIn([]aoi.CellKey{a, a, b}); len(got) != 3 ||
 		got[0] != 1 || got[1] != 2 || got[2] != 3 {
@@ -212,9 +208,7 @@ func TestViewGridIndex(t *testing.T) {
 	if _, ok := g.Remove(1); ok {
 		t.Fatal("重复 Remove 应返回 false")
 	}
-	if g.Len() != 2 {
-		t.Fatalf("Len=%d, want 2", g.Len())
-	}
+	require.EqualValues(t, 2, g.Len())
 
 	// 九宫格：含自身、9 个、顺序固定
 	n := aoi.Neighbors9(b)
@@ -225,9 +219,7 @@ func TestViewGridIndex(t *testing.T) {
 		{2, 1}, {3, 1}, {3, 2}, {2, 2}, {1, 2}, {1, 1}, {1, 0}, {2, 0}, {3, 0},
 	}
 	for i := range want {
-		if n[i] != want[i] {
-			t.Fatalf("Neighbors9[%d]=%v, want %v", i, n[i], want[i])
-		}
+		require.EqualValues(t, want[i], n[i])
 	}
 
 	// 九宫格可见性：切比雪夫距离 <= 1
@@ -240,9 +232,7 @@ func TestViewGridIndex(t *testing.T) {
 
 	// 清空
 	g.Clear()
-	if g.Len() != 0 {
-		t.Fatalf("Clear 后 Len=%d", g.Len())
-	}
+	require.EqualValues(t, 0, g.Len())
 }
 
 func TestViewCellOfMatchesGeometry(t *testing.T) {
@@ -283,12 +273,8 @@ func TestEnterSendsFullView(t *testing.T) {
 			}
 		}
 	}
-	if !found {
-		t.Fatal("2 没有收到 EnterViewMsg")
-	}
-	if got.Self.UUID != 2 {
-		t.Fatalf("Self=%v, want 2", got.Self.UUID)
-	}
+	require.True(t, found, "2 没有收到 EnterViewMsg")
+	require.EqualValues(t, 2, got.Self.UUID)
 	if len(got.Entities) != 1 || got.Entities[0].UUID != 1 {
 		t.Fatalf("全量包实体=%v, want [1]", got.Entities)
 	}
@@ -317,9 +303,7 @@ func TestNineGridVisibility(t *testing.T) {
 		t.Fatalf("九宫格外 1 收到 %d 条投递, want 0: %v", n, sink.all())
 	}
 	for _, d := range sink.all() {
-		if d.uuid != 2 {
-			t.Fatalf("出现了不该有的投递: %+v", d)
-		}
+		require.EqualValues(t, 2, d.uuid)
 		m, ok := d.msg.(aoi.EnterViewMsg)
 		if !ok || len(m.Entities) != 0 {
 			t.Fatalf("2 的全量包不该含实体: %+v", d.msg)
@@ -590,9 +574,7 @@ func TestSnapshotConsistent(t *testing.T) {
 	if s.Revision == 0 {
 		t.Fatal("Revision 未推进")
 	}
-	if len(s.Entities) != len(s.CellOf) {
-		t.Fatalf("Entities=%d CellOf=%d, 应一致", len(s.Entities), len(s.CellOf))
-	}
+	require.EqualValues(t, len(s.CellOf), len(s.Entities))
 	total := 0
 	for cell, list := range s.Views {
 		total += len(list)
@@ -605,9 +587,7 @@ func TestSnapshotConsistent(t *testing.T) {
 			}
 		}
 	}
-	if total != len(s.Entities) {
-		t.Fatalf("Σlen(Views)=%d, len(Entities)=%d, 应一致", total, len(s.Entities))
-	}
+	require.EqualValues(t, len(s.Entities), total)
 	// 快照里的切片必须按 UUID 升序（客户端不抖动的前提）
 	for cell, list := range s.Views {
 		for i := 1; i < len(list); i++ {
@@ -660,17 +640,13 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 
 	a1, err := pool.Acquire(keyA)
 	require.NoError(t, err, "Acquire A")
-	if a1.Key() != keyA {
-		t.Fatalf("Key=%v, want %v", a1.Key(), keyA)
-	}
+	require.EqualValues(t, keyA, a1.Key())
 	if err := a1.CallEnter(context.Background(), aoi.Entity{
 		UUID: 1, Kind: scenemap.EntityKindPlayer, PX: 10, PY: 10,
 	}); err != nil {
 		t.Fatalf("enter: %v", err)
 	}
-	if a1.Len() != 1 {
-		t.Fatalf("Len=%d, want 1", a1.Len())
-	}
+	require.EqualValues(t, 1, a1.Len())
 
 	// 容量 2：第二个可以开，第三个必须被拒（池空 ⇒ 明确过载，而不是排队）
 	a2, err := pool.Acquire(keyB)
@@ -678,28 +654,20 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 	if _, err := pool.Acquire(keyC); !errors.Is(err, scenemap.ErrRoomPoolExhausted) {
 		t.Fatalf("第三个 Acquire err=%v, want ErrRoomPoolExhausted", err)
 	}
-	if pool.InUse() != 2 {
-		t.Fatalf("InUse=%d, want 2", pool.InUse())
-	}
+	require.EqualValues(t, 2, pool.InUse())
 
 	// 归还前必须先关（Pool 契约）：关掉 A 再还池
 	if err := a1.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	pool.Release(a1)
-	if pool.Idle() != 1 {
-		t.Fatalf("Idle=%d, want 1", pool.Idle())
-	}
+	require.EqualValues(t, 1, pool.Idle())
 
 	// 复用的实例不能带上一局的实体，也不能带旧 Key
 	a3, err := pool.Acquire(keyC)
 	require.NoError(t, err, "Acquire C")
-	if a3.Len() != 0 {
-		t.Fatalf("复用实例 Len=%d, want 0（索引未清空）", a3.Len())
-	}
-	if a3.Key() != keyC {
-		t.Fatalf("复用实例 Key=%v, want %v", a3.Key(), keyC)
-	}
+	require.EqualValues(t, 0, a3.Len())
+	require.EqualValues(t, keyC, a3.Key())
 	_ = a2
 }
 

@@ -10,6 +10,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -90,9 +91,7 @@ func TestLearnAndUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := load(st)
-	if d.Levels[int32(cfg.Id)] != 1 {
-		t.Fatalf("learn not persisted: %v", d.Levels)
-	}
+	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)])
 
 	st.items[upgradeItemID] = 1000
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
@@ -100,13 +99,9 @@ func TestLearnAndUpgrade(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ = load(st)
-	if d.Levels[int32(cfg.Id)] != 2 {
-		t.Fatalf("upgrade not persisted: %v", d.Levels)
-	}
+	require.EqualValues(t, 2, d.Levels[int32(cfg.Id)])
 	want := 1000 - int64(cfg.Col3)
-	if st.GetItemCount(upgradeItemID) != want {
-		t.Fatalf("cost not deducted: got %d want %d", st.GetItemCount(upgradeItemID), want)
-	}
+	require.EqualValues(t, want, st.GetItemCount(upgradeItemID))
 }
 
 // TestLearnDuplicate 重复学习不重置等级。
@@ -123,9 +118,7 @@ func TestLearnDuplicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := load(st)
-	if d.Levels[int32(cfg.Id)] != 3 {
-		t.Fatalf("level reset by duplicate learn: %v", d.Levels)
-	}
+	require.EqualValues(t, 3, d.Levels[int32(cfg.Id)])
 }
 
 // TestUpgradeWithoutResource 材料不足时不升级、不扣费。
@@ -142,12 +135,8 @@ func TestUpgradeWithoutResource(t *testing.T) {
 		t.Fatal(err)
 	}
 	d, _ := load(st)
-	if d.Levels[int32(cfg.Id)] != 1 {
-		t.Fatal("level changed without resource")
-	}
-	if st.GetItemCount(upgradeItemID) != 0 {
-		t.Fatal("item deducted on failed upgrade")
-	}
+	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)], "level changed without resource")
+	require.EqualValues(t, 0, st.GetItemCount(upgradeItemID), "item deducted on failed upgrade")
 }
 
 // TestSnapshotShape 落库形状 {"player_id":..,"skills":"{...}"}。

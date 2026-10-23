@@ -174,18 +174,14 @@ func TestKafkaRechargeFlow(t *testing.T) {
 	for act.count() == 0 && time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 	}
-	if act.count() != 1 {
-		t.Fatalf("expected 1 grant, got %d", act.count())
-	}
+	require.EqualValues(t, 1, act.count())
 
 	// 重复投递：验证幂等
 	if err := producer.ProduceEnvelope(ctx, env); err != nil {
 		t.Fatalf("produce duplicate: %v", err)
 	}
 	time.Sleep(3 * time.Second)
-	if act.count() != 1 {
-		t.Fatalf("duplicate delivery should be idempotent, grants = %d", act.count())
-	}
+	require.EqualValues(t, 1, act.count())
 }
 
 // itDeduper 内存幂等器。

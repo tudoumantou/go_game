@@ -52,9 +52,7 @@ func writeTempSQL(t *testing.T, content string) string {
 func TestParseSQLFlatAnnotation(t *testing.T) {
 	tables, err := parseSQL(writeTempSQL(t, flatDDL))
 	require.NoError(t, err)
-	if len(tables) != 2 {
-		t.Fatalf("want 2 tables, got %d", len(tables))
-	}
+	require.Len(t, tables, 2)
 	byName := map[string]table{}
 	for _, tb := range tables {
 		byName[tb.Name] = tb

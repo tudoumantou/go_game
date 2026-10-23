@@ -84,9 +84,7 @@ func call(t *testing.T, m *Module, ctx *module.Context, rec *recorder, msgID uin
 		t.Fatal(err)
 	}
 	raw, ok := rec.last[msgID+1]
-	if !ok {
-		t.Fatalf("no reply for msg %d", msgID)
-	}
+	require.True(t, ok)
 	return raw
 }
 
@@ -114,9 +112,7 @@ func TestDataAdd(t *testing.T) {
 	if len(d.Days) != 2 || d.Days[0] != 1 || d.Days[1] != 3 {
 		t.Fatalf("days not sorted: %v", d.Days)
 	}
-	if d.Rewards[1001] != 40 {
-		t.Fatalf("rewards not accumulated: %v", d.Rewards)
-	}
+	require.EqualValues(t, 40, d.Rewards[1001])
 	// 同一天再次登记不重复天数（重领由 claim 的 has 拦截，这里兜底）。
 	d.add(3, nil)
 	if len(d.Days) != 2 || d.Rewards[1001] != 40 {
@@ -151,9 +147,7 @@ func TestStateRoundTrip(t *testing.T) {
 
 	// 落库：业务结构 → 表行 → 业务结构。
 	row, err := toRow(7, &decoded)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if row.PlayerId != 7 || row.ClaimedDays != "[2]" || row.ClaimedRewards != `{"1001":20}` {
 		t.Fatalf("行结构与表不符: %+v", row)
 	}
@@ -189,9 +183,7 @@ func TestClaimFlow(t *testing.T) {
 	if len(resp.ClaimedDays) != 1 || resp.ClaimedDays[0] != 3 || resp.ClaimedRewards[1001] != 300 {
 		t.Fatalf("claim state: days=%v rewards=%v", resp.ClaimedDays, resp.ClaimedRewards)
 	}
-	if st.GetItemCount(1001) != 300 {
-		t.Fatalf("item not granted: %d", st.GetItemCount(1001))
-	}
+	require.EqualValues(t, 300, st.GetItemCount(1001))
 
 	// 重复领取：幂等，不叠加奖励。
 	dup := &gamev1.SigninClaimResp{}
@@ -201,9 +193,7 @@ func TestClaimFlow(t *testing.T) {
 	if !dup.Already || dup.ClaimedRewards[1001] != 300 {
 		t.Fatalf("duplicate claim: %+v", dup)
 	}
-	if st.GetItemCount(1001) != 300 {
-		t.Fatalf("duplicate grant: %d", st.GetItemCount(1001))
-	}
+	require.EqualValues(t, 300, st.GetItemCount(1001))
 }
 
 // TestRewardConfiguration 七天配置齐全，缺天在启动期暴露。

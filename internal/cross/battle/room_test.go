@@ -158,12 +158,8 @@ func TestRoomRelaysBattleMsgToOpponentOnly(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.framesOf("battle")) == 1 }, "relay once")
 
 	relayed := sink.framesOf("battle")[0]
-	if relayed.node != "game-b" {
-		t.Fatalf("relay target: want game-b, got %s", relayed.node)
-	}
-	if string(relayed.frame.GetBattle().Body) != "op-1" {
-		t.Fatalf("body must be forwarded verbatim, got %q", relayed.frame.GetBattle().Body)
-	}
+	require.EqualValues(t, "game-b", relayed.node)
+	require.EqualValues(t, "op-1", string(relayed.frame.GetBattle().Body))
 }
 
 func TestRoomRejectsBadToken(t *testing.T) {
@@ -223,9 +219,7 @@ func TestRoomTimeoutSettlesAsDraw(t *testing.T) {
 	waitFor(t, func() bool { return len(sink.framesOf("result")) == 2 }, "timeout settle")
 
 	for _, f := range sink.framesOf("result") {
-		if f.frame.GetResult().Result != 2 {
-			t.Fatalf("timeout must settle as draw(2), got %d", f.frame.GetResult().Result)
-		}
+		require.EqualValues(t, 2, f.frame.GetResult().Result)
 	}
 }
 

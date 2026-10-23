@@ -190,14 +190,10 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	// ⑥ 双方匹配：中心服匹配池凑人 → MatchResult 分发 → 各自建房 → 开战通知
 	respA, err := clientA.Match("arena")
 	require.NoError(t, err, "match A")
-	if respA.Code != 0 {
-		t.Fatalf("match A code=%d", respA.Code)
-	}
+	require.EqualValues(t, 0, respA.Code)
 	respB, err := clientB.Match("arena")
 	require.NoError(t, err, "match B")
-	if respB.Code != 0 {
-		t.Fatalf("match B code=%d", respB.Code)
-	}
+	require.EqualValues(t, 0, respB.Code)
 
 	startA, err := clientA.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start A")
@@ -224,9 +220,7 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	}
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
 	require.NoError(t, err, "wait battle sync")
-	if string(sync.Body) != "op-via-center" {
-		t.Fatalf("relay body mismatch: %q", sync.Body)
-	}
+	require.EqualValues(t, "op-via-center", string(sync.Body))
 
 	// ⑨ 结算：双方上报 → CrossServer 结算回推
 	if _, err := clientA.BattleResult(roomID, startA.BattleToken, 0); err != nil {

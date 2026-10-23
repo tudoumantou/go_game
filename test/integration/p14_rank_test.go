@@ -228,36 +228,24 @@ func TestP14RankAndLeader(t *testing.T) {
 	t.Logf("rank top%d: %v", len(entries), rankSummary(entries))
 
 	// A 应排第一（30 分），B 第二（-10 分）
-	if entries[0].PlayerId != roleA {
-		t.Fatalf("rank 1 should be winner %d, got %d", roleA, entries[0].PlayerId)
-	}
-	if entries[0].Score != 30 {
-		t.Fatalf("winner score should be 30, got %d", entries[0].Score)
-	}
+	require.EqualValues(t, roleA, entries[0].PlayerId)
+	require.EqualValues(t, 30, entries[0].Score)
 	var bEntry *internalv2.RankEntry
 	for _, e := range entries {
 		if e.PlayerId == roleB {
 			bEntry = e
 		}
 	}
-	if bEntry == nil {
-		t.Fatalf("loser %d should be on the board", roleB)
-	}
-	if bEntry.Score != -10 {
-		t.Fatalf("loser score should be -10, got %d", bEntry.Score)
-	}
+	require.NotNil(t, bEntry)
+	require.EqualValues(t, -10, bEntry.Score)
 
 	// ④ 再打一场（A 再胜）→ 分数应累加到 60（验证 ZINCRBY 而非覆盖）
 	respA2, err := clientA.Match("arena")
 	require.NoError(t, err, "match A2")
-	if respA2.Code != 0 {
-		t.Fatalf("match A2 code=%d (settled battle must allow re-match)", respA2.Code)
-	}
+	require.EqualValues(t, 0, respA2.Code)
 	respB2, err := clientB.Match("arena")
 	require.NoError(t, err, "match B2")
-	if respB2.Code != 0 {
-		t.Fatalf("match B2 code=%d", respB2.Code)
-	}
+	require.EqualValues(t, 0, respB2.Code)
 	startA2, err := clientA.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start A2")
 	startB2, err := clientB.WaitBattleStart(20 * time.Second)
@@ -281,9 +269,7 @@ func TestP14RankAndLeader(t *testing.T) {
 	// ⑤ 统计查询（本测试未上报 feature，应返回空列表且不报错）
 	statsResp, err := gm.QueryFeatureStats(context.Background(), &internalv2.QueryStatsReq{})
 	require.NoError(t, err, "query stats")
-	if statsResp.Code != 0 {
-		t.Fatalf("stats query code=%d", statsResp.Code)
-	}
+	require.EqualValues(t, 0, statsResp.Code)
 	t.Logf("stats reports: %d", len(statsResp.Reports))
 
 	// ⑥ 校验 Redis 里的 ZSet key 形态

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"game_study/pkg/writebehind"
+	"github.com/stretchr/testify/require"
 )
 
 // TestClaimBiz 占用一次后重复占用返回 false，空键不参与幂等。
@@ -26,9 +27,7 @@ func TestClaimBiz(t *testing.T) {
 	if !s.ClaimBiz("") {
 		t.Fatal("empty key must always succeed")
 	}
-	if len(s.snapshot().AppliedGrants) != 1 {
-		t.Fatalf("empty key recorded: %v", s.snapshot().AppliedGrants)
-	}
+	require.Len(t, s.snapshot().AppliedGrants, 1)
 }
 
 // TestClaimBizSurvivesSnapshot 业务键必须随快照往返，否则重启后幂等失效。

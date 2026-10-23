@@ -238,30 +238,20 @@ func TestBattleTimeoutEventResolvesAndAdvancesQueue(t *testing.T) {
 	})
 
 	attacker := findTroop(t, f.scene, 1, testAttackerID)
-	if attacker == nil {
-		t.Fatal("攻方部队丢失")
-	}
-	if attacker.Phase != domain.TroopPhaseReturning {
-		t.Fatalf("超时后攻方 Phase=%v, want RETURNING", attacker.Phase)
-	}
-	if attacker.Move == nil {
-		t.Fatal("超时后攻方必须生成回城路线（否则没有到达事件）")
-	}
+	require.NotNil(t, attacker, "攻方部队丢失")
+	require.EqualValues(t, domain.TroopPhaseReturning, attacker.Phase)
+	require.NotNil(t, attacker.Move, "超时后攻方必须生成回城路线（否则没有到达事件）")
 	if attacker.BattleID != "" || attacker.Busy.Reason != domain.BusyReasonNone {
 		t.Fatalf("超时后战斗锁未解除: battle_id=%q busy=%+v", attacker.BattleID, attacker.Busy)
 	}
 
 	queued := findTroop(t, f.scene, 3, testQueuedID)
-	if queued == nil {
-		t.Fatal("队列成员丢失")
-	}
+	require.NotNil(t, queued, "队列成员丢失")
 	next, _ := battleOn(f.scene, testTargetID)
 	if queued.Phase != domain.TroopPhaseFighting || queued.BattleID != next.BattleID {
 		t.Fatalf("队首未开战: phase=%v battle_id=%q, want FIGHTING %q", queued.Phase, queued.BattleID, next.BattleID)
 	}
-	if queued.Busy.Reason != domain.BusyReasonBattle {
-		t.Fatalf("队首缺少战斗锁: %+v", queued.Busy)
-	}
+	require.EqualValues(t, domain.BusyReasonBattle, queued.Busy.Reason)
 	if q := f.scene.Snapshot().QueuedOn(testTargetID); len(q) != 0 {
 		t.Fatalf("队首出队后队列应为空: %+v", q)
 	}
@@ -272,19 +262,13 @@ func TestBattleTimeoutEventResolvesAndAdvancesQueue(t *testing.T) {
 		PlayerID:  1, // 内部命令用攻方玩家身份
 		RequestID: domain.BattleResultKey("b1"),
 	})
-	if !ok {
-		t.Fatal("超时命令必须落回执")
-	}
+	require.True(t, ok, "超时命令必须落回执")
 	var payload map[string]any
 	if err := json.Unmarshal(rc.ResultJSON, &payload); err != nil {
 		t.Fatalf("回执解析失败: %v (%s)", err, rc.ResultJSON)
 	}
-	if payload["status"] != "TIMED_OUT" {
-		t.Fatalf("回执状态=%v, want TIMED_OUT", payload["status"])
-	}
-	if payload["timed_out"] != true {
-		t.Fatalf("回执未标记超时: %v", payload)
-	}
+	require.EqualValues(t, "TIMED_OUT", payload["status"])
+	require.EqualValues(t, true, payload["timed_out"])
 }
 
 // TestBattleResultCommandAdvancesQueue 验证结果命令经运行时的完整链路：
@@ -329,9 +313,7 @@ func TestBattleResultCommandAdvancesQueue(t *testing.T) {
 		t.Fatalf("重复结果应幂等成功: %v", err)
 	}
 	after, _ := battleOn(f.scene, testTargetID)
-	if after.BattleID != beforeBattle {
-		t.Fatalf("重复结果改变了当前战斗: %s → %s", beforeBattle, after.BattleID)
-	}
+	require.EqualValues(t, beforeBattle, after.BattleID)
 	if got := findTroop(t, f.scene, 3, testQueuedID); got == nil || got.Header.Version != beforeVersion {
 		t.Fatalf("重复结果推进了队首版本: %+v", got)
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -62,9 +63,7 @@ func TestThinDispatchesRegisteredHandlers(t *testing.T) {
 	if err := th.OnMessage(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got != 1001 {
-		t.Fatalf("handler got %d", got)
-	}
+	require.EqualValues(t, 1001, got)
 	if err := th.OnMessage(ctx, 9999, nil); err == nil {
 		t.Fatal("unexpected message should error")
 	}
@@ -88,16 +87,12 @@ func TestThinGuardRejectsWithoutCache(t *testing.T) {
 		t.Fatal("handler must not run when guard rejects")
 	}
 	raw, ok := (*replies)[1002]
-	if !ok {
-		t.Fatal("expected failure reply 1002")
-	}
+	require.True(t, ok, "expected failure reply 1002")
 	var resp gamev1.SigninInfoResp
 	if err := proto.Unmarshal(raw, &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Code != 7 {
-		t.Fatalf("code = %d, want 7", resp.Code)
-	}
+	require.EqualValues(t, 7, resp.Code)
 }
 
 // TestThinCacheFailureReply 验证缓存不可用响应的协议号与错误码。
@@ -139,9 +134,7 @@ func TestThinFailLogsAndReplies(t *testing.T) {
 	if err := th.OnMessage(ctx, 1001, nil); !errors.Is(err, boom) {
 		t.Fatalf("handler error should propagate, got %v", err)
 	}
-	if len((*replies)[1002]) != 0 {
-		t.Fatal("plain handler error should not auto-reply (module decides)")
-	}
+	require.Len(t, (*replies)[1002], 0, "plain handler error should not auto-reply (module decides)")
 	if err := th.Fail(ctx, 1001, 6602, boom); err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +142,7 @@ func TestThinFailLogsAndReplies(t *testing.T) {
 	if err := proto.Unmarshal((*replies)[1002], &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Code != 6602 {
-		t.Fatalf("code = %d, want 6602", resp.Code)
-	}
+	require.EqualValues(t, 6602, resp.Code)
 }
 
 // TestThinLifecycleHooks 验证 Init/Login/Logout 钩子可选、默认无操作。
@@ -236,9 +227,7 @@ func TestHandleRBuildsErrorReply(t *testing.T) {
 	if err := proto.Unmarshal((*replies)[2002], &resp); err != nil {
 		t.Fatalf("错误包解析失败: %v", err)
 	}
-	if resp.Code != 6603 {
-		t.Fatalf("code = %d, want 6603", resp.Code)
-	}
+	require.EqualValues(t, 6603, resp.Code)
 
 	// CacheFailureReply 用模块级 errCode，不是 Fail 的入参。
 	respID, raw, ok := th.CacheFailureReply(2001)

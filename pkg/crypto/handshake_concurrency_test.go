@@ -125,11 +125,7 @@ func TestHandshakeKeyStable(t *testing.T) {
 	wg.Wait()
 
 	for i := 0; i < n; i++ {
-		if errs[i] != nil {
-			t.Fatalf("#%d decrypt error: %v", i, errs[i])
-		}
-		if string(results[i]) != string(msg) {
-			t.Fatalf("#%d plaintext mismatch: %q", i, results[i])
-		}
+		require.Nil(t, errs[i])
+		require.EqualValues(t, string(msg), string(results[i]))
 	}
 }

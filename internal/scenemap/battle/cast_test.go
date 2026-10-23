@@ -5,6 +5,7 @@ import (
 
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/mgr"
+	"github.com/stretchr/testify/require"
 )
 
 // addNpcState 在场景里放一只怪（NPES 权威数据），供 target/death 相关用例使用。
@@ -34,18 +35,12 @@ func TestLaunchDoesNotHarmUntilCast(t *testing.T) {
 	if res.PrefixMS <= 0 {
 		t.Fatalf("普攻前摇应大于 0，实际 %d", res.PrefixMS)
 	}
-	if T.HP != 1000 {
-		t.Fatalf("LAUNCH 阶段不应扣血，实际 hp=%d", T.HP)
-	}
-	if rt.PendingDelayed() != 1 {
-		t.Fatalf("应有一个待执行的 CAST，实际 %d", rt.PendingDelayed())
-	}
+	require.EqualValues(t, 1000, T.HP)
+	require.EqualValues(t, 1, rt.PendingDelayed())
 
 	now += 10000
 	rt.RunDue(s, now)
-	if T.HP != 910 {
-		t.Fatalf("CAST 后应扣 90 血，实际 hp=%d（debug 不可见时看前一条断言）", T.HP)
-	}
+	require.EqualValues(t, 910, T.HP)
 }
 
 // TestCastCooldownRejects 验证 CD 期间重复出手被拒（且不排 CAST）。
@@ -131,22 +126,14 @@ func TestMultiPartDamage(t *testing.T) {
 		t.Fatalf("出手应受理: %d", res.Code)
 	}
 	// 第 0 段无前摇 → 立即结算。
-	if T.HP != 990 {
-		t.Fatalf("第 1 段后应剩 990，实际 %d", T.HP)
-	}
+	require.EqualValues(t, 990, T.HP)
 	now += 150
 	rt.RunDue(s, now)
-	if T.HP != 980 {
-		t.Fatalf("第 2 段后应剩 980，实际 %d", T.HP)
-	}
+	require.EqualValues(t, 980, T.HP)
 	now += 150
 	rt.RunDue(s, now)
-	if T.HP != 970 {
-		t.Fatalf("第 3 段后应剩 970，实际 %d", T.HP)
-	}
-	if rt.PendingDelayed() != 0 {
-		t.Fatalf("三段打完后不应再有延时任务，实际 %d", rt.PendingDelayed())
-	}
+	require.EqualValues(t, 970, T.HP)
+	require.EqualValues(t, 0, rt.PendingDelayed())
 }
 
 // TestAreaSkillHitsMultiple 验证范围技按半径命中多人并按人数截断。
@@ -201,9 +188,7 @@ func TestKillIsIdempotent(t *testing.T) {
 	rt.handleDead(s, T, A.UUID, now)
 	rt.handleDead(s, T, A.UUID, now)
 
-	if deadCalls != 1 {
-		t.Fatalf("死亡链应只执行一次，实际 %d", deadCalls)
-	}
+	require.EqualValues(t, 1, deadCalls)
 	var monDead int
 	for _, evt := range events {
 		if m, ok := evt.(MonDeadEvent); ok {
@@ -213,9 +198,7 @@ func TestKillIsIdempotent(t *testing.T) {
 			}
 		}
 	}
-	if monDead != 1 {
-		t.Fatalf("MonDeadEvent 应只发一次，实际 %d", monDead)
-	}
+	require.EqualValues(t, 1, monDead)
 	info := s.NPES[9]
 	if info.HP != 0 || info.AI != mgr.AIStateDead || info.DeadAt == 0 {
 		t.Fatalf("场景权威未同步死亡态: %+v", info)
@@ -250,9 +233,7 @@ func TestDeadTargetIgnoredByNewCast(t *testing.T) {
 	rt.cast(s, Cast{Caster: A.UUID, SkillID: cfg2.ID, Target: T.UUID})
 	now += 1000
 	rt.RunDue(s, now)
-	if T.HP != before {
-		t.Fatalf("死亡目标不应再掉血: %d → %d", before, T.HP)
-	}
+	require.EqualValues(t, before, T.HP)
 }
 
 // TestEnsureIsIdempotent 验证 §4.2：重复初始化复用同一份运行时。
@@ -261,9 +242,7 @@ func TestEnsureIsIdempotent(t *testing.T) {
 	var now int64 = 1000
 	rt1 := testRuntime(s, &now, nil)
 	rt2 := Ensure(s, Options{Table: DefaultTable(), Now: func() int64 { return now }, NoBattle: true})
-	if rt1 != rt2 {
-		t.Fatal("重复 Ensure 应复用同一运行时")
-	}
+	require.EqualValues(t, rt2, rt1, "重复 Ensure 应复用同一运行时")
 	if rt2.NoBattle() {
 		t.Fatal("复用后不应被第二次参数覆盖（单写者语义）")
 	}

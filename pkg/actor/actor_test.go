@@ -98,9 +98,7 @@ func TestScheduleOnce(t *testing.T) {
 	for a.count.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if a.count.Load() != 1 {
-		t.Fatalf("expected 1 scheduled message, got %d", a.count.Load())
-	}
+	require.EqualValues(t, 1, a.count.Load())
 }
 
 func TestSendToMissingActor(t *testing.T) {

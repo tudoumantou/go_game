@@ -6,6 +6,7 @@ import (
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/grid"
 	"game_study/internal/scenemap/mgr"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestState 构造一个可直接给 battle 用的 State（不启动 MGR）。
@@ -98,9 +99,7 @@ func TestDamageFormulaFixedValue(t *testing.T) {
 	if !hasTag(out.Harms, HarmCrit) {
 		t.Fatalf("应带暴击标签: %+v", out.Harms)
 	}
-	if out.RealHarm != 117 {
-		t.Fatalf("real harm 应为 117，实际 %d", out.RealHarm)
-	}
+	require.EqualValues(t, 117, out.RealHarm)
 }
 
 // TestDamageFormulaNoCrit 验证不暴击时只有基础伤害（顺序/默认值的对照组）。
@@ -184,25 +183,17 @@ func TestBuffDotTicksAndExpires(t *testing.T) {
 		t.Fatal("DoT 施加失败")
 	}
 	rt.tickBuffs(s, now+500)
-	if T.HP != 90 {
-		t.Fatalf("第一跳后应剩 90，实际 %d", T.HP)
-	}
+	require.EqualValues(t, 90, T.HP)
 	now += 1000
 	rt.tickBuffs(s, now)
-	if T.HP != 80 {
-		t.Fatalf("第二跳后应剩 80，实际 %d", T.HP)
-	}
+	require.EqualValues(t, 80, T.HP)
 	// 跳到 3 秒之后：Buff 到期，血量不再变化。
 	now += 3000
 	rt.tickBuffs(s, now)
-	if len(T.Buffs) != 0 {
-		t.Fatalf("DoT 应已到期移除: %+v", T.Buffs)
-	}
+	require.Len(t, T.Buffs, 0)
 	before := T.HP
 	rt.tickBuffs(s, now+5000)
-	if T.HP != before {
-		t.Fatalf("到期后不应继续掉血: %d → %d", before, T.HP)
-	}
+	require.EqualValues(t, before, T.HP)
 }
 
 // TestBuffStackCap 验证叠层上限（MaxStacks=3 的灼烧）。
@@ -253,9 +244,7 @@ func TestSuperBlocksDamage(t *testing.T) {
 	cfg := &SkillConfig{ID: 9996, HarmType: HarmTypeNormal, Coeff: PermilleOne}
 	sc := &SkillContext{SkillID: cfg.ID, Caster: A.UUID, Target: T.UUID, Action: ActionCast}
 	out := rt.calcSkill(s, A, T, cfg, sc, now)
-	if T.HP != 100 {
-		t.Fatalf("无敌仍掉血: %d", T.HP)
-	}
+	require.EqualValues(t, 100, T.HP)
 	if !hasTag(out.Harms, HarmSuper) {
 		t.Fatalf("应带 SUPER 标签: %+v", out.Harms)
 	}

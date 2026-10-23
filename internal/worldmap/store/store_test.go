@@ -397,9 +397,7 @@ func TestCommitUnknownOnCommitError(t *testing.T) {
 	if res.Committed {
 		t.Fatal("Unknown 不能同时标记 Committed")
 	}
-	if res.Err == nil {
-		t.Fatal("Unknown 应携带底层错误供日志/解析使用")
-	}
+	require.NotNil(t, res.Err, "Unknown 应携带底层错误供日志/解析使用")
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -562,9 +560,7 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 
 func TestDecodePayloadRejectsBrokenJSON(t *testing.T) {
 	_, _, _, err := decodePayload(1, 101, domain.ObjectKindTroop, []byte(`{"kind":2,"troop":{"cargo":{"abc":1}}}`))
-	if err == nil {
-		t.Fatal("非法 cargo 键应报错")
-	}
+	require.Error(t, err, "非法 cargo 键应报错")
 }
 
 func TestLoadScene(t *testing.T) {
@@ -598,9 +594,7 @@ func TestAllocObjectID(t *testing.T) {
 
 	id, err := r.AllocObjectID(context.Background(), r.db)
 	require.NoError(t, err, "AllocObjectID")
-	if id != 4321 {
-		t.Fatalf("应返回自增 ID 4321, got %d", id)
-	}
+	require.EqualValues(t, 4321, id)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -654,9 +648,7 @@ func TestRecoverWorldOrder(t *testing.T) {
 
 	got, err := r.RecoverWorld(context.Background(), 1)
 	require.NoError(t, err, "RecoverWorld")
-	if got.Epoch != 9 {
-		t.Fatalf("epoch 应为 9, got %d", got.Epoch)
-	}
+	require.EqualValues(t, 9, got.Epoch)
 	if len(got.Scenes) != 2 || got.Scenes[2].Revision != 12 {
 		t.Fatalf("场景状态不符: %+v", got.Scenes)
 	}
@@ -696,9 +688,7 @@ func TestAcquireLease(t *testing.T) {
 
 		epoch, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
 		require.NoError(t, err, "Acquire")
-		if epoch != 1 {
-			t.Fatalf("首次创建 epoch 应为 1, got %d", epoch)
-		}
+		require.EqualValues(t, 1, epoch)
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
 		}
@@ -732,9 +722,7 @@ func TestAcquireLease(t *testing.T) {
 
 		epoch, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
 		require.NoError(t, err, "Acquire")
-		if epoch != 6 {
-			t.Fatalf("接管后 epoch 应为 6, got %d", epoch)
-		}
+		require.EqualValues(t, 6, epoch)
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
 		}
@@ -911,9 +899,7 @@ func TestCommitRejectsEmptyPlan(t *testing.T) {
 func TestSortedHelpersDoNotMutateInput(t *testing.T) {
 	in := []domain.SceneRevision{{SceneID: 3, Revision: 1}, {SceneID: 1, Revision: 2}, {SceneID: 1, Revision: 2}}
 	out := sortedSceneRevisions(in)
-	if in[0].SceneID != 3 {
-		t.Fatal("排序不应修改调用方切片")
-	}
+	require.EqualValues(t, 3, in[0].SceneID, "排序不应修改调用方切片")
 	if len(out) != 2 || out[0].SceneID != 1 || out[1].SceneID != 3 {
 		t.Fatalf("排序/去重结果错误: %+v", out)
 	}
@@ -922,12 +908,8 @@ func TestSortedHelpersDoNotMutateInput(t *testing.T) {
 		{Key: domain.ObjectKey{ID: 20}}, {Key: domain.ObjectKey{ID: 10}},
 	}
 	sorted := sortedSnapshots(snaps)
-	if snaps[0].Key.ID != 20 {
-		t.Fatal("对象排序不应修改调用方切片")
-	}
-	if sorted[0].Key.ID != 10 {
-		t.Fatalf("对象排序结果错误: %+v", sorted)
-	}
+	require.EqualValues(t, 20, snaps[0].Key.ID, "对象排序不应修改调用方切片")
+	require.EqualValues(t, 10, sorted[0].Key.ID)
 }
 
 func TestRetryBackoff(t *testing.T) {

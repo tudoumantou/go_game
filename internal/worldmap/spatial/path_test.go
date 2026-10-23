@@ -33,18 +33,14 @@ func TestSegmentLengthUnits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := SegmentLengthUnits(tt.from, tt.to)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("期望溢出错误, got %d", got)
-				}
+				require.Error(t, err)
 				if !errors.Is(err, domain.ErrOverflow) {
 					t.Fatalf("错误应包装 ErrOverflow, got %v", err)
 				}
 				return
 			}
 			require.NoError(t, err, "意外错误")
-			if got != tt.want {
-				t.Fatalf("SegmentLengthUnits(%v→%v) = %d, want %d", tt.from, tt.to, got, tt.want)
-			}
+			require.EqualValues(t, tt.want, got)
 		})
 	}
 }
@@ -105,9 +101,7 @@ func TestBuildMove(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m, err := BuildMove(tt.from, tt.to, tt.speed, tt.startAt, "move-1", tt.inBounds)
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("期望错误, got %+v", m)
-				}
+				require.Error(t, err)
 				if !errors.Is(err, domain.ErrInvalidArgument) {
 					t.Fatalf("错误应包装 ErrInvalidArgument, got %v", err)
 				}
@@ -157,17 +151,13 @@ func TestAdvanceAlongTrajectory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := AdvanceAlong(m, tt.now)
 			require.NoError(t, err, "AdvanceAlong 错误")
-			if got != tt.want {
-				t.Fatalf("AdvanceAlong(%d) = %v, want %v", tt.now, got, tt.want)
-			}
+			require.EqualValues(t, tt.want, got)
 		})
 	}
 	// 绝对时间重算一致性：任意时刻两次调用结果相同（不累加误差）。
 	p1, _ := AdvanceAlong(m, 12_345)
 	p2, _ := AdvanceAlong(m, 12_345)
-	if p1 != p2 {
-		t.Fatalf("重复推导不一致: %v vs %v", p1, p2)
-	}
+	require.EqualValues(t, p2, p1)
 	// nil 段：报错而不是 panic。
 	if _, err := AdvanceAlong(nil, 100); err == nil || !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("nil 段应返回 ErrInvalidArgument, got %v", err)
@@ -246,9 +236,7 @@ func TestRaycastBlocked(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			at, ok := RaycastBlocked(tt.from, tt.to, tt.blocked)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v (blockedAt=%v)", ok, tt.wantOK, at)
-			}
+			require.EqualValues(t, tt.wantOK, ok)
 			if ok && at != tt.wantAt {
 				t.Fatalf("blockedAt = %v, want %v", at, tt.wantAt)
 			}

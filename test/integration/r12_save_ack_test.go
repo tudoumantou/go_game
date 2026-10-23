@@ -68,9 +68,7 @@ func TestR12FlushAllDrainsAllBatches(t *testing.T) {
 			"SELECT count FROM player_item WHERE player_id=? AND item_id=1001", id).Scan(&count); err != nil {
 			t.Fatalf("player %d item row: %v", id, err)
 		}
-		if count != 1 {
-			t.Fatalf("player %d item count=%d, want 1", id, count)
-		}
+		require.EqualValues(t, 1, count)
 	}
 }
 
@@ -125,7 +123,5 @@ func TestR12SaveFailureKeepsDirtyThenRecovers(t *testing.T) {
 		"SELECT count FROM player_item WHERE player_id=? AND item_id=1001", id).Scan(&count); err != nil {
 		t.Fatalf("verify item: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("recovered item count=%d, want 2", count)
-	}
+	require.EqualValues(t, 2, count)
 }

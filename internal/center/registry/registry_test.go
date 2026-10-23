@@ -2,6 +2,7 @@
 package registry
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
@@ -34,9 +35,7 @@ func TestRegisterAndQuery(t *testing.T) {
 	}
 
 	groupGames := r.ListByGroup("g1", TypeGame)
-	if len(groupGames) != 2 {
-		t.Fatalf("expect 2 games in g1, got %d", len(groupGames))
-	}
+	require.Len(t, groupGames, 2)
 	crosses := r.ListByGroup("g1", TypeCross)
 	if len(crosses) != 1 || crosses[0].Addr != "1.1.1.3:9300" {
 		t.Fatalf("cross node mismatch: %+v", crosses)
@@ -68,9 +67,7 @@ func TestHeartbeatUpdatesNode(t *testing.T) {
 	if n.PlayerNum != 100 || n.CPULoad != 30 || n.MemLoad != 40 || n.MsgQPS != 500 {
 		t.Fatalf("heartbeat fields not applied: %+v", n)
 	}
-	if n.Version != "1.0.1" {
-		t.Fatalf("version not updated: %s", n.Version)
-	}
+	require.EqualValues(t, "1.0.1", n.Version)
 
 	// 未注册节点的心跳应返回 false（上层要求补发 Register）
 	if r.Heartbeat("ghost", 1, 0, 0, 0, "") {

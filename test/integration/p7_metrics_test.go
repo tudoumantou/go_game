@@ -230,17 +230,11 @@ func httpGet(t *testing.T, url string) string {
 	t.Helper()
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s: status %d", url, resp.StatusCode)
-	}
+	require.EqualValues(t, http.StatusOK, resp.StatusCode)
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read %s: %v", url, err)
-	}
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -248,9 +242,7 @@ func httpStatus(t *testing.T, url string) int {
 	t.Helper()
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Get(url)
-	if err != nil {
-		t.Fatalf("GET %s: %v", url, err)
-	}
+	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode
 }

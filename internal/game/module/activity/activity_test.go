@@ -10,6 +10,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -88,9 +89,7 @@ func TestClaimOnce(t *testing.T) {
 		}
 	}
 	want := int64(cfg.Col3) * 20
-	if st.GetItemCount(itemDiamond) != want {
-		t.Fatalf("duplicate claim: got %d want %d", st.GetItemCount(itemDiamond), want)
-	}
+	require.EqualValues(t, want, st.GetItemCount(itemDiamond))
 	d, _ := load(st)
 	if d.Records[int32(cfg.Id)].RewardMask&1 == 0 {
 		t.Fatal("claim fact not persisted in snapshot")
@@ -107,9 +106,7 @@ func TestClaimUnfinished(t *testing.T) {
 	if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
 		t.Fatal(err)
 	}
-	if st.GetItemCount(itemDiamond) != 0 {
-		t.Fatal("unfinished activity must not grant")
-	}
+	require.EqualValues(t, 0, st.GetItemCount(itemDiamond), "unfinished activity must not grant")
 }
 
 // TestEventClampsProgress 事件推进不超过目标值。

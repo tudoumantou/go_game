@@ -125,9 +125,7 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if ferr != nil {
-		t.Fatalf("forward: %v", ferr)
-	}
+	require.Nil(t, ferr)
 
 	// 等 B 消费并投递
 	deadline := time.Now().Add(15 * time.Second)
@@ -138,36 +136,22 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if recB.count() != 1 {
-		t.Fatalf("instance B delivered %d messages, want 1", recB.count())
-	}
+	require.EqualValues(t, 1, recB.count())
 	got, _ := recB.last()
-	if got.RelayID != payload.RelayID {
-		t.Fatalf("relay id = %q, want %q", got.RelayID, payload.RelayID)
-	}
-	if got.FromNode != "game-a" {
-		t.Fatalf("from node = %q", got.FromNode)
-	}
-	if string(got.Body) != "hello from game-a" {
-		t.Fatalf("body = %q", string(got.Body))
-	}
+	require.EqualValues(t, payload.RelayID, got.RelayID)
+	require.EqualValues(t, "game-a", got.FromNode)
+	require.EqualValues(t, "hello from game-a", string(got.Body))
 
 	// A 自己也收到了这条消息（同组广播），但必须因 OriginInstance 跳过，
 	// 不能重复投递 —— 否则 game-a 会收到本不该给它的消息
-	if recA.count() != 0 {
-		t.Fatalf("instance A should skip its own relay, but delivered %d", recA.count())
-	}
+	require.EqualValues(t, 0, recA.count())
 
 	fwdA, recvA, delivA, skipA := brA.Stats()
-	if fwdA != 1 {
-		t.Fatalf("A forwarded = %d, want 1", fwdA)
-	}
+	require.EqualValues(t, 1, fwdA)
 	if recvA == 0 {
 		t.Fatal("A should have consumed the broadcast copy")
 	}
-	if delivA != 0 {
-		t.Fatalf("A delivered = %d, want 0", delivA)
-	}
+	require.EqualValues(t, 0, delivA)
 	if skipA == 0 {
 		t.Fatal("A should record a skip for its own message")
 	}
@@ -201,7 +185,5 @@ func TestP9BridgeSkipsForeignNode(t *testing.T) {
 	if n := rec.deliver(relay.Payload{ToNode: "game-b"}); n != 1 {
 		t.Fatalf("deliver own node = %d, want 1", n)
 	}
-	if rec.count() != 1 {
-		t.Fatalf("recorded %d, want 1", rec.count())
-	}
+	require.EqualValues(t, 1, rec.count())
 }

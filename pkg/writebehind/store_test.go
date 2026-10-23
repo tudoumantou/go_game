@@ -19,9 +19,7 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 	snapshot := Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 10}}
 	initial, err := store.Seed(ctx, snapshot, 0)
 	require.NoError(t, err)
-	if initial.Version != 0 {
-		t.Fatal(initial.Version)
-	}
+	require.EqualValues(t, 0, initial.Version)
 	ids, err := store.Pending(ctx, Partition(7), 10)
 	if err != nil || len(ids) != 0 {
 		t.Fatalf("seed became dirty: %v %v", ids, err)
@@ -56,9 +54,7 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids, _ = store.Pending(ctx, Partition(7), 10)
-	if len(ids) != 1 {
-		t.Fatal("old acknowledgement lost new work")
-	}
+	require.Len(t, ids, 1, "old acknowledgement lost new work")
 	// 新进程通过相同 Redis 恢复全部热数据。
 	restored, err := NewStore(rdb).Load(ctx, 7)
 	if err != nil || restored.Version != 2 || restored.State.Items[1001] != 109 {
@@ -68,9 +64,7 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids, _ = store.Pending(ctx, Partition(7), 10)
-	if len(ids) != 0 {
-		t.Fatal("ack did not clear work")
-	}
+	require.Len(t, ids, 0, "ack did not clear work")
 }
 
 func TestCorruptCacheDoesNotBecomeColdMiss(t *testing.T) {

@@ -16,6 +16,7 @@ import (
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -263,16 +264,12 @@ func TestEnterUnknownScene(t *testing.T) {
 	// 未知场景由模块直接拒绝，不经过场景 Actor——回包走 Send 而不是 SceneResult。
 	select {
 	case pkt := <-p.out:
-		if pkt.id != codec.MsgSceneEnterResp {
-			t.Fatalf("reply id = %d", pkt.id)
-		}
+		require.EqualValues(t, codec.MsgSceneEnterResp, pkt.id)
 		var resp gamev1.SceneEnterResp
 		if err := proto.Unmarshal(pkt.body, &resp); err != nil {
 			t.Fatal(err)
 		}
-		if resp.Code != codeNoScene {
-			t.Fatalf("code = %d, want %d", resp.Code, codeNoScene)
-		}
+		require.EqualValues(t, codeNoScene, resp.Code)
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timeout waiting for reply (errs=%v)", p.errors())
 	}

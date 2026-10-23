@@ -19,6 +19,7 @@ import (
 
 	"game_study/internal/game/module/friend"
 	"game_study/pkg/db"
+	"github.com/stretchr/testify/require"
 )
 
 // insertFriendPlayers 批量造测试玩家：好友列表的 name 来自 player 表，
@@ -130,9 +131,7 @@ func TestFriendFlow(t *testing.T) {
 			t.Fatal("mutual apply must create friendship directly")
 		}
 		_, applies, _ := repo.List(ctx, b)
-		if len(applies) != 0 {
-			t.Fatalf("no pending apply should remain: %+v", applies)
-		}
+		require.Len(t, applies, 0)
 	})
 
 	t.Run("好友满拒绝且不产生单边", func(t *testing.T) {
@@ -169,17 +168,13 @@ func TestFriendFlow(t *testing.T) {
 		if err != nil || code != 6808 {
 			t.Fatalf("expired accept: code=%d err=%v", code, err)
 		}
-		if friendRows(t, database, a) != 0 {
-			t.Fatal("expired apply must not create friendship")
-		}
+		require.EqualValues(t, 0, friendRows(t, database, a), "expired apply must not create friendship")
 		var status int32
 		if err := database.QueryRow(
 			`SELECT status FROM friend_apply WHERE from_id = ? AND to_id = ?`, a, b).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
-		if status != 2 {
-			t.Fatalf("expired apply status = %d, want 2 (rejected)", status)
-		}
+		require.EqualValues(t, 2, status)
 	})
 
 	t.Run("拒绝后需重新申请", func(t *testing.T) {
@@ -192,9 +187,7 @@ func TestFriendFlow(t *testing.T) {
 		if code, _ := repo.Handle(ctx, b, a, false, 7*24*time.Hour); code != 0 {
 			t.Fatalf("reject: %d", code)
 		}
-		if friendRows(t, database, a) != 0 {
-			t.Fatal("reject must not create friendship")
-		}
+		require.EqualValues(t, 0, friendRows(t, database, a), "reject must not create friendship")
 		// 再次同意旧申请：申请已拒绝，应返回「不存在/已处理」。
 		if code, _ := repo.Handle(ctx, b, a, true, 7*24*time.Hour); code != 6806 {
 			t.Fatalf("accept rejected apply: code=%d", code)
@@ -208,8 +201,6 @@ func TestFriendFlow(t *testing.T) {
 			`SELECT status FROM friend_apply WHERE from_id = ? AND to_id = ?`, a, b).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
-		if status != 0 {
-			t.Fatalf("re-apply status = %d, want 0", status)
-		}
+		require.EqualValues(t, 0, status)
 	})
 }

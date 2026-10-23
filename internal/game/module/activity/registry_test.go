@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"game_study/pkg/activity"
+	"github.com/stretchr/testify/require"
 )
 
 // TestRegistryApplyStale 乱序/重复消息不能把窗口改回去（R7.2）。
@@ -37,20 +38,14 @@ func TestOpenNow(t *testing.T) {
 	}
 
 	defaultRegistry.Apply(Window{ActivityID: 1, StartAt: 100, EndAt: 200, Version: 100})
-	if openNow(1, 150) != true {
-		t.Fatal("inside window must be open")
-	}
-	if openNow(1, 250) != false {
-		t.Fatal("expired window must be closed")
-	}
+	require.EqualValues(t, true, openNow(1, 150), "inside window must be open")
+	require.EqualValues(t, false, openNow(1, 250), "expired window must be closed")
 }
 
 // TestWindowDeterministic 同一时刻，中心服与游戏服算出同一个窗口。
 func TestWindowDeterministic(t *testing.T) {
 	start, end, period := activity.Window(7, 1_700_000_000)
-	if end-start != 7*86400 {
-		t.Fatalf("span = %d", end-start)
-	}
+	require.EqualValues(t, 7*86400, end-start)
 	if period <= 0 {
 		t.Fatalf("period = %d", period)
 	}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"game_study/internal/center/stats"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNextSeason(t *testing.T) {
@@ -51,9 +52,7 @@ func TestStableID(t *testing.T) {
 	a := stableID("rank_reward:s1:arena_score:1001")
 	b := stableID("rank_reward:s1:arena_score:1001")
 	c := stableID("rank_reward:s1:arena_score:1002")
-	if a != b {
-		t.Fatal("stable id must be deterministic")
-	}
+	require.EqualValues(t, b, a, "stable id must be deterministic")
 	if a == c {
 		t.Fatal("different players must get different mail ids")
 	}

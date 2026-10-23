@@ -248,9 +248,7 @@ func (e *testEnv) call(t *testing.T, cmd Command) (any, error) {
 func (e *testEnv) mustCall(t *testing.T, cmd Command) any {
 	t.Helper()
 	v, err := e.call(t, cmd)
-	if err != nil {
-		t.Fatalf("命令 %s 失败: %v", cmd.Name(), err)
-	}
+	require.NoError(t, err)
 	return v
 }
 
@@ -330,26 +328,14 @@ func TestEnterPlayerUpdatesIndexAndUsers(t *testing.T) {
 		CharName: "alice",
 	})
 	er, ok := reply.(EnterReply)
-	if !ok {
-		t.Fatalf("回执类型错误: %T", reply)
-	}
-	if er.GridPos != pos {
-		t.Fatalf("落点 = %s, 期望 %s", er.GridPos, pos)
-	}
+	require.True(t, ok)
+	require.EqualValues(t, pos, er.GridPos)
 
 	s := env.snapshot(t, 1001)
-	if s.users != 1 {
-		t.Fatalf("Users = %d, 期望 1", s.users)
-	}
-	if s.pos != pos {
-		t.Fatalf("索引位置 = %s, 期望 %s", s.pos, pos)
-	}
-	if s.pixel != cellCenter(geo, pos) {
-		t.Fatalf("像素 = %+v, 期望格中心 %+v", s.pixel, cellCenter(geo, pos))
-	}
-	if s.closeTime != 0 {
-		t.Fatalf("CloseTime = %d, 有玩家时必须是 0", s.closeTime)
-	}
+	require.EqualValues(t, 1, s.users)
+	require.EqualValues(t, pos, s.pos)
+	require.EqualValues(t, cellCenter(geo, pos), s.pixel)
+	require.EqualValues(t, 0, s.closeTime)
 	if got := env.gp.enters.Load(); got != 1 {
 		t.Fatalf("PlayerEnter 调用 %d 次, 期望 1", got)
 	}
@@ -373,13 +359,9 @@ func TestPlayerLeaveOfflineSetsGrace(t *testing.T) {
 	env.mustCall(t, CommandLeave{UUID: 2001, Reason: scenemap.LeaveReasonOffline})
 
 	s := env.snapshot(t, 2001)
-	if s.users != 0 {
-		t.Fatalf("离图后 Users = %d", s.users)
-	}
+	require.EqualValues(t, 0, s.users)
 	want := env.clock.Now() + cfg.OfflineGrace.Milliseconds()
-	if s.closeTime != want {
-		t.Fatalf("CloseTime = %d, 期望 now+grace = %d", s.closeTime, want)
-	}
+	require.EqualValues(t, want, s.closeTime)
 	if got := env.gp.leaves.Load(); got != 1 {
 		t.Fatalf("PlayerLeave 调用 %d 次", got)
 	}
@@ -423,9 +405,7 @@ func TestQuitLeaveBranches(t *testing.T) {
 		env.mustCall(t, CommandLeave{UUID: 3002, Reason: scenemap.LeaveReasonQuit})
 		s := env.snapshot(t, 3002)
 		want := env.clock.Now() + cfg.EnterProtect.Milliseconds()
-		if s.closeTime != want {
-			t.Fatalf("CloseTime = %d, 期望 %d", s.closeTime, want)
-		}
+		require.EqualValues(t, want, s.closeTime)
 		time.Sleep(30 * time.Millisecond)
 		if n := env.closed.count(); n != 0 {
 			t.Fatalf("enter_time 未到就关图了")
@@ -472,9 +452,7 @@ func TestCanCheckStopMapFalseKeepsRoom(t *testing.T) {
 	env.mustCall(t, CommandLeave{UUID: 4001, Reason: scenemap.LeaveReasonOffline})
 
 	s := env.snapshot(t, 4001)
-	if s.closeTime != 0 {
-		t.Fatalf("CanCheckStopMap=false 时 CloseTime 必须为 0, got %d", s.closeTime)
-	}
+	require.EqualValues(t, 0, s.closeTime)
 	time.Sleep(60 * time.Millisecond)
 	if n := env.closed.count(); n != 0 {
 		t.Fatalf("不该关图, OnClose=%d", n)
@@ -516,9 +494,7 @@ func TestSyncSameCellDoesNotTriggerEntitySync(t *testing.T) {
 	pixel.Y -= 3
 	reply := env.mustCall(t, CommandMove{UUID: 5001, Pixel: pixel, Dir: scenemap.DirLeft, State: 2})
 	mr, ok := reply.(MoveReply)
-	if !ok {
-		t.Fatalf("回执类型错误: %T", reply)
-	}
+	require.True(t, ok)
 	if mr.Moved {
 		t.Fatalf("同格微调不应报告 Moved")
 	}
@@ -527,18 +503,10 @@ func TestSyncSameCellDoesNotTriggerEntitySync(t *testing.T) {
 	}
 
 	after := env.snapshot(t, 5001)
-	if after.pos != start {
-		t.Fatalf("格子变了: %s → %s", start, after.pos)
-	}
-	if after.pixel != pixel {
-		t.Fatalf("像素未更新: %+v", after.pixel)
-	}
-	if after.dir != scenemap.DirLeft {
-		t.Fatalf("朝向未更新: %v", after.dir)
-	}
-	if after.anim != 2 {
-		t.Fatalf("动画状态 = %d, 期望 2", after.anim)
-	}
+	require.EqualValues(t, start, after.pos)
+	require.EqualValues(t, pixel, after.pixel)
+	require.EqualValues(t, scenemap.DirLeft, after.dir)
+	require.EqualValues(t, 2, after.anim)
 	if after.revision <= before.revision {
 		t.Fatalf("同格微调也必须 Touch（像素/朝向变了），revision %d → %d", before.revision, after.revision)
 	}
@@ -561,9 +529,7 @@ func TestSyncCrossCellTriggersEntitySync(t *testing.T) {
 	}
 
 	events := env.gp.syncEvents()
-	if len(events) != 1 {
-		t.Fatalf("EntitySync 次数 = %d, 期望 1", len(events))
-	}
+	require.Len(t, events, 1)
 	if events[0].uuid != 5002 || events[0].oldPos != start || events[0].newPos != next {
 		t.Fatalf("EntitySync 参数 = %+v", events[0])
 	}
@@ -645,9 +611,7 @@ func TestPlayersMayOverlapMonstersMayNot(t *testing.T) {
 	env.mustCall(t, CommandEnterPlayer{UUID: 7001, GridPos: pos})
 	env.mustCall(t, CommandEnterPlayer{UUID: 7002, GridPos: pos})
 	s := env.snapshot(t, 7001)
-	if s.blockCnt != 2 {
-		t.Fatalf("blockCount = %d, 期望 2（玩家也计数）", s.blockCnt)
-	}
+	require.EqualValues(t, 2, s.blockCnt)
 
 	// 怪物想落在玩家身上：被挪到相邻格。
 	reply := env.mustCall(t, CommandEnterPlayer{
@@ -706,9 +670,7 @@ func TestMonsterFootprintBlocksNeighbors(t *testing.T) {
 			}
 		}
 	}
-	if ix.Len() != 0 {
-		t.Fatalf("索引残留 %d 个实体", ix.Len())
-	}
+	require.EqualValues(t, 0, ix.Len())
 }
 
 func TestIndexSameCellMoveDoesNotMigrate(t *testing.T) {
@@ -734,15 +696,9 @@ func TestIndexSameCellMoveDoesNotMigrate(t *testing.T) {
 	if err != nil || !moved {
 		t.Fatalf("换格 Move = (%v,%v), 期望 (true,nil)", moved, err)
 	}
-	if ix.BlockCount(p) != 0 {
-		t.Fatalf("旧格占位未回收")
-	}
-	if ix.BlockCount(scenemap.GridPos{X: 3, Y: 2}) != 1 {
-		t.Fatalf("新格占位未登记")
-	}
-	if ix.PlayersAt(p) != 0 {
-		t.Fatalf("旧格玩家计数未回收")
-	}
+	require.EqualValues(t, 0, ix.BlockCount(p), "旧格占位未回收")
+	require.EqualValues(t, 1, ix.BlockCount(scenemap.GridPos{X: 3, Y: 2}), "新格占位未登记")
+	require.EqualValues(t, 0, ix.PlayersAt(p), "旧格玩家计数未回收")
 }
 
 // ============================================================================
@@ -877,9 +833,7 @@ func TestConcurrentPostSingleWriter(t *testing.T) {
 		n, _ := s.Ext["n"].(int)
 		return n, nil
 	}}).(int)
-	if got != goroutines*perG {
-		t.Fatalf("计数 = %d, 期望 %d（命令丢失或被并发修改）", got, goroutines*perG)
-	}
+	require.EqualValues(t, goroutines*perG, got)
 
 	rev := env.snapshot(t, 0).revision
 	if rev < uint64(goroutines*perG) {
@@ -902,9 +856,7 @@ func TestNpeUUIDsAreSorted(t *testing.T) {
 			t.Fatalf("NpeUUIDs 未排序: %v", got)
 		}
 	}
-	if len(got) != 5 {
-		t.Fatalf("len = %d", len(got))
-	}
+	require.Len(t, got, 5)
 }
 
 func TestStopBeforeStartAndPostAfterStop(t *testing.T) {
@@ -955,10 +907,6 @@ func TestPetsFollowMaster(t *testing.T) {
 	// 主人离开 → 宠物一起走，且不阻塞关图。
 	env.mustCall(t, CommandLeave{UUID: master, Reason: scenemap.LeaveReasonQuit})
 	s := env.snapshot(t, 8002)
-	if s.pets != 0 {
-		t.Fatalf("主人离开后宠物仍登记, pets=%d", s.pets)
-	}
-	if s.users != 0 {
-		t.Fatalf("Users = %d", s.users)
-	}
+	require.EqualValues(t, 0, s.pets)
+	require.EqualValues(t, 0, s.users)
 }

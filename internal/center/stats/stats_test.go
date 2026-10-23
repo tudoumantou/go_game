@@ -36,15 +36,11 @@ func TestWriteAndQuery(t *testing.T) {
 	}
 
 	list := s.Query("group-01", "arena_match", now-600, now)
-	if len(list) != 1 {
-		t.Fatalf("expect 1 series, got %d", len(list))
-	}
+	require.Len(t, list, 1)
 	if got := list[0].Metrics["total"]; got != 5 {
 		t.Fatalf("expect total 5, got %d", got)
 	}
-	if list[0].Feature != "arena_match" {
-		t.Fatalf("feature mismatch: %s", list[0].Feature)
-	}
+	require.EqualValues(t, "arena_match", list[0].Feature)
 }
 
 func TestQueryFilterByGroupAndFeature(t *testing.T) {
@@ -56,19 +52,13 @@ func TestQueryFilterByGroupAndFeature(t *testing.T) {
 	s.Write(&internalv2.FeatureReport{GroupId: "g2", Feature: "a", Metrics: map[string]int64{"v": 3}, Ts: now})
 
 	all := s.Query("", "", now-60, now)
-	if len(all) != 3 {
-		t.Fatalf("expect 3 series, got %d", len(all))
-	}
+	require.Len(t, all, 3)
 
 	g1 := s.Query("g1", "", now-60, now)
-	if len(g1) != 2 {
-		t.Fatalf("expect 2 series in g1, got %d", len(g1))
-	}
+	require.Len(t, g1, 2)
 
 	a := s.Query("", "a", now-60, now)
-	if len(a) != 2 {
-		t.Fatalf("expect 2 series for feature a, got %d", len(a))
-	}
+	require.Len(t, a, 2)
 
 	one := s.Query("g2", "a", now-60, now)
 	if len(one) != 1 || one[0].Metrics["total"] != 3 {
@@ -91,9 +81,7 @@ func TestWindowRollover(t *testing.T) {
 	})
 
 	list := s.Query("g1", "f", now.Add(-time.Hour).Unix(), now.Unix())
-	if len(list) != 1 {
-		t.Fatalf("expect 1 series, got %d", len(list))
-	}
+	require.Len(t, list, 1)
 	if got := list[0].Metrics["total"]; got != 10 {
 		t.Fatalf("1h window should only count recent writes (10), got %d", got)
 	}
@@ -103,16 +91,12 @@ func TestSeriesCountAndFeatures(t *testing.T) {
 	s, _ := newTestService(t)
 	now := time.Now().Unix()
 
-	if s.SeriesCount() != 0 {
-		t.Fatalf("initial series should be 0, got %d", s.SeriesCount())
-	}
+	require.EqualValues(t, 0, s.SeriesCount())
 
 	s.Write(&internalv2.FeatureReport{GroupId: "g1", Feature: "a", Metrics: map[string]int64{"v": 1}, Ts: now})
 	s.Write(&internalv2.FeatureReport{GroupId: "g1", Feature: "b", Metrics: map[string]int64{"v": 1}, Ts: now})
 
-	if s.SeriesCount() != 2 {
-		t.Fatalf("expect 2 series, got %d", s.SeriesCount())
-	}
+	require.EqualValues(t, 2, s.SeriesCount())
 	feats := s.Features()
 	if len(feats) != 2 || feats[0] != "a" || feats[1] != "b" {
 		t.Fatalf("features mismatch: %v", feats)
@@ -138,18 +122,14 @@ func TestSnapshotWritesRedis(t *testing.T) {
 	defer func() { _ = rdb.Close() }()
 	vals, err := rdb.HGetAll(context.Background(), key).Result()
 	require.NoError(t, err, "hgetall")
-	if len(vals) != 1 {
-		t.Fatalf("expect 1 instance field, got %d: %v", len(vals), vals)
-	}
+	require.Len(t, vals, 1)
 	merged := s.MergedMetrics(context.Background(), "g1", "arena")
 	for _, w := range []string{Window1m, Window5m, Window1h, Window1d} {
 		if _, ok := merged[w]; !ok {
 			t.Fatalf("snapshot missing window %s: %v", w, merged)
 		}
 	}
-	if merged[Window1h] != 7 {
-		t.Fatalf("1h snapshot: want 7, got %d", merged[Window1h])
-	}
+	require.EqualValues(t, 7, merged[Window1h])
 }
 
 func TestSnapshotEmptyNoError(t *testing.T) {
@@ -194,7 +174,5 @@ func TestSnapshotMergedAcrossInstances(t *testing.T) {
 	}
 	merged := a.MergedMetrics(ctx, "group-01", "battle")
 	// 两个实例各上报 5，合并后必须是 10。
-	if merged[Window1h] != 10 {
-		t.Fatalf("merged 1h = %d, want 10", merged[Window1h])
-	}
+	require.EqualValues(t, 10, merged[Window1h])
 }

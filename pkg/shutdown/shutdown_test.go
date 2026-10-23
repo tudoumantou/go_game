@@ -4,6 +4,7 @@ package shutdown
 import (
 	"context"
 	"errors"
+	"github.com/stretchr/testify/require"
 	"strings"
 	"sync"
 	"testing"
@@ -65,13 +66,9 @@ func TestRunOrdersByPhase(t *testing.T) {
 	}
 	want := []string{"unregister", "drain-inflight", "stop-rpc", "flush", "stop-actor"}
 	got := rec.got()
-	if len(got) != len(want) {
-		t.Fatalf("order: got %v want %v", got, want)
-	}
+	require.EqualValues(t, len(want), len(got))
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("order: got %v want %v", got, want)
-		}
+		require.EqualValues(t, want[i], got[i])
 	}
 }
 
@@ -87,9 +84,7 @@ func TestRunAggregatesErrors(t *testing.T) {
 	m.Register("stop-actor", PhaseStop, rec.step("stop-actor"))
 
 	err := m.Run(context.Background())
-	if err == nil {
-		t.Fatal("expected aggregated error")
-	}
+	require.Error(t, err, "expected aggregated error")
 	msg := err.Error()
 	if !strings.Contains(msg, "flush") || !strings.Contains(msg, "mysql down") {
 		t.Fatalf("flush error missing: %v", err)
@@ -115,9 +110,7 @@ func TestRunStopsWhenBudgetExhausted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	err := m.Run(ctx)
-	if err == nil {
-		t.Fatal("expected budget error")
-	}
+	require.Error(t, err, "expected budget error")
 	if !strings.Contains(err.Error(), "budget") {
 		t.Fatalf("unexpected error: %v", err)
 	}

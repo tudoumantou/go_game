@@ -110,16 +110,10 @@ func TestAcceptProgressClaim(t *testing.T) {
 	if err := m.OnMessage(ctx, msgIDClaimReq, claimBody); err != nil {
 		t.Fatal(err)
 	}
-	if st.GetItemCount(1001) != int64(cfg.Col3)*10 {
-		t.Fatalf("item not granted: %d", st.GetItemCount(1001))
-	}
-	if st.exp != int64(cfg.Col3)*100 {
-		t.Fatalf("exp not granted: %d", st.exp)
-	}
+	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
+	require.EqualValues(t, int64(cfg.Col3)*100, st.exp)
 	d, _ = load(st)
-	if d.Quests[int32(cfg.Id)].Status != statusClaimed {
-		t.Fatal("claim state not persisted in snapshot")
-	}
+	require.EqualValues(t, statusClaimed, d.Quests[int32(cfg.Id)].Status, "claim state not persisted in snapshot")
 }
 
 // TestClaimIdempotent 重复领奖只返回已领，不再发奖。
@@ -139,9 +133,7 @@ func TestClaimIdempotent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if st.GetItemCount(1001) != int64(cfg.Col3)*10 {
-		t.Fatalf("duplicate claim granted again: %d", st.GetItemCount(1001))
-	}
+	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
 }
 
 // TestClaimUnfinished 进度不足时不发奖、不改状态。
@@ -158,13 +150,9 @@ func TestClaimUnfinished(t *testing.T) {
 	if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
 		t.Fatal(err)
 	}
-	if st.GetItemCount(1001) != 0 {
-		t.Fatal("unfinished quest must not grant")
-	}
+	require.EqualValues(t, 0, st.GetItemCount(1001), "unfinished quest must not grant")
 	back, _ := load(st)
-	if back.Quests[int32(cfg.Id)].Status != statusDoing {
-		t.Fatal("status changed on failed claim")
-	}
+	require.EqualValues(t, statusDoing, back.Quests[int32(cfg.Id)].Status, "status changed on failed claim")
 }
 
 // TestSnapshotShape 落库形状是 {"quests":{...}}，与 model.PlayerQuest.Quests 对应。

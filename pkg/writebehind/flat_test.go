@@ -40,12 +40,8 @@ func TestRegisterFlatRoundTrip(t *testing.T) {
 	var upserted []flatRow
 	RegisterFlat("flat", okOps(&upserted))
 	p, ok := LookupPersister("flat")
-	if !ok {
-		t.Fatal("persister not registered")
-	}
-	if p.Name() != "flat" {
-		t.Fatalf("name=%q", p.Name())
-	}
+	require.True(t, ok, "persister not registered")
+	require.EqualValues(t, "flat", p.Name())
 
 	// 结构校验：合法、零值合法（结构校验不管业务语义）、损坏必须报错。
 	good := json.RawMessage(`{"player_id":1,"anchor_day":20000}`)

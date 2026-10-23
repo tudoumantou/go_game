@@ -175,9 +175,7 @@ func TestSchemaApplied(t *testing.T) {
 func TestSeedLoaded(t *testing.T) {
 	acc, err := model.FindAccountByPK(context.Background(), testDB, 1)
 	require.NoError(t, err, "FindAccountByPK(1)")
-	if acc.Account != "test001" {
-		t.Errorf("account = %q, want test001", acc.Account)
-	}
+	require.EqualValues(t, "test001", acc.Account)
 }
 
 // TestCRUDAndIdempotent 第 4 步等价验证：业务闭环 → 触发落库 → 查 MySQL 终态；

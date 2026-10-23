@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // occKey 快速构造占位键。
@@ -28,9 +29,7 @@ func TestClaimAndOccupant(t *testing.T) {
 
 	// 不同对象双占：必须失败。
 	err := idx.Claim(k, key(200))
-	if err == nil {
-		t.Fatalf("双占应失败")
-	}
+	require.Error(t, err, "双占应失败")
 	if !errors.Is(err, domain.ErrPositionOccupied) {
 		t.Fatalf("双占错误应包装 ErrPositionOccupied, got %v", err)
 	}
@@ -46,9 +45,7 @@ func TestClaimAndOccupant(t *testing.T) {
 	if obj, _ := idx.Occupant(k); obj != key(100) {
 		t.Fatalf("重复 Claim 后占用者 = %v, want 100", obj)
 	}
-	if idx.Len() != 1 {
-		t.Fatalf("Len = %d, want 1", idx.Len())
-	}
+	require.EqualValues(t, 1, idx.Len())
 
 	// 空闲格查询。
 	if _, ok := idx.Occupant(occKey(11, 20)); ok {
@@ -68,9 +65,7 @@ func TestReleaseRules(t *testing.T) {
 
 	// 他人释放：失败且不真释放。
 	err := idx.Release(k, key(200))
-	if err == nil {
-		t.Fatalf("释放他人占位应失败")
-	}
+	require.Error(t, err, "释放他人占位应失败")
 	if !errors.Is(err, domain.ErrNotOwner) {
 		t.Fatalf("错误应包装 ErrNotOwner, got %v", err)
 	}
@@ -80,9 +75,7 @@ func TestReleaseRules(t *testing.T) {
 
 	// 释放未占用格：失败。
 	err = idx.Release(occKey(6, 6), key(100))
-	if err == nil {
-		t.Fatalf("释放空格应失败")
-	}
+	require.Error(t, err, "释放空格应失败")
 	if !errors.Is(err, domain.ErrObjectNotFound) {
 		t.Fatalf("错误应包装 ErrObjectNotFound, got %v", err)
 	}
@@ -123,9 +116,7 @@ func TestObjectsOnReverseIndex(t *testing.T) {
 	}
 
 	got := idx.ObjectsOn(obj)
-	if len(got) != len(keys) {
-		t.Fatalf("ObjectsOn = %+v, want %d 个键", got, len(keys))
-	}
+	require.EqualValues(t, len(keys), len(got))
 	// 按键排序确定：Layer 优先，然后 CellX/CellY。
 	want := []OccupancyKey{
 		{CellX: -7, CellY: 4, Layer: 0},
@@ -148,9 +139,7 @@ func TestObjectsOnReverseIndex(t *testing.T) {
 			t.Fatalf("Release %+v: %v", k, err)
 		}
 	}
-	if idx.Len() != 0 {
-		t.Fatalf("释放后 Len = %d, want 0", idx.Len())
-	}
+	require.EqualValues(t, 0, idx.Len())
 	if got := idx.ObjectsOn(obj); got != nil {
 		t.Fatalf("反索引应无残留: %+v", got)
 	}
@@ -187,15 +176,11 @@ func TestSnapshotDeepCopy(t *testing.T) {
 	if err := idx.Claim(occKey(2, 2), key(200)); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
-	if len(snap) != 1 {
-		t.Fatalf("旧快照不应看到新占位, got %+v", snap)
-	}
+	require.Len(t, snap, 1)
 	if _, ok := snap[occKey(2, 2)]; ok {
 		t.Fatalf("旧快照不应包含新占的格")
 	}
-	if idx.Len() != 2 {
-		t.Fatalf("索引 Len = %d, want 2", idx.Len())
-	}
+	require.EqualValues(t, 2, idx.Len())
 }
 
 // TestLayerSeparation 覆盖 layer 维度：同格不同 layer 互不冲突，
@@ -216,7 +201,5 @@ func TestLayerSeparation(t *testing.T) {
 	if err := idx.Claim(l2, key(300)); err != nil {
 		t.Fatalf("layer2 应可占用: %v", err)
 	}
-	if idx.Len() != 3 {
-		t.Fatalf("Len = %d, want 3", idx.Len())
-	}
+	require.EqualValues(t, 3, idx.Len())
 }

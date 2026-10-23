@@ -35,33 +35,19 @@ func TestPlanRecall(t *testing.T) {
 				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if plan.CommandReceipt.ResultCode != domain.CodeOK {
-					t.Fatalf("ResultCode=%d", plan.CommandReceipt.ResultCode)
-				}
+				require.EqualValues(t, domain.CodeOK, plan.CommandReceipt.ResultCode)
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok {
-					t.Fatalf("缺少 Troop upsert")
-				}
+				require.True(t, ok, "缺少 Troop upsert")
 				tr := up.Troop
-				if tr.Phase != domain.TroopPhaseReturning {
-					t.Fatalf("Phase=%v", tr.Phase)
-				}
-				if tr.Header.Version != 2 {
-					t.Fatalf("Version=%d, want 2", tr.Header.Version)
-				}
+				require.EqualValues(t, domain.TroopPhaseReturning, tr.Phase)
+				require.EqualValues(t, 2, tr.Header.Version)
 				if tr.Move.MoveID == "m-out" {
 					t.Fatalf("回城必须生成新 MoveID")
 				}
 				// now=4000 时在 (4000,0)，回主堡 (0,0) 需要 4 秒。
-				if tr.Move.From != (domain.Pos{X: 4000, Y: 0}) {
-					t.Fatalf("起点=%+v", tr.Move.From)
-				}
-				if tr.Move.To != (domain.Pos{X: 0, Y: 0}) {
-					t.Fatalf("终点=%+v", tr.Move.To)
-				}
-				if tr.Move.EndAtMS != 8000 {
-					t.Fatalf("EndAtMS=%d, want 8000", tr.Move.EndAtMS)
-				}
+				require.EqualValues(t, (domain.Pos{X: 4000, Y: 0}), tr.Move.From)
+				require.EqualValues(t, (domain.Pos{X: 0, Y: 0}), tr.Move.To)
+				require.EqualValues(t, 8000, tr.Move.EndAtMS)
 				m := receiptMap(t, plan)
 				if jsonInt(t, m, "arrive_at_ms") != 8000 || jsonStr(t, m, "move_id") != tr.Move.MoveID {
 					t.Fatalf("回执与移动段不一致: %v", m)
@@ -92,32 +78,16 @@ func TestPlanRecall(t *testing.T) {
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				// 文档例子：rate=2500、capacityLeft=17、remaining=100、3000ms → 7。
-				if len(plan.CollectSettle) != 1 {
-					t.Fatalf("CollectSettle=%+v", plan.CollectSettle)
-				}
-				if plan.CollectSettle[0].SettledQty != 7 {
-					t.Fatalf("SettledQty=%d, want 7", plan.CollectSettle[0].SettledQty)
-				}
-				if plan.CollectSettle[0].SessionID != "sess-1" {
-					t.Fatalf("SessionID=%q", plan.CollectSettle[0].SessionID)
-				}
+				require.Len(t, plan.CollectSettle, 1)
+				require.EqualValues(t, 7, plan.CollectSettle[0].SettledQty)
+				require.EqualValues(t, "sess-1", plan.CollectSettle[0].SessionID)
 				resUp, ok := findUpsert(plan, domain.ObjectKindResource)
-				if !ok {
-					t.Fatalf("INV-04: 资源扣减不在计划里")
-				}
-				if resUp.Resource.Remaining != 93 {
-					t.Fatalf("Remaining=%d, want 93", resUp.Resource.Remaining)
-				}
-				if resUp.Resource.ActiveCollectID != "" {
-					t.Fatalf("结算后必须清 active_collect_id")
-				}
+				require.True(t, ok, "INV-04: 资源扣减不在计划里")
+				require.EqualValues(t, 93, resUp.Resource.Remaining)
+				require.EqualValues(t, "", resUp.Resource.ActiveCollectID, "结算后必须清 active_collect_id")
 				trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok {
-					t.Fatalf("INV-04: Cargo 增加不在计划里")
-				}
-				if trUp.Troop.Cargo[101] != 90 {
-					t.Fatalf("Cargo=%v, want 90", trUp.Troop.Cargo)
-				}
+				require.True(t, ok, "INV-04: Cargo 增加不在计划里")
+				require.EqualValues(t, 90, trUp.Troop.Cargo[101])
 				if trUp.Troop.Phase != domain.TroopPhaseReturning || trUp.Troop.Header.Version != 4 {
 					t.Fatalf("Phase=%v Version=%d", trUp.Troop.Phase, trUp.Troop.Header.Version)
 				}
@@ -143,15 +113,11 @@ func TestPlanRecall(t *testing.T) {
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				// 退出队列 = 显式删除队列行（map_battle_queue），
 				// 与 Phase 变更同一事务；不再把战斗记录置 TIMED_OUT。
-				if len(plan.QueueDequeue) != 1 {
-					t.Fatalf("QueueDequeue=%+v", plan.QueueDequeue)
-				}
+				require.Len(t, plan.QueueDequeue, 1)
 				if de := plan.QueueDequeue[0]; de.TargetID != 1000 || de.TroopID != 200 {
 					t.Fatalf("出队记录=%+v", de)
 				}
-				if len(plan.BattleUpsert) != 0 {
-					t.Fatalf("退出队列不得改动正在进行的战斗: %+v", plan.BattleUpsert)
-				}
+				require.Len(t, plan.BattleUpsert, 0)
 				trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
 				if !ok || trUp.Troop.Phase != domain.TroopPhaseReturning {
 					t.Fatalf("部队未转回城")
@@ -160,9 +126,7 @@ func TestPlanRecall(t *testing.T) {
 				if !jsonBool(t, m, "queued_left") {
 					t.Fatalf("回执未标记退出队列: %v", m)
 				}
-				if jsonStr(t, m, "battle_id") != "battle-1" {
-					t.Fatalf("回执应带出正在进行的战斗编号: %v", m)
-				}
+				require.EqualValues(t, "battle-1", jsonStr(t, m, "battle_id"))
 			},
 		},
 		{
@@ -180,25 +144,17 @@ func TestPlanRecall(t *testing.T) {
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok {
-					t.Fatalf("缺少 Troop upsert")
-				}
+				require.True(t, ok, "缺少 Troop upsert")
 				tr := up.Troop
-				if tr.Phase != domain.TroopPhaseFighting {
-					t.Fatalf("战斗中的召回不得改 Phase, got %v", tr.Phase)
-				}
+				require.EqualValues(t, domain.TroopPhaseFighting, tr.Phase)
 				if tr.Busy.Reason != domain.BusyReasonBattle || tr.BattleID != "battle-9" {
 					t.Fatalf("不得清战斗锁: %+v", tr.Busy)
 				}
 				if tr.Deferred == nil || tr.Deferred.Kind != domain.DeferredKindRecall {
 					t.Fatalf("Deferred=%+v", tr.Deferred)
 				}
-				if tr.Deferred.RequestID != "req-fight" {
-					t.Fatalf("RequestID=%q", tr.Deferred.RequestID)
-				}
-				if tr.Header.Version != 6 {
-					t.Fatalf("Version=%d, want 6", tr.Header.Version)
-				}
+				require.EqualValues(t, "req-fight", tr.Deferred.RequestID)
+				require.EqualValues(t, 6, tr.Header.Version)
 				m := receiptMap(t, plan)
 				if !jsonBool(t, m, "accepted") || !jsonBool(t, m, "deferred") {
 					t.Fatalf("回执=%v", m)
@@ -220,9 +176,7 @@ func TestPlanRecall(t *testing.T) {
 				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200, ExpectedVersion: 5}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.ObjectsUpsert) != 0 {
-					t.Fatalf("保留 ForceReturn 时不应写对象, got %d", len(plan.ObjectsUpsert))
-				}
+				require.Len(t, plan.ObjectsUpsert, 0)
 				m := receiptMap(t, plan)
 				if !jsonBool(t, m, "deferred") || jsonStr(t, m, "deferred_kind") != "FORCE_RETURN" {
 					t.Fatalf("回执=%v", m)
@@ -245,15 +199,9 @@ func TestPlanRecall(t *testing.T) {
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok {
-					t.Fatalf("升级必须写对象")
-				}
-				if up.Troop.Deferred.Kind != domain.DeferredKindForceReturn {
-					t.Fatalf("Deferred=%+v", up.Troop.Deferred)
-				}
-				if up.Troop.Header.Version != 6 {
-					t.Fatalf("Version=%d", up.Troop.Header.Version)
-				}
+				require.True(t, ok, "升级必须写对象")
+				require.EqualValues(t, domain.DeferredKindForceReturn, up.Troop.Deferred.Kind)
+				require.EqualValues(t, 6, up.Troop.Header.Version)
 			},
 		},
 		{
@@ -269,16 +217,12 @@ func TestPlanRecall(t *testing.T) {
 				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.ObjectsUpsert) != 0 {
-					t.Fatalf("幂等分支不应写对象")
-				}
+				require.Len(t, plan.ObjectsUpsert, 0, "幂等分支不应写对象")
 				m := receiptMap(t, plan)
 				if jsonStr(t, m, "move_id") != "m-back" || !jsonBool(t, m, "idempotent") {
 					t.Fatalf("回执=%v", m)
 				}
-				if jsonInt(t, m, "arrive_at_ms") != 5000 {
-					t.Fatalf("arrive_at_ms=%v", m["arrive_at_ms"])
-				}
+				require.EqualValues(t, 5000, jsonInt(t, m, "arrive_at_ms"))
 			},
 		},
 		{
@@ -294,13 +238,9 @@ func TestPlanRecall(t *testing.T) {
 				}), Command{Kind: CmdRecall, Recall: RecallParams{TroopID: 200}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.ObjectsUpsert) != 0 {
-					t.Fatalf("SETTLING 不得改状态")
-				}
+				require.Len(t, plan.ObjectsUpsert, 0, "SETTLING 不得改状态")
 				m := receiptMap(t, plan)
-				if jsonStr(t, m, "settlement_id") != "delivery-77" {
-					t.Fatalf("回执=%v", m)
-				}
+				require.EqualValues(t, "delivery-77", jsonStr(t, m, "settlement_id"))
 			},
 		},
 		{

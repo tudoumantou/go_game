@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // TestLineIndexUpsertRemove 覆盖行军线的基本生命周期：建立/替换/删除、
@@ -20,18 +21,14 @@ func TestLineIndexUpsertRemove(t *testing.T) {
 	if err := li.Upsert("m2", line2); err != nil {
 		t.Fatalf("Upsert m2: %v", err)
 	}
-	if li.Len() != 2 {
-		t.Fatalf("Len = %d, want 2", li.Len())
-	}
+	require.EqualValues(t, 2, li.Len())
 
 	// 同 moveID 替换（改速后重画线）。
 	line1b := []domain.Pos{{X: 0, Y: 0}, {X: 2000, Y: 2000}}
 	if err := li.Upsert("m1", line1b); err != nil {
 		t.Fatalf("Upsert 替换: %v", err)
 	}
-	if li.Len() != 2 {
-		t.Fatalf("替换不应增加条数: Len = %d", li.Len())
-	}
+	require.EqualValues(t, 2, li.Len())
 	// 替换生效：旧线段不可见、新线段可见。
 	if got := li.QueryViewport(900, -10, 1100, 10); len(got) != 0 {
 		t.Fatalf("旧线段应已被替换, got %v", got)
@@ -51,9 +48,7 @@ func TestLineIndexUpsertRemove(t *testing.T) {
 	// Remove：幂等。
 	li.Remove("m1")
 	li.Remove("m1")
-	if li.Len() != 1 {
-		t.Fatalf("Remove 后 Len = %d, want 1", li.Len())
-	}
+	require.EqualValues(t, 1, li.Len())
 	if got := li.QueryViewport(0, 0, 10_000, 10_000); len(got) != 1 || got[0] != "m2" {
 		t.Fatalf("删除后不应再可见, got %v", got)
 	}
@@ -68,9 +63,7 @@ func TestLineIndexUpsertRemove(t *testing.T) {
 	if err := li.Upsert("m3", nil); !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("nil 点集应拒绝, got %v", err)
 	}
-	if li.Len() != 1 {
-		t.Fatalf("非法入参不得写入: Len = %d, want 1", li.Len())
-	}
+	require.EqualValues(t, 1, li.Len())
 
 	// 零长度段 [p,p] 合法：包围盒即一个点，查询语义正确。
 	if err := li.Upsert("m4", []domain.Pos{{X: 500, Y: 500}, {X: 500, Y: 500}}); err != nil {
@@ -125,18 +118,14 @@ func TestQueryViewportBboxCoarseFilter(t *testing.T) {
 		t.Fatalf("Upsert: %v", err)
 	}
 	got := li.QueryViewport(500, 500, 510, 510)
-	if len(got) != 0 {
-		t.Fatalf("包围盒重叠但线段不交, 应不可见, got %v", got)
-	}
+	require.Len(t, got, 0)
 
 	// 完全在视野左侧：粗筛直接排除。
 	if err := li.Upsert("left", []domain.Pos{{X: 0, Y: 0}, {X: 10, Y: 10}}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
 	got = li.QueryViewport(100, 0, 200, 10)
-	if len(got) != 0 {
-		t.Fatalf("视野左侧的线不可见, got %v", got)
-	}
+	require.Len(t, got, 0)
 
 	// 粗筛不漏的正面验证：长线包围盒与视野重叠且线段确实穿过。
 	if err := li.Upsert("far", []domain.Pos{{X: 0, Y: 5}, {X: 5000, Y: 5}}); err != nil {

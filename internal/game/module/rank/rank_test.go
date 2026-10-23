@@ -10,6 +10,7 @@ import (
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -64,9 +65,7 @@ func newCtx(t *testing.T, id int64) (*module.Context, *[]byte, *uint32) {
 
 func decodeResp(t *testing.T, raw []byte) *gamev1.RankListResp {
 	t.Helper()
-	if raw == nil {
-		t.Fatal("no reply captured")
-	}
+	require.NotNil(t, raw, "no reply captured")
 	var resp gamev1.RankListResp
 	if err := proto.Unmarshal(raw, &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -91,9 +90,7 @@ func TestListReturnsTopAndMine(t *testing.T) {
 	if err := m.OnMessage(ctx, msgIDListReq, body); err != nil {
 		t.Fatal(err)
 	}
-	if *msgID != msgIDListResp {
-		t.Fatalf("reply msg = %d, want %d", *msgID, msgIDListResp)
-	}
+	require.EqualValues(t, msgIDListResp, *msgID)
 	resp := decodeResp(t, *raw)
 	if resp.Code != codeOK || len(resp.Entries) != 2 || resp.MyRank != 2 || !resp.OnBoard {
 		t.Fatalf("unexpected resp: %+v", resp)
@@ -115,9 +112,7 @@ func TestListDefaultsRankType(t *testing.T) {
 	if err := m.OnMessage(ctx, msgIDListReq, body); err != nil {
 		t.Fatal(err)
 	}
-	if q.gotType != defaultRankType {
-		t.Fatalf("rank type = %q, want %q", q.gotType, defaultRankType)
-	}
+	require.EqualValues(t, defaultRankType, q.gotType)
 	if resp := decodeResp(t, *raw); resp.RankType != defaultRankType {
 		t.Fatalf("resp rank type = %q", resp.RankType)
 	}
@@ -141,12 +136,8 @@ func TestListUnavailable(t *testing.T) {
 				t.Fatal(err)
 			}
 			resp := decodeResp(t, *raw)
-			if resp.Code != codeUnavailable {
-				t.Fatalf("code = %d, want %d", resp.Code, codeUnavailable)
-			}
-			if len(resp.Entries) != 0 {
-				t.Fatal("unavailable must not return fake entries")
-			}
+			require.EqualValues(t, codeUnavailable, resp.Code)
+			require.Len(t, resp.Entries, 0, "unavailable must not return fake entries")
 		})
 	}
 }

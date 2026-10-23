@@ -46,17 +46,11 @@ func TestDeterministicResolverSameInput100Times(t *testing.T) {
 	if first.WinnerID != in.AttackerID && first.WinnerID != in.DefenderID {
 		t.Fatalf("胜者 %d 不是攻守任何一方", first.WinnerID)
 	}
-	if first.AppliedAtMS != in.ResolveAtMS {
-		t.Fatalf("AppliedAtMS=%d, want %d", first.AppliedAtMS, in.ResolveAtMS)
-	}
-	if first.AttackerWon != (first.WinnerID == in.AttackerID) {
-		t.Fatalf("AttackerWon=%t 与 WinnerID=%d 不自洽", first.AttackerWon, first.WinnerID)
-	}
+	require.EqualValues(t, in.ResolveAtMS, first.AppliedAtMS)
+	require.EqualValues(t, (first.WinnerID == in.AttackerID), first.AttackerWon)
 	for i := 0; i < 100; i++ {
 		got, err := r.Resolve(context.Background(), in)
-		if err != nil {
-			t.Fatalf("第 %d 次裁决失败: %v", i, err)
-		}
+		require.NoError(t, err)
 		// reflect.DeepEqual 会把 DetailJSON 的 []byte 逐字节比较：
 		// 这正是"可对账"需要的强度，时间戳/浮点/遍历顺序任何一处
 		// 不确定都会让它失败。
@@ -75,9 +69,7 @@ func TestDeterministicResolverSeedVariation(t *testing.T) {
 	for seed := int64(0); seed < 64; seed++ {
 		in := ruleTestInput(seed, 100, 100, 1000)
 		got, err := r.Resolve(context.Background(), in)
-		if err != nil {
-			t.Fatalf("seed=%d 裁决失败: %v", seed, err)
-		}
+		require.NoError(t, err)
 		seen[got.WinnerID] = true
 	}
 	if len(seen) < 2 {
@@ -114,9 +106,7 @@ func TestDeterministicResolverDefenderAdvantageNearEqual(t *testing.T) {
 	for seed := int64(0); seed < 200; seed++ {
 		in := ruleTestInput(seed, 97, 100, 1000)
 		got, err := r.Resolve(context.Background(), in)
-		if err != nil {
-			t.Fatalf("seed=%d 裁决失败: %v", seed, err)
-		}
+		require.NoError(t, err)
 		if got.AttackerWon {
 			attackerWins++
 		} else {
@@ -227,9 +217,7 @@ func TestDeterministicResolverDetailDamage(t *testing.T) {
 		t.Fatalf("攻击方战力 1000 对 1，应获胜: %s", res.DetailJSON)
 	}
 	d := decodeDetail(t, res)
-	if d.WinnerDamage != 124 {
-		t.Fatalf("winner_damage=%d, want 124 (floor(999*125/1000))", d.WinnerDamage)
-	}
+	require.EqualValues(t, 124, d.WinnerDamage)
 	if d.WinnerHP != 999 || d.LoserHP != 100 {
 		t.Fatalf("DetailJSON 中双方生命不符: %+v", d)
 	}

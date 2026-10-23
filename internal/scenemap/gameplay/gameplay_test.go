@@ -8,6 +8,7 @@ import (
 	"game_study/internal/scenemap/entity"
 	"game_study/internal/scenemap/grid"
 	"game_study/internal/scenemap/mgr"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestState 构造一个可直接给玩法用的 State（不启动 MGR）。
@@ -81,9 +82,7 @@ func TestRegistryRegisterAndLookup(t *testing.T) {
 	if !errors.Is(err, scenemap.ErrMapTypeMissing) {
 		t.Fatalf("未配置的类型应返回 ErrMapTypeMissing, got %v", err)
 	}
-	if r.Len() != 1 {
-		t.Fatalf("Len = %d", r.Len())
-	}
+	require.EqualValues(t, 1, r.Len())
 }
 
 // ============================================================================
@@ -107,19 +106,13 @@ func TestCityNeverClosesAndRejectsSkill(t *testing.T) {
 
 	addUser(s, 1)
 	_ = c.PlayerEnter(1, s)
-	if c.Players() != 1 {
-		t.Fatalf("人数 = %d", c.Players())
-	}
+	require.EqualValues(t, 1, c.Players())
 	delete(s.Users, 1)
 	_ = c.PlayerLeave(1, scenemap.LeaveReasonQuit, s)
-	if c.Players() != 0 {
-		t.Fatalf("人数 = %d", c.Players())
-	}
+	require.EqualValues(t, 0, c.Players())
 	// 多余的离图不能把人数减成负数。
 	_ = c.PlayerLeave(1, scenemap.LeaveReasonQuit, s)
-	if c.Players() != 0 {
-		t.Fatalf("人数不应为负: %d", c.Players())
-	}
+	require.EqualValues(t, 0, c.Players())
 	if err := c.Loop(s); err != nil {
 		t.Fatalf("Loop: %v", err)
 	}
@@ -136,16 +129,12 @@ func TestDungeonSpawnsFirstWaveOnInit(t *testing.T) {
 	if err := d.MgrInit(s); err != nil {
 		t.Fatalf("MgrInit 失败: %v", err)
 	}
-	if d.CurrentWave != 1 {
-		t.Fatalf("当前波 = %d", d.CurrentWave)
-	}
+	require.EqualValues(t, 1, d.CurrentWave)
 	if n := len(s.NPES); n != 2 {
 		t.Fatalf("第一波应刷 2 只, got %d", n)
 	}
 	// 框架不解释 Data，玩法自己把实例存进去。
-	if s.Data != d {
-		t.Fatal("Dungeon 未写进 State.Data")
-	}
+	require.EqualValues(t, d, s.Data, "Dungeon 未写进 State.Data")
 }
 
 func TestDungeonAdvancesAndClearsExactlyOnce(t *testing.T) {
@@ -160,9 +149,7 @@ func TestDungeonAdvancesAndClearsExactlyOnce(t *testing.T) {
 
 	// 杀完第一波：HandleNpcDead 发现本波全灭，推进到第二波。
 	killAll(t, s, d)
-	if d.CurrentWave != 2 {
-		t.Fatalf("应推进到第 2 波, got %d", d.CurrentWave)
-	}
+	require.EqualValues(t, 2, d.CurrentWave)
 	if n := len(s.NPES); n != 2 {
 		t.Fatalf("第二波应刷 2 只, got %d", n)
 	}
@@ -175,9 +162,7 @@ func TestDungeonAdvancesAndClearsExactlyOnce(t *testing.T) {
 	if !d.Cleared {
 		t.Fatal("应已通关")
 	}
-	if clearCount != 1 {
-		t.Fatalf("OnClear 应调用 1 次, got %d", clearCount)
-	}
+	require.EqualValues(t, 1, clearCount)
 
 	// 幂等：再推 Loop/死亡回调都不会重复结算。
 	for i := 0; i < 3; i++ {
@@ -186,12 +171,8 @@ func TestDungeonAdvancesAndClearsExactlyOnce(t *testing.T) {
 		}
 	}
 	_ = d.HandleNpcDead(9001, 123, 0, 0, s)
-	if clearCount != 1 {
-		t.Fatalf("OnClear 被重复调用: %d", clearCount)
-	}
-	if d.Killed != 4 {
-		t.Fatalf("累计击杀应为 4, got %d", d.Killed)
-	}
+	require.EqualValues(t, 1, clearCount)
+	require.EqualValues(t, 4, d.Killed)
 }
 
 func TestDungeonLoopAdvancesWhenMonstersVanishWithoutDeath(t *testing.T) {
@@ -213,12 +194,8 @@ func TestDungeonLoopAdvancesWhenMonstersVanishWithoutDeath(t *testing.T) {
 	if err := d.Loop(s); err != nil {
 		t.Fatalf("Loop 失败: %v", err)
 	}
-	if d.CurrentWave != 2 {
-		t.Fatalf("Loop 应推进到第 2 波, got %d", d.CurrentWave)
-	}
-	if len(s.NPES) != 1 {
-		t.Fatalf("第 2 波应刷 1 只, got %d", len(s.NPES))
-	}
+	require.EqualValues(t, 2, d.CurrentWave)
+	require.Len(t, s.NPES, 1)
 }
 
 func TestDungeonCannotCloseWhilePlayersInside(t *testing.T) {
@@ -252,7 +229,5 @@ func TestDungeonOnTerminateCallsOnEnd(t *testing.T) {
 	if err := d.OnTerminate(s); err != nil {
 		t.Fatalf("OnTerminate 失败: %v", err)
 	}
-	if ended != 1 {
-		t.Fatalf("结算回调应调用 1 次, got %d", ended)
-	}
+	require.EqualValues(t, 1, ended)
 }

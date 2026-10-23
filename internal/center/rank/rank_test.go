@@ -38,22 +38,14 @@ func TestWriteAndTopN(t *testing.T) {
 	write(s, "game-02", 1003, 200)
 
 	top := s.TopN("arena_score", "", 10)
-	if len(top) != 3 {
-		t.Fatalf("expect 3 entries, got %d", len(top))
-	}
+	require.Len(t, top, 3)
 	// 按分数降序：1002(300) > 1003(200) > 1001(100)
 	want := []int64{1002, 1003, 1001}
 	for i, e := range top {
-		if e.PlayerId != want[i] {
-			t.Fatalf("rank %d: want player %d, got %d", i+1, want[i], e.PlayerId)
-		}
-		if e.Rank != int64(i+1) {
-			t.Fatalf("rank no mismatch at %d: %d", i, e.Rank)
-		}
+		require.EqualValues(t, want[i], e.PlayerId)
+		require.EqualValues(t, int64(i+1), e.Rank)
 	}
-	if top[0].Score != 300 {
-		t.Fatalf("top score: want 300, got %d", top[0].Score)
-	}
+	require.EqualValues(t, 300, top[0].Score)
 }
 
 func TestWriteAccumulates(t *testing.T) {
@@ -65,12 +57,8 @@ func TestWriteAccumulates(t *testing.T) {
 	write(s, "game-01", 1001, -10)
 
 	r, score := s.RankOf("arena_score", "", 1001)
-	if r != 1 {
-		t.Fatalf("expect rank 1, got %d", r)
-	}
-	if score != 50 {
-		t.Fatalf("expect accumulated 50 (30+30-10), got %d", score)
-	}
+	require.EqualValues(t, 1, r)
+	require.EqualValues(t, 50, score)
 }
 
 func TestRankOfNotFound(t *testing.T) {
@@ -101,14 +89,10 @@ func TestAround(t *testing.T) {
 			found = true
 		}
 	}
-	if !found {
-		t.Fatalf("around must include the target player, got %+v", list)
-	}
+	require.True(t, found)
 	// 名次连续递增
 	for i := 1; i < len(list); i++ {
-		if list[i].Rank != list[i-1].Rank+1 {
-			t.Fatalf("ranks should be consecutive: %d then %d", list[i-1].Rank, list[i].Rank)
-		}
+		require.EqualValues(t, list[i-1].Rank+1, list[i].Rank)
 	}
 }
 
@@ -224,9 +208,7 @@ func TestQueryTopMineAround(t *testing.T) {
 	write(s, "game-1", 3, 300)
 
 	resp := s.Query("arena_score", "", 2, 10, 0)
-	if resp.Season != "s1" {
-		t.Fatalf("season = %q", resp.Season)
-	}
+	require.EqualValues(t, "s1", resp.Season)
 	if len(resp.Top) != 3 || resp.Top[0].PlayerId != 3 || resp.Top[0].Rank != 1 {
 		t.Fatalf("top = %+v", resp.Top)
 	}
@@ -250,12 +232,8 @@ func TestQueryNotOnBoard(t *testing.T) {
 	if resp.OnBoard || resp.MyRank != 0 || resp.MyScore != 0 {
 		t.Fatalf("unexpected mine: %+v", resp)
 	}
-	if len(resp.Around) != 0 {
-		t.Fatalf("around must be empty when not on board: %+v", resp.Around)
-	}
-	if len(resp.Top) != 1 {
-		t.Fatalf("top should still be returned: %+v", resp.Top)
-	}
+	require.Len(t, resp.Around, 0)
+	require.Len(t, resp.Top, 1)
 }
 
 // TestQueryTopNCapped 客户端协议上限 100，避免一次拉全服。

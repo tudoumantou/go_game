@@ -51,9 +51,7 @@ func addPlayer(t *testing.T, s *mgr.State, id scenemap.UUID, pos scenemap.GridPo
 func mustSpawn(t *testing.T, s *mgr.State, spec Spec, pos scenemap.GridPos) scenemap.UUID {
 	t.Helper()
 	id, err := Spawn(s, spec, pos, grid.DefaultGeometry())
-	if err != nil {
-		t.Fatalf("Spawn(%s) 失败: %v", pos, err)
-	}
+	require.NoError(t, err)
 	return id
 }
 
@@ -66,18 +64,14 @@ func TestSpawnWritesStateAndIndex(t *testing.T) {
 	id := mustSpawn(t, s, Spec{ConfigID: 101, AI: StateGuard, HP: 80, Attack: 7, Radius: 0}, scenemap.GridPos{X: 3, Y: 4})
 
 	info := s.NPES[id]
-	if info == nil {
-		t.Fatalf("NPES 里没有 %s", id)
-	}
+	require.NotNil(t, info)
 	if info.TemplateID != 101 || info.HP != 80 || info.MaxHP != 80 || info.AI != StateGuard {
 		t.Fatalf("状态写入不对: %+v", info)
 	}
 	if info.Hate == nil || len(info.Hate) != 0 {
 		t.Fatalf("HateList 应为空切片, got %#v", info.Hate)
 	}
-	if info.BornAt != 0 {
-		t.Fatalf("BornAt 应取 State.Now()=0, got %d", info.BornAt)
-	}
+	require.EqualValues(t, 0, info.BornAt)
 	if pos, ok := s.Index.At(id); !ok || pos != (scenemap.GridPos{X: 3, Y: 4}) {
 		t.Fatalf("索引落点不对: %s %v", pos, ok)
 	}
@@ -112,9 +106,7 @@ func TestDespawnReturnsSpecAndReclaimsFootprint(t *testing.T) {
 	}
 
 	spec, ok := Despawn(s, id)
-	if !ok {
-		t.Fatal("Despawn 应返回 true")
-	}
+	require.True(t, ok, "Despawn 应返回 true")
 	if spec.ConfigID != 7 || spec.Radius != 1 {
 		t.Fatalf("返回的 Spec 不对: %+v", spec)
 	}
@@ -166,12 +158,8 @@ func TestGuardAcquiresNearestPlayer(t *testing.T) {
 	TickAll(s, 1000)
 
 	info := s.NPES[id]
-	if info.AI != StateFight {
-		t.Fatalf("应切到 FIGHT, got %s", info.AI)
-	}
-	if info.Target != 2 {
-		t.Fatalf("应锁定最近的玩家 2, got %s", info.Target)
-	}
+	require.EqualValues(t, StateFight, info.AI)
+	require.EqualValues(t, 2, info.Target)
 	if len(info.Hate) != 1 || info.Hate[0].UUID != 2 {
 		t.Fatalf("HateList 不对: %+v", info.Hate)
 	}
@@ -196,9 +184,7 @@ func TestFightAttackIsThrottledAndEmitsEvent(t *testing.T) {
 
 	TickAll(s, 1000)
 	evs := DrainEvents(s)
-	if len(evs) != 1 {
-		t.Fatalf("相邻应产生 1 条攻击事件, got %d", len(evs))
-	}
+	require.Len(t, evs, 1)
 	if evs[0].UUID != id || evs[0].Target != 1 || evs[0].Damage != 12 {
 		t.Fatalf("事件内容不对: %+v", evs[0])
 	}
@@ -233,9 +219,7 @@ func TestFightGivesUpBeyondRange(t *testing.T) {
 
 	TickAll(s, 1000)
 	info := s.NPES[id]
-	if info.AI != StateReturn {
-		t.Fatalf("超距应切 RETURN, got %s", info.AI)
-	}
+	require.EqualValues(t, StateReturn, info.AI)
 	if info.Target.Valid() || len(info.Hate) != 0 {
 		t.Fatalf("RETURN 应清空目标与仇恨: %+v", info)
 	}
@@ -259,23 +243,17 @@ func TestReturnWalksHomeHealsAndGuards(t *testing.T) {
 		t.Fatalf("应朝出生点走近一步, got %s (距离 %d)", info.GridPos, d)
 	}
 	// 回血：每秒 5% of 100 = 5。
-	if info.HP != 55 {
-		t.Fatalf("第一秒应回 5 点血, got %d", info.HP)
-	}
+	require.EqualValues(t, 55, info.HP)
 
 	// 继续走（每 500ms 一步），最多 4 拍必须到家。
 	for now := int64(1500); now <= 3500 && info.GridPos != home; now += MoveIntervalMS {
 		TickAll(s, now)
 	}
-	if info.GridPos != home {
-		t.Fatalf("没有走回出生点, got %s", info.GridPos)
-	}
+	require.EqualValues(t, home, info.GridPos)
 
 	// 到家之后的第一拍才切 GUARD（状态迁移发生在 tick 开头）。
 	TickAll(s, 4000)
-	if info.AI != StateGuard {
-		t.Fatalf("到家应切 GUARD, got %s", info.AI)
-	}
+	require.EqualValues(t, StateGuard, info.AI)
 	if info.HP <= 55 || info.HP > 100 {
 		t.Fatalf("回血异常: %d", info.HP)
 	}
@@ -289,9 +267,7 @@ func TestHateAccumulatesAndClearsAfterIdle(t *testing.T) {
 	Damage(s, id, 10, 3)
 	Damage(s, id, 5, 2)
 	info := s.NPES[id]
-	if info.Target != 2 {
-		t.Fatalf("目标应为仇恨最高的 2, got %s", info.Target)
-	}
+	require.EqualValues(t, 2, info.Target)
 	if len(info.Hate) != 2 || info.Hate[0].Hate != 35 {
 		t.Fatalf("仇恨累加不对: %+v", info.Hate)
 	}
@@ -320,14 +296,10 @@ func TestGuardWanderIsDeterministicAndBounded(t *testing.T) {
 		return trail
 	}
 	a, b := run(), run()
-	if len(a) != len(b) {
-		t.Fatalf("轨迹长度不同: %d vs %d", len(a), len(b))
-	}
+	require.EqualValues(t, len(b), len(a))
 	home := scenemap.GridPos{X: 10, Y: 10}
 	for i := range a {
-		if a[i] != b[i] {
-			t.Fatalf("同一局面两次运行结果不同（不可复现）: 第 %d 步 %s vs %s", i, a[i], b[i])
-		}
+		require.EqualValues(t, b[i], a[i])
 		if d := grid.Chebyshev(home, a[i]); d > WanderRadius {
 			t.Fatalf("游走超出出生点 %d 格: %s", WanderRadius, a[i])
 		}
@@ -338,11 +310,10 @@ func TestMoveOneRejectsBlockedCell(t *testing.T) {
 	s := newTestState(grid.Size{Width: 10, Height: 10})
 	id := mustSpawn(t, s, Spec{ConfigID: 1, HP: 10}, scenemap.GridPos{X: 2, Y: 2})
 	other := mustSpawn(t, s, Spec{ConfigID: 1, HP: 10}, scenemap.GridPos{X: 3, Y: 2})
+	require.NotNil(t, other, "目标格应被另一个实体占住")
 
 	err := MoveOne(s, id, scenemap.GridPos{X: 3, Y: 2})
-	if err == nil {
-		t.Fatalf("目标格被 %s 占着，应拒绝移动", other)
-	}
+	require.Error(t, err)
 	if pos, _ := s.Index.At(id); pos != (scenemap.GridPos{X: 2, Y: 2}) {
 		t.Fatalf("被拒绝的移动不应改变位置, got %s", pos)
 	}

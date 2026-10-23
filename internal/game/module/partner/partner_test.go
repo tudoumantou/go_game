@@ -10,6 +10,7 @@ import (
 	"game_study/pkg/model"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -90,9 +91,7 @@ func TestActivateAndStarUp(t *testing.T) {
 	}
 	var act gamev1.PartnerActivateResp
 	_ = proto.Unmarshal(*raw, &act)
-	if act.Code != codeOK {
-		t.Fatalf("activate code = %d", act.Code)
-	}
+	require.EqualValues(t, codeOK, act.Code)
 	if got := st.items[itemCoin]; got != 10_000-cfg.Col3 {
 		t.Fatalf("coin = %d, want %d", got, 10_000-cfg.Col3)
 	}
@@ -102,18 +101,14 @@ func TestActivateAndStarUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = proto.Unmarshal(*raw, &act)
-	if act.Code != codeOwned {
-		t.Fatalf("duplicate activate code = %d", act.Code)
-	}
+	require.EqualValues(t, codeOwned, act.Code)
 	if got := st.items[itemCoin]; got != 10_000-cfg.Col3 {
 		t.Fatalf("duplicate activate must not charge: %d", got)
 	}
 
 	// 升星：1→2 消耗 partner_star 里 (当前星级=1) 的 col3。
 	cost, ok := starCost(int32(cfg.Id), 1)
-	if !ok {
-		t.Fatal("missing star cost config")
-	}
+	require.True(t, ok, "missing star cost config")
 	starBody, _ := proto.Marshal(&gamev1.PartnerStarUpReq{PartnerId: int32(cfg.Id)})
 	if err := m.OnMessage(ctx, msgIDStarUpReq, starBody); err != nil {
 		t.Fatal(err)
@@ -145,28 +140,20 @@ func TestFieldBonusAppliedOnce(t *testing.T) {
 	}
 	var fr gamev1.PartnerFieldResp
 	_ = proto.Unmarshal(*raw, &fr)
-	if fr.AtkBonus != cfg.Col3 {
-		t.Fatalf("bonus = %d, want %d", fr.AtkBonus, cfg.Col3)
-	}
-	if st.bonus["atk"] != cfg.Col3 {
-		t.Fatalf("state bonus = %d", st.bonus["atk"])
-	}
+	require.EqualValues(t, cfg.Col3, fr.AtkBonus)
+	require.EqualValues(t, cfg.Col3, st.bonus["atk"])
 
 	// 重复上阵：幂等，不能二次累加（R6.3）。
 	_ = m.OnMessage(ctx, msgIDFieldReq, onBody)
 	for i := 0; i < 3; i++ {
 		_ = m.OnMessage(ctx, msgIDFieldReq, onBody)
 	}
-	if st.bonus["atk"] != cfg.Col3 {
-		t.Fatalf("repeated field must not stack: %d", st.bonus["atk"])
-	}
+	require.EqualValues(t, cfg.Col3, st.bonus["atk"])
 
 	// 下阵：加成归零。
 	offBody, _ := proto.Marshal(&gamev1.PartnerFieldReq{PartnerId: int32(cfg.Id), On: false})
 	_ = m.OnMessage(ctx, msgIDFieldReq, offBody)
-	if st.bonus["atk"] != 0 {
-		t.Fatalf("bonus after off = %d", st.bonus["atk"])
-	}
+	require.EqualValues(t, 0, st.bonus["atk"])
 }
 
 // TestOnLoginRestoresBonus 登录时按快照重算加成，且不依赖上次会话的 bonus。
@@ -188,9 +175,7 @@ func TestOnLoginRestoresBonus(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := cfg.Col3 * 2
-	if st.bonus["atk"] != want {
-		t.Fatalf("login bonus = %d, want %d", st.bonus["atk"], want)
-	}
+	require.EqualValues(t, want, st.bonus["atk"])
 }
 
 // TestDecodeRejectsBrokenState 上阵位超限/上阵未拥有都要在解码时拦住。

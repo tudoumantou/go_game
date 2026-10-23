@@ -23,9 +23,7 @@ func TestPacketEncodeDecode(t *testing.T) {
 	require.NoError(t, err, "encode")
 	length, err := ReadLength(buf)
 	require.NoError(t, err, "read length")
-	if length != HeaderSize+len(p.Body) {
-		t.Fatalf("length mismatch: %d", length)
-	}
+	require.EqualValues(t, HeaderSize+len(p.Body), length)
 	got, err := DecodePacket(buf[LengthFieldSize:])
 	require.NoError(t, err, "decode")
 	if got.MsgID != p.MsgID || got.Seq != p.Seq || !bytes.Equal(got.Body, p.Body) {
@@ -64,7 +62,5 @@ func TestHandlerRegistry(t *testing.T) {
 	if err := r.Handle(context.Background(), 1001, &gatev1.HandshakeReq{}); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	if !called {
-		t.Fatalf("handler not called")
-	}
+	require.True(t, called, "handler not called")
 }

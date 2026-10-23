@@ -60,15 +60,11 @@ func TestCommitItemsAtomic(t *testing.T) {
 					t.Fatal("committed reward not synchronized")
 				}
 			} else {
-				if err == nil {
-					t.Fatal("expected failure")
-				}
+				require.Error(t, err, "expected failure")
 				if s.GetItemCount(1001) != 15 || s.DirtyItems()[1001] != 15 {
 					t.Fatal("failed transaction mutated memory")
 				}
-				if (fail == "commit") != errors.Is(err, ErrCommitUnknown) {
-					t.Fatalf("wrong commit uncertainty: %v", err)
-				}
+				require.EqualValues(t, errors.Is(err, ErrCommitUnknown), (fail == "commit"))
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)

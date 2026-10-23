@@ -184,9 +184,7 @@ func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
 	if err := reopened.QueryRow(`SELECT claimed_days FROM player_signin WHERE player_id=?`, id).Scan(&days); err != nil {
 		t.Fatalf("signin row: %v", err)
 	}
-	if days != "[3]" {
-		t.Fatalf("claimed days=%q want [3]", days)
-	}
+	require.EqualValues(t, "[3]", days)
 	pending, err = store.Pending(ctx, writebehind.Partition(id), 100)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("dirty queue not drained: %v %v", pending, err)

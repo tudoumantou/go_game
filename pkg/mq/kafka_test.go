@@ -96,9 +96,7 @@ func TestRunRetriesThenDeadLettersAndCommits(t *testing.T) {
 		return errors.New("boom")
 	})
 	require.NoError(t, err)
-	if attempts != 2 {
-		t.Fatalf("retry attempts: got %d want 2", attempts)
-	}
+	require.EqualValues(t, 2, attempts)
 	if len(dlq.got) != 1 || len(reader.committed) != 1 {
 		t.Fatalf("dead=%d committed=%d", len(dlq.got), len(reader.committed))
 	}
@@ -113,15 +111,11 @@ func TestRunDeadLetterFailureKeepsOffset(t *testing.T) {
 	err := c.Run(context.Background(), func(context.Context, *Envelope) error {
 		return errors.New("boom")
 	})
-	if err == nil {
-		t.Fatal("dead letter failure must surface as an error")
-	}
+	require.Error(t, err, "dead letter failure must surface as an error")
 	if !strings.Contains(err.Error(), "dead letter") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(reader.committed) != 0 {
-		t.Fatalf("offset must not advance: %+v", reader.committed)
-	}
+	require.Len(t, reader.committed, 0)
 }
 
 // TestRunMalformedGoesToDeadLetter 解析失败的消息进死信（带原始字节），成功后才提交。
@@ -135,18 +129,12 @@ func TestRunMalformedGoesToDeadLetter(t *testing.T) {
 	if err := c.Run(context.Background(), func(context.Context, *Envelope) error { handled++; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if handled != 0 {
-		t.Fatal("malformed message must not reach the handler")
-	}
-	if len(dlq.got) != 1 {
-		t.Fatalf("dead letters: %d", len(dlq.got))
-	}
+	require.EqualValues(t, 0, handled, "malformed message must not reach the handler")
+	require.Len(t, dlq.got, 1)
 	if raw := dlq.got[0].Headers["dlq_raw"]; raw != "bm90LWpzb24=" { // base64("not-json")
 		t.Fatalf("raw payload not preserved: %q", raw)
 	}
-	if len(reader.committed) != 1 {
-		t.Fatalf("committed: %+v", reader.committed)
-	}
+	require.Len(t, reader.committed, 1)
 }
 
 // TestRunWithoutDeadLetterWriterKeepsOffset 没有死信通道时不能假装处理完。
@@ -159,9 +147,7 @@ func TestRunWithoutDeadLetterWriterKeepsOffset(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "no dead letter writer") {
 		t.Fatalf("expected dead letter writer error, got %v", err)
 	}
-	if len(reader.committed) != 0 {
-		t.Fatal("offset advanced without a dead letter channel")
-	}
+	require.Len(t, reader.committed, 0, "offset advanced without a dead letter channel")
 }
 
 // TestRunCommitFailureSurfaces commit 失败要上报，让上层重启后重放。
@@ -185,7 +171,5 @@ func TestRunCancelDoesNotCommit(t *testing.T) {
 		return ctx.Err()
 	})
 	require.NoError(t, err, "cancel should exit cleanly")
-	if len(reader.committed) != 0 {
-		t.Fatal("offset committed while shutting down")
-	}
+	require.Len(t, reader.committed, 0, "offset committed while shutting down")
 }

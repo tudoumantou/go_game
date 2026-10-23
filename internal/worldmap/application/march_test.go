@@ -217,43 +217,29 @@ func receiptMap(t *testing.T, plan *domain.MutationPlan) map[string]any {
 func jsonInt(t *testing.T, m map[string]any, key string) int64 {
 	t.Helper()
 	v, ok := m[key]
-	if !ok {
-		t.Fatalf("回执缺少字段 %q: %v", key, m)
-	}
+	require.True(t, ok)
 	n, ok := v.(json.Number)
-	if !ok {
-		t.Fatalf("回执字段 %q 不是数字: %T", key, v)
-	}
+	require.True(t, ok)
 	i, err := n.Int64()
-	if err != nil {
-		t.Fatalf("回执字段 %q 解析失败: %v", key, err)
-	}
+	require.NoError(t, err)
 	return i
 }
 
 func jsonStr(t *testing.T, m map[string]any, key string) string {
 	t.Helper()
 	v, ok := m[key]
-	if !ok {
-		t.Fatalf("回执缺少字段 %q: %v", key, m)
-	}
+	require.True(t, ok)
 	s, ok := v.(string)
-	if !ok {
-		t.Fatalf("回执字段 %q 不是字符串: %T", key, v)
-	}
+	require.True(t, ok)
 	return s
 }
 
 func jsonBool(t *testing.T, m map[string]any, key string) bool {
 	t.Helper()
 	v, ok := m[key]
-	if !ok {
-		t.Fatalf("回执缺少字段 %q: %v", key, m)
-	}
+	require.True(t, ok)
 	b, ok := v.(bool)
-	if !ok {
-		t.Fatalf("回执字段 %q 不是布尔: %T", key, v)
-	}
+	require.True(t, ok)
 	return b
 }
 
@@ -304,40 +290,28 @@ func TestPlanMarchStart(t *testing.T) {
 				SlotID: 1, HomeCityID: 100, Target: target,
 			}},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if plan.CommandReceipt.ResultCode != domain.CodeOK {
-					t.Fatalf("ResultCode=%d", plan.CommandReceipt.ResultCode)
-				}
-				if len(plan.ObjectsUpsert) != 1 {
-					t.Fatalf("出征应只创建一个对象, got %d", len(plan.ObjectsUpsert))
-				}
+				require.EqualValues(t, domain.CodeOK, plan.CommandReceipt.ResultCode)
+				require.Len(t, plan.ObjectsUpsert, 1)
 				got := plan.ObjectsUpsert[0]
 				if got.Kind != domain.ObjectKindTroop || got.Troop == nil {
 					t.Fatalf("对象种类=%s", got.Kind)
 				}
 				tr := got.Troop
-				if tr.Phase != domain.TroopPhaseMarching {
-					t.Fatalf("Phase=%v", tr.Phase)
-				}
+				require.EqualValues(t, domain.TroopPhaseMarching, tr.Phase)
 				if tr.Header.Version != 1 || tr.Header.OwnerScene != testScene {
 					t.Fatalf("Header=%+v", tr.Header)
 				}
 				if tr.Cargo == nil || len(tr.Cargo) != 0 {
 					t.Fatalf("Cargo 必须是非 nil 空表: %v", tr.Cargo)
 				}
-				if tr.CapacityUnits != h.rules.CapacityUnits {
-					t.Fatalf("CapacityUnits=%d", tr.CapacityUnits)
-				}
+				require.EqualValues(t, h.rules.CapacityUnits, tr.CapacityUnits)
 				// 速度只能来自规则；MarchParams 根本没有速度字段。
-				if tr.Move.SpeedUnitsPerSec != h.rules.MarchSpeedUnitsPerSec {
-					t.Fatalf("速度=%d, 规则=%d", tr.Move.SpeedUnitsPerSec, h.rules.MarchSpeedUnitsPerSec)
-				}
+				require.EqualValues(t, h.rules.MarchSpeedUnitsPerSec, tr.Move.SpeedUnitsPerSec)
 				// 到达时间 = ceil(len/speed)*1000 + now。
 				length, err := spatial.SegmentLengthUnits(domain.Pos{X: 0, Y: 0}, domain.Pos{X: 10000, Y: 0})
 				require.NoError(t, err, "SegmentLengthUnits")
 				wantArrive := int64(1000) + ((length+h.rules.MarchSpeedUnitsPerSec-1)/h.rules.MarchSpeedUnitsPerSec)*1000
-				if tr.Move.EndAtMS != wantArrive {
-					t.Fatalf("EndAtMS=%d, want %d", tr.Move.EndAtMS, wantArrive)
-				}
+				require.EqualValues(t, wantArrive, tr.Move.EndAtMS)
 				m := receiptMap(t, plan)
 				if got := jsonInt(t, m, "arrive_at_ms"); got != wantArrive {
 					t.Fatalf("回执 arrive_at_ms=%d, want %d", got, wantArrive)
@@ -380,9 +354,7 @@ func TestPlanMarchStart(t *testing.T) {
 				SlotID: 1, HomeCityID: 100, Target: target,
 			}},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.ObjectsUpsert) != 1 {
-					t.Fatalf("ObjectsUpsert=%d", len(plan.ObjectsUpsert))
-				}
+				require.Len(t, plan.ObjectsUpsert, 1)
 			},
 		},
 		{
@@ -503,22 +475,14 @@ func TestPlanMarchStartIdempotentReplay(t *testing.T) {
 	})
 	second, err := h.planner.Plan(replaySnap, env, cmd, 2000)
 	require.NoError(t, err, "重放")
-	if second.CommandID != first.CommandID {
-		t.Fatalf("重放 CommandID=%q, want %q", second.CommandID, first.CommandID)
-	}
-	if len(second.ObjectsUpsert) != 0 {
-		t.Fatalf("重放不应生成对象, got %d", len(second.ObjectsUpsert))
-	}
-	if *h.objCount != 1001 {
-		t.Fatalf("重放不应再分配对象 ID, got %d", *h.objCount)
-	}
+	require.EqualValues(t, first.CommandID, second.CommandID)
+	require.Len(t, second.ObjectsUpsert, 0)
+	require.EqualValues(t, 1001, *h.objCount)
 	if second.CommandReceipt == nil || !bytes.Equal(second.CommandReceipt.ResultJSON, first.CommandReceipt.ResultJSON) {
 		t.Fatalf("重放回执内容不一致")
 	}
 	m := receiptMap(t, second)
-	if jsonInt(t, m, "troop_id") != int64(firstTroopID) {
-		t.Fatalf("重放回执 troop_id 应复用首次结果")
-	}
+	require.EqualValues(t, int64(firstTroopID), jsonInt(t, m, "troop_id"), "重放回执 troop_id 应复用首次结果")
 }
 
 // TestPlanMarchStartIdempotencyConflict 覆盖同键不同 hash。

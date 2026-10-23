@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	commonv1 "game_study/pkg/pb/common/v1"
+	"github.com/stretchr/testify/require"
 )
 
 // TestParityWithProto 守护 proto 枚举 ↔ Go 常量 ↔ 文案表三方一致（23.2 单测点）
@@ -26,9 +27,7 @@ func TestParityWithProto(t *testing.T) {
 	} {
 		goVals[v] = true
 	}
-	if len(goVals) != len(protoVals) {
-		t.Fatalf("Go 常量 %d 个 != proto 枚举 %d 个", len(goVals), len(protoVals))
-	}
+	require.EqualValues(t, len(protoVals), len(goVals))
 	for v := range goVals {
 		if !protoVals[v] {
 			t.Fatalf("Go 常量 %d 不在 proto 枚举中", int32(v))

@@ -232,21 +232,15 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// 脱下
 	off, err := clientA.EquipTakeOff(equipUID)
 	require.NoError(t, err, "equip take off")
-	if off.Code != 0 {
-		t.Fatalf("equip take off code=%d", off.Code)
-	}
+	require.EqualValues(t, 0, off.Code)
 
 	// ============ B2：技能 ============
 	sl, err := clientA.SkillList()
 	require.NoError(t, err, "skill list")
-	if sl.Code != 0 {
-		t.Fatalf("skill list code=%d", sl.Code)
-	}
+	require.EqualValues(t, 0, sl.Code)
 	learn, err := clientA.SkillLearn(skillFire)
 	require.NoError(t, err, "skill learn")
-	if learn.Code != 0 {
-		t.Fatalf("skill learn code=%d", learn.Code)
-	}
+	require.EqualValues(t, 0, learn.Code)
 	// 重复学习 → 3203
 	if resp, err := clientA.SkillLearn(skillFire); err != nil {
 		t.Fatalf("skill learn again: %v", err)
@@ -304,9 +298,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// B 加入
 	gj, err := clientB.GuildJoin(gc.GuildId)
 	require.NoError(t, err, "guild join")
-	if gj.Code != 0 {
-		t.Fatalf("guild join code=%d", gj.Code)
-	}
+	require.EqualValues(t, 0, gj.Code)
 	gi2, err := clientA.GuildInfo()
 	require.NoError(t, err, "guild info after join")
 	if gi2.Code != 0 || gi2.MemberCount != 2 || !gi2.IsLeader {
@@ -332,9 +324,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	tj, err := clientB.TeamJoin(tc.TeamId)
 	require.NoError(t, err, "team join")
-	if tj.Code != 0 {
-		t.Fatalf("team join code=%d", tj.Code)
-	}
+	require.EqualValues(t, 0, tj.Code)
 	ti2, err := clientA.TeamInfo()
 	require.NoError(t, err, "team info after join")
 	if ti2.Code != 0 || len(ti2.Members) != 2 {
@@ -351,9 +341,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	info3, err := clientA.TeamInfo()
 	require.NoError(t, err, "team info after leave")
-	if len(info3.Members) != 1 {
-		t.Fatalf("expect 1 member after leave, got %d", len(info3.Members))
-	}
+	require.Len(t, info3.Members, 1)
 
 	// ============ B4：副本 ============
 	cl, err := clientA.CopyList()
@@ -396,9 +384,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	after := bagItem(clientA, t, goods.ItemId)
 	expectGain := int64(goods.Count) * 2
-	if after-before != expectGain {
-		t.Fatalf("shop buy item gain mismatch: before=%d after=%d expect+%d", before, after, expectGain)
-	}
+	require.EqualValues(t, expectGain, after-before)
 	// Write-Behind 落库：等待 flusher 周期（2s）后校验库内一致
 	waitItemCount(t, database, roleA, goods.ItemId, after)
 	// 商品不存在 → 6401
@@ -453,9 +439,7 @@ func newRole(t *testing.T, loginURL, gwAddr, namePrefix string) (int64, *robot.C
 	}
 	roleName := fmt.Sprintf("%s%d", namePrefix, time.Now().UnixNano()%1000000)
 	cr, err := c.CreateRole(roleName, 1)
-	if err != nil {
-		t.Fatalf("%s create role: %v", namePrefix, err)
-	}
+	require.NoError(t, err)
 	if cr.Code != 0 || cr.RoleId == 0 {
 		t.Fatalf("%s create role code=%d role=%d", namePrefix, cr.Code, cr.RoleId)
 	}

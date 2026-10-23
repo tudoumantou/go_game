@@ -10,6 +10,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -105,9 +106,7 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	for id, n := range st.items {
-		if n != before[id] {
-			t.Fatalf("duplicate settle granted again: item %d %d -> %d", id, before[id], n)
-		}
+		require.EqualValues(t, before[id], n)
 	}
 	d, _ := load(st)
 	rec := d.Records[int32(cfg.Id)]

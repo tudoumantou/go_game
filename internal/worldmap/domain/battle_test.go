@@ -57,9 +57,7 @@ func TestFakeResolverDeterministic(t *testing.T) {
 	require.NoError(t, err, "首次 Resolve 失败")
 	for i := 0; i < 5; i++ {
 		got, err := r.Resolve(context.Background(), in)
-		if err != nil {
-			t.Fatalf("第 %d 次 Resolve 失败: %v", i, err)
-		}
+		require.NoError(t, err)
 		if !reflect.DeepEqual(first, got) {
 			t.Fatalf("第 %d 次结果与首次不一致:\nfirst=%+v\ngot=%+v", i, first, got)
 		}
@@ -69,12 +67,8 @@ func TestFakeResolverDeterministic(t *testing.T) {
 		t.Fatalf("胜者 %d 不是攻守任何一方", first.WinnerID)
 	}
 	wantWon := first.WinnerID == in.AttackerID
-	if first.AttackerWon != wantWon {
-		t.Fatalf("AttackerWon=%t 与 WinnerID=%d 不自洽", first.AttackerWon, first.WinnerID)
-	}
-	if first.AppliedAtMS != in.ResolveAtMS {
-		t.Fatalf("AppliedAtMS=%d, want %d", first.AppliedAtMS, in.ResolveAtMS)
-	}
+	require.EqualValues(t, wantWon, first.AttackerWon)
+	require.EqualValues(t, in.ResolveAtMS, first.AppliedAtMS)
 }
 
 // TestFakeResolverSeedVariation 验证不同随机种子会产生
@@ -99,9 +93,7 @@ func TestFakeResolverSeedVariation(t *testing.T) {
 		in := symmetric
 		in.RandomSeed = seed
 		got, err := r.Resolve(context.Background(), in)
-		if err != nil {
-			t.Fatalf("seed=%d Resolve 失败: %v", seed, err)
-		}
+		require.NoError(t, err)
 		seen[outcome{got.WinnerID, got.AttackerWon}] = true
 	}
 	if len(seen) < 2 {
@@ -115,9 +107,7 @@ func TestFakeResolverSeedVariation(t *testing.T) {
 		in := symmetric
 		in.InputHash = PayloadHashOf([]byte{byte(i)})
 		got, err := r.Resolve(context.Background(), in)
-		if err != nil {
-			t.Fatalf("hash 变体 %d Resolve 失败: %v", i, err)
-		}
+		require.NoError(t, err)
 		hashSeen[outcome{got.WinnerID, got.AttackerWon}] = true
 	}
 	if len(hashSeen) < 2 {
@@ -164,9 +154,7 @@ func TestFakeResolverRejects(t *testing.T) {
 				tc.mutate(&in)
 			}
 			_, err := tc.resolver.Resolve(tc.ctx, in)
-			if err == nil {
-				t.Fatalf("期望错误 %v，得到 nil", tc.wantErr)
-			}
+			require.Error(t, err)
 			// errors.Is 穿透 %w 包装链；context.Canceled 经
 			// fmt.Errorf %w 包装后同样可判定。
 			if !isErr(err, tc.wantErr) {
@@ -217,15 +205,11 @@ func TestApplyBattleResultPending(t *testing.T) {
 	if !reflect.DeepEqual(got, res) {
 		t.Fatalf("返回结果与传入不一致:\ngot=%+v\nwant=%+v", got, res)
 	}
-	if rec.Status != BattleStatusResolved {
-		t.Fatalf("记录状态 = %d, want RESOLVED", int32(rec.Status))
-	}
+	require.EqualValues(t, BattleStatusResolved, rec.Status)
 	if rec.Result == nil || !reflect.DeepEqual(*rec.Result, res) {
 		t.Fatalf("记录结果未正确写入: %+v", rec.Result)
 	}
-	if rec.AppliedOperationID != "op-7001" {
-		t.Fatalf("AppliedOperationID = %q, want op-7001", rec.AppliedOperationID)
-	}
+	require.EqualValues(t, "op-7001", rec.AppliedOperationID)
 	// 记录里的结果必须是拷贝：外部改 res 不能污染已生效事实。
 	res.WinnerID = 9999
 	if rec.Result.WinnerID == 9999 {
@@ -236,12 +220,8 @@ func TestApplyBattleResultPending(t *testing.T) {
 		name  string
 		troop *Troop
 	}{{"攻方", attacker}, {"守方", defender}} {
-		if tt.troop.Phase != TroopPhaseReturning {
-			t.Errorf("%s Phase = %d, want RETURNING", tt.name, int32(tt.troop.Phase))
-		}
-		if tt.troop.BattleID != "" {
-			t.Errorf("%s BattleID 未清空: %q", tt.name, tt.troop.BattleID)
-		}
+		require.EqualValues(t, TroopPhaseReturning, tt.troop.Phase)
+		require.EqualValues(t, "", tt.troop.BattleID)
 		if !tt.troop.Busy.Idle() {
 			t.Errorf("%s Busy 未解除: %+v", tt.name, tt.troop.Busy)
 		}
@@ -289,9 +269,7 @@ func TestApplyBattleResultLateDoesNotOverride(t *testing.T) {
 
 			got, err := ApplyBattleResult(rec, attacker, defender, late, "op-late")
 			require.NoError(t, err, "ApplyBattleResult 失败")
-			if got.WinnerID != tc.wantWinner {
-				t.Fatalf("返回胜者 = %d, want %d", got.WinnerID, tc.wantWinner)
-			}
+			require.EqualValues(t, tc.wantWinner, got.WinnerID)
 			if got.AttackerWon {
 				t.Fatal("迟到结果不应让攻击方获胜")
 			}
@@ -300,23 +278,13 @@ func TestApplyBattleResultLateDoesNotOverride(t *testing.T) {
 				name  string
 				troop *Troop
 			}{{"攻方", attacker}, {"守方", defender}} {
-				if tt.troop.Phase != TroopPhaseFighting {
-					t.Errorf("%s Phase 被迟到结果改动: %d", tt.name, int32(tt.troop.Phase))
-				}
-				if tt.troop.BattleID != "bt-1001" {
-					t.Errorf("%s BattleID 被迟到结果清掉: %q", tt.name, tt.troop.BattleID)
-				}
-				if tt.troop.Busy.Reason != BusyReasonBattle {
-					t.Errorf("%s Busy 被迟到结果解除", tt.name)
-				}
+				require.EqualValues(t, TroopPhaseFighting, tt.troop.Phase)
+				require.EqualValues(t, "bt-1001", tt.troop.BattleID)
+				require.EqualValues(t, BusyReasonBattle, tt.troop.Busy.Reason)
 			}
 			// 记录本身也不得被迟到结果改写。
-			if rec.Status != tc.status {
-				t.Errorf("记录状态被改动: %d", int32(rec.Status))
-			}
-			if rec.AppliedOperationID != "" {
-				t.Errorf("AppliedOperationID 被迟到结果写入: %q", rec.AppliedOperationID)
-			}
+			require.EqualValues(t, tc.status, rec.Status)
+			require.EqualValues(t, "", rec.AppliedOperationID)
 		})
 	}
 }
@@ -335,9 +303,7 @@ func TestApplyBattleResultIdempotent(t *testing.T) {
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("两次返回不一致:\nfirst=%+v\nsecond=%+v", first, second)
 	}
-	if rec.AppliedOperationID != "op-1" {
-		t.Fatalf("AppliedOperationID 被二次应用覆盖: %q", rec.AppliedOperationID)
-	}
+	require.EqualValues(t, "op-1", rec.AppliedOperationID)
 }
 
 // TestApplyBattleResultRejects 验证非法输入：伪造胜者、

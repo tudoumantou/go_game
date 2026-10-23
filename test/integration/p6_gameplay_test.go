@@ -187,9 +187,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	// 无角色 → 2003
 	eg, err := r.EnterGame()
 	require.NoError(t, err, "enter game")
-	if eg.Code != 2003 {
-		t.Fatalf("expect 2003 for empty account, got %d", eg.Code)
-	}
+	require.EqualValues(t, 2003, eg.Code)
 
 	// ⑤ 创角
 	roleName := fmt.Sprintf("勇士%d", time.Now().UnixNano()%1000000)
@@ -217,9 +215,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	}
 	dup, err := r2.CreateRole(roleName, 1)
 	require.NoError(t, err, "create duplicate role")
-	if dup.Code != 2004 {
-		t.Fatalf("expect 2004 for duplicate name, got %d", dup.Code)
-	}
+	require.EqualValues(t, 2004, dup.Code)
 
 	// ⑥ 玩家信息
 	info, err := r.PlayerInfo()
@@ -260,9 +256,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	// 幂等：重复领取 → 5002
 	take2, err := r.TakeMail(mailID)
 	require.NoError(t, err, "take mail again")
-	if take2.Code != 5002 {
-		t.Fatalf("expect 5002 for repeated take, got %d", take2.Code)
-	}
+	require.EqualValues(t, 5002, take2.Code)
 
 	// ⑨ 背包
 	bag, err := r.BagList()
@@ -273,9 +267,7 @@ func TestP6GameplayFlow(t *testing.T) {
 			diamond = it.Count
 		}
 	}
-	if diamond != diamondBase+50 {
-		t.Fatalf("expect %d diamonds (base %d + mail 50), got %d (%+v)", diamondBase+50, diamondBase, diamond, bag.Items)
-	}
+	require.EqualValues(t, diamondBase+50, diamond)
 
 	// ⑩ 使用道具（1001 配置 Col3=1 → 单次上限 1 个）
 	use, err := r.UseItem(1001, 10)
@@ -287,9 +279,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	// ⑪ 场景：越界钳制 → 近距离移动成功 → 瞬移被拒 → 离开后同步报「不在场景」
 	sceneEnt, err := r.SceneEnter(1, 150, 150)
 	require.NoError(t, err, "scene enter")
-	if sceneEnt.Code != 0 {
-		t.Fatalf("scene enter code = %d", sceneEnt.Code)
-	}
+	require.EqualValues(t, 0, sceneEnt.Code)
 	// 地图 100x100，坐标上界是开区间：150 必须钳制到 99。
 	if sceneEnt.X != 99 || sceneEnt.Y != 99 {
 		t.Fatalf("scene enter clamped to (%d,%d), want (99,99)", sceneEnt.X, sceneEnt.Y)
@@ -304,9 +294,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	// 跨地图瞬移：超出「距上次移动时间 × 速度上限」，应被拒并回权威坐标。
 	farMove, err := r.SceneMove(10, 10, 2)
 	require.NoError(t, err, "scene move (far)")
-	if farMove.Code != 4004 {
-		t.Fatalf("far move code = %d, want 4004", farMove.Code)
-	}
+	require.EqualValues(t, 4004, farMove.Code)
 	if farMove.X != 97 || farMove.Y != 99 {
 		t.Fatalf("far move authority = (%d,%d), want (97,99)", farMove.X, farMove.Y)
 	}
@@ -316,20 +304,14 @@ func TestP6GameplayFlow(t *testing.T) {
 	}
 	syncResp, err := r.SceneSync(1)
 	require.NoError(t, err, "scene sync after leave")
-	if syncResp.Code != 4005 {
-		t.Fatalf("sync after leave code = %d, want 4005", syncResp.Code)
-	}
+	require.EqualValues(t, 4005, syncResp.Code)
 
 	// ⑫ 榜单查询：本用例没有启动中心服，必须回「暂不可用」（6702）而不是空榜。
 	// 空榜会让玩家误以为自己没有成绩，是列表类协议最容易做错的语义（R8.1/R11.1）。
 	rank, err := r.RankList("arena_score")
 	require.NoError(t, err, "rank list")
-	if rank.Code != 6702 {
-		t.Fatalf("rank code = %d, want 6702 (center not running)", rank.Code)
-	}
-	if len(rank.Entries) != 0 {
-		t.Fatalf("unavailable must not return entries: %+v", rank.Entries)
-	}
+	require.EqualValues(t, 6702, rank.Code)
+	require.Len(t, rank.Entries, 0)
 
 	// ⑬ 优雅关闭
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

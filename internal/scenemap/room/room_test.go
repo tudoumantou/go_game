@@ -13,6 +13,7 @@ import (
 	"game_study/internal/scenemap/aoi"
 	"game_study/internal/scenemap/grid"
 	"game_study/internal/scenemap/room"
+	"github.com/stretchr/testify/require"
 )
 
 // stubSink 只记录投递次数与内容，供 NodeDown 兜底广播断言。
@@ -142,9 +143,7 @@ func newHarness(t *testing.T, poolSize int) (*room.Manager, *aoi.Pool, *stubSink
 func open(t *testing.T, m *room.Manager, key scenemap.MapKey, route scenemap.Route, sink aoi.Sink) *room.Room {
 	t.Helper()
 	r, err := m.Open(context.Background(), key, route, testConfig(sink))
-	if err != nil {
-		t.Fatalf("Open(%s): %v", key.Key(), err)
-	}
+	require.NoError(t, err)
 	return r
 }
 
@@ -155,9 +154,7 @@ func TestOpenAndGet(t *testing.T) {
 	key := scenemap.MapKey{MapID: 1, CliKey: "r1"}
 
 	r := open(t, m, key, 1, sink)
-	if r.CurrentState() != room.StateRunning {
-		t.Fatalf("State=%v, want RUNNING", r.CurrentState())
-	}
+	require.EqualValues(t, room.StateRunning, r.CurrentState())
 	if r.MGR == nil || r.AOI == nil {
 		t.Fatal("Room 的 MGR/AOI 未装配")
 	}
@@ -165,9 +162,7 @@ func TestOpenAndGet(t *testing.T) {
 	if !ok || got != r {
 		t.Fatalf("Get=%v,%v want 同一实例", got, ok)
 	}
-	if m.Len() != 1 {
-		t.Fatalf("Len=%d, want 1", m.Len())
-	}
+	require.EqualValues(t, 1, m.Len())
 	if routes := m.List(key.MapID); len(routes) != 1 || routes[0] != 1 {
 		t.Fatalf("List=%v, want [1]", routes)
 	}
@@ -208,12 +203,8 @@ func TestOpenConcurrentSameKey(t *testing.T) {
 	}
 	wg.Wait()
 
-	if okCount.Load() != 1 {
-		t.Fatalf("成功开房 %d 次, want 1", okCount.Load())
-	}
-	if dupCount.Load() != n-1 {
-		t.Fatalf("重复错误 %d 次, want %d", dupCount.Load(), n-1)
-	}
+	require.EqualValues(t, 1, okCount.Load())
+	require.EqualValues(t, n-1, dupCount.Load())
 }
 
 func TestOpenFactoryErrorRollsBack(t *testing.T) {
@@ -227,9 +218,7 @@ func TestOpenFactoryErrorRollsBack(t *testing.T) {
 	if _, ok := m.Get(key); ok {
 		t.Fatal("失败后房间不应被登记")
 	}
-	if pool.Idle() != 1 {
-		t.Fatalf("Idle=%d, want 1（AOI 应归还池）", pool.Idle())
-	}
+	require.EqualValues(t, 1, pool.Idle())
 	// 占位必须被摘掉，否则这张图再也开不起来
 	factory.setErr(nil)
 	if _, err := m.Open(context.Background(), key, 1, testConfig(sink)); err != nil {
@@ -248,9 +237,7 @@ func TestCloseReleasesAOIToPool(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enter: %v", err)
 	}
-	if r.AOI.Len() != 1 {
-		t.Fatalf("AOI Len=%d, want 1", r.AOI.Len())
-	}
+	require.EqualValues(t, 1, r.AOI.Len())
 
 	if err := m.Close(context.Background(), key, "test"); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -258,18 +245,12 @@ func TestCloseReleasesAOIToPool(t *testing.T) {
 	if _, ok := m.Get(key); ok {
 		t.Fatal("关房后 Get 仍能查到")
 	}
-	if r.CurrentState() != room.StateClosed {
-		t.Fatalf("State=%v, want CLOSED", r.CurrentState())
-	}
+	require.EqualValues(t, room.StateClosed, r.CurrentState())
 	if c := factory.closer.(*stubCloser); c.closeCalls.Load() != 1 {
 		t.Fatalf("MGR.Close 调用 %d 次, want 1", c.closeCalls.Load())
 	}
-	if pool.Idle() != 1 {
-		t.Fatalf("Idle=%d, want 1（AOI 未归还池）", pool.Idle())
-	}
-	if r.AOI.Len() != 0 {
-		t.Fatalf("归还后 AOI 仍带上一局实体: Len=%d", r.AOI.Len())
-	}
+	require.EqualValues(t, 1, pool.Idle())
+	require.EqualValues(t, 0, r.AOI.Len())
 }
 
 func TestCloseNotFound(t *testing.T) {
@@ -308,18 +289,12 @@ func TestConcurrentCloseOnlyOneWins(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	if okCount.Load() != 1 {
-		t.Fatalf("成功关闭 %d 次, want 1", okCount.Load())
-	}
-	if notFoundCount.Load() != n-1 {
-		t.Fatalf("ErrNotFound %d 次, want %d", notFoundCount.Load(), n-1)
-	}
+	require.EqualValues(t, 1, okCount.Load())
+	require.EqualValues(t, n-1, notFoundCount.Load())
 	if c := factory.closer.(*stubCloser); c.closeCalls.Load() != 1 {
 		t.Fatalf("MGR.Close 调用 %d 次, want 1", c.closeCalls.Load())
 	}
-	if pool.Idle() != 1 {
-		t.Fatalf("Idle=%d, want 1", pool.Idle())
-	}
+	require.EqualValues(t, 1, pool.Idle())
 }
 
 func TestPoolExhausted(t *testing.T) {
@@ -360,9 +335,7 @@ func TestCloseJoinsErrorsButStillCleans(t *testing.T) {
 	if _, ok := m.Get(key); ok {
 		t.Fatal("即使失败，房间也必须从登记表摘除（否则永远关不掉）")
 	}
-	if pool.Idle() != 1 {
-		t.Fatalf("Idle=%d, want 1（AOI 仍应归还）", pool.Idle())
-	}
+	require.EqualValues(t, 1, pool.Idle())
 }
 
 func TestListRoutes(t *testing.T) {
@@ -375,13 +348,9 @@ func TestListRoutes(t *testing.T) {
 
 	routes := m.List(mapID)
 	want := []scenemap.Route{1, 2, 3}
-	if len(routes) != len(want) {
-		t.Fatalf("List=%v, want %v", routes, want)
-	}
+	require.EqualValues(t, len(want), len(routes))
 	for i := range want {
-		if routes[i] != want[i] {
-			t.Fatalf("List=%v, want %v（应升序）", routes, want)
-		}
+		require.EqualValues(t, want[i], routes[i])
 	}
 
 	if err := m.Close(context.Background(), scenemap.MapKey{MapID: mapID, CliKey: "b"}, "test"); err != nil {
@@ -418,16 +387,12 @@ func TestNodeDownRoutesToCrossNodeRooms(t *testing.T) {
 	if err := m.NodeDown(context.Background(), []string{"n1"}); err != nil {
 		t.Fatalf("NodeDown: %v", err)
 	}
-	if c1.nodeCalls.Load() != 1 {
-		t.Fatalf("n1 房间收到 %d 次 node_down, want 1", c1.nodeCalls.Load())
-	}
+	require.EqualValues(t, 1, c1.nodeCalls.Load())
 	if got, _ := c1.nodes.Load().([]string); len(got) != 1 || got[0] != "n1" {
 		t.Fatalf("nodes=%v, want [n1]", got)
 	}
 	// n2 不在通知列表里，不应被打扰
-	if c2.nodeCalls.Load() != 0 {
-		t.Fatalf("n2 房间收到 %d 次 node_down, want 0", c2.nodeCalls.Load())
-	}
+	require.EqualValues(t, 0, c2.nodeCalls.Load())
 }
 
 // TestNodeDownFallbackBroadcast：玩法没实现 NodeDownHandler 时，

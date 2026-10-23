@@ -28,13 +28,9 @@ func TestBuildInitialItems(t *testing.T) {
 		{Id: 6, Col1: 1002, Col2: -1},  // 非法数量 → 跳过
 	})
 	want := []initItem{{itemID: 1001, count: 300}, {itemID: 2001, count: 1}}
-	if len(got) != len(want) {
-		t.Fatalf("items = %+v, want %+v", got, want)
-	}
+	require.EqualValues(t, len(want), len(got))
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("items[%d] = %+v, want %+v (all: %+v)", i, got[i], want[i], got)
-		}
+		require.EqualValues(t, want[i], got[i])
 	}
 }
 
@@ -48,9 +44,7 @@ func TestInitialItemsFromConfig(t *testing.T) {
 	}
 	for _, it := range items {
 		cfg, ok := gamedata.GetItemCfg(int64(it.itemID))
-		if !ok {
-			t.Fatalf("初始道具 %d 不在 item.xml", it.itemID)
-		}
+		require.True(t, ok)
 		if it.count <= 0 || (cfg.Col2 > 0 && it.count > cfg.Col2) {
 			t.Fatalf("初始道具 %d 数量 %d 非法（上限 %d）", it.itemID, it.count, cfg.Col2)
 		}
@@ -85,9 +79,7 @@ func TestCreateWritesInitialBagInTx(t *testing.T) {
 
 	got, err := svc.Create(context.Background(), accountID, "张三", 1)
 	require.NoError(t, err, "create")
-	if got != roleID {
-		t.Fatalf("role id = %d, want %d", got, roleID)
-	}
+	require.EqualValues(t, roleID, got)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
