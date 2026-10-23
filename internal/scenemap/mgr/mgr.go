@@ -192,6 +192,13 @@ type Deps struct {
 	// `entity.TickAll(s, now)`，装配时塞进来即可。
 	// nil 表示不跑 AI（纯框架/测试）。
 	AITick func(s *State, nowMS int64)
+	// BuffTick 战斗/buff 的每轮推进（500ms，吃倍速）。
+	//
+	// 与 AITick 同一时刻、同一 goroutine：battle.Tick 在这里结算 DoT、
+	// 子弹、火墙、延时施法。为什么不让 battle 自己起定时器：那样一张图
+	// 会有两条结算时间线，"Dot 先死还是技能先死"取决于 goroutine 调度，
+	// 无法回放。nil 表示不做战斗结算。
+	BuffTick func(s *State, nowMS int64)
 	// NpcDead 怪物死亡回调（由 entity 在血量归零时调用，
 	// 这里允许玩法覆盖结算顺序）。
 	NpcDead func(s *State, uuid scenemap.UUID, npcID int32)

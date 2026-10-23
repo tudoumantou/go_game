@@ -172,6 +172,13 @@ type Bullet struct {
 	Dir      scenemap.Dir
 	Speed    int32
 	ExpireAt int64
+	// Target 目标格（battle 追击用；原实现按朝向直线飞行，这里带目标
+	// 更简单也更可控）。
+	Target scenemap.GridPos
+	// SubSkillID 命中后结算的子技能（0 表示只是表现，不结算）。
+	SubSkillID int32
+	// NextAt 下次移动时间（unix 毫秒），用于控制每跳间隔。
+	NextAt int64
 }
 
 // Firewell 是持续伤害区域（火墙/毒池）。

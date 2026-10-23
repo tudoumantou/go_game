@@ -232,6 +232,33 @@ func (s *State) Now() int64 {
 	return s.owner.now()
 }
 
+// SpeedPermille 返回当前倍速（千分比，1000=1x）。
+//
+// 给 battle/entity 这类"挂在 MGR 上的算法包"用：它们需要知道倍速来缩放
+// 技能前摇、子弹间隔、刷怪周期。无主状态返回 1000（不缩放）。
+func (s *State) SpeedPermille() int32 {
+	if s == nil || s.owner == nil {
+		return 1000
+	}
+	return s.owner.Speed()
+}
+
+// Broadcast 在 MGR goroutine 内按范围广播（规格 §6.7 的 MGR.BcastMsg）。
+//
+// 为什么暴露这个方法：battle/玩法需要在"结算完成的那一刻"把表现包
+// 发出去，而它们只拿得到 *State。走命令（CommandBcast）是异步的，
+// 会让"结算顺序"与"广播顺序"之间插入其他命令；这里同步转发给 AOI，
+// 保证"先扣血、再飘字"的顺序不被破坏。
+//
+// 无主状态（单元测试）直接丢弃：没有 AOI 可发，也不是错误。
+func (s *State) Broadcast(msg any, scope BroadcastScope) error {
+	if s == nil || s.owner == nil {
+		return nil
+	}
+	_, err := s.owner.broadcast(msg, scope)
+	return err
+}
+
 // Closed 报告是否已进入关闭流程。
 func (s *State) Closed() bool { return s.closed }
 

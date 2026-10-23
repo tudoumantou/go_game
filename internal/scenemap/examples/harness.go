@@ -31,6 +31,7 @@ import (
 
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/aoi"
+	"game_study/internal/scenemap/battle"
 	"game_study/internal/scenemap/bridge"
 	"game_study/internal/scenemap/entity"
 	"game_study/internal/scenemap/grid"
@@ -160,6 +161,7 @@ type options struct {
 	tickInterval time.Duration
 	maxStep      int32
 	cliKey       string
+	battle       *battle.Options
 }
 
 // defaultOptions 返回默认配置：32×32 的空图、默认几何、60 秒空房保护。
@@ -228,6 +230,21 @@ func WithCliKey(key string) Option {
 	return func(o *options) { o.cliKey = key }
 }
 
+// WithBattle 启用战斗结算，并允许调用方定制配置表/地图类型/白名单。
+//
+// 不传 configure 时用 battle.DefaultTable()：演示技能 2001-2005。
+// Submit 默认留空（延时任务进 Runtime 本地队列），测试可以用
+// Harness.TickCombat 手动推进——这比"睡 400ms 等前摇"稳定得多。
+func WithBattle(configure func(*battle.Options)) Option {
+	return func(o *options) {
+		opts := battle.Options{}
+		if configure != nil {
+			configure(&opts)
+		}
+		o.battle = &opts
+	}
+}
+
 // Harness 是一张"装好的图"：MGR + AOI + bridge + RoomManager + 玩法。
 type Harness struct {
 	// T 用于在装配失败时直接 Fatal（装配错误不该让调用方再判一次）。
@@ -248,12 +265,15 @@ type Harness struct {
 	Geo grid.Geometry
 	// Size 地图尺寸。
 	Size grid.Size
+	// Events 战斗结果事件（battle.Notify 的出口，未启用战斗时为 nil）。
+	Events *BattleEventRecorder
 
 	gameplay     mgr.Gameplay
 	walkable     mgr.WalkableFunc
 	enterProtect time.Duration
 	tickInterval time.Duration
 	maxStep      int32
+	battle       *battle.Options
 
 	// roomClosed 在收到 MGR 的关图通知时被写入一条（容量 1，防重复）。
 	roomClosed chan struct{}
@@ -278,11 +298,13 @@ func NewHarness(t *testing.T, mapID int32, route scenemap.Route, opts ...Option)
 		Geo:          o.geo,
 		Size:         o.size,
 		Sink:         NewRecordingSink(),
+		Events:       NewBattleEventRecorder(),
 		gameplay:     o.gameplay,
 		walkable:     o.walkable,
 		enterProtect: o.enterProtect,
 		tickInterval: o.tickInterval,
 		maxStep:      o.maxStep,
+		battle:       o.battle,
 		roomClosed:   make(chan struct{}, 1),
 	}
 	h.Room = room.NewManager(nil, &harnessFactory{h: h}, aoi.NopLogger{})
@@ -331,6 +353,11 @@ func (f *harnessFactory) Create(_ context.Context, r *room.Room, _ room.OpenConf
 		// AI 钩子：entity 提供 TickAll，MGR 负责"每 500ms 恰好一轮"。
 		AITick: entity.TickAll,
 	}
+	if h.battle != nil {
+		// 战斗结算与 AI 同一拍（500ms，吃倍速）：DoT/子弹/火墙/延时施法
+		// 都在 BattleTick 里推进，保证"一条结算时间线"。
+		deps.BuffTick = battle.Tick
+	}
 
 	m := mgr.New(cfg, deps)
 	// 刷怪器推进走 MGR 的 loop（每秒，吃倍速），entity 自己不排定时器。
@@ -348,7 +375,49 @@ func (f *harnessFactory) Create(_ context.Context, r *room.Room, _ room.OpenConf
 
 	h.Mgr = m
 	h.AOI = r.AOI
+
+	// 战斗运行时必须在 MGR goroutine 里初始化（写 State.Ext）。
+	// 放在 Start 之后 Post：命令与后续的进图/施法同队列，天然有序。
+	if h.battle != nil {
+		opts := *h.battle
+		if opts.Table == nil {
+			opts.Table = battle.DefaultTable()
+		}
+		if opts.Notify == nil {
+			opts.Notify = func(uuid scenemap.UUID, evt any) { h.Events.Add(uuid, evt) }
+		}
+		if opts.OnNpcDead == nil {
+			opts.OnNpcDead = h.onNpcDead
+		}
+		if err := m.Post(battle.NewEnsureCommand(opts)); err != nil {
+			h.T.Fatalf("examples: 初始化战斗运行时失败: %v", err)
+		}
+	}
 	return mgrCloser{m: m}, nil
+}
+
+// onNpcDead 是 battle 的怪物死亡钩子（在 MGR goroutine 内被调用）。
+//
+// 顺序：先通知玩法（此时 NpeAIInfo 还在，玩法能拿到死亡格做掉落/计数），
+// 再投递 leave 命令删尸体（索引与动态阻挡、AOI 消失一起收口）。
+func (h *Harness) onNpcDead(s *mgr.State, uuid scenemap.UUID, npcID int32) {
+	info := s.NPES[uuid]
+	if info == nil {
+		return
+	}
+	x, y := info.GridPos.X, info.GridPos.Y
+	if h.gameplay != nil {
+		if err := h.gameplay.HandleNpcDead(npcID, uuid, x, y, s); err != nil {
+			h.T.Logf("examples: HandleNpcDead 失败: %v", err)
+		}
+	}
+	if h.Mgr != nil {
+		// Post 而不是直接改表：删尸体要同时动索引/阻挡/AOI，
+		// 走 mgr 的统一入口（entityLeave）才不会留下残留。
+		if err := h.Mgr.Post(mgr.CommandLeave{UUID: uuid, Reason: scenemap.LeaveReasonClose}); err != nil {
+			h.T.Logf("examples: 删除尸体失败: %v", err)
+		}
+	}
 }
 
 // mgrCloser 把 *mgr.Mgr 适配成 room.Closer。
@@ -431,6 +500,38 @@ func (h *Harness) Call(cmd mgr.Command) (any, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return h.Mgr.Call(ctx, cmd)
+}
+
+// Cast 让一个实体对目标施法（走 battle.CastCommand）。
+//
+// 返回值只表示"受理结果"，伤害在后续的 TickCombat/定时器里结算——
+// 这是规格 §10.7 双回路的直接体现，测试不要拿它当伤害结果。
+func (h *Harness) Cast(caster scenemap.UUID, skillID int32, target scenemap.UUID, pos *scenemap.GridPos) (battle.CastResult, error) {
+	v, err := h.Call(battle.NewCastCommand(battle.Cast{
+		Caster: caster, SkillID: skillID, Target: target, TargetPos: pos,
+	}))
+	if err != nil {
+		return battle.CastResult{}, err
+	}
+	res, ok := v.(battle.CastResult)
+	if !ok {
+		return battle.CastResult{}, fmt.Errorf("examples: 施法回执类型异常 %T", v)
+	}
+	return res, nil
+}
+
+// TickCombat 在 MGR goroutine 内手动推进一次战斗结算。
+//
+// 用于测试：延时 CAST、DoT、子弹、火墙都由 battle.Tick 驱动，
+// 生产上它挂在 Deps.BuffTick（500ms，吃倍速），测试不必等真实定时器。
+func (h *Harness) TickCombat() error {
+	cmd := mgr.NewFunc("examples:combat_tick", func(s *mgr.State) (any, error) {
+		battle.Tick(s, s.Now())
+		return nil, nil
+	})
+	cmd.AllowNoop = true
+	_, err := h.Call(cmd)
+	return err
 }
 
 // Read 在 MGR goroutine 里读一份状态并返回。

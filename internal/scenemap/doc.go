@@ -32,6 +32,8 @@
 //	aoi       视野：九宫格视野、出现/消失/移动广播、视野快照。
 //	room      全局单例：房间登记表、关房收口、节点宕机通知。
 //	entity    怪物/召唤/子弹的数据与 AI 状态机（全部活在 MGR 内）。
+//	battle    技能战斗结算：Sprite/SkillContext、伤害公式链、选目标、Buff、
+//	          死亡链幂等、双回路事件（算法库，不持有 goroutine）。
 //	gameplay  玩法插件：每种地图类型一个实现（Loop/PlayerEnter/...）。
 //	examples  最小可跑示例：多线主城 + 副本房。
 //

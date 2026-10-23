@@ -257,6 +257,11 @@ func (m *Mgr) handleBuffCheck(s *State, now int64) {
 	if m.deps.AITick != nil {
 		m.deps.AITick(s, now)
 	}
+	// 战斗结算（DoT/子弹/火墙/延时施法）与 AI 同一拍、同一 goroutine：
+	// 两条时间线合并成一条，结算顺序才是可回放的。
+	if m.deps.BuffTick != nil {
+		m.deps.BuffTick(s, now)
+	}
 	for _, id := range s.NpeUUIDs() {
 		info := s.NPES[id]
 		if info == nil {
