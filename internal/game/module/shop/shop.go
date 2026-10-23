@@ -14,7 +14,6 @@
 package shop
 
 import (
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -22,8 +21,6 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -67,30 +64,10 @@ type Data struct {
 	Bought map[string]int32 `json:"bought"`
 }
 
-// init 注册持久化：shop_record 主键为 (player_id)。
-func init() {
-	writebehind.RegisterFlat[model.ShopRecord](stateKey, model.ShopRecordFlat, validate)
-}
-
-// validate 落库前校验：次数非负。
-//
-// 空键也拒绝：键格式由 goodsKey 生成，空键说明状态被外部改坏。
-func validate(row *model.ShopRecord) error {
-	d, err := decode(row)
-	if err != nil {
-		return err
-	}
-	for key, n := range d.Bought {
-		if key == "" || n < 0 {
-			return fmt.Errorf("invalid shop record %q = %d", key, n)
-		}
-	}
-	return nil
-}
-
 // Module 商店模块。
 type Module struct {
-	*module.Thin
+	// Stateful 内嵌 Thin：生命周期与消息注册仍由 Thin 提供。
+	*module.Stateful[Data]
 	logger *log.Logger
 }
 
@@ -101,7 +78,7 @@ type Module struct {
 // 因此没有 OnLogin 钩子。
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
-	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
+	m.Stateful = module.NewStateful(stateKey, newData, module.ThinLogger(logger))
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.ShopListResp{}, m.onList)
 	m.HandleR(msgIDBuyReq, msgIDBuyResp, &gamev1.ShopBuyResp{}, module.Typed(msgIDBuyResp, m.onBuy))
 	return m
@@ -112,19 +89,22 @@ func New(logger *log.Logger) *Module {
 // load 传今天：跨天时在读取路径清零，列表天然展示新周期。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.ShopListResp{Code: codeOK}
-	d, err := load(ctx.State, businessDay(time.Now()))
-	if err != nil {
+	today := businessDay(time.Now())
+	if err := m.Read(ctx, func(d *Data) {
+		// 只读路径上的跨天重置不写回：下次读会重算，行为一致（原实现同）。
+		normalize(d, today)
+		for _, cfg := range gamedata.ShopGoodsCfgList() {
+			resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
+				GoodsId: int32(cfg.Id),
+				ItemId:  int32(cfg.Col2),
+				Price:   int32(cfg.Col3),
+				Count:   int32(cfg.Col4),
+				Bought:  d.Bought[goodsKey(defaultShopID, int32(cfg.Id))],
+				Limit:   0, // P6 不限购，P7 接 shop.xml 限购列
+			})
+		}
+	}); err != nil {
 		return err
-	}
-	for _, cfg := range gamedata.ShopGoodsCfgList() {
-		resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
-			GoodsId: int32(cfg.Id),
-			ItemId:  int32(cfg.Col2),
-			Price:   int32(cfg.Col3),
-			Count:   int32(cfg.Col4),
-			Bought:  d.Bought[goodsKey(defaultShopID, int32(cfg.Id))],
-			Limit:   0, // P6 不限购，P7 接 shop.xml 限购列
-		})
 	}
 	return reply(ctx, msgIDListResp, resp)
 }
@@ -149,48 +129,52 @@ func (m *Module) onBuy(ctx *module.Context, req *gamev1.ShopBuyReq, resp *gamev1
 
 	itemID := int32(cfg.Col2)
 	gain := int64(cfg.Col4) * count
-	// 顺序即正确性：先只预检（不改状态）→ 扣费 → 才发货。
-	// 反过来做就会出现「钱扣了货没到」或「货到了钱没扣」，只能客服补偿。
-	grants := []module.ItemGrant{{ItemID: itemID, Count: gain}}
-	if err := module.PrecheckGrant(ctx.State, grants); err != nil {
-		resp.Code = codeBagFull
-		return nil
-	}
-
-	price := int64(cfg.Col3) * count
-	if err := module.Spend(ctx.State, itemDiamond, price); err != nil {
-		resp.Code = codeDiamondNotEnough
-		return nil
-	}
-
-	// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
-	changes, grantErr := module.Grant(ctx.State, grants)
-	if grantErr != nil {
-		resp.Code = codeBagFull
-		return nil
-	}
-
-	// 购买次数在扣费/发货之后才累加，但同属一份快照：CAS 失败时扣费与次数一起回滚。
-	// load 传入今天，跨天时会在读取路径上清零历史次数（见 load 注释）。
 	today := businessDay(time.Now())
-	d, err := load(ctx.State, today)
+
+	var (
+		applied bool
+		changes []module.BagChange
+		bought  int32
+	)
+	err := m.Mutate(ctx, func(d *Data) bool {
+		// 顺序即正确性：先只预检（不改状态）→ 扣费 → 才发货。
+		// 反过来做就会出现「钱扣了货没到」或「货到了钱没扣」，只能客服补偿。
+		grants := []module.ItemGrant{{ItemID: itemID, Count: gain}}
+		if err := module.PrecheckGrant(ctx.State, grants); err != nil {
+			resp.Code = codeBagFull
+			return false
+		}
+		price := int64(cfg.Col3) * count
+		if err := module.Spend(ctx.State, itemDiamond, price); err != nil {
+			resp.Code = codeDiamondNotEnough
+			return false
+		}
+		// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
+		c, grantErr := module.Grant(ctx.State, grants)
+		if grantErr != nil {
+			resp.Code = codeBagFull
+			return false
+		}
+		changes = c
+
+		normalize(d, today)
+		key := goodsKey(defaultShopID, req.GoodsId)
+		d.Bought[key] += int32(count)
+		bought = d.Bought[key]
+		applied = true
+		return true
+	})
 	if err != nil {
 		return err
 	}
-	d.Day = today
-	key := goodsKey(defaultShopID, req.GoodsId)
-	d.Bought[key] += int32(count)
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
+	if !applied {
+		return nil
 	}
 
 	resp.Code = codeOK
-	resp.Bought = d.Bought[key]
-	// 回包由 module.Typed 统一完成；此处不再显式 reply。
-	// 背包增量推送（钻石扣减 + 道具增加）
-	// 一条通知带两条变更：扣减 Change=2、增加 Change=1，客户端一次刷新面板。
+	resp.Bought = bought
+	// 背包增量推送（钻石扣减 + 道具增加），一条通知带两条变更。
 	notify := &gamev1.BagChangeNotify{Changes: append([]*gamev1.ItemChange{
-		// 扣减用 Change=2（与增加区分，客户端据此播扣款动效）
 		{ItemUid: int64(itemDiamond), ItemId: itemDiamond, Count: int32(ctx.State.GetItemCount(itemDiamond)), Change: 2},
 	}, module.ToItemChanges(changes)...)}
 	if raw, err := proto.Marshal(notify); err == nil {
@@ -206,31 +190,6 @@ func (m *Module) onBuy(ctx *module.Context, req *gamev1.ShopBuyReq, resp *gamev1
 // goodsKey 组合商店与商品 ID，作为快照内的稳定键。
 func goodsKey(shopID, goodsID int32) string {
 	return fmt.Sprintf("%d:%d", shopID, goodsID)
-}
-
-// load 读取购买次数；从未购买返回空结构。
-//
-// 每日刷新的商店（shop_refresh.xml 的 col2=daily）在跨天时清零购买次数：
-// 清零发生在读取路径上，不需要全服定时任务，也不会因为玩家离线几天而漏刷。
-// 代价是每次读都要比一次 Day——换来的是「零定时任务」的简单性。
-func load(state writebehind.ExtState, today int64) (*Data, error) {
-	row, err := writebehind.LoadExt[model.ShopRecord](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{Day: today, Bought: map[string]int32{}}, nil
-	}
-	d, err := decode(row)
-	if err != nil {
-		return nil, err
-	}
-	if dailyRefresh() && d.Day != today {
-		// 跨天：旧次数作废，重置 Day 让本次购买从 0 计起。
-		d.Bought = map[string]int32{}
-		d.Day = today
-	}
-	return d, nil
 }
 
 // dailyRefresh 商店是否按日刷新（配置缺失视为不刷新）。
@@ -249,33 +208,6 @@ func dailyRefresh() bool {
 // 与 loginreward/signin 同一口径（UTC+8 固定偏移）：进程跑在
 // UTC 容器里也不能改变「今天」的归属，跨天清零才对得上玩家体感。
 func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }
-
-// decode 把表行 JSON 解成业务视图；保证 map 非 nil。
-func decode(row *model.ShopRecord) (*Data, error) {
-	d := &Data{Bought: map[string]int32{}}
-	if row.Bought != "" {
-		if err := json.Unmarshal([]byte(row.Bought), &d.Bought); err != nil {
-			return nil, fmt.Errorf("decode shop state: %w", err)
-		}
-	}
-	if d.Bought == nil {
-		d.Bought = map[string]int32{}
-	}
-	return d, nil
-}
-
-// save 把购买次数编码回 Ext 槽位；落库调度由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	raw, err := json.Marshal(d.Bought)
-	if err != nil {
-		return fmt.Errorf("encode shop state: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.ShopRecord{
-		PlayerId: playerID,
-		Day:      d.Day,
-		Bought:   string(raw),
-	})
-}
 
 // reply 序列化 proto 并经 ctx.Reply 下发。
 func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
