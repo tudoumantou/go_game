@@ -5,7 +5,6 @@ package skill
 
 import (
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -90,14 +89,14 @@ func TestLearnAndUpgrade(t *testing.T) {
 	learn, _ := proto.Marshal(&gamev1.SkillLearnReq{SkillId: int32(cfg.Id)})
 	err := m.OnMessage(ctx, msgIDLearnReq, learn)
 	require.NoError(t, err)
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)])
 
 	st.items[upgradeItemID] = 1000
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
 	err = m.OnMessage(ctx, msgIDUpgradeReq, upgrade)
 	require.NoError(t, err)
-	d, _ = load(st)
+	d, _ = m.State(ctx)
 	require.EqualValues(t, 2, d.Levels[int32(cfg.Id)])
 	want := 1000 - int64(cfg.Col3)
 	require.EqualValues(t, want, st.GetItemCount(upgradeItemID))
@@ -109,12 +108,12 @@ func TestLearnDuplicate(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
 	m := New(nil)
-	err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{int32(cfg.Id): 3}})
+	err := m.Mutate(ctx, func(dst *Data) bool { *dst = *&Data{Levels: map[int32]int32{int32(cfg.Id): 3}}; return true })
 	require.NoError(t, err)
 	learn, _ := proto.Marshal(&gamev1.SkillLearnReq{SkillId: int32(cfg.Id)})
 	err = m.OnMessage(ctx, msgIDLearnReq, learn)
 	require.NoError(t, err)
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	require.EqualValues(t, 3, d.Levels[int32(cfg.Id)])
 }
 
@@ -124,27 +123,32 @@ func TestUpgradeWithoutResource(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
 	m := New(nil)
-	err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{int32(cfg.Id): 1}})
+	err := m.Mutate(ctx, func(dst *Data) bool { *dst = *&Data{Levels: map[int32]int32{int32(cfg.Id): 1}}; return true })
 	require.NoError(t, err)
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
 	err = m.OnMessage(ctx, msgIDUpgradeReq, upgrade)
 	require.NoError(t, err)
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)], "level changed without resource")
 	require.EqualValues(t, 0, st.GetItemCount(upgradeItemID), "item deducted on failed upgrade")
 }
 
-// TestSnapshotShape 落库形状 {"player_id":..,"skills":"{...}"}。
+// TestSnapshotShape Ext 槽位存的是业务结构（Data），表行转换在 persist.go。
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
-	err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{101: 4}})
+	ctx := newCtx(st)
+	m := New(nil)
+
+	err := m.Mutate(ctx, func(dst *Data) bool { *dst = Data{Levels: map[int32]int32{101: 4}}; return true })
 	require.NoError(t, err)
-	var row struct {
-		PlayerId int64
-		Skills   string
-	}
-	err = json.Unmarshal(st.Ext(stateKey), &row)
+
+	var decoded Data
+	require.NoError(t, json.Unmarshal(st.Ext(stateKey), &decoded), "Ext 必须是 Data 结构")
+	require.EqualValues(t, 4, decoded.Levels[101])
+
+	// 落库形状由 toRow 决定：整份存 skills 列。
+	row, err := toRow(9, &decoded)
 	require.NoError(t, err)
-	require.EqualValues(t, 9, row.PlayerId, fmt.Sprintf("unexpected row: %+v", row))
+	require.EqualValues(t, 9, row.PlayerId)
 	require.EqualValues(t, `{"101":4}`, row.Skills)
 }

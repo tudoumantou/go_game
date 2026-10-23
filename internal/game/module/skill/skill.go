@@ -13,15 +13,10 @@
 package skill
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -64,38 +59,17 @@ type Data struct {
 	Levels map[int32]int32 `json:"levels"`
 }
 
-// init 注册持久化：player_skill 主键为 (player_id)。
-func init() {
-	writebehind.RegisterFlat[model.PlayerSkill](stateKey, model.PlayerSkillFlat, validate)
-}
-
-// validate 落库前校验：等级必须为正，技能 ID 合法。
-//
-// 等级 <=0 一律拒绝：0 级没有语义（未学习应该没有键），
-// 负数说明数据被改坏。
-func validate(row *model.PlayerSkill) error {
-	d, err := decode(row)
-	if err != nil {
-		return err
-	}
-	for id, level := range d.Levels {
-		if id <= 0 || level <= 0 {
-			return fmt.Errorf("invalid skill %d level %d", id, level)
-		}
-	}
-	return nil
-}
-
 // Module 技能模块。
 type Module struct {
-	*module.Thin
+	// Stateful 内嵌 Thin：生命周期与消息注册仍由 Thin 提供。
+	*module.Stateful[Data]
 	logger *log.Logger
 }
 
 // New 创建技能模块。
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
-	m.Thin = module.NewThin(stateKey,
+	m.Stateful = module.NewStateful(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
@@ -107,7 +81,7 @@ func New(logger *log.Logger) *Module {
 
 // onLogout 下线时标脏，确保最后一次学习的技能随快照落库。
 func (m *Module) onLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(stateKey)
+	ctx.State.MarkDirty(m.Name())
 	return nil
 }
 
@@ -119,33 +93,32 @@ func (m *Module) onLogout(ctx *module.Context) error {
 // 也顺带在注释里写明了「为什么不用标准库」。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.SkillListResp{Code: codeOK}
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
-
-	ids := make([]int32, 0, len(d.Levels))
-	for id := range d.Levels {
-		ids = append(ids, id)
-	}
-	// 稳定顺序，客户端列表不抖动。
-	for i := 0; i < len(ids); i++ {
-		for j := i + 1; j < len(ids); j++ {
-			if ids[j] < ids[i] {
-				ids[i], ids[j] = ids[j], ids[i]
+	if err := m.Read(ctx, func(d *Data) {
+		ids := make([]int32, 0, len(d.Levels))
+		for id := range d.Levels {
+			ids = append(ids, id)
+		}
+		// 稳定顺序，客户端列表不抖动（N 通常 <20，冒泡足够）。
+		for i := 0; i < len(ids); i++ {
+			for j := i + 1; j < len(ids); j++ {
+				if ids[j] < ids[i] {
+					ids[i], ids[j] = ids[j], ids[i]
+				}
 			}
 		}
-	}
-	for _, id := range ids {
-		name := ""
-		if cfg, ok := gamedata.GetSkillCfg(int64(id)); ok {
-			name = cfg.Col1
+		for _, id := range ids {
+			name := ""
+			if cfg, ok := gamedata.GetSkillCfg(int64(id)); ok {
+				name = cfg.Col1
+			}
+			resp.Skills = append(resp.Skills, &gamev1.SkillEntry{
+				SkillId: id,
+				Name:    name,
+				Level:   d.Levels[id],
+			})
 		}
-		resp.Skills = append(resp.Skills, &gamev1.SkillEntry{
-			SkillId: id,
-			Name:    name,
-			Level:   d.Levels[id],
-		})
+	}); err != nil {
+		return err
 	}
 	return reply(ctx, msgIDListResp, resp)
 }
@@ -160,24 +133,20 @@ func (m *Module) onLearn(ctx *module.Context, req *gamev1.SkillLearnReq, resp *g
 		resp.Code = codeNotExist
 		return nil
 	}
+	// 等级门槛是只读判断，放在闭包外，避免无改动也走一次解码。
 	if ctx.State.Profile().Level < int32(cfg.Col2) {
 		resp.Code = codeLevelLow
 		return nil
 	}
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
-	if _, learned := d.Levels[req.SkillId]; learned {
-		resp.Code = codeLearned
-		return nil
-	}
-	d.Levels[req.SkillId] = 1
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	resp.Code = codeOK
-	return nil
+	return m.Mutate(ctx, func(d *Data) bool {
+		if _, learned := d.Levels[req.SkillId]; learned {
+			resp.Code = codeLearned
+			return false
+		}
+		d.Levels[req.SkillId] = 1
+		resp.Code = codeOK
+		return true
+	})
 }
 
 // onUpgrade 升级：扣材料与等级变更在同一次快照提交。
@@ -192,70 +161,23 @@ func (m *Module) onUpgrade(ctx *module.Context, req *gamev1.SkillUpgradeReq, res
 		resp.Code = codeNotExist
 		return nil
 	}
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
-	level, learned := d.Levels[req.SkillId]
-	if !learned {
-		resp.Code = codeNotLearned
-		return nil
-	}
-	// 升级消耗：Col3 * 当前等级 钻石（Col3=0 表示免费）
-	cost := int64(cfg.Col3) * int64(level)
-	// 免费（cost<=0）由 Spend 内部直接放行，不必再写分支。
-	if err := module.Spend(ctx.State, upgradeItemID, cost); err != nil {
-		resp.Code = codeNoResource
-		return nil
-	}
-	next := level + 1
-	d.Levels[req.SkillId] = next
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	resp.Code = codeOK
-	resp.Level = next
-	return nil
-}
-
-// load 读取技能状态；从未学习过返回空结构。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.PlayerSkill](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{Levels: map[int32]int32{}}, nil
-	}
-	return decode(row)
-}
-
-// decode 把表行 JSON 解成业务视图；保证 map 非 nil，避免调用方写入 panic。
-//
-// Go 知识点：nil map 可以读不可以写——d.Levels[id] = 1 对 nil map
-// 会 panic。所有 load 路径归一成非 nil，调用方才敢直接赋值。
-func decode(row *model.PlayerSkill) (*Data, error) {
-	d := &Data{Levels: map[int32]int32{}}
-	if row.Skills != "" {
-		if err := json.Unmarshal([]byte(row.Skills), &d.Levels); err != nil {
-			return nil, fmt.Errorf("decode skill state: %w", err)
+	return m.Mutate(ctx, func(d *Data) bool {
+		level, learned := d.Levels[req.SkillId]
+		if !learned {
+			resp.Code = codeNotLearned
+			return false
 		}
-	}
-	if d.Levels == nil {
-		d.Levels = map[int32]int32{}
-	}
-	return d, nil
-}
-
-// save 把技能等级编码回 Ext 槽位；落库由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	raw, err := json.Marshal(d.Levels)
-	if err != nil {
-		return fmt.Errorf("encode skill state: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.PlayerSkill{
-		PlayerId: playerID,
-		Skills:   string(raw),
+		// 升级消耗：Col3 * 当前等级 钻石（Col3=0 表示免费，Spend 内部放行）。
+		cost := int64(cfg.Col3) * int64(level)
+		if err := module.Spend(ctx.State, upgradeItemID, cost); err != nil {
+			resp.Code = codeNoResource
+			return false
+		}
+		next := level + 1
+		d.Levels[req.SkillId] = next
+		resp.Code = codeOK
+		resp.Level = next
+		return true
 	})
 }
 
