@@ -58,7 +58,7 @@ type fakeRouter struct {
 }
 
 func (r *fakeRouter) Get(playerID int64) (*actor.PID, bool) { return r.pid, r.pid != nil }
-func (r *fakeRouter) GetOrSpawn(playerID int64) (*actor.PID, error) {
+func (r *fakeRouter) GetOrSpawn(ctx context.Context, playerID int64) (*actor.PID, error) {
 	return r.pid, nil
 }
 

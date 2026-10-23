@@ -18,11 +18,14 @@ package actor
 // ID 是全局唯一名（如 "player:123"），同时作为分片路由键；
 // Shard 是该 Actor 固定落到的分片序号——投递与终止都按 ID 哈希
 // 路由到同一分片，保证同一 Actor 的消息在单 goroutine 上串行执行。
+// Node 是 Actor 所在节点（P0 跨节点）：空 = 本节点；非空 = 远端节点 ID。
+// 单机部署下 Node 恒为空，本字段不参与任何逻辑。
 // 全链路以 *PID 传递（Spawn 返回、Send/Terminate 接收）：指针语义
 // 让「同一个 Actor」在各处是同一份标识，不会因值拷贝产生歧义。
 type PID struct {
 	ID    string
 	Shard int
+	Node  string
 }
 
 // String 返回 PID 字符串表示。

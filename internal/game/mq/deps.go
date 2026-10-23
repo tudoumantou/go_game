@@ -34,9 +34,12 @@ type Presence interface {
 }
 
 // PlayerRouter 玩家 Actor 路由接口（*player.Manager 实现）。
+//
+// GetOrSpawn 带 ctx：命中本节点时透传给管理器做缓存预热；未命中且玩家
+// 在线在别节点时返回错误（由调用方走跨节点路径），不静默本地拉起。
 type PlayerRouter interface {
 	Get(playerID int64) (*actor.PID, bool)
-	GetOrSpawn(playerID int64) (*actor.PID, error)
+	GetOrSpawn(ctx context.Context, playerID int64) (*actor.PID, error)
 }
 
 // 编译期断言：*player.Manager 实现 PlayerRouter。

@@ -27,6 +27,7 @@ import (
 
 	gamecenter "game_study/internal/game/center"
 	gamecross "game_study/internal/game/cross"
+	gameremote "game_study/internal/game/remote"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/activity"
 	"game_study/internal/game/module/attr"
@@ -218,12 +219,29 @@ func (s *Server) Start(ctx context.Context) error {
 		go s.maintainIDTables(s.runCtx)
 	}
 
+	// ② 中心服客户端（P8 + P0）：匹配主路径 + 跨节点 Actor 投递中转。
+	// 必须建在 Actor 系统之前——actor.Config.Remote 引用它。
+	// 未配置则 battle 降级为本服匹配、远程投递走「本地找不到即失败」。
+	if s.cfg.Center.Addr != "" {
+		s.centerCli = gamecenter.NewClient(s.cfg.Server.Name, s.cfg.Center.Addr, centerHandler{srv: s}, s.logger)
+	}
+
 	// ③ Actor 系统 + 模块
-	s.actorSys = actor.NewSystem(actor.Config{
+	//
+	// NodeID/Remote（P0 跨节点）：NodeID 是本节点标识（Send 据此判断
+	// 目标是否远程）；Remote 非 nil 时远程 PID 经中心服中转投递。
+	// 未配中心服时不设 Remote——远程 PID 按本地找，找不到报错，
+	// 与单机部署行为一致（宁可显式失败，不静默丢消息）。
+	actorCfg := actor.Config{
 		ShardCount:  s.cfg.Actor.ShardCount,
 		MailboxSize: s.cfg.Actor.MailboxSize,
 		Logger:      s.logger, // panic 恢复时记录堆栈（不再静默吞掉）
-	})
+		NodeID:      s.cfg.Server.Name,
+	}
+	if s.centerCli != nil {
+		actorCfg.Remote = gameremote.NewSender(s.centerCli, s.cfg.Server.Name, s.logger)
+	}
+	s.actorSys = actor.NewSystem(actorCfg)
 	s.actorSys.Start(s.runCtx)
 
 	// 场景 Actor：数量由配置决定，启动期一次性拉起。
@@ -236,10 +254,6 @@ func (s *Server) Start(ctx context.Context) error {
 	// 跨服连接池（P13）：在模块注册前建好，battle 模块依赖它
 	if len(s.cfg.Cross.Nodes) > 0 {
 		s.crossPool = gamecross.NewPool(s.cfg.Server.Name, crossHandler{srv: s}, s.logger)
-	}
-	// 中心服客户端（P8）：匹配主路径，未配置则 battle 降级为本服匹配
-	if s.cfg.Center.Addr != "" {
-		s.centerCli = gamecenter.NewClient(s.cfg.Server.Name, s.cfg.Center.Addr, centerHandler{srv: s}, s.logger)
 	}
 	s.battleMod = battle.New(s.crossPool, centerMatchAdapter{cli: s.centerCli}, gamePusher{srv: s}, s.logger)
 	if d, err := config.ParseDuration(s.cfg.Cross.BattleTimeout); err == nil && d > 0 {
@@ -351,6 +365,13 @@ func (s *Server) Start(ctx context.Context) error {
 	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, onDirty, s.sendToClient)
 	// 场景心跳与重连同步：反向依赖由组装层注入，player 包不认识 scene。
 	s.players.SetSceneLink(s.sceneMgr)
+	// 跨节点（P0）：本节点标识 + 在线归属表。Resolve 据此在本地未命中时
+	// 返回远程 PID（Send 自动走中心服中转）；presence 未配置（无 Redis）
+	// 时退化为纯本地查询。
+	s.players.SetNodeID(s.cfg.Server.Name)
+	if s.presence != nil {
+		s.players.SetPresence(s.presence)
+	}
 	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
 	if s.database != nil {
 		preloadTimeout := player.DefaultPreloadTimeout
@@ -621,10 +642,15 @@ func (m chatMessenger) OnlineNode(ctx context.Context, playerID int64) (string, 
 // 优先走 Actor（保证与玩家自身消息的处理顺序一致）；Actor 尚未创建时
 // （玩家只登录、还没发过业务包）直接走会话下行 —— 推送是纯下行，不需要业务状态。
 //
+// Resolve 而不是 Get（P0）：玩家可能在线在**别的游戏节点**——本地表
+// 未命中时查在线归属表，拿到远程 PID 后 Send 自动经中心服中转投递。
+// 跨节点推送上线前，这里对异地在线玩家只能落到 sendToPlayer（本节点
+// 会话下行），消息实际丢失。
+//
 // 顺序敏感的根源：聊天回包与玩家自己的业务回包若走两条通道，客户端可能
 // 看到「先收到回复、后收到请求响应」的乱序。
 func (m chatMessenger) Push(ctx context.Context, playerID int64, msgID uint32, body []byte) bool {
-	if pid, ok := m.srv.players.Get(playerID); ok {
+	if pid, ok := m.srv.players.Resolve(ctx, playerID); ok {
 		if err := m.srv.actorSys.Send(pid, &player.PushMsg{MsgID: msgID, Body: body}); err == nil {
 			return true
 		}
@@ -856,7 +882,7 @@ func (s *Server) ensureActor(ctx context.Context, sessionID uint64, playerID int
 func (s *Server) bindActor(ctx context.Context, sessionID uint64, playerID int64) error {
 	pid, ok := s.players.Get(playerID)
 	if !ok {
-		spawned, err := s.players.GetOrSpawn(playerID)
+		spawned, err := s.players.GetOrSpawn(ctx, playerID)
 		if err != nil {
 			return err
 		}
@@ -1159,13 +1185,26 @@ func (h centerHandler) OnMatchResult(res *internalv2.MatchResult) {
 	}
 }
 
-// OnRelayPush 实现 center.Handler（P9 中转业务接入前只记日志）。
+// OnRelayPush 实现 center.Handler：跨节点 Actor 投递的接收侧（P0）。
 //
-// 当前只观测不落地：中转是中心服代多节点互投消息的通道，业务接入前
-// 记下流量规模即可用于容量评估。
+//  payload 是 actor.RemoteEnvelope（JSON）：解出目标 ActorID 与消息后
+// 投入本地 System。语义是「尽力而为 + 对账兜底」——玩家已下线时
+// DeliverRemote 返回 ErrActorGone，记日志即可：客户端重连会拉全量
+// 权威状态，丢一条下行推送不构成正确性缺口。
 func (h centerHandler) OnRelayPush(push *internalv2.RelayPush) {
-	h.srv.logger.Debug("relay push received", "from", push.GetFromNode(),
-		"relay_id", push.GetRelayId(), "bytes", len(push.GetPayload()))
+	actorID, msg, err := actor.DecodeRemoteEnvelope(push.GetPayload())
+	if err != nil {
+		h.srv.logger.Warn("relay push decode failed",
+			"from", push.GetFromNode(), "relay_id", push.GetRelayId(), "err", err)
+		return
+	}
+	if err := h.srv.actorSys.DeliverRemote(actorID, msg); err != nil {
+		h.srv.logger.Debug("relay push deliver failed",
+			"from", push.GetFromNode(), "actor", actorID, "err", err)
+		return
+	}
+	h.srv.logger.Debug("relay push delivered",
+		"from", push.GetFromNode(), "actor", actorID, "relay_id", push.GetRelayId())
 }
 
 // OnGroupUpdate 实现 center.Handler：组内跨服地址变化 → 重建/新增跨服流。

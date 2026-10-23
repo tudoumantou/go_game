@@ -70,7 +70,9 @@ type staticRouter struct{ pid *actor.PID }
 func (r *staticRouter) Get(int64) (*actor.PID, bool) { return r.pid, true }
 
 // GetOrSpawn 与 Get 相同：测试里不真的 spawn。
-func (r *staticRouter) GetOrSpawn(int64) (*actor.PID, error) { return r.pid, nil }
+func (r *staticRouter) GetOrSpawn(ctx context.Context, _ int64) (*actor.PID, error) {
+	return r.pid, nil
+}
 
 // alwaysOnline 在线判定桩：任何玩家都「在线」且在指定节点，
 // 省去真实 presence（etcd/Redis）装配，把用例聚焦在 Kafka 链路本身。

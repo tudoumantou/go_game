@@ -18,6 +18,7 @@ package player
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -64,6 +65,10 @@ type UnbindMsg struct {
 }
 
 // PacketMsg 客户端消息。
+// PacketMsg 客户端上行数据包（经网关透传，含业务 protobuf）。
+//
+// 跨节点可投递（P0）：Kafka 消费（邮件/充值发货）等路径可能把数据包
+// 投给在线在别的节点的玩家。
 type PacketMsg struct {
 	// MsgID 业务协议号，Registry 按它分发到模块。
 	MsgID uint32
@@ -73,6 +78,12 @@ type PacketMsg struct {
 	Body []byte
 }
 
+// RemoteTypeURL 实现 actor.RemoteMessage（编解码注册表的键）。
+func (*PacketMsg) RemoteTypeURL() string { return remoteTypeURLPacketMsg }
+
+// MarshalRemote 实现 actor.RemoteMessage（JSON：纯数据，无 channel）。
+func (m *PacketMsg) MarshalRemote() ([]byte, error) { return json.Marshal(m) }
+
 // GrantItem 奖励道具。
 type GrantItem struct {
 	ItemID int32
@@ -80,10 +91,20 @@ type GrantItem struct {
 }
 
 // PushMsg 向该玩家客户端推送一条消息（跨模块统一出口）。
+// PushMsg 下行推送消息（聊天/GM 广播等纯下行路径）。
+//
+// 跨节点可投递（P0）：实现 actor.RemoteMessage——聊天推送给在线在
+// 别的节点的玩家时，消息经中心服中转投递到目标节点的本地 Actor。
 type PushMsg struct {
 	MsgID uint32
 	Body  []byte
 }
+
+// RemoteTypeURL 实现 actor.RemoteMessage（编解码注册表的键）。
+func (*PushMsg) RemoteTypeURL() string { return remoteTypeURLPushMsg }
+
+// MarshalRemote 实现 actor.RemoteMessage（JSON：纯数据，无 channel）。
+func (m *PushMsg) MarshalRemote() ([]byte, error) { return json.Marshal(m) }
 
 // SceneResult 场景 Actor 对玩家请求（进入/移动/离开/同步）的处理结果。
 //

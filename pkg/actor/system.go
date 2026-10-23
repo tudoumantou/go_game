@@ -64,6 +64,11 @@ type System struct {
 	stopOnce    sync.Once
 	stopCh      chan struct{}
 
+	// 跨节点（P0）：nodeID 是本节点标识；remote 非 nil 时远程 PID 走
+	// 它投递。两者在 NewSystem 后只读。
+	nodeID string
+	remote RemoteSender
+
 	// 定时器：timerLoop 每 100ms 线性扫描到期的 entry 并投递。
 	// timerMu 保护 timers 切片——ScheduleOnce（业务 goroutine）与
 	// fireTimers（定时器 goroutine）跨 goroutine 读写同一切片。
@@ -76,12 +81,18 @@ type System struct {
 //
 // ShardCount/MailboxSize <= 0 时分别回退默认 1024；Logger 可选，
 // 不提供则 panic 时走 debug.PrintStack（输出到 stderr）。
+// NodeID/Remote 是跨节点部署开关（P0）：两者都非空/nil 就位时，
+// Send 对 Node 非本节点的 PID 走 RemoteSender；缺任何一个 →
+// 按单机模式处理（远程 PID 也只在本地找，找不到报 ErrActorGone，
+// 与改造前行为一致，不会静默丢消息）。
 // 按值传入（非指针）：配置是短生命周期小对象，值语义避免调用方之后
 // 修改外部 Config 影响已创建的 System。
 type Config struct {
 	ShardCount  int
 	MailboxSize int
 	Logger      Logger // 可选：panic 恢复时记录堆栈
+	NodeID      string // 本节点标识（跨节点路由的比较基准）
+	Remote      RemoteSender
 }
 
 // NewSystem 创建 ActorSystem（不启动任何 goroutine，需显式 Start）。
@@ -107,6 +118,8 @@ func NewSystem(cfg Config) *System {
 		shards:      make([]*shard, cfg.ShardCount),
 		logger:      cfg.Logger,
 		stopCh:      make(chan struct{}),
+		nodeID:      cfg.NodeID,
+		remote:      cfg.Remote,
 	}
 	for i := range s.shards {
 		s.shards[i] = newShard(i, s)
@@ -218,12 +231,31 @@ func (s *System) Send(target *PID, msg any) error {
 // Go 知识点：按 target.ID 重新计算分片而不是信 PID.Shard——寻址逻辑
 // 单点收敛（改哈希算法只改一处），也防调用方伪造 Shard 字段；
 // deliver 内的错误已用 %w 包装 ErrActorGone，errors.Is 可判。
+//
+// 跨节点分支（P0）：target.Node 非空且不是本节点时走 RemoteSender。
+// 三个条件缺一不可——Node 为空（本地 PID）或就是本节点（本节点持有的
+// 远端视图，如玩家重连后归属表还没刷新）都按本地投递处理；Remote 为 nil
+// （单机模式）时也落本地，找不到报 ErrActorGone，与改造前一致。
 func (s *System) SendWithSender(target *PID, msg any, sender *PID) error {
 	if target == nil {
 		return fmt.Errorf("target pid is nil")
 	}
+	if s.remote != nil && target.Node != "" && target.Node != s.nodeID {
+		return s.remote.Deliver(target, msg)
+	}
 	sh := s.shardFor(target.ID)
 	return sh.deliver(target.ID, envelope{sender: sender, message: msg})
+}
+
+// DeliverRemote 把跨节点收到的消息投入本地 Actor（组装层的中转入口调用）。
+//
+// 与 Send 的区别：sender 为 nil（跨节点没有可 Respond 的发送方），
+// 消息已由传输层反序列化。Actor 不存在时返回包装了 ErrActorGone 的错误，
+// 由调用方（RPC handler）记日志——远程投递是「尽力而为 + 对账兜底」，
+// 玩家已下线时丢消息是可接受语义（客户端重连会拉全量权威状态）。
+func (s *System) DeliverRemote(actorID string, msg any) error {
+	sh := s.shardFor(actorID)
+	return sh.deliver(actorID, envelope{message: msg})
 }
 
 // ScheduleOnce 调度一次性延迟消息。
