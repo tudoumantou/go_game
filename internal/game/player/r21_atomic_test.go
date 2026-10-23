@@ -81,7 +81,7 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 	responses := make(chan uint32, 8)
 	a := NewActor(7, registry, logger, repo, nil,
 		func(_ uint64, id uint32, _ []byte) error { responses <- id; return nil })
-	state, version, err := repo.LoadCached(ctx, 7)
+	state, version, _, err := repo.LoadCached(ctx, 7)
 	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version

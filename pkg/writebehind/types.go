@@ -99,6 +99,24 @@ type Record struct {
 	Version int64
 	// State 快照本体。
 	State Snapshot
+	// Legacy 该快照是升级前的「整份 data」格式。
+	//
+	// 分字段存储下，若第一条消息只提交变化字段，Lua 会 HDEL data，
+	// 其余字段（profile/items…）就丢了。所以调用方看到 Legacy=true 时
+	// 必须先做一次全量提交，把旧格式迁成分字段。
+	Legacy bool
+}
+
+// FieldNames 返回快照的全部字段名（Redis Hash 的 field）。
+//
+// 用于「必须整份写入」的场景：冷启动 Seed、pending 补提。
+// 常规消息用 State.DirtyFields() 只写变化的部分。
+func (s Snapshot) FieldNames() []string {
+	fields := []string{"profile", "attr", "items", "grants"}
+	for name := range s.Ext {
+		fields = append(fields, "ext:"+name)
+	}
+	return fields
 }
 
 // Validate 校验快照自洽性（提交/落库前的公共闸门）。

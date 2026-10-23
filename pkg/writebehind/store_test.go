@@ -32,7 +32,7 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 	require.EqualValues(t, 1, token, "首次获取令牌应从 1 开始")
 
 	snapshot.Items[1001] = 110
-	first, err := store.Commit(ctx, snapshot, token)
+	first, err := store.Commit(ctx, snapshot, snapshot.FieldNames(), nil, token)
 	if err != nil || first != 1 {
 		t.Fatalf("commit %d %v", first, err)
 	}
@@ -45,11 +45,11 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 	newToken, err := store.AcquireLease(ctx, 7)
 	require.NoError(t, err)
 	require.Greater(t, newToken, token)
-	if _, err := store.Commit(ctx, snapshot, token); !errors.Is(err, ErrConflict) {
+	if _, err := store.Commit(ctx, snapshot, snapshot.FieldNames(), nil, token); !errors.Is(err, ErrConflict) {
 		t.Fatalf("被接管后的旧令牌仍可写: %v", err)
 	}
 	snapshot.Items[1001] = 109
-	if _, err := store.Commit(ctx, snapshot, newToken); err != nil {
+	if _, err := store.Commit(ctx, snapshot, snapshot.FieldNames(), nil, newToken); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Ack(ctx, 7, 1); err != nil {
@@ -103,7 +103,7 @@ func TestInvalidQueueTypeDoesNotPartiallyUpdateSnapshot(t *testing.T) {
 	}
 	rdb.Set(ctx, s.dirtyKey(Partition(7)), "wrong type", 0)
 	state.Items[1001] = 110
-	if _, err := s.Commit(ctx, state, 0); err == nil {
+	if _, err := s.Commit(ctx, state, state.FieldNames(), nil, 0); err == nil {
 		t.Fatal("wrong queue type accepted")
 	}
 	record, err := s.Load(ctx, 7)

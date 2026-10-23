@@ -194,6 +194,9 @@ type Actor struct {
 	// cacheVersion 本地已知的 Redis 快照版本（仅用于落库确认与日志）；
 	// 提交成功则前进为新版本，失败保持旧值（下轮按同一版本重试）。
 	cacheVersion int64
+	// legacy 快照仍是升级前的整份格式：下一次提交要写全量，否则会丢字段。
+	legacy bool
+
 	// cacheReload 下一条消息前必须重新 LoadCached：上一次提交已回滚或
 	// 结果未知，内存相对 Redis 已过期，先恢复权威状态再进业务。
 	cacheReload bool
@@ -485,11 +488,12 @@ func (a *Actor) preload(ctx *actor.Context) error {
 		if err != nil {
 			return fmt.Errorf("acquire lease: %w", err)
 		}
-		state, version, err := a.repo.LoadCached(loadCtx, a.playerID)
+		state, version, legacy, err := a.repo.LoadCached(loadCtx, a.playerID)
 		if err != nil {
 			return err
 		}
 		a.token = token
+		a.legacy = legacy
 		a.setState(state)
 		a.cacheVersion = version
 		a.loaded = true
@@ -582,18 +586,16 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 		// 同落库到 applied_grants，进程重启后依然有效——充值回调/Kafka
 		// 重投不会导致二次发奖。B 类（主动领取）禁止塞这里，会持续膨胀。
 		key := msg.Source + ":" + msg.BizID
-		if a.state.appliedGrants[key] {
+		// 经 ClaimBiz 而不是直接写 map：它负责「检查 + 置位 + 标脏」三件事，
+		// 直接写会漏掉标脏——分字段提交时 grants 字段就不会被写回 Redis，
+		// 幂等键丢失，Kafka 重投会二次发奖。
+		if !a.state.ClaimBiz(key) {
 			if msg.Done != nil {
 				// 幂等命中：结果要等本次提交落定后再回执（与正常路径一致）。
 				_ = a.gate.Send(func() error { msg.Done <- nil; return nil })
 			}
 			return
 		}
-		// nil map 写入会 panic，懒初始化；ClaimBiz 同理（state.go）
-		if a.state.appliedGrants == nil {
-			a.state.appliedGrants = make(map[string]bool)
-		}
-		a.state.appliedGrants[key] = true
 	}
 
 	for _, it := range msg.Items {

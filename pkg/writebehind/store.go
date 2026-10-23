@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -97,9 +98,25 @@ elseif token ~= epoch then
 end
 local queueType=redis.call('TYPE',KEYS[2]).ok
 if queueType~='none' and queueType~='zset' then return redis.error_reply('invalid dirty queue type') end
+
+-- ARGV[1]=token ARGV[2]=playerID ARGV[3]=score ARGV[4]=占位
+-- ARGV[5..] 是 field/value 对；field 以 '-' 开头表示删除该 field。
+local i = 5
+while i <= #ARGV do
+  local f = ARGV[i]
+  local v = ARGV[i+1]
+  if string.sub(f, 1, 1) == '-' then
+    redis.call('HDEL', KEYS[1], string.sub(f, 2))
+  else
+    redis.call('HSET', KEYS[1], f, v)
+  end
+  i = i + 2
+end
+
+-- 首次分字段提交时清掉旧格式的整份 data（否则 Load 可能读到陈旧值）。
+redis.call('HDEL', KEYS[1], 'data')
 local next=redis.call('HINCRBY',KEYS[1],'version',1)
-redis.call('HSET',KEYS[1],'data',ARGV[2])
-redis.call('ZADD',KEYS[2],'NX',ARGV[4],ARGV[3])
+redis.call('ZADD',KEYS[2],'NX',ARGV[3],ARGV[2])
 return next
 `)
 
@@ -113,19 +130,31 @@ return next
 // 取舍：每次提交序列化**整份**快照而非 diff——快照量级在 KB 内，
 // 全量的实现与正确性论证（幂等、无合并冲突）远比增量简单；
 // 真正的写压力在数据库侧，那里有合批 UPSERT 兜底。
-func (s *Store) Commit(ctx context.Context, state Snapshot, token int64) (int64, error) {
+func (s *Store) Commit(ctx context.Context, state Snapshot, fields, removed []string, token int64) (int64, error) {
 	if err := state.Validate(); err != nil {
 		return 0, err
 	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return 0, err
+	// 只序列化本次变化的字段（R2.5-B）：签到消息不再重写整个背包。
+	args := []interface{}{token, state.PlayerID, time.Now().UnixMilli()}
+	args = append(args, 0) // 占位：字段对从 ARGV[5] 开始
+	for _, f := range fields {
+		raw, err := marshalField(state, f)
+		if err != nil {
+			return 0, err
+		}
+		if raw == nil {
+			continue // 模块没有状态，不写
+		}
+		args = append(args, f, string(raw))
+	}
+	for _, f := range removed {
+		args = append(args, "-"+f, "")
 	}
 	version, err := commitScript.Run(ctx, s.rdb, []string{
 		s.stateKey(state.PlayerID),
 		s.dirtyKey(Partition(state.PlayerID)),
 		s.epochKey(state.PlayerID),
-	}, token, string(raw), state.PlayerID, time.Now().UnixMilli()).Int64()
+	}, args...).Int64()
 	if err != nil {
 		return 0, err
 	}
@@ -133,6 +162,31 @@ func (s *Store) Commit(ctx context.Context, state Snapshot, token int64) (int64,
 		return 0, ErrConflict
 	}
 	return version, nil
+}
+
+// marshalField 序列化快照的单个字段。
+//
+// 返回 nil 表示该字段没有内容可写（模块未持有状态），调用方跳过。
+func marshalField(state Snapshot, field string) ([]byte, error) {
+	switch field {
+	case "profile":
+		return json.Marshal(state.Profile)
+	case "attr":
+		return json.Marshal(state.Attr)
+	case "items":
+		return json.Marshal(state.Items)
+	case "grants":
+		return json.Marshal(state.AppliedGrants)
+	}
+	name, ok := strings.CutPrefix(field, "ext:")
+	if !ok {
+		return nil, fmt.Errorf("writebehind: unknown field %q", field)
+	}
+	raw, exists := state.Ext[name]
+	if !exists || len(raw) == 0 {
+		return nil, nil
+	}
+	return raw, nil
 }
 
 // leaseTTL 会话令牌有效期。
@@ -230,8 +284,39 @@ func (s *Store) Load(ctx context.Context, id int64) (Record, error) {
 		return Record{}, fmt.Errorf("invalid cached version")
 	}
 	var state Snapshot
-	if err := json.Unmarshal([]byte(values["data"]), &state); err != nil {
-		return Record{}, fmt.Errorf("decode player cache: %w", err)
+	legacy := false
+	if raw := values["data"]; raw != "" {
+		legacy = true
+		// 旧格式：整份快照一个 field（升级前的数据，Commit 后会清掉）。
+		if err := json.Unmarshal([]byte(raw), &state); err != nil {
+			return Record{}, fmt.Errorf("decode player cache: %w", err)
+		}
+	} else {
+		// 新格式：一部分一个 field（R2.5-B），只解析需要的字段。
+		state = Snapshot{
+			PlayerID: id,
+			Items:    make(map[int32]int64),
+			Ext:      make(map[string]json.RawMessage),
+		}
+		for name, dst := range map[string]any{
+			"profile": &state.Profile,
+			"attr":    &state.Attr,
+			"items":   &state.Items,
+			"grants":  &state.AppliedGrants,
+		} {
+			if raw := values[name]; raw != "" {
+				if err := json.Unmarshal([]byte(raw), dst); err != nil {
+					return Record{}, fmt.Errorf("decode %s: %w", name, err)
+				}
+			}
+		}
+		for f, raw := range values {
+			name, ok := strings.CutPrefix(f, "ext:")
+			if !ok || raw == "" {
+				continue
+			}
+			state.Ext[name] = json.RawMessage(raw)
+		}
 	}
 	// 防串号：缓存内容里的 PlayerID 必须与请求的 id 一致，
 	// 不一致说明 key 被写错或数据被污染，继续用会张冠李戴
@@ -244,7 +329,7 @@ func (s *Store) Load(ctx context.Context, id int64) (Record, error) {
 	if err := state.Validate(); err != nil {
 		return Record{}, err
 	}
-	return Record{Version: version, State: state}, nil
+	return Record{Version: version, State: state, Legacy: legacy}, nil
 }
 
 // Pending 取一个分区最早的 limit 个待落库玩家（按入队时间排序）。

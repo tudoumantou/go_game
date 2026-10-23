@@ -61,6 +61,17 @@ type State struct {
 	dirty      map[string]bool // module -> dirty 标记
 	dirtyItems map[int32]bool  // 变更过的道具（落库只写这些，见 persist.Save）
 
+	// dirtyFields 本次尚未提交到 Redis 的字段名（R2.5-B 分字段存储）。
+	//
+	// 与 dirty 的分工：dirty 是「哪些模块脏」的明细，给落库与 flusher 用；
+	// dirtyFields 更细一级——直接就是 Redis Hash 的 field 名（profile/attr/
+	// items/grants/ext:<模块>），提交成功后清空。两者分开是为了让「提交」
+	// 能消费掉自己的标记而不影响落库链路。
+	dirtyFields map[string]bool
+	// removedExt 被删除的模块 Ext：分字段存储下删除要显式 HDEL，
+	// 否则旧 field 留在 Redis 里，下次 Load 会把已重置的模块状态读回来。
+	removedExt map[string]bool
+
 	// changed 自上一条消息以来是否有任何持久化字段被修改（R2.5）。
 	//
 	// 与 dirty 的区别：dirty 是「哪些模块脏」的明细，给落库用，生命周期跨消息；
@@ -83,11 +94,13 @@ type State struct {
 // NewState 创建玩家状态。
 func NewState(playerID int64) *State {
 	return &State{
-		playerID:   playerID,
-		items:      make(map[int32]int64),
-		ext:        make(map[string]json.RawMessage),
-		dirty:      make(map[string]bool),
-		dirtyItems: make(map[int32]bool),
+		playerID:    playerID,
+		items:       make(map[int32]int64),
+		ext:         make(map[string]json.RawMessage),
+		dirty:       make(map[string]bool),
+		dirtyItems:  make(map[int32]bool),
+		dirtyFields: make(map[string]bool),
+		removedExt:  make(map[string]bool),
 	}
 }
 
@@ -112,8 +125,10 @@ func (s *State) SetExt(name string, raw json.RawMessage) {
 	s.mu.Lock()
 	if raw == nil {
 		delete(s.ext, name)
+		s.removedExt[name] = true
 	} else {
 		s.ext[name] = append(json.RawMessage(nil), raw...)
+		delete(s.removedExt, name) // 重新写回则撤销待删除标记
 	}
 	s.mu.Unlock()
 	// touch 在锁外调用：持锁执行外部回调有死锁风险
@@ -148,7 +163,11 @@ func (s *State) ClaimBiz(key string) bool {
 }
 
 // HasBiz 查询业务键是否已应用。
-func (s *State) HasBiz(key string) bool { return s.appliedGrants[key] }
+func (s *State) HasBiz(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appliedGrants[key]
+}
 
 // Profile 返回角色基础信息副本。
 func (s *State) Profile() module.Profile {
@@ -379,9 +398,49 @@ func (s *State) touch(module string) {
 	s.changed = true
 	if module != "" {
 		s.dirty[module] = true
+		s.dirtyFields[fieldOf(module)] = true
 	}
 	s.mu.Unlock()
 	s.notifyDirty()
+}
+
+// fieldOf 模块名 → Redis Hash field 名。
+//
+// 核心四块有固定字段名，其余模块名都对应自己的 Ext 槽位。
+func fieldOf(module string) string {
+	switch module {
+	case "profile", "attr", "grants":
+		return module
+	case "bag":
+		return "items"
+	default:
+		return "ext:" + module
+	}
+}
+
+// DirtyFields 返回本次需要写回 Redis 的字段名与待删除的 Ext 字段。
+//
+// 返回的字段名直接就是 Redis Hash 的 field，Commit 据此只序列化变化的部分。
+func (s *State) DirtyFields() (fields, removed []string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	fields = make([]string, 0, len(s.dirtyFields))
+	for f := range s.dirtyFields {
+		fields = append(fields, f)
+	}
+	removed = make([]string, 0, len(s.removedExt))
+	for name := range s.removedExt {
+		removed = append(removed, "ext:"+name)
+	}
+	return fields, removed
+}
+
+// ClearDirtyFields 提交成功后清空字段级标记（落库明细 dirty/dirtyItems 不动）。
+func (s *State) ClearDirtyFields() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.dirtyFields)
+	clear(s.removedExt)
 }
 
 // HasChanged 自上一条消息以来是否有任何持久化字段被修改。
