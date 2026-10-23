@@ -33,7 +33,6 @@ import (
 	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -151,22 +150,20 @@ func (m *Module) grantOnLogin(ctx *module.Context) error {
 		m.warn("login reward config missing", ctx, err)
 		return nil
 	}
-	// 满包时不前进状态：下次登录会重新发放，不会吞掉当天奖励。
+	// 满包（或数量超限）时不前进状态：下次登录会重新发放，不会吞掉当天奖励。
 	// 与 quest/copy 的「满包拒绝」不同：那边是玩家主动重试，
 	// 这里连「重试入口」都没有，只能靠状态不前进来保奖励。
-	if !ctx.State.CanHold(grants) {
-		m.warn("login reward deferred: bag full", ctx, module.ErrBagFull)
+	// Grant 失败时一个道具都不会加，所以「状态没前进 = 奖励没发」始终成立。
+	changes, grantErr := module.Grant(ctx.State, grants)
+	if grantErr != nil {
+		m.warn("login reward deferred: bag full", ctx, grantErr)
 		return nil
 	}
-	// save 与 AddItem 都只改内存，同一次快照 CAS 提交：
-	// CAS 失败则「已发当天」的事实与道具一起回滚，不会吞奖。
+	// save 与发奖都只改内存，同一次快照 CAS 提交：
+	// CAS 失败则「已发当天」的事实与道具一起丢弃，不会吞奖。
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
-	for _, g := range grants {
-		ctx.State.AddItem(g.ItemID, g.Count)
-	}
-	ctx.State.MarkDirty("bag")
 
 	if m.logger != nil {
 		m.logger.Info("login reward granted",
@@ -174,15 +171,7 @@ func (m *Module) grantOnLogin(ctx *module.Context) error {
 	}
 	// 登录阶段客户端可能还没进场景，推送失败不影响正确性（背包以下次拉取为准）。
 	if ctx.Send != nil {
-		changes := lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.ItemChange {
-			return &gamev1.ItemChange{
-				ItemUid: int64(g.ItemID),
-				ItemId:  g.ItemID,
-				Count:   int32(ctx.State.GetItemCount(g.ItemID)),
-				Change:  1,
-			}
-		})
-		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
+		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(changes)}); err == nil {
 			_ = ctx.Send(3010, raw)
 		}
 	}

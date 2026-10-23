@@ -153,9 +153,10 @@ func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
 
 	itemID := int32(cfg.Col2)
 	gain := int64(cfg.Col4) * count
-	// 先查容量再扣费：满包时不能先把钻石扣掉再发现发不出货——
-	// 顺序错了就会出现「钱没了货没到」，只能客服补偿。
-	if !ctx.State.CanHold([]module.ItemGrant{{ItemID: itemID, Count: gain}}) {
+	// 顺序即正确性：先只预检（不改状态）→ 扣费 → 才发货。
+	// 反过来做就会出现「钱扣了货没到」或「货到了钱没扣」，只能客服补偿。
+	grants := []module.ItemGrant{{ItemID: itemID, Count: gain}}
+	if err := module.PrecheckGrant(ctx.State, grants); err != nil {
 		resp.Code = codeBagFull
 		return reply(ctx, msgIDBuyResp, resp)
 	}
@@ -170,8 +171,12 @@ func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
 		return reply(ctx, msgIDBuyResp, resp)
 	}
 
-	ctx.State.AddItem(itemID, gain)
-	ctx.State.MarkDirty("bag")
+	// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
+	changes, grantErr := module.Grant(ctx.State, grants)
+	if grantErr != nil {
+		resp.Code = codeBagFull
+		return reply(ctx, msgIDBuyResp, resp)
+	}
 
 	// 购买次数在扣费/发货之后才累加，但同属一份快照：CAS 失败时扣费与次数一起回滚。
 	// load 传入今天，跨天时会在读取路径上清零历史次数（见 load 注释）。
@@ -194,10 +199,10 @@ func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
 	}
 	// 背包增量推送（钻石扣减 + 道具增加）
 	// 一条通知带两条变更：扣减 Change=2、增加 Change=1，客户端一次刷新面板。
-	notify := &gamev1.BagChangeNotify{Changes: []*gamev1.ItemChange{
+	notify := &gamev1.BagChangeNotify{Changes: append([]*gamev1.ItemChange{
+		// 扣减用 Change=2（与增加区分，客户端据此播扣款动效）
 		{ItemUid: int64(itemDiamond), ItemId: itemDiamond, Count: int32(ctx.State.GetItemCount(itemDiamond)), Change: 2},
-		{ItemUid: int64(itemID), ItemId: itemID, Count: int32(ctx.State.GetItemCount(itemID)), Change: 1},
-	}}
+	}, module.ToItemChanges(changes)...)}
 	if raw, err := proto.Marshal(notify); err == nil {
 		_ = ctx.Reply(3010, raw)
 	}

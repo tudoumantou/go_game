@@ -18,6 +18,7 @@
 package signin
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -149,6 +150,7 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 	var (
 		code    int32
 		grants  []module.ItemGrant
+		changes []module.BagChange
 		already bool
 		snap    Data
 	)
@@ -166,19 +168,14 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 			already = true // 幂等：重复领取回「已领」状态，不再发奖
 			return false
 		}
-		for _, it := range g {
-			current := ctx.State.GetItemCount(it.ItemID)
-			// 持有量已达 int32 上限时不能再发：协议里的 Count 是 int32，
-			// 溢出会变成负数，必须在发奖前拦住（协议宽度 < 存储宽度）。
-			if current < 0 || it.Count > math.MaxInt32-current {
-				code = codeBagLimit
-				return false
-			}
-		}
-		if !ctx.State.CanHold(g) {
-			code = codeBagFull
+		// 发奖与登记在同一个提交窗口里：Grant 失败时不改任何状态，
+		// 领取位也就不会置上，玩家清包后可重新领。
+		c, grantErr := module.Grant(ctx.State, g)
+		if grantErr != nil {
+			code = grantCode(grantErr)
 			return false
 		}
+		changes = c
 		d.add(today, g)
 		return true
 	})
@@ -196,19 +193,24 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 		return m.Reply(ctx, MsgClaimResp, resp)
 	}
 
-	// 领取事实已在 Mutate 里写回快照，这里再发道具——两者同属一份快照，
-	// 提交失败整体丢弃重载，不会出现「奖发了、状态没记」的重复可领。
-	for _, g := range grants {
-		ctx.State.AddItem(g.ItemID, g.Count)
-	}
-	ctx.State.MarkDirty("bag")
 	if err := m.Reply(ctx, MsgClaimResp, resp); err != nil {
 		return err
 	}
-	changes := lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.ItemChange {
-		return &gamev1.ItemChange{ItemUid: int64(g.ItemID), ItemId: g.ItemID, Count: int32(ctx.State.GetItemCount(g.ItemID)), Change: 1}
+	// 背包变更由 Grant 一并算出（含发放后存量），直接转协议下发。
+	return m.Reply(ctx, codec.MsgBagChangeNotify, &gamev1.BagChangeNotify{
+		Changes: module.ToItemChanges(changes),
 	})
-	return m.Reply(ctx, 3010, &gamev1.BagChangeNotify{Changes: changes})
+}
+
+// grantCode 把发奖失败翻译成本模块的业务码。
+//
+// 两种失败的处理方式不同：满包是「清包再来」，超限是「数量异常」，
+// 客户端提示与客诉话术都不一样，所以不合并成一个码。
+func grantCode(err error) int32 {
+	if errors.Is(err, module.ErrItemLimit) {
+		return codeBagLimit
+	}
+	return codeBagFull
 }
 
 // newData 新玩家的空状态（空切片而非 nil，业务闭包里不必判空）。

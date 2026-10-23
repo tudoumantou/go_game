@@ -219,7 +219,6 @@ func (m *Module) onUpgrade(ctx *module.Context, _ uint32, body []byte) error {
 		// 先查后扣：GetItemCount 是快照读，RemoveItem 内部还会再校验一次，
 		// 双查是 Actor 单线程下的廉价防御。
 		ctx.State.RemoveItem(upgradeItemID, cost)
-		ctx.State.MarkDirty("bag")
 	}
 	next := level + 1
 	d.Levels[req.SkillId] = next

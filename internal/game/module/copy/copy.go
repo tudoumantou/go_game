@@ -196,23 +196,15 @@ func (m *Module) onSettle(ctx *module.Context, _ uint32, body []byte) error {
 			}
 			grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
 		}
-		if !ctx.State.CanHold(grants) {
-			// 满包：整个结算拒绝（进度也不前进），玩家清包后重新结算——
-			// 副本结算可重复打，所以这里不需要「部分成功」。
+		// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算——
+		// 副本结算可重复打，所以这里不需要「部分成功」。
+		bagChanges, grantErr := module.Grant(ctx.State, grants)
+		if grantErr != nil {
 			resp.Code = codeBagFull
 			return reply(ctx, msgIDSettleResp, resp)
 		}
-		for _, g := range grants {
-			ctx.State.AddItem(g.ItemID, g.Count)
-			changes = append(changes, &gamev1.ItemChange{
-				ItemUid: int64(g.ItemID),
-				ItemId:  g.ItemID,
-				Count:   int32(ctx.State.GetItemCount(g.ItemID)),
-				Change:  1,
-			})
-		}
+		changes = module.ToItemChanges(bagChanges)
 		if len(changes) > 0 {
-			ctx.State.MarkDirty("bag")
 			if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
 				resp.Rewards = raw
 			}

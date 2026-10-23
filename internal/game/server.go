@@ -27,7 +27,6 @@ import (
 
 	gamecenter "game_study/internal/game/center"
 	gamecross "game_study/internal/game/cross"
-	gameremote "game_study/internal/game/remote"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/activity"
 	"game_study/internal/game/module/attr"
@@ -52,6 +51,7 @@ import (
 	"game_study/internal/game/module/team"
 	gamemq "game_study/internal/game/mq"
 	"game_study/internal/game/player"
+	gameremote "game_study/internal/game/remote"
 	"game_study/internal/game/rpc"
 	"game_study/internal/game/scene"
 	"game_study/internal/game/service"
@@ -1187,7 +1187,8 @@ func (h centerHandler) OnMatchResult(res *internalv2.MatchResult) {
 
 // OnRelayPush 实现 center.Handler：跨节点 Actor 投递的接收侧（P0）。
 //
-//  payload 是 actor.RemoteEnvelope（JSON）：解出目标 ActorID 与消息后
+//	payload 是 actor.RemoteEnvelope（JSON）：解出目标 ActorID 与消息后
+//
 // 投入本地 System。语义是「尽力而为 + 对账兜底」——玩家已下线时
 // DeliverRemote 返回 ErrActorGone，记日志即可：客户端重连会拉全量
 // 权威状态，丢一条下行推送不构成正确性缺口。

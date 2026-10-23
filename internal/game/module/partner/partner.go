@@ -230,7 +230,6 @@ func (m *Module) onActivate(ctx *module.Context, _ uint32, body []byte) error {
 			return reply(ctx, msgIDActivateResp, resp)
 		}
 		ctx.State.RemoveItem(itemCoin, cfg.Col3)
-		ctx.State.MarkDirty("bag")
 	}
 
 	d.Stars[req.PartnerId] = 1
@@ -276,7 +275,6 @@ func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 	oldBonus := atkBonus(req.PartnerId, star)
 
 	ctx.State.RemoveItem(itemCoin, cost)
-	ctx.State.MarkDirty("bag")
 	d.Stars[req.PartnerId] = star + 1
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err

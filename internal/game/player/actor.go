@@ -604,7 +604,6 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 		}
 		a.state.AddItem(it.ItemID, it.Count)
 	}
-	a.state.MarkDirty("bag")
 	if a.onDirty != nil {
 		a.onDirty(a.playerID)
 	}

@@ -316,14 +316,13 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 		return reply(ctx, msgIDClaimResp, resp)
 	}
 
-	// 发奖：target * 20 钻石；先预检容量，满包时不发也不置领取位
+	// 发奖：target * 20 钻石；满包/超限时不发也不置领取位（Grant 失败不改状态）
 	gain := int64(cfg.Col3) * 20
-	if !ctx.State.CanHold([]module.ItemGrant{{ItemID: itemDiamond, Count: gain}}) {
+	changes, grantErr := module.Grant(ctx.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
+	if grantErr != nil {
 		resp.Code = codeBagFull
 		return reply(ctx, msgIDClaimResp, resp)
 	}
-	ctx.State.AddItem(itemDiamond, gain)
-	ctx.State.MarkDirty("bag")
 	rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
 	d.Records[req.ActivityId] = rec
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
@@ -331,12 +330,7 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	}
 
 	resp.Code = codeOK
-	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: []*gamev1.ItemChange{{
-		ItemUid: int64(itemDiamond),
-		ItemId:  itemDiamond,
-		Count:   int32(ctx.State.GetItemCount(itemDiamond)),
-		Change:  1,
-	}}}); err == nil {
+	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(changes)}); err == nil {
 		resp.Rewards = raw
 	}
 	return reply(ctx, msgIDClaimResp, resp)

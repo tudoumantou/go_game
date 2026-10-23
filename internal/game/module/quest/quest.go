@@ -286,15 +286,13 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 
 	// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）
 	expGain := int64(cfg.Col3) * 100
-	itemCount := int64(cfg.Col3) * 10
-	grants := []module.ItemGrant{{ItemID: 1001, Count: itemCount}}
-	// 先预检容量：满包时整个领取被拒，不会出现「状态已置领、道具没发」。
-	if !ctx.State.CanHold(grants) {
+	grants := []module.ItemGrant{{ItemID: 1001, Count: int64(cfg.Col3) * 10}}
+	// 满包/超限时整个领取被拒，不会出现「状态已置领、道具没发」。
+	changes, grantErr := module.Grant(ctx.State, grants)
+	if grantErr != nil {
 		resp.Code = codeBagFull
 		return reply(ctx, msgIDClaimResp, resp)
 	}
-	ctx.State.AddItem(1001, itemCount)
-	ctx.State.MarkDirty("bag")
 
 	rec.Status = statusClaimed
 	d.Quests[req.QuestId] = rec
@@ -304,12 +302,7 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 
 	resp.Code = codeOK
 	resp.ExpGain = expGain
-	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: []*gamev1.ItemChange{{
-		ItemUid: 1001,
-		ItemId:  1001,
-		Count:   int32(ctx.State.GetItemCount(1001)),
-		Change:  1,
-	}}}); err == nil {
+	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(changes)}); err == nil {
 		resp.Rewards = raw
 	}
 	if err := reply(ctx, msgIDClaimResp, resp); err != nil {

@@ -479,23 +479,19 @@ func (m *Module) onTake(ctx *module.Context, _ uint32, body []byte) error {
 		for _, a := range atts {
 			grants = append(grants, module.ItemGrant{ItemID: a.ItemID, Count: int64(a.Count)})
 		}
-		// 满包时返回 ErrBagFull：ApplyOnce 不占业务键，玩家清包后可重新领取。
-		// CanHold 先于 AddItem 是「先检查后扣减」：避免加到一半发现满包，
-		// 留下半套奖励的中间态
-		if !ctx.State.CanHold(grants) {
-			return module.ErrBagFull
-		}
+		// 满包/超限时返回错误：ApplyOnce 不占业务键，玩家清包后可重新领取。
+		// Grant 先全量校验再入包，不会留下「加到一半」的中间态。
 		// 闭包内的内存修改是「暂态」：ApplyOnce 成功后统一 CAS 提交，
-		// 失败则整体丢弃，不会留下改了没提交的脏状态
-		for _, a := range atts {
-			ctx.State.AddItem(a.ItemID, int64(a.Count))
+		// 失败则整体丢弃，不会留下改了没提交的脏状态。
+		if _, err := module.Grant(ctx.State, grants); err != nil {
+			return err
 		}
-		// 向 Persister 声明背包 Ext 变脏（模块间依赖用 MarkDirty 显式表达）
-		ctx.State.MarkDirty("bag")
 		return nil
 	})
 	if err != nil {
-		if errors.Is(err, module.ErrBagFull) {
+		// 满包与数量超限都回「背包满」：玩家侧动作相同（清包再领），
+		// 区分两者只会让客户端多一个用不上的分支。
+		if errors.Is(err, module.ErrBagFull) || errors.Is(err, module.ErrItemLimit) {
 			resp.Code = codeBagFull
 			return m.replyTake(ctx, resp)
 		}
