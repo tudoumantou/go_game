@@ -62,13 +62,14 @@ func (f *fakeState) ClaimBiz(key string) bool {
 }
 func (f *fakeState) HasBiz(key string) bool { return f.biz[key] }
 
-func newCtx(st *fakeState) (*module.Context, *[]uint32) {
-	var replies []uint32
+// newCtx 组装上下文；返回按消息号索引的下行报文，便于断言业务码。
+func newCtx(st *fakeState) (*module.Context, *map[uint32][]byte) {
+	replies := map[uint32][]byte{}
 	return &module.Context{
 		State:        st,
 		CacheEnabled: true,
-		Send: func(id uint32, _ []byte) error {
-			replies = append(replies, id)
+		Send: func(id uint32, body []byte) error {
+			replies[id] = append([]byte(nil), body...)
 			return nil
 		},
 		AddExp: func(n int64) (bool, int32) {
@@ -88,7 +89,7 @@ func firstQuest(t *testing.T) gamedata.QuestCfg {
 func TestAcceptProgressClaim(t *testing.T) {
 	cfg := firstQuest(t)
 	st := newFakeState(1)
-	ctx, _ := newCtx(st)
+	ctx, replies := newCtx(st)
 	m := New(nil)
 
 	acceptBody, _ := proto.Marshal(&gamev1.QuestAcceptReq{QuestId: int32(cfg.Id)})
@@ -97,7 +98,7 @@ func TestAcceptProgressClaim(t *testing.T) {
 	// 事件推进（类型取自配置，增量给足）
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3)})
 
-	d, err := load(st)
+	d, err := m.State(ctx)
 	require.NoError(t, err)
 	rec := d.Quests[int32(cfg.Id)]
 	require.EqualValues(t, statusDone, rec.Status, fmt.Sprintf("progress not advanced: %+v", rec))
@@ -108,7 +109,10 @@ func TestAcceptProgressClaim(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
 	require.EqualValues(t, int64(cfg.Col3)*100, st.exp)
-	d, _ = load(st)
+	var claimResp gamev1.QuestClaimResp
+	require.NoError(t, proto.Unmarshal((*replies)[msgIDClaimResp], &claimResp))
+	require.EqualValues(t, codeOK, claimResp.Code, "领奖成功必须回 0")
+	d, _ = m.State(ctx)
 	require.EqualValues(t, statusClaimed, d.Quests[int32(cfg.Id)].Status, "claim state not persisted in snapshot")
 }
 
@@ -116,49 +120,55 @@ func TestAcceptProgressClaim(t *testing.T) {
 func TestClaimIdempotent(t *testing.T) {
 	cfg := firstQuest(t)
 	st := newFakeState(1)
-	ctx, _ := newCtx(st)
+	ctx, replies := newCtx(st)
 	m := New(nil)
 
 	body, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
 	d := &Data{Quests: map[int32]Record{int32(cfg.Id): {Status: statusDone, Progress: int32(cfg.Col3)}}}
-	err := save(st, st.PlayerID(), d)
-	require.NoError(t, err)
+	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))
 	for i := 0; i < 2; i++ {
 		err := m.OnMessage(ctx, msgIDClaimReq, body)
 		require.NoError(t, err)
 	}
 	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
+	var resp gamev1.QuestClaimResp
+	require.NoError(t, proto.Unmarshal((*replies)[msgIDClaimResp], &resp))
+	require.EqualValues(t, codeQuestClaimed, resp.Code, "重复领奖必须回 7104，不能被成功码覆盖")
 }
 
 // TestClaimUnfinished 进度不足时不发奖、不改状态。
 func TestClaimUnfinished(t *testing.T) {
 	cfg := firstQuest(t)
 	st := newFakeState(1)
-	ctx, _ := newCtx(st)
+	ctx, replies := newCtx(st)
 	m := New(nil)
 	d := &Data{Quests: map[int32]Record{int32(cfg.Id): {Status: statusDoing}}}
-	err := save(st, st.PlayerID(), d)
-	require.NoError(t, err)
+	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))
 	body, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
-	err = m.OnMessage(ctx, msgIDClaimReq, body)
+	err := m.OnMessage(ctx, msgIDClaimReq, body)
 	require.NoError(t, err)
 	require.EqualValues(t, 0, st.GetItemCount(1001), "unfinished quest must not grant")
-	back, _ := load(st)
+	var resp gamev1.QuestClaimResp
+	require.NoError(t, proto.Unmarshal((*replies)[msgIDClaimResp], &resp))
+	require.EqualValues(t, codeQuestUnfinished, resp.Code, "未完成必须回 7103，不能被成功码覆盖")
+	back, _ := m.State(ctx)
 	require.EqualValues(t, statusDoing, back.Quests[int32(cfg.Id)].Status, "status changed on failed claim")
 }
 
-// TestSnapshotShape 落库形状是 {"quests":{...}}，与 model.PlayerQuest.Quests 对应。
+// TestSnapshotShape Ext 槽位存的是业务结构（Data），不是表行。
+//
+// 这是 R2.6 的关键约定：业务结构 ↔ 表行的转换在 persist.go 里，
+// 快照里只出现 Data —— 否则业务改字段时还得同步改「快照长什么样」。
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
+	ctx, _ := newCtx(st)
+	m := New(nil)
+
 	d := &Data{Quests: map[int32]Record{101: {Status: statusClaimed, Progress: 5}}}
-	err := save(st, st.PlayerID(), d)
-	require.NoError(t, err)
-	var row struct {
-		PlayerId int64
-		Quests   string
-	}
-	err = json.Unmarshal(st.Ext(stateKey), &row)
-	require.NoError(t, err)
-	require.EqualValues(t, 9, row.PlayerId, fmt.Sprintf("unexpected row: %+v", row))
-	require.EqualValues(t, `{"101":{"status":2,"progress":5}}`, row.Quests)
+	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))
+
+	var decoded Data
+	require.NoError(t, json.Unmarshal(st.Ext(stateKey), &decoded), "Ext 必须是 Data 结构")
+	require.EqualValues(t, statusClaimed, decoded.Quests[101].Status)
+	require.EqualValues(t, 5, decoded.Quests[101].Progress)
 }
