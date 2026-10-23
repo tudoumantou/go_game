@@ -99,15 +99,15 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		var version int64
 		// 只写本次变化的字段（R2.5-B）：签到不再重写整个背包。
+		// 字段由 State 现取现序列化，不再先构造整份快照（省一次全量复制）。
 		fields, removed := a.state.DirtyFields()
-		snap := a.state.snapshot()
 		if len(fields) == 0 || a.legacy {
 			// 两种情况退化为整份写入：
 			//   - HasChanged 为真却没有字段标记（映射漏了）；
 			//   - 快照是旧格式，必须一次迁完，否则 HDEL data 后其余字段丢失。
-			fields = snap.FieldNames()
+			fields = a.state.Fields()
 		}
-		version, commitErr = a.repo.cache.Commit(saveCtx, snap, fields, removed, a.token)
+		version, commitErr = a.repo.cache.Commit(saveCtx, a.playerID, a.state, fields, removed, a.token)
 		cancel()
 		if commitErr == nil {
 			a.cacheVersion = version
@@ -177,7 +177,7 @@ func (a *Actor) finishPending() error {
 	// 原先的「读出来再 marshal 两份比对」要两次序列化，而它只影响
 	// 「是否报错」这一个判断，不值得。
 	// pending 是整份快照，必须全量写（它是「上次那条消息的完整结果」）。
-	version, err := a.repo.cache.Commit(ctx, pending.State, pending.State.FieldNames(), nil, a.token)
+	version, err := a.repo.cache.Commit(ctx, pending.State.PlayerID, pending.State, pending.State.FieldNames(), nil, a.token)
 	if err != nil {
 		if errors.Is(err, writebehind.ErrConflict) {
 			// 已被新会话接管：这个 Actor 不该再写。放弃补提转重载——

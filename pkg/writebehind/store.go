@@ -130,20 +130,27 @@ return next
 // 取舍：每次提交序列化**整份**快照而非 diff——快照量级在 KB 内，
 // 全量的实现与正确性论证（幂等、无合并冲突）远比增量简单；
 // 真正的写压力在数据库侧，那里有合批 UPSERT 兜底。
-func (s *Store) Commit(ctx context.Context, state Snapshot, fields, removed []string, token int64) (int64, error) {
-	if err := state.Validate(); err != nil {
-		return 0, err
+// Commit 提交快照的部分字段。
+//
+// src 按字段现取现序列化（FieldSource），不再要求调用方先构造整份 Snapshot。
+// fields 为空表示「没有变化」，调用方应避免这种情况（白写一次 Redis）。
+func (s *Store) Commit(ctx context.Context, playerID int64, src FieldSource, fields, removed []string, token int64) (int64, error) {
+	if playerID <= 0 {
+		return 0, fmt.Errorf("invalid player id")
 	}
 	// 只序列化本次变化的字段（R2.5-B）：签到消息不再重写整个背包。
-	args := []interface{}{token, state.PlayerID, time.Now().UnixMilli()}
+	args := []interface{}{token, playerID, time.Now().UnixMilli()}
 	args = append(args, 0) // 占位：字段对从 ARGV[5] 开始
 	for _, f := range fields {
-		raw, err := marshalField(state, f)
+		raw, err := src.Field(f)
 		if err != nil {
 			return 0, err
 		}
 		if raw == nil {
 			continue // 模块没有状态，不写
+		}
+		if err := validateField(f, raw); err != nil {
+			return 0, err
 		}
 		args = append(args, f, string(raw))
 	}
@@ -151,9 +158,9 @@ func (s *Store) Commit(ctx context.Context, state Snapshot, fields, removed []st
 		args = append(args, "-"+f, "")
 	}
 	version, err := commitScript.Run(ctx, s.rdb, []string{
-		s.stateKey(state.PlayerID),
-		s.dirtyKey(Partition(state.PlayerID)),
-		s.epochKey(state.PlayerID),
+		s.stateKey(playerID),
+		s.dirtyKey(Partition(playerID)),
+		s.epochKey(playerID),
 	}, args...).Int64()
 	if err != nil {
 		return 0, err
@@ -162,6 +169,26 @@ func (s *Store) Commit(ctx context.Context, state Snapshot, fields, removed []st
 		return 0, ErrConflict
 	}
 	return version, nil
+}
+
+// validateField 校验单个字段：Ext 字段要求模块已注册且自校验通过。
+//
+// 核心字段（profile/attr/items/grants）不做范围校验——它们的写入源是
+// player.State，AddItem/RemoveItem/Grant 已在入口保证非负与 int32 上限；
+// 在这里复检要对 items 反序列化一遍（100 件约 5µs），与本次优化目的相反。
+func validateField(field string, raw []byte) error {
+	name, ok := strings.CutPrefix(field, "ext:")
+	if !ok {
+		return nil
+	}
+	p, ok := LookupPersister(name)
+	if !ok {
+		return fmt.Errorf("unknown module state %q", name)
+	}
+	if len(raw) == 0 {
+		return fmt.Errorf("module %q has empty state", name)
+	}
+	return p.Validate(raw)
 }
 
 // marshalField 序列化快照的单个字段。

@@ -1,22 +1,22 @@
-// internal/game/player/snapshot.go —— State ↔ writebehind.Snapshot 转换与深拷贝
+// internal/game/player/snapshot.go —— State ↔ writebehind.Snapshot 转换
 //
-// 架构职责：把内存 State 序列化成可提交/可落库的 Snapshot，以及反向还原；
-// clone()  additionally 保留派生属性与脏标记，供提交失败时整体回退。
+// 架构职责：两个方向的转换。
+//   - 出：State.Field/Fields 按字段序列化（提交时只写变化的字段）；
+//     State.snapshot 构造整份快照（pending 补提、落库需要完整形态）。
+//   - 入：stateFromSnapshot 把读到的快照还原成 State。
 //
-// 协作关系：cache_actor.go 的「克隆 → diff → CAS」流程完全建立在本文件的
-// 三个函数上；cache_load.go 用 stateFromSnapshot 把读到的快照还原成 State。
+// 协作关系：cache_actor.go 的提交流程用 Field/Fields（R2.5-B 起不再为了
+// 写一个字段先复制整份状态）；cache_load.go 用 stateFromSnapshot 还原。
 //
-// 设计取舍：
-//   - 为什么必须深拷贝而不是共享引用：回滚靠的是「换回 previous 指针」，
-//     若 Ext 的 json.RawMessage（底层是 []byte）与快照共享底层数组，
-//     回滚后业务再改同一个数组，previous 会被悄悄改写，回滚形同虚设；
-//   - 为什么 diff 只比较快照 JSON：字段级比对要为每个新字段加代码，
-//     JSON 字节比对自动覆盖所有字段；Ext 里模块私有状态的键序由
-//     encoding/json 保证稳定（map 键排序输出），不会误报差异。
+// 设计取舍：snapshot() 里的深拷贝是必要的——落库与 pending 都要一份
+// 与内存解耦的副本，否则后续消息改动会污染已经在途的记录；而常规提交
+// 不需要副本，所以走 Field 现取现序列化。
 package player
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"game_study/pkg/writebehind"
 )
@@ -42,6 +42,51 @@ func cloneExt(src map[string]json.RawMessage) map[string]json.RawMessage {
 // 只含持久化字段：Profile/Attr/Items/Ext/AppliedGrants——即与 DB 列一一
 // 对应的部分（player / player_attr / player_item / 模块 Persister /
 // player_writebehind.applied_grants）；bonus（装备加成）与脏标记不落库。
+// Field 实现 writebehind.FieldSource：按字段现取序列化。
+//
+// 这是「只写变化字段」的最后一块拼图：调用方不必先构造整份 Snapshot
+// （100 件道具约 4.3µs），省掉的是纯粹的复制。
+//
+// 持读锁期间做 json.Marshal：写方要拿写锁，因此序列化出来的是一致快照；
+// 代价是这段时间写方会等（一条消息一次，微秒级）。
+func (s *State) Field(name string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	switch name {
+	case "profile":
+		return json.Marshal(s.profile)
+	case "attr":
+		return json.Marshal(s.attr)
+	case "items":
+		return json.Marshal(s.items)
+	case "grants":
+		return json.Marshal(s.appliedGrants)
+	}
+	mod, ok := strings.CutPrefix(name, "ext:")
+	if !ok {
+		return nil, fmt.Errorf("player: unknown snapshot field %q", name)
+	}
+	raw := s.ext[mod]
+	if len(raw) == 0 {
+		return nil, nil // 该模块没有状态
+	}
+	return raw, nil
+}
+
+// Fields 实现 writebehind.FieldSource：全部字段名（整份写入用）。
+//
+// 用于旧格式迁移（legacy）与「HasChanged 为真但字段标记为空」的兜底。
+func (s *State) Fields() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, 4+len(s.ext))
+	out = append(out, "profile", "attr", "items", "grants")
+	for name := range s.ext {
+		out = append(out, "ext:"+name)
+	}
+	return out
+}
+
 func (s *State) snapshot() writebehind.Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

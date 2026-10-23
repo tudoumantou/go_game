@@ -107,6 +107,20 @@ type Record struct {
 	Legacy bool
 }
 
+// FieldSource 提交时的字段来源。
+//
+// 为什么不让调用方直接传 Snapshot：构造 Snapshot 要把背包 map、Ext map、
+// 幂等键表全部复制一遍（100 件道具约 4.3µs），而一次提交通常只改一个字段。
+// 按需取字段后，这份复制就没了。
+//
+// 实现者：Snapshot（冷启动种子 / pending 补提）与 player.State（常规提交）。
+type FieldSource interface {
+	// Field 返回字段的 JSON；nil 表示该字段没有内容（调用方跳过写入）。
+	Field(name string) ([]byte, error)
+	// Fields 返回全部字段名，用于必须整份写入的场景。
+	Fields() []string
+}
+
 // FieldNames 返回快照的全部字段名（Redis Hash 的 field）。
 //
 // 用于「必须整份写入」的场景：冷启动 Seed、pending 补提。
@@ -119,7 +133,13 @@ func (s Snapshot) FieldNames() []string {
 	return fields
 }
 
-// Validate 校验快照自洽性（提交/落库前的公共闸门）。
+// Field 实现 FieldSource。
+func (s Snapshot) Field(name string) ([]byte, error) { return marshalField(s, name) }
+
+// Fields 实现 FieldSource。
+func (s Snapshot) Fields() []string { return s.FieldNames() }
+
+// Validate 校验快照自洽性（Seed 落库前的公共闸门）。
 //
 // 检查项：PlayerID 正数；Items 数量合法（id 正、数量在 int32 列范围内）；
 // Ext 每个键非空、模块已注册、且模块自己的 Validate 通过。

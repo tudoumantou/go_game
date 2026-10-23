@@ -58,12 +58,12 @@ func TestCommitWritesOnlyChangedFields(t *testing.T) {
 	}
 	token, err := store.AcquireLease(ctx, 7)
 	require.NoError(t, err)
-	_, err = store.Commit(ctx, full, full.FieldNames(), nil, token)
+	_, err = store.Commit(ctx, full.PlayerID, full, full.FieldNames(), nil, token)
 	require.NoError(t, err)
 
 	// 只改签到的 Ext，其余字段不该被重写（内容不变即可，用值判断）。
 	full.Ext["signin"] = json.RawMessage(`{"day":2}`)
-	_, err = store.Commit(ctx, full, []string{"ext:signin"}, nil, token)
+	_, err = store.Commit(ctx, full.PlayerID, full, []string{"ext:signin"}, nil, token)
 	require.NoError(t, err)
 
 	got, err := store.Load(ctx, 7)
@@ -115,7 +115,7 @@ func TestLegacyMigrationWritesFullSnapshot(t *testing.T) {
 	token, err := store.AcquireLease(ctx, 9)
 	require.NoError(t, err)
 	// 调用方看到 Legacy 后必须传全量字段。
-	_, err = store.Commit(ctx, old, old.FieldNames(), nil, token)
+	_, err = store.Commit(ctx, old.PlayerID, old, old.FieldNames(), nil, token)
 	require.NoError(t, err)
 
 	fields, err := mr.HKeys(store.stateKey(9))
@@ -145,7 +145,7 @@ func TestCommitRemovesDeletedExt(t *testing.T) {
 	}
 	token, err := store.AcquireLease(ctx, 11)
 	require.NoError(t, err)
-	_, err = store.Commit(ctx, snap, snap.FieldNames(), nil, token)
+	_, err = store.Commit(ctx, snap.PlayerID, snap, snap.FieldNames(), nil, token)
 	require.NoError(t, err)
 	keys, err := mr.HKeys(store.stateKey(11))
 	require.NoError(t, err)
@@ -153,7 +153,7 @@ func TestCommitRemovesDeletedExt(t *testing.T) {
 
 	// 模块 Reset：Ext 里不再有 signin，调用方把 "ext:signin" 放进 removed。
 	snap.Ext = map[string]json.RawMessage{}
-	_, err = store.Commit(ctx, snap, []string{"profile"}, []string{"ext:signin"}, token)
+	_, err = store.Commit(ctx, snap.PlayerID, snap, []string{"profile"}, []string{"ext:signin"}, token)
 	require.NoError(t, err)
 
 	keys, err = mr.HKeys(store.stateKey(11))

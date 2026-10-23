@@ -65,7 +65,7 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 		t.Fatal(err)
 	}
 	snap := Snapshot{PlayerID: 3, Items: map[int32]int64{}}
-	if _, err := store.Commit(ctx, snap, snap.FieldNames(), nil, lease); err != nil {
+	if _, err := store.Commit(ctx, snap.PlayerID, snap, snap.FieldNames(), nil, lease); err != nil {
 		t.Fatal(err)
 	}
 

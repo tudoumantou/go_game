@@ -143,3 +143,30 @@ func BenchmarkSnapshotConstruct(b *testing.B) {
 		_ = s.snapshot()
 	}
 }
+
+// BenchmarkStateField 改造后：改一个 Ext 模块时，直接取该字段。
+// 不复制背包 map、不构造整份 Snapshot。
+func BenchmarkStateField(b *testing.B) {
+	s := benchState()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.Field("ext:signin"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkSnapshotThenField 改造前：先构造整份 Snapshot，再取其字段。
+// 两者之差就是「为写一个字段而复制整份状态」的成本。
+func BenchmarkSnapshotThenField(b *testing.B) {
+	s := benchState()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		snap := s.snapshot()
+		if _, err := snap.Field("ext:signin"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
