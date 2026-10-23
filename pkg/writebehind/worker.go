@@ -122,12 +122,25 @@ func (w *Worker) FlushAll(ctx context.Context) error {
 
 // Run 可由独立进程运行；首轮也等待定时器，不因一条签到触发同步 MySQL。
 //
-// 每 tick 顺序处理 10 个分区；每分区独立 30s 子超时——一个分区卡死
-// （大事务/锁等待）不拖垮其余分区的落库节奏。
+// 错峰设计（与 flush.Flusher 的 stagger 同思路，12.4.3 分散轮询）：
+//   - 一个 tick 内的 Partitions 个分区不再背靠背顺序打完，而是按
+//     stagger=interval/Partitions 依次启动：任一刻只有一个分区的合批
+//     事务在写 MySQL。攒批数据量不变，但写压力被摊平到整个周期，
+//     消除「tick 边界 10 个分区同时打库」的周期性尖峰；
+//   - 代价是单玩家落库延迟的上界从 interval 变成约 2×interval
+//     （本分区处理完还要等后面的分区）；对签到/背包类数据可接受，
+//     充值订单不走本通道（订单状态机在 login 服 MySQL 侧，见 R2.3）；
+//   - 分区处理慢于步长时自动顺延（处理时长 + 等待），单 goroutine
+//     串行保证不会出现两个分区并发写同一批表；
+//   - 每分区独立 30s 子超时：一个分区卡死（大事务/锁等待）不拖垮
+//     其余分区的落库节奏。
 //
 // Go 细节：
 //   - ticker 必须 Stop：与 timer 同理，不 Stop 的 ticker 相关资源要等
 //     GC/下次触发才释放，defer ticker.Stop() 是惯用保险；
+//   - 分区间错峰用 time.NewTimer + select 两路监听而非 time.Sleep：
+//     ctx 取消时能立即退出，不等满一个步长（停机要快）；
+//   - timer.Stop 在 ctx 取消分支里调用：与 ticker 同理的堆对象保险；
 //   - context.WithTimeout 在**循环体内**创建并立即 cancel()：若用
 //     defer cancel 会把 cancel 推迟到 Run 返回，十次循环累积十个
 //     未释放 context（经典 context 泄漏）；
@@ -137,6 +150,10 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration, onError func(e
 	if interval <= 0 {
 		interval = time.Minute
 	}
+	// 错峰步长：把一个 tick 内的分区均摊到整个 interval 上。
+	// interval 极小（测试调至毫秒级）时除法可能得到 0，退化为
+	// 背靠背处理——正确性不受影响，只是失去错峰意义。
+	stagger := interval / time.Duration(Partitions)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -145,6 +162,16 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration, onError func(e
 			return nil
 		case <-ticker.C:
 			for part := 0; part < Partitions; part++ {
+				// 分片间错峰等待；停机信号优先，不坐满一个步长
+				if part > 0 && stagger > 0 {
+					timer := time.NewTimer(stagger)
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return nil
+					case <-timer.C:
+					}
+				}
 				// 每分区独立超时；cancel 必须本轮结束即调用，不能 defer 到函数尾
 				runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				_, err := w.FlushBatch(runCtx, part)
