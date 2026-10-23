@@ -224,12 +224,9 @@ func (m *Module) onActivate(ctx *module.Context, _ uint32, body []byte) error {
 		resp.Code = codeOwned
 		return reply(ctx, msgIDActivateResp, resp)
 	}
-	if cfg.Col3 > 0 {
-		if ctx.State.GetItemCount(itemCoin) < cfg.Col3 {
-			resp.Code = codeNoCoin
-			return reply(ctx, msgIDActivateResp, resp)
-		}
-		ctx.State.RemoveItem(itemCoin, cfg.Col3)
+	if err := module.Spend(ctx.State, itemCoin, cfg.Col3); err != nil {
+		resp.Code = codeNoCoin
+		return reply(ctx, msgIDActivateResp, resp)
 	}
 
 	d.Stars[req.PartnerId] = 1
@@ -266,7 +263,8 @@ func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 		resp.Code = codeMaxStar
 		return reply(ctx, msgIDStarUpResp, resp)
 	}
-	if ctx.State.GetItemCount(itemCoin) < cost {
+	// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
+	if err := module.Spend(ctx.State, itemCoin, cost); err != nil {
 		resp.Code = codeNoCoin
 		return reply(ctx, msgIDStarUpResp, resp)
 	}
@@ -274,7 +272,6 @@ func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 	wasOnField := contains(d.Field, req.PartnerId)
 	oldBonus := atkBonus(req.PartnerId, star)
 
-	ctx.State.RemoveItem(itemCoin, cost)
 	d.Stars[req.PartnerId] = star + 1
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err

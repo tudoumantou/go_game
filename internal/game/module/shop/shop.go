@@ -162,11 +162,7 @@ func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
 	}
 
 	price := int64(cfg.Col3) * count
-	if ctx.State.GetItemCount(itemDiamond) < price {
-		resp.Code = codeDiamondNotEnough
-		return reply(ctx, msgIDBuyResp, resp)
-	}
-	if !ctx.State.RemoveItem(itemDiamond, price) {
+	if err := module.Spend(ctx.State, itemDiamond, price); err != nil {
 		resp.Code = codeDiamondNotEnough
 		return reply(ctx, msgIDBuyResp, resp)
 	}

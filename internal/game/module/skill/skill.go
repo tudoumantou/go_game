@@ -211,14 +211,10 @@ func (m *Module) onUpgrade(ctx *module.Context, _ uint32, body []byte) error {
 	}
 	// 升级消耗：Col3 * 当前等级 钻石（Col3=0 表示免费）
 	cost := int64(cfg.Col3) * int64(level)
-	if cost > 0 {
-		if ctx.State.GetItemCount(upgradeItemID) < cost {
-			resp.Code = codeNoResource
-			return reply(ctx, msgIDUpgradeResp, resp)
-		}
-		// 先查后扣：GetItemCount 是快照读，RemoveItem 内部还会再校验一次，
-		// 双查是 Actor 单线程下的廉价防御。
-		ctx.State.RemoveItem(upgradeItemID, cost)
+	// 免费（cost<=0）由 Spend 内部直接放行，不必再写分支。
+	if err := module.Spend(ctx.State, upgradeItemID, cost); err != nil {
+		resp.Code = codeNoResource
+		return reply(ctx, msgIDUpgradeResp, resp)
 	}
 	next := level + 1
 	d.Levels[req.SkillId] = next

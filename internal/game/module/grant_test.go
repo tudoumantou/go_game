@@ -12,6 +12,8 @@ type grantState struct {
 	thinState
 	items map[int32]int64
 	cap   int
+	// removeFails 让 RemoveItem 假装失败（模拟「查过之后状态又变了」）。
+	removeFails bool
 }
 
 func newGrantState(cap int, init map[int32]int64) *grantState {
@@ -21,6 +23,17 @@ func newGrantState(cap int, init map[int32]int64) *grantState {
 func (s *grantState) GetItemCount(id int32) int64 { return s.items[id] }
 
 func (s *grantState) AddItem(id int32, n int64) { s.items[id] += n }
+
+func (s *grantState) RemoveItem(id int32, n int64) bool {
+	if s.removeFails || n <= 0 || s.items[id] < n {
+		return false
+	}
+	s.items[id] -= n
+	if s.items[id] == 0 {
+		delete(s.items, id)
+	}
+	return true
+}
 
 func (s *grantState) CanHold(grants []ItemGrant) bool {
 	kinds := 0
