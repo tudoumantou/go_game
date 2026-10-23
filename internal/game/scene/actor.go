@@ -80,6 +80,12 @@ type Config struct {
 	// IdleTimeout 实体空闲多久后被兜底清理（0 用默认 90s）。
 	// 可注入是为了让测试不必等 90 秒——生产值不接受配置，避免误配成 0 秒清场。
 	IdleTimeout time.Duration
+	// Clock 时钟；nil 时用 time.Now。
+	//
+	// 与 IdleTimeout 配套：测试要制造「空闲超时」时推进虚拟时钟即可，
+	// 不必真的睡过阈值——真实时钟下「睡 60ms 跨 40ms 阈值」本就是在赌调度。
+	// 注意实现必须并发安全（测试用 atomic 包装），Actor 在自己的 goroutine 里读。
+	Clock func() time.Time
 }
 
 // entity 场景内实体。只存广播必需的最小信息。
@@ -109,6 +115,9 @@ type Actor struct {
 	logger *log.Logger
 	ents   map[int64]*entity
 	grid   map[int64]map[int64]struct{} // 格键 → 实体 ID 集合
+	// now 时钟。生产用 time.Now；测试注入可控时钟，避免为了制造
+	// 「空闲超时」而真的 sleep —— 空闲阈值与睡眠时长的边界本来就靠调度运气。
+	now func() time.Time
 }
 
 // NewActor 创建场景 Actor。
@@ -118,13 +127,18 @@ func NewActor(cfg Config, sys *actor.System, logger *log.Logger) *Actor {
 		// 测试显式传小值（见 Config.IdleTimeout 注释）
 		cfg.IdleTimeout = defaultIdleTimeout
 	}
-	return &Actor{
+	a := &Actor{
 		cfg:    cfg,
 		sys:    sys,
 		logger: logger.With("scene_id", cfg.ID),
 		ents:   make(map[int64]*entity, cfg.MaxPlayers),
 		grid:   make(map[int64]map[int64]struct{}, 64),
+		now:    cfg.Clock,
 	}
+	if a.now == nil {
+		a.now = time.Now
+	}
+	return a
 }
 
 // 入站消息（玩家 Actor → 场景 Actor）。
@@ -188,7 +202,7 @@ func (a *Actor) Receive(ctx *actor.Context) {
 	case *HeartbeatMsg:
 		a.onHeartbeat(msg)
 	case *SweepMsg:
-		a.sweep(time.Now())
+		a.sweep(a.now())
 		// 扫完立刻给自己排下一帧：自维持的周期扫描，不依赖外部定时器
 		ctx.ScheduleOnce(sweepInterval, ctx.PID(), &SweepMsg{})
 	case *CountMsg:
@@ -207,7 +221,7 @@ func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 		e.pid = msg.PID
 		e.name = msg.Name
 		e.level = msg.Level
-		e.lastSeen = time.Now()
+		e.lastSeen = a.now()
 		a.replyEnter(ctx, msg.PID, codeOK, e, true)
 		return
 	}
@@ -218,7 +232,7 @@ func (a *Actor) onEnter(ctx *actor.Context, msg *EnterMsg) {
 		return
 	}
 
-	now := time.Now()
+	now := a.now()
 	// 进入即钳制：客户端可发任意坐标，非法坐标进网格会破坏
 	//「格键恒非负」这个 cellKeyOf/viewSet 依赖的不变量
 	e := &entity{
@@ -303,7 +317,7 @@ func (a *Actor) onMove(ctx *actor.Context, msg *MoveMsg) {
 
 	// 限频先于一切：超频时连速度校验都不做，直接丢弃，
 	// 否则恶意客户端能用高频请求占满分片。
-	now := time.Now()
+	now := a.now()
 	if now.Sub(e.moveWindowStart) >= moveWindow {
 		e.moveWindowStart = now
 		e.moveCount = 0
@@ -429,7 +443,7 @@ func (a *Actor) onSync(ctx *actor.Context, msg *SyncMsg) {
 		return
 	}
 	e.pid = msg.PID // 重连后 PID 可能变化
-	e.lastSeen = time.Now()
+	e.lastSeen = a.now()
 
 	// Sync 是全量兜底：广播不重试（见 pushBody），重连/序号断档时
 	// 用它把视野一次补齐，客户端可直接复用进入回执的渲染逻辑
@@ -460,7 +474,7 @@ func (a *Actor) onSync(ctx *actor.Context, msg *SyncMsg) {
 // 回包只会让两个方向的车轮翻倍。
 func (a *Actor) onHeartbeat(msg *HeartbeatMsg) {
 	if e, ok := a.ents[msg.PlayerID]; ok {
-		e.lastSeen = time.Now()
+		e.lastSeen = a.now()
 	}
 }
 
