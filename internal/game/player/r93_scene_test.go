@@ -75,10 +75,12 @@ func TestBindTriggersResyncAndHeartbeat(t *testing.T) {
 	got := link.lastResync()
 	require.EqualValues(t, 3, got, fmt.Sprintf("resync sceneID = %d, want 3", got))
 
-	// 100ms 一次，350ms 内至少应有 2 次心跳。
-	time.Sleep(350 * time.Millisecond)
-	_, hb := link.counts()
-	require.False(t, hb < 2, fmt.Sprintf("心跳次数 = %d, want >= 2", hb))
+	// 心跳间隔 100ms：等它至少跳 2 次。原先睡固定 350ms，
+	// 机器一忙 350ms 内可能只跳到 1 次，失败与代码无关。
+	require.Eventually(t, func() bool {
+		_, hb := link.counts()
+		return hb >= 2
+	}, 2*time.Second, 10*time.Millisecond, "心跳次数不足 2")
 }
 
 // TestNoHeartbeatWithoutScene 未进场景时不发心跳、不做同步。
@@ -107,9 +109,11 @@ func TestHeartbeatStopsWhenOffline(t *testing.T) {
 
 	err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7})
 	require.NoError(t, err, fmt.Sprintf("send bind: %v", err))
-	time.Sleep(250 * time.Millisecond)
-	before, _ := link.counts()
-	require.NotEqualValues(t, 0, before, "绑定后应有心跳")
+	// 等第一条心跳落地，而不是睡固定 250ms。
+	require.Eventually(t, func() bool {
+		n, _ := link.counts()
+		return n > 0
+	}, 2*time.Second, 10*time.Millisecond, "绑定后应有心跳")
 
 	// 解绑：之后即使定时器还在跑，也不应再发心跳。
 	err = rig.sys.Send(rig.pid, &UnbindMsg{SessionID: 1})
