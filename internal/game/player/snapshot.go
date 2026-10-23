@@ -83,23 +83,3 @@ func stateFromSnapshot(snapshot writebehind.Snapshot) *State {
 	}
 	return s
 }
-
-// clone 包含派生属性和脏标记，用于未成功写缓存时恢复本次内存修改。
-//
-// 与 snapshot() 的差别：clone 走的是「全量拷贝」语义——除了持久化字段，
-// 还带回 bonus（在线装备加成）与 dirty/dirtyItems（落库 diff 的依据），
-// 否则回滚会把玩家身上的装备加成一起抹掉。
-func (s *State) clone() *State {
-	out := stateFromSnapshot(s.snapshot())
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out.bonus = s.bonus
-	out.dirtyHook = s.dirtyHook
-	for name, dirty := range s.dirty {
-		out.dirty[name] = dirty
-	}
-	for id, dirty := range s.dirtyItems {
-		out.dirtyItems[id] = dirty
-	}
-	return out
-}

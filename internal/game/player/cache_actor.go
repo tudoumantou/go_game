@@ -25,9 +25,8 @@
 package player
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"game_study/pkg/writebehind"
 	"time"
@@ -159,27 +158,23 @@ func (a *Actor) finishPending() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	pending := a.cachePending
-	current, err := a.repo.cache.Load(ctx, a.playerID)
+
+	// 直接重提，不读 Redis 比对内容：
+	//   - 上次其实写成功了 → 重写同样内容，version+1，幂等无害；
+	//   - 上次没写成功 → 正好补上。
+	// 原先的「读出来再 marshal 两份比对」要两次序列化，而它只影响
+	// 「是否报错」这一个判断，不值得。
+	version, err := a.repo.cache.Commit(ctx, pending.State, a.token)
 	if err != nil {
+		if errors.Is(err, writebehind.ErrConflict) {
+			// 已被新会话接管：这个 Actor 不该再写。放弃补提转重载——
+			// MySQL 侧已落定的事实由对账补偿（R2.3），不在这里硬修。
+			a.cachePending = nil
+			a.cacheReload = true
+			return fmt.Errorf("pending commit superseded: %w", err)
+		}
 		return err
 	}
-	version := current.Version
-	switch {
-	case current.Version == pending.Version:
-		version, err = a.repo.cache.Commit(ctx, pending.State, a.token)
-		if err != nil {
-			return err
-		}
-	case current.Version == pending.Version+1:
-		expected, _ := json.Marshal(pending.State)
-		actual, _ := json.Marshal(current.State)
-		if !bytes.Equal(expected, actual) {
-			return fmt.Errorf("pending legacy snapshot conflicts with cache")
-		}
-	default:
-		return fmt.Errorf("pending legacy snapshot version conflict")
-	}
-	// 保留 SQL 已提交的资产，核对未知提交后才恢复后续业务。
 	a.cacheVersion = version
 	a.cachePending = nil
 	a.state.ClearItemsDirty()

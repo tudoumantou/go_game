@@ -41,13 +41,30 @@ func benchState() *State {
 	return s
 }
 
-// BenchmarkStateClone 回滚备份的成本（R2.5 后应整体消失）。
+// benchmarkClone 复刻 R2.5 之前的 clone 实现（只为让 Legacy 对照可运行）。
+// 生产代码里已删除——失败路径改为整份重载，不需要备份。
+func benchmarkClone(s *State) *State {
+	out := stateFromSnapshot(s.snapshot())
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out.bonus = s.bonus
+	out.dirtyHook = s.dirtyHook
+	for name, dirty := range s.dirty {
+		out.dirty[name] = dirty
+	}
+	for id, dirty := range s.dirtyItems {
+		out.dirtyItems[id] = dirty
+	}
+	return out
+}
+
+// BenchmarkStateClone 回滚备份的成本（R2.5 后生产路径已无此开销）。
 func BenchmarkStateClone(b *testing.B) {
 	s := benchState()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = s.clone()
+		_ = benchmarkClone(s)
 	}
 }
 
@@ -83,7 +100,7 @@ func BenchmarkMessageOverhead_Legacy(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		previous := s.clone()
+		previous := benchmarkClone(s)
 		before, err := json.Marshal(previous.snapshot())
 		if err != nil {
 			b.Fatal(err)
