@@ -210,9 +210,7 @@ func (m *Module) onSettle(ctx *module.Context, req *gamev1.CopySettleReq, resp *
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
-	if err := reply(ctx, msgIDSettleResp, resp); err != nil {
-		return err
-	}
+	// 回包由 module.Typed 统一完成；此处不再显式 reply。
 	// AddExp 是可选注入：nil 时跳过（测试/无等级系统环境）。
 	if ctx.AddExp != nil {
 		ctx.AddExp(expGain)

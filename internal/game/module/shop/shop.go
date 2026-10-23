@@ -186,9 +186,7 @@ func (m *Module) onBuy(ctx *module.Context, req *gamev1.ShopBuyReq, resp *gamev1
 
 	resp.Code = codeOK
 	resp.Bought = d.Bought[key]
-	if err := reply(ctx, msgIDBuyResp, resp); err != nil {
-		return err
-	}
+	// 回包由 module.Typed 统一完成；此处不再显式 reply。
 	// 背包增量推送（钻石扣减 + 道具增加）
 	// 一条通知带两条变更：扣减 Change=2、增加 Change=1，客户端一次刷新面板。
 	notify := &gamev1.BagChangeNotify{Changes: append([]*gamev1.ItemChange{

@@ -162,9 +162,7 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 
 	resp.Code = codeOK
 	resp.RemainCount = int32(ctx.State.GetItemCount(itemID))
-	if err := m.replyUse(ctx, resp); err != nil {
-		return err
-	}
+	// 回包由 module.Typed 统一完成；这里再回一次会多发一条响应。
 	// 增量推送
 	// Change=2 表示扣减（协议约定 1=增加、2=减少），与商店/发奖路径对称。
 	notify := &gamev1.BagChangeNotify{Changes: []*gamev1.ItemChange{{
@@ -177,13 +175,4 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 		_ = ctx.Reply(msgIDBagChange, raw)
 	}
 	return nil
-}
-
-// replyUse 序列化并回包使用道具响应。
-func (m *Module) replyUse(ctx *module.Context, resp *gamev1.UseItemResp) error {
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgIDUseItemResp, body)
 }

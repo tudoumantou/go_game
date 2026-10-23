@@ -444,7 +444,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	// 前置挡掉非正 id：省一次 DB 往返，也防负 id 扫表
 	if req.MailId <= 0 {
 		resp.Code = codeMailNotExist
-		return m.replyTake(ctx, resp)
+		return nil
 	}
 
 	// 已领过直接返回 5002：SQL 的 claimed 只是展示，权威事实在快照业务键上。
@@ -452,7 +452,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	key := fmt.Sprintf("mail:%d", req.MailId)
 	if ctx.State.HasBiz(key) {
 		resp.Code = codeMailTaken
-		return m.replyTake(ctx, resp)
+		return nil
 	}
 
 	atts, err := m.repo.FindAttachments(context.Background(), ctx.State.PlayerID(), req.MailId)
@@ -465,7 +465,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 		default:
 			return err
 		}
-		return m.replyTake(ctx, resp)
+		return nil
 	}
 
 	applied, err := ctx.ApplyOnce(key, func() error {
@@ -489,7 +489,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 		// 区分两者只会让客户端多一个用不上的分支。
 		if errors.Is(err, module.ErrBagFull) || errors.Is(err, module.ErrItemLimit) {
 			resp.Code = codeBagFull
-			return m.replyTake(ctx, resp)
+			return nil
 		}
 		return err
 	}
@@ -497,7 +497,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	// 抢跑的请求在这里被 ApplyOnce 的版本号判重挡下，同样回 5002
 	if !applied {
 		resp.Code = codeMailTaken
-		return m.replyTake(ctx, resp)
+		return nil
 	}
 	if err := m.repo.MarkTaken(context.Background(), req.MailId); err != nil {
 		// 不是错误：快照才是权威，标记只影响列表展示。
@@ -521,17 +521,5 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
 		resp.Rewards = raw
 	}
-	return m.replyTake(ctx, resp)
-}
-
-// replyTake 序列化并回包领取响应。
-//
-// 领取响应专用 helper（列表 onList 内联 marshal 是因为全文件只此一处，
-// 领取有 5 个回包点，抽函数避免重复）。
-func (m *Module) replyTake(ctx *module.Context, resp *gamev1.MailTakeAttachmentResp) error {
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgIDMailTakeResp, body)
+	return nil
 }

@@ -251,9 +251,8 @@ func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1
 	resp.Code = codeOK
 	// 凑满时两人出队后剩 0；未凑满则把当前排队人数透给客户端做「匹配中 n 人」
 	resp.Queued = int32(queued - len(pair))
-	if err := m.reply(ctx, msgIDMatchResp, resp); err != nil {
-		return err
-	}
+	// 回包由 module.Typed 统一完成（这里再回一次会多发一条响应，
+	// 多出来的那条会被下一次请求当成自己的响应读走）。
 
 	// 建房放在回包之后：先让客户端渲染「匹配中」，再同步建房（本地路径量小，
 	// 阻塞当前 Actor 可接受；建房内部还要 RPC CrossServer，可能秒级返回）

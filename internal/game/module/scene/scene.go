@@ -215,6 +215,10 @@ func (m *Module) onSync(ctx *module.Context, _ *gamev1.SceneSyncReq, resp *gamev
 	sceneID := ctx.State.Profile().SceneID
 	pid := m.mgr.PID(sceneID)
 	if pid == nil {
+		// 离开场景后 SceneID 已被清成 0，这里必须明确回 4005：
+		// 直接 return nil 会让 Typed 用零值回包，客户端读到的 code=0
+		// 与「同步成功」无法区分。
+		resp.Code = codeNotIn
 		return nil
 	}
 	if err := ctx.Actor.Send(pid, &scn.SyncMsg{PlayerID: ctx.State.PlayerID(), PID: ctx.Actor.PID()}); err != nil {

@@ -297,13 +297,12 @@ func (m *Module) onClaim(ctx *module.Context, req *gamev1.QuestClaimReq, resp *g
 	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(changes)}); err == nil {
 		resp.Rewards = raw
 	}
-	if err := reply(ctx, msgIDClaimResp, resp); err != nil {
-		return err
-	}
 	// 发经验（Actor 内部会推送等级变化）；仍在同一条消息内，随同一份快照提交。
 	if ctx.AddExp != nil {
 		ctx.AddExp(expGain)
 	}
+	// 回包由 module.Typed 统一完成：这里再 reply 一次会让客户端收到两条响应，
+	// 多出来的那条留到下一次请求时被当成新响应读走。
 	return nil
 }
 

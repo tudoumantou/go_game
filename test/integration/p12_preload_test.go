@@ -211,12 +211,27 @@ func TestP12LoginPreload(t *testing.T) {
 	t.Logf("装备加成生效：atk=%d", atk)
 
 	// ⑥ 校验登录活动进度推进（预置 2，登录后 ≥3）
+	// activity_record 是整份 JSON（{"<活动ID>":{progress,reward_mask}}），
+	// 读出来在 Go 侧解析，SQL 里没有 progress 列。
+	//
+	// 必须用 Eventually：登录推进只改内存快照，落库由 write-behind 异步完成，
+	// 登录后立即查库读到的是上一轮落库的值。
 	var progress int32
-	if err := database.QueryRow(
-		`SELECT progress FROM activity_record WHERE player_id = ? AND activity_id = 1`, roleID).Scan(&progress); err != nil {
-		t.Fatalf("query activity progress: %v", err)
-	}
-	require.False(t, progress < 3, fmt.Sprintf("login activity progress should increase, got %d", progress))
+	require.Eventually(t, func() bool {
+		var records string
+		if err := database.QueryRow(
+			`SELECT records FROM activity_record WHERE player_id = ?`, roleID).Scan(&records); err != nil {
+			return false
+		}
+		var decoded map[string]struct {
+			Progress int32 `json:"progress"`
+		}
+		if err := json.Unmarshal([]byte(records), &decoded); err != nil {
+			return false
+		}
+		progress = decoded["1"].Progress
+		return progress >= 3
+	}, 10*time.Second, 100*time.Millisecond, "login activity progress should increase past the seeded 2")
 	t.Logf("活动进度推进到 %d", progress)
 
 	// ⑦ 校验离线暂存被 drain 并补投
