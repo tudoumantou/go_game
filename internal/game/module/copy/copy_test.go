@@ -105,7 +105,7 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 	for id, n := range st.items {
 		require.EqualValues(t, before[id], n)
 	}
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	rec := d.Records[int32(cfg.Id)]
 	require.False(t, rec.PassCount != 2 || !rec.FirstPass || rec.Star != 2, fmt.Sprintf("record not updated: %+v", rec))
 }
@@ -122,7 +122,7 @@ func TestStarKeepsBest(t *testing.T) {
 	require.NoError(t, err)
 	err = m.OnMessage(ctx, msgIDSettleReq, low)
 	require.NoError(t, err)
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	got := d.Records[int32(cfg.Id)].Star
 	require.EqualValues(t, 3, got, fmt.Sprintf("star regressed to %d", got))
 }
@@ -146,7 +146,7 @@ func TestLevelGate(t *testing.T) {
 	body, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 3})
 	err := m.OnMessage(ctx, msgIDSettleReq, body)
 	require.NoError(t, err)
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	_, ok := d.Records[int32(cfg.Id)]
 	require.False(t, ok, "settle must be rejected below required level")
 }

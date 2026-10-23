@@ -12,15 +12,12 @@
 package copy
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -68,31 +65,10 @@ type Data struct {
 	Records map[int32]Record `json:"records"`
 }
 
-// init 注册持久化：copy_record 主键为 (player_id)。
-func init() {
-	writebehind.RegisterFlat[model.CopyRecord](stateKey, model.CopyRecordFlat, validate)
-}
-
-// validate 落库前校验：星级 0-3、次数非负。
-//
-// 星级上界 3 是协议约定（面板只画 3 颗星）；写死在校验里而非配置，
-// 是因为它同时约束客户端展示与服务端存储。
-func validate(row *model.CopyRecord) error {
-	d, err := decode(row)
-	if err != nil {
-		return err
-	}
-	for id, rec := range d.Records {
-		if id <= 0 || rec.Star < 0 || rec.Star > 3 || rec.PassCount < 0 {
-			return fmt.Errorf("invalid copy %d record %+v", id, rec)
-		}
-	}
-	return nil
-}
-
 // Module 副本模块。
 type Module struct {
-	*module.Thin
+	// Stateful 内嵌 Thin：生命周期与消息注册仍由 Thin 提供。
+	*module.Stateful[Data]
 	logger *log.Logger
 }
 
@@ -102,7 +78,7 @@ type Module struct {
 // 懒加载比登录时预解码更划算。
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
-	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
+	m.Stateful = module.NewStateful(stateKey, newData, module.ThinLogger(logger))
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.CopyListResp{}, m.onList)
 	m.HandleR(msgIDSettleReq, msgIDSettleResp, &gamev1.CopySettleResp{}, module.Typed(msgIDSettleResp, m.onSettle))
 	return m
@@ -114,21 +90,21 @@ func New(logger *log.Logger) *Module {
 // （BestStar=0/PassCount=0），这样客户端不需要再拉配置表。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.CopyListResp{Code: codeOK}
-	d, err := load(ctx.State)
-	if err != nil {
+	if err := m.Read(ctx, func(d *Data) {
+		for _, cfg := range gamedata.CopyCfgList() {
+			entry := &gamev1.CopyEntry{
+				CopyId:   int32(cfg.Id),
+				Name:     cfg.Col1,
+				MinLevel: int32(cfg.Col2),
+			}
+			if rec, ok := d.Records[int32(cfg.Id)]; ok {
+				entry.BestStar = rec.Star
+				entry.PassCount = rec.PassCount
+			}
+			resp.Copies = append(resp.Copies, entry)
+		}
+	}); err != nil {
 		return err
-	}
-	for _, cfg := range gamedata.CopyCfgList() {
-		entry := &gamev1.CopyEntry{
-			CopyId:   int32(cfg.Id),
-			Name:     cfg.Col1,
-			MinLevel: int32(cfg.Col2),
-		}
-		if rec, ok := d.Records[int32(cfg.Id)]; ok {
-			entry.BestStar = rec.Star
-			entry.PassCount = rec.PassCount
-		}
-		resp.Copies = append(resp.Copies, entry)
 	}
 	return reply(ctx, msgIDListResp, resp)
 }
@@ -156,113 +132,72 @@ func (m *Module) onSettle(ctx *module.Context, req *gamev1.CopySettleReq, resp *
 		star = 3
 	}
 
-	d, err := load(ctx.State)
+	var (
+		applied   bool
+		firstPass bool
+		changes   []*gamev1.ItemChange
+	)
+	err := m.Mutate(ctx, func(d *Data) bool {
+		// rec 是值副本；FirstPass 先取反再置位——本次是否首通必须在改写之前判定。
+		rec := d.Records[req.CopyId]
+		firstPass = !rec.FirstPass
+		if rec.Star < star {
+			rec.Star = star // 历史最佳只升不降
+		}
+		rec.PassCount++
+		rec.FirstPass = true
+
+		// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
+		// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算。
+		if firstPass {
+			grants := make([]module.ItemGrant, 0, 4)
+			for _, drop := range gamedata.CopyDropCfgList() {
+				if drop.Col1 != cfg.Id {
+					continue
+				}
+				grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
+			}
+			bagChanges, grantErr := module.Grant(ctx.State, grants)
+			if grantErr != nil {
+				resp.Code = codeBagFull
+				return false
+			}
+			changes = module.ToItemChanges(bagChanges)
+		}
+		d.Records[req.CopyId] = rec
+		applied = true
+		return true
+	})
 	if err != nil {
 		return err
 	}
-	// rec 是值副本；FirstPass 先取反再置位——本次是否首通必须在改写之前判定，
-	// 否则置位后永远判不出首通。
-	rec := d.Records[req.CopyId]
-	firstPass := !rec.FirstPass
-	if rec.Star < star {
-		rec.Star = star // 历史最佳只升不降
+	if !applied {
+		// 闭包里已设好拒绝码（6404 等），不能被下面的成功码覆盖。
+		return nil
 	}
-	rec.PassCount++
-	rec.FirstPass = true
-	d.Records[req.CopyId] = rec
 
 	resp.Code = codeOK
 	resp.FirstPass = firstPass
-
-	// 通关经验：等级门槛 * 50
+	// 通关经验：等级门槛 * 50（门槛缺失时给保底 50）。
 	expGain := cfg.Col2 * 50
 	if cfg.Col2 <= 0 {
 		expGain = 50
 	}
 	resp.ExpGain = expGain
-
-	// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
-	// 先收集再预检容量，避免「发到一半满包」留下部分到账。
-	var changes []*gamev1.ItemChange
-	if firstPass {
-		grants := make([]module.ItemGrant, 0, 4)
-		for _, drop := range gamedata.CopyDropCfgList() {
-			if drop.Col1 != cfg.Id {
-				continue
-			}
-			grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
-		}
-		// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算——
-		// 副本结算可重复打，所以这里不需要「部分成功」。
-		bagChanges, grantErr := module.Grant(ctx.State, grants)
-		if grantErr != nil {
-			resp.Code = codeBagFull
-			return nil
-		}
-		changes = module.ToItemChanges(bagChanges)
-		if len(changes) > 0 {
-			if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
-				resp.Rewards = raw
-			}
+	if len(changes) > 0 {
+		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
+			resp.Rewards = raw
 		}
 	}
-
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	// 回包由 module.Typed 统一完成；此处不再显式 reply。
 	// AddExp 是可选注入：nil 时跳过（测试/无等级系统环境）。
 	if ctx.AddExp != nil {
 		ctx.AddExp(expGain)
 	}
-	// 事件：驱动任务/活动（kill 语义的副本通关）
+	// 事件：驱动任务/活动（copy_pass）
 	if ctx.Emit != nil {
 		ctx.Emit(module.Event{Type: "copy_pass", Key: fmt.Sprintf("%d", cfg.Id), Delta: 1})
 	}
 	return nil
-}
-
-// load 读取副本状态；从未通关返回空结构。
-//
-// 懒初始化：row == nil 返回空 map 而不落库，首通时才产生记录。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.CopyRecord](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{Records: map[int32]Record{}}, nil
-	}
-	return decode(row)
-}
-
-// decode 把表行 JSON 解成业务视图；保证 map 非 nil。
-//
-// map 非 nil 是硬约束：onSettle 会 d.Records[id] = rec 写入，
-// nil map 写入直接 panic（读不会）。
-func decode(row *model.CopyRecord) (*Data, error) {
-	d := &Data{Records: map[int32]Record{}}
-	if row.Records != "" {
-		if err := json.Unmarshal([]byte(row.Records), &d.Records); err != nil {
-			return nil, fmt.Errorf("decode copy state: %w", err)
-		}
-	}
-	if d.Records == nil {
-		d.Records = map[int32]Record{}
-	}
-	return d, nil
-}
-
-// save 把进度编码回 Ext 槽位；落库调度由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	raw, err := json.Marshal(d.Records)
-	if err != nil {
-		return fmt.Errorf("encode copy state: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.CopyRecord{
-		PlayerId: playerID,
-		Records:  string(raw),
-	})
 }
 
 // reply 序列化 proto 并经 ctx.Reply 下发。
