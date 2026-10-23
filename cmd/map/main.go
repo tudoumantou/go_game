@@ -32,6 +32,10 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/log"
 	rpcpkg "game_study/pkg/rpc"
+
+	// automaxprocs：按 cgroup CPU 配额设置 GOMAXPROCS（K8s 限核时
+	// 避免按宿主机核数开 P 导致 GC/调度抖动）；无限制时自动 no-op。
+	_ "go.uber.org/automaxprocs"
 )
 
 var (

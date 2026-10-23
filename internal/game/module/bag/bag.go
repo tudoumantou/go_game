@@ -21,6 +21,7 @@ import (
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -117,17 +118,19 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 // 变成契约，必须先排序再遍历。
 func (m *Module) onList(ctx *module.Context) error {
 	items := ctx.State.Items()
-	resp := &gamev1.BagListResp{Code: codeOK, Items: make([]*gamev1.ItemEntry, 0, len(items))}
-	for itemID, count := range items {
-		if count <= 0 {
-			continue // 防御：扣减路径理论不留 0，脏数据不展示
+	// FilterMap：一次遍历完成「跳过脏数据 + 转协议结构」，比先 make 再
+	// append 少两行，且「哪些条目会被下发」集中在一个闭包里。
+	entries := lo.FilterMap(lo.Entries(items), func(e lo.Entry[int32, int64], _ int) (*gamev1.ItemEntry, bool) {
+		if e.Value <= 0 {
+			return nil, false // 防御：扣减路径理论不留 0，脏数据不展示
 		}
-		resp.Items = append(resp.Items, &gamev1.ItemEntry{
-			ItemUid: int64(itemID),
-			ItemId:  itemID,
-			Count:   int32(count),
-		})
-	}
+		return &gamev1.ItemEntry{
+			ItemUid: int64(e.Key),
+			ItemId:  e.Key,
+			Count:   int32(e.Value),
+		}, true
+	})
+	resp := &gamev1.BagListResp{Code: codeOK, Items: entries}
 	body, err := proto.Marshal(resp)
 	if err != nil {
 		return err

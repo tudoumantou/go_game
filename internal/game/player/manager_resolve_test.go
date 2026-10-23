@@ -15,6 +15,8 @@ import (
 
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
+
+	"github.com/stretchr/testify/require"
 )
 
 // fakePresence 内存在线归属表（测试替身）。
@@ -57,12 +59,9 @@ func TestResolveLocalHit(t *testing.T) {
 	m.SetPresence(presence)
 
 	pid, ok := m.Resolve(context.Background(), 42)
-	if !ok || pid != local {
-		t.Fatalf("本地命中应返回本地 PID: got (%v, %v)", pid, ok)
-	}
-	if presence.hits != 0 {
-		t.Fatalf("本地命中不应查询 presence，实际问了 %d 次", presence.hits)
-	}
+	require.True(t, ok, "本地命中应解析成功")
+	require.Same(t, local, pid, "本地命中应返回本地 PID")
+	require.Zero(t, presence.hits, "本地命中不应查询 presence")
 }
 
 // TestResolveRemoteNode 本地未命中 + 在线在别节点 → 远程 PID。
@@ -72,15 +71,9 @@ func TestResolveRemoteNode(t *testing.T) {
 	m.SetPresence(&fakePresence{owner: map[int64]string{42: "game-2"}})
 
 	pid, ok := m.Resolve(context.Background(), 42)
-	if !ok {
-		t.Fatal("玩家在线在 game-2，应解析成功")
-	}
-	if pid.Node != "game-2" {
-		t.Fatalf("PID.Node 应为 game-2，got %q", pid.Node)
-	}
-	if pid.ID != playerPID(42) {
-		t.Fatalf("PID.ID 应与本地 Spawn key 一致，got %q want %q", pid.ID, playerPID(42))
-	}
+	require.True(t, ok, "玩家在线在 game-2，应解析成功")
+	require.Equal(t, "game-2", pid.Node, "PID.Node 应为归属节点")
+	require.Equal(t, playerPID(42), pid.ID, "PID.ID 应与本地 Spawn key 一致")
 }
 
 // TestResolveOffline 不在线任何节点 → ok=false。
@@ -89,17 +82,15 @@ func TestResolveOffline(t *testing.T) {
 	m.SetNodeID("game-1")
 	m.SetPresence(&fakePresence{owner: map[int64]string{}})
 
-	if _, ok := m.Resolve(context.Background(), 42); ok {
-		t.Fatal("玩家不在线，Resolve 应返回 ok=false")
-	}
+	_, ok := m.Resolve(context.Background(), 42)
+	require.False(t, ok, "玩家不在线，Resolve 应返回 ok=false")
 }
 
 // TestResolveNoPresence presence 未注入时退化为纯本地查询（不 panic）。
 func TestResolveNoPresence(t *testing.T) {
 	m, _ := newTestManager(t)
-	if _, ok := m.Resolve(context.Background(), 42); ok {
-		t.Fatal("无 presence 且本地未命中，应返回 ok=false")
-	}
+	_, ok := m.Resolve(context.Background(), 42)
+	require.False(t, ok, "无 presence 且本地未命中，应返回 ok=false")
 }
 
 // TestGetOrSpawnRemoteGuard 本地未命中 + 在线在别节点 → 返回远程 PID
@@ -110,15 +101,9 @@ func TestGetOrSpawnRemoteGuard(t *testing.T) {
 	m.SetPresence(&fakePresence{owner: map[int64]string{42: "game-2"}})
 
 	pid, err := m.GetOrSpawn(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("GetOrSpawn: %v", err)
-	}
-	if pid.Node != "game-2" {
-		t.Fatalf("应返回远程 PID，got Node=%q", pid.Node)
-	}
-	if m.Count() != 0 {
-		t.Fatalf("远程归属时不得本地 Spawn，Count=%d", m.Count())
-	}
+	require.NoError(t, err)
+	require.Equal(t, "game-2", pid.Node, "应返回远程 PID")
+	require.Zero(t, m.Count(), "远程归属时不得本地 Spawn")
 }
 
 // TestGetOrSpawnPresenceError presence 查询报错时按「不在线」处理：
@@ -126,19 +111,12 @@ func TestGetOrSpawnRemoteGuard(t *testing.T) {
 func TestGetOrSpawnPresenceError(t *testing.T) {
 	m, _ := newTestManager(t)
 	m.SetNodeID("game-1")
-	boom := errors.New("redis down")
-	m.SetPresence(&fakePresence{err: boom})
+	m.SetPresence(&fakePresence{err: errors.New("redis down")})
 
 	// presence 故障 → 守卫放行 → 走本地 Spawn。这里 repo 为 nil 不会炸：
 	// Spawn 只登记 Actor，真正加载发生在首条消息（Bind）时。
 	pid, err := m.GetOrSpawn(context.Background(), 42)
-	if err != nil {
-		t.Fatalf("presence 故障应降级为本地 Spawn，got err=%v", err)
-	}
-	if pid.Node != "" {
-		t.Fatalf("降级路径应 Spawn 本地 Actor，got Node=%q", pid.Node)
-	}
-	if m.Count() != 1 {
-		t.Fatalf("降级后应持有本地 Actor，Count=%d", m.Count())
-	}
+	require.NoError(t, err, "presence 故障应降级为本地 Spawn")
+	require.Empty(t, pid.Node, "降级路径应 Spawn 本地 Actor")
+	require.Equal(t, 1, m.Count(), "降级后应持有本地 Actor")
 }

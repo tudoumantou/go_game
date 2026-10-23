@@ -22,7 +22,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"game_study/internal/game/module"
@@ -30,6 +29,8 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	"game_study/pkg/model"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // DefaultPreloadTimeout 预加载超时（12.6.2 第 4 条：超时则登录失败，避免半成品 Actor 上线）。
@@ -72,79 +73,68 @@ func NewPreloader(database *db.DB, logger *log.Logger, timeout time.Duration) *P
 //
 // 任一必需项（player）缺失视为错误；其余表缺失按空处理（新角色无装备/活动记录是正常的）。
 //
-// Go 知识点：
-//   - wg.Add(N) 必须在所有 go 语句**之前**调用：Add 在 goroutine 里做会
-//     有「Wait 已返回、Add 又来」的竞态；这里集中 Add(5) 再逐个放 goroutine；
-//   - 每个 goroutine 只写自己的 err 变量、只读共享的 pf 的不同字段，
-//     没有数据竞争；ctx 超时由 database/sql 的驱动层负责取消在途查询。
+// 用 errgroup 而不是手写 WaitGroup：Add/Done 必须手工配对，多一个少一个
+// 都会让 Wait 永久阻塞（本函数曾因删掉两个查询却漏改 Add(5) 而死锁，且
+// 只在非缓存降级路径上暴露）。errgroup 的 counter 由 Go/Wait 自动管理，
+// 这类结构性错误从此不可能再出现；第一次错误还会 cancel 其余查询（快速失败），
+// 不必等三个查询全部超时。
+//
+// 并发安全性：各 goroutine 只写 pf 的不同字段，无数据竞争；gctx 由
+// database/sql 驱动层负责取消在途查询。
 func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch, error) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
 	pf := &Prefetch{Items: make(map[int32]int64)}
+	g, gctx := errgroup.WithContext(ctx)
 
-	// 并行拉取：5 个查询并发，耗时 ≈ max(单表耗时)
-	var (
-		wg        sync.WaitGroup
-		playerErr error
-		attrErr   error
-		itemsErr  error
-	)
-
-	wg.Add(5)
-
-	go func() {
-		defer wg.Done()
-		row, err := model.FindPlayerByPK(ctx, p.db.DB, playerID)
+	// 并行拉取：3 个查询并发，耗时 ≈ max(单表耗时)
+	g.Go(func() error {
+		row, err := model.FindPlayerByPK(gctx, p.db.DB, playerID)
 		switch {
 		case err == nil:
 			pf.Player = row
 		case errors.Is(err, sql.ErrNoRows):
-			playerErr = ErrNoPlayer
+			return ErrNoPlayer
 		default:
-			playerErr = fmt.Errorf("load player: %w", err)
+			return fmt.Errorf("load player: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	go func() {
-		defer wg.Done()
-		row, err := model.FindPlayerAttrByPK(ctx, p.db.DB, playerID)
+	g.Go(func() error {
+		row, err := model.FindPlayerAttrByPK(gctx, p.db.DB, playerID)
 		switch {
 		case err == nil:
 			pf.Attr = row
 		case errors.Is(err, sql.ErrNoRows):
 			// 无属性行：创角事务应保证存在，缺失按默认值处理
 		default:
-			attrErr = fmt.Errorf("load attr: %w", err)
+			return fmt.Errorf("load attr: %w", err)
 		}
-	}()
+		return nil
+	})
 
-	go func() {
-		defer wg.Done()
-		items, err := p.queryItems(ctx, playerID)
+	g.Go(func() error {
+		items, err := p.queryItems(gctx, playerID)
 		if err != nil {
-			itemsErr = err
-			return
+			return err
 		}
 		pf.Items = items
-	}()
+		return nil
+	})
 
-	wg.Wait()
+	err := g.Wait()
 
-	// 记录耗时（20.1：登录 P99 < 2s）
+	// 记录耗时（20.1：登录 P99 < 2s）。
+	// 与原实现的一点差异：原代码的成功判定漏掉了 attr 错误，现在三路任一
+	// 失败即记失败——attr 失败本来就会让本次登录失败，指标应与真实结果一致。
 	if metrics.Enabled() {
-		metrics.LoginPreloadObserve(time.Since(start), playerErr == nil && itemsErr == nil)
+		metrics.LoginPreloadObserve(time.Since(start), err == nil)
 	}
-
-	if playerErr != nil {
-		return nil, nil, playerErr
-	}
-	if attrErr != nil {
-		return nil, nil, attrErr
-	}
-	if itemsErr != nil {
-		return nil, nil, itemsErr
+	if err != nil {
+		return nil, nil, err
 	}
 	// 装备与活动状态已随玩家快照（Ext）加载，不再单独查库。
 

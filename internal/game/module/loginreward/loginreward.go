@@ -33,6 +33,7 @@ import (
 	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -173,15 +174,14 @@ func (m *Module) grantOnLogin(ctx *module.Context) error {
 	}
 	// 登录阶段客户端可能还没进场景，推送失败不影响正确性（背包以下次拉取为准）。
 	if ctx.Send != nil {
-		changes := make([]*gamev1.ItemChange, 0, len(grants))
-		for _, g := range grants {
-			changes = append(changes, &gamev1.ItemChange{
+		changes := lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.ItemChange {
+			return &gamev1.ItemChange{
 				ItemUid: int64(g.ItemID),
 				ItemId:  g.ItemID,
 				Count:   int32(ctx.State.GetItemCount(g.ItemID)),
 				Change:  1,
-			})
-		}
+			}
+		})
 		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
 			_ = ctx.Send(3010, raw)
 		}

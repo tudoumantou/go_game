@@ -35,6 +35,7 @@ import (
 	pkgmq "game_study/pkg/mq"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -525,17 +526,16 @@ func (m *Module) onTake(ctx *module.Context, body []byte) error {
 		m.logger.Warn("mail mark taken failed", "mail_id", req.MailId, "err", err)
 	}
 
-	changes := make([]*gamev1.ItemChange, 0, len(atts))
-	for _, a := range atts {
-		changes = append(changes, &gamev1.ItemChange{
+	changes := lo.Map(atts, func(a Attachment, _ int) *gamev1.ItemChange {
+		return &gamev1.ItemChange{
 			// demo 期道具无唯一实例 uid，用 itemID 占位（协议字段不可省）
 			ItemUid: int64(a.ItemID),
 			ItemId:  a.ItemID,
 			// 回包带领取后存量而非本次发放数：客户端直接刷新显示
 			Count:  int32(ctx.State.GetItemCount(a.ItemID)),
 			Change: 1,
-		})
-	}
+		}
+	})
 
 	resp.Code = codeOK
 	// 奖励复用 BagChangeNotify 格式塞进 Rewards：客户端一套道具变更

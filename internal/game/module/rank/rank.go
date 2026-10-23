@@ -26,6 +26,7 @@ import (
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -171,21 +172,19 @@ func (m *Module) onList(ctx *module.Context, body []byte) error {
 //
 // len==0 返回 nil 而非空切片：proto3 序列化下 nil 不出现在 wire 上，
 // 省几字节；客户端判空用 len()，nil 与空语义等价。
-// make(..., 0, len) 预分配避免 append 增长复制。
+// lo.Map 内部分配 len(entries) 长度的结果切片，与手工预分配等价。
 func toProto(entries []Entry) []*gamev1.RankEntry {
 	if len(entries) == 0 {
 		return nil
 	}
-	out := make([]*gamev1.RankEntry, 0, len(entries))
-	for _, e := range entries {
+	return lo.Map(entries, func(e Entry, _ int) *gamev1.RankEntry {
 		// Name 留空：游戏服不持有其他玩家昵称，由客户端按 player_id 补齐。
-		out = append(out, &gamev1.RankEntry{
+		return &gamev1.RankEntry{
 			PlayerId: e.PlayerID,
 			Score:    e.Score,
 			Rank:     e.Rank,
-		})
-	}
-	return out
+		}
+	})
 }
 
 // reply 序列化并回包（marshal 失败用 %w 包装，保留错误链）。

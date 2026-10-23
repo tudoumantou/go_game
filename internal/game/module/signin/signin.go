@@ -31,6 +31,7 @@ import (
 	"game_study/pkg/model"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"game_study/pkg/writebehind"
+	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -230,10 +231,9 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 	}); err != nil {
 		return err
 	}
-	changes := make([]*gamev1.ItemChange, 0, len(grants))
-	for _, g := range grants {
-		changes = append(changes, &gamev1.ItemChange{ItemUid: int64(g.ItemID), ItemId: g.ItemID, Count: int32(ctx.State.GetItemCount(g.ItemID)), Change: 1})
-	}
+	changes := lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.ItemChange {
+		return &gamev1.ItemChange{ItemUid: int64(g.ItemID), ItemId: g.ItemID, Count: int32(ctx.State.GetItemCount(g.ItemID)), Change: 1}
+	})
 	return m.Reply(ctx, 3010, &gamev1.BagChangeNotify{Changes: changes})
 }
 
@@ -324,11 +324,9 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 
 // protoRewards 把内部发奖结构转成协议结构（按 ItemID 排序由调用方保证）。
 func protoRewards(grants []module.ItemGrant) []*gamev1.SigninReward {
-	out := make([]*gamev1.SigninReward, 0, len(grants))
-	for _, g := range grants {
-		out = append(out, &gamev1.SigninReward{ItemId: g.ItemID, Count: g.Count})
-	}
-	return out
+	return lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.SigninReward {
+		return &gamev1.SigninReward{ItemId: g.ItemID, Count: g.Count}
+	})
 }
 
 // rewardsForDay 汇总配置里某一天的奖励（同一天可配多种道具）。
@@ -358,10 +356,10 @@ func rewardsForDay(day int32) ([]module.ItemGrant, error) {
 	if len(counts) == 0 {
 		return nil, fmt.Errorf("signin day %d has no reward", day)
 	}
-	out := make([]module.ItemGrant, 0, len(counts))
-	for id, count := range counts {
-		out = append(out, module.ItemGrant{ItemID: id, Count: count})
-	}
+	// map → slice 再排序：lo.Keys 只负责取键，顺序仍由下面的排序保证稳定。
+	out := lo.Map(lo.Keys(counts), func(id int32, _ int) module.ItemGrant {
+		return module.ItemGrant{ItemID: id, Count: counts[id]}
+	})
 	sort.Slice(out, func(i, j int) bool { return out[i].ItemID < out[j].ItemID })
 	return out, nil
 }

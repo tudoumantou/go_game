@@ -34,6 +34,8 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/writebehind"
+
+	"github.com/samber/lo"
 )
 
 // Attr 玩家属性。
@@ -373,15 +375,14 @@ func (s *State) CanHold(grants []writebehind.ItemGrant) bool {
 			kinds++
 		}
 	}
-	// 本批新增种类去重；已在背包里的直接跳过。
-	seen := make(map[int32]bool, len(grants))
-	for _, g := range grants {
-		if g.Count <= 0 || g.ItemID <= 0 || s.items[g.ItemID] > 0 || seen[g.ItemID] {
-			continue
-		}
-		seen[g.ItemID] = true
-	}
-	return kinds+len(seen) <= int(cap)
+	// 本批「新种类」数 = 合法发放项 → 过滤掉非法与已有 → 按 ItemID 去重。
+	// 用 lo 而非手写 seen map：意图（filter 什么、按什么去重）从两个循环
+	// 收敛成两行，且不会漏掉「先去重再加入」的顺序依赖。
+	fresh := lo.Filter(grants, func(g writebehind.ItemGrant, _ int) bool {
+		return g.Count > 0 && g.ItemID > 0 && s.items[g.ItemID] <= 0
+	})
+	newKinds := lo.UniqBy(fresh, func(g writebehind.ItemGrant) int32 { return g.ItemID })
+	return kinds+len(newKinds) <= int(cap)
 }
 
 // capacityFor 按配置计算容量；无配置返回 0（不限制）。

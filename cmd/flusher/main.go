@@ -29,6 +29,10 @@ import (
 	// 否则框架会拒绝写入未注册的模块状态（防静默丢数据）。
 	// blank import（_）：只触发包的 init 注册副作用，不引入任何标识符
 	_ "game_study/internal/game/module/register"
+
+	// automaxprocs：按 cgroup CPU 配额设置 GOMAXPROCS（K8s 限核时
+	// 避免按宿主机核数开 P 导致 GC/调度抖动）；无限制时自动 no-op。
+	_ "go.uber.org/automaxprocs"
 )
 
 func main() {
