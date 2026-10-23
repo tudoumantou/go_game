@@ -17,15 +17,12 @@
 package partner
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -67,84 +64,17 @@ type Data struct {
 	Field []int32         `json:"field"`
 }
 
-// init 注册持久化：表主键恰为 (player_id)，FlatOps 直接复用。
-func init() {
-	writebehind.RegisterFlat[model.PlayerPartner](stateKey, model.PlayerPartnerFlat, validate)
-}
-
-// validate 落库前校验：只做可解码性检查，业务不变量（上阵合法）在 decode 里。
-func validate(row *model.PlayerPartner) error {
-	_, err := decode(row)
-	return err
-}
-
-// decode 把表行 JSON 解成业务视图，并拦住坏快照：
-// 上阵位超限、上阵未拥有、重复上阵都会让登录给出错误加成且无法自愈，
-// 宁可整批落库失败，也不把坏状态放进出战计算。
-//
-// Go 知识点：这是「可信边界」模式——Ext 数据可能来自旧版本、
-// 手工改库或传输损坏，decode 是第一个接触点，把不变量检查
-// 集中在读取路径，比在每个使用点防御更可靠。
-func decode(row *model.PlayerPartner) (*Data, error) {
-	d := &Data{Stars: map[int32]int32{}, Field: []int32{}}
-	if row == nil || row.Partners == "" {
-		return d, nil
-	}
-	if err := json.Unmarshal([]byte(row.Partners), d); err != nil {
-		return nil, fmt.Errorf("decode partner state: %w", err)
-	}
-	if d.Stars == nil {
-		d.Stars = map[int32]int32{}
-	}
-	// 快照可能被旧版本或手工改坏：上阵位超限、上阵未拥有的伙伴都要在这里拦住，
-	// 否则登录会给出错误加成且无法自愈。
-	if len(d.Field) > fieldLimit {
-		return nil, fmt.Errorf("partner field has %d entries, limit %d", len(d.Field), fieldLimit)
-	}
-	seen := map[int32]bool{}
-	for _, id := range d.Field {
-		if d.Stars[id] <= 0 {
-			return nil, fmt.Errorf("partner %d on field but not owned", id)
-		}
-		if seen[id] {
-			return nil, fmt.Errorf("partner %d duplicated on field", id)
-		}
-		seen[id] = true
-	}
-	return d, nil
-}
-
-// load 读取伙伴状态；从未激活返回空结构（Stars 空 map、Field 空切片）。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.PlayerPartner](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	return decode(row)
-}
-
-// save 把星级与上阵序列化回 Ext 槽位；落库由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	raw, err := json.Marshal(d)
-	if err != nil {
-		return fmt.Errorf("encode partner state: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.PlayerPartner{
-		PlayerId: playerID,
-		Partners: string(raw),
-	})
-}
-
 // Module 伙伴模块。
 type Module struct {
-	*module.Thin
+	// Stateful 内嵌 Thin：Lifecycle 与消息注册仍由 Thin 提供。
+	*module.Stateful[Data]
 	logger *log.Logger
 }
 
 // New 创建模块。
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
-	m.Thin = module.NewThin(stateKey,
+	m.Stateful = module.NewStateful(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinLogin(m.onLogin),
 	)
@@ -161,14 +91,16 @@ func New(logger *log.Logger) *Module {
 // 状态损坏时吞掉错误继续登录：加成可以下次写操作时修复，
 // 但把玩家拦在登录外的影响更大（可用性优先）。
 func (m *Module) onLogin(ctx *module.Context) error {
-	d, err := load(ctx.State)
-	if err != nil {
-		return nil // 状态损坏不阻断登录；下次写操作会再次报错
-	}
-	for _, id := range d.Field {
-		if bonus := atkBonus(id, d.Stars[id]); bonus != 0 {
-			ctx.State.AddBonus("atk", bonus)
+	// 只读：登录只重新叠加加成，不改状态。
+	if err := m.Read(ctx, func(d *Data) {
+		for _, id := range d.Field {
+			if bonus := atkBonus(id, d.Stars[id]); bonus != 0 {
+				ctx.State.AddBonus("atk", bonus)
+			}
 		}
+	}); err != nil {
+		// 状态损坏不阻断登录；下次写操作会再次报错。
+		return nil
 	}
 	return nil
 }
@@ -178,25 +110,25 @@ func (m *Module) onLogin(ctx *module.Context) error {
 // 与任务/副本同构：列表 = 配置全集 JOIN 玩家进度，未解锁项也展示
 // （星级 0），客户端可渲染「可激活」入口。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
 	resp := &gamev1.PartnerListResp{Code: codeOK, FieldLimit: fieldLimit}
-	for _, cfg := range gamedata.PartnerCfgList() {
-		id := int32(cfg.Id)
-		star := d.Stars[id]
-		entry := &gamev1.PartnerEntry{
-			PartnerId: id,
-			Name:      cfg.Col1,
-			Quality:   int32(cfg.Col2),
-			Star:      star,
+	if err := m.Read(ctx, func(d *Data) {
+		for _, cfg := range gamedata.PartnerCfgList() {
+			id := int32(cfg.Id)
+			star := d.Stars[id]
+			entry := &gamev1.PartnerEntry{
+				PartnerId: id,
+				Name:      cfg.Col1,
+				Quality:   int32(cfg.Col2),
+				Star:      star,
+			}
+			if star > 0 {
+				entry.OnField = contains(d.Field, id)
+				entry.AtkBonus = atkBonus(id, star)
+			}
+			resp.Partners = append(resp.Partners, entry)
 		}
-		if star > 0 {
-			entry.OnField = contains(d.Field, id)
-			entry.AtkBonus = atkBonus(id, star)
-		}
-		resp.Partners = append(resp.Partners, entry)
+	}); err != nil {
+		return err
 	}
 	return reply(ctx, msgIDListResp, resp)
 }
@@ -212,24 +144,19 @@ func (m *Module) onActivate(ctx *module.Context, req *gamev1.PartnerActivateReq,
 		resp.Code = codeNotFound
 		return nil
 	}
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
-	if d.Stars[req.PartnerId] > 0 {
-		resp.Code = codeOwned
-		return nil
-	}
-	if err := module.Spend(ctx.State, itemCoin, cfg.Col3); err != nil {
-		resp.Code = codeNoCoin
-		return nil
-	}
-
-	d.Stars[req.PartnerId] = 1
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	return nil
+	return m.Mutate(ctx, func(d *Data) bool {
+		if d.Stars[req.PartnerId] > 0 {
+			resp.Code = codeOwned
+			return false
+		}
+		// 扣费与置星在同一份内存状态里：提交失败一起回滚。
+		if err := module.Spend(ctx.State, itemCoin, cfg.Col3); err != nil {
+			resp.Code = codeNoCoin
+			return false
+		}
+		d.Stars[req.PartnerId] = 1
+		return true
+	})
 }
 
 // onStarUp 升星：按 partner_star 的「当前星级 → 下一星」消耗金币。
@@ -240,40 +167,38 @@ func (m *Module) onActivate(ctx *module.Context, req *gamev1.PartnerActivateReq,
 func (m *Module) onStarUp(ctx *module.Context, req *gamev1.PartnerStarUpReq, resp *gamev1.PartnerStarUpResp) error {
 	*resp = gamev1.PartnerStarUpResp{}
 
-	d, err := load(ctx.State)
+	var wasOnField bool
+	var oldBonus int64
+	err := m.Mutate(ctx, func(d *Data) bool {
+		star := d.Stars[req.PartnerId]
+		if star <= 0 {
+			resp.Code = codeNotOwned
+			return false
+		}
+		cost, ok := starCost(req.PartnerId, star)
+		if !ok {
+			// 配置里没有「当前星 → 下一星」行 = 已满星
+			resp.Code = codeMaxStar
+			return false
+		}
+		// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
+		if err := module.Spend(ctx.State, itemCoin, cost); err != nil {
+			resp.Code = codeNoCoin
+			return false
+		}
+		wasOnField = contains(d.Field, req.PartnerId)
+		oldBonus = atkBonus(req.PartnerId, star)
+		d.Stars[req.PartnerId] = star + 1
+		resp.Star = star + 1
+		return true
+	})
 	if err != nil {
 		return err
 	}
-	star := d.Stars[req.PartnerId]
-	if star <= 0 {
-		resp.Code = codeNotOwned
-		return nil
-	}
-	cost, ok := starCost(req.PartnerId, star)
-	if !ok {
-		// 配置里没有「当前星 → 下一星」行 = 已满星
-		resp.Code = codeMaxStar
-		return nil
-	}
-	// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
-	if err := module.Spend(ctx.State, itemCoin, cost); err != nil {
-		resp.Code = codeNoCoin
-		return nil
-	}
-
-	wasOnField := contains(d.Field, req.PartnerId)
-	oldBonus := atkBonus(req.PartnerId, star)
-
-	d.Stars[req.PartnerId] = star + 1
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-
-	// 已上阵时属性要跟着变：先减旧星的加成，再加新星的，净变化只发生一次。
+	// 已上阵时属性要跟着变：只加「新星 - 旧星」的差值，净变化发生一次。
 	if wasOnField {
-		ctx.State.AddBonus("atk", atkBonus(req.PartnerId, star+1)-oldBonus)
+		ctx.State.AddBonus("atk", atkBonus(req.PartnerId, resp.Star)-oldBonus)
 	}
-	resp.Star = star + 1
 	return nil
 }
 
@@ -285,39 +210,36 @@ func (m *Module) onStarUp(ctx *module.Context, req *gamev1.PartnerStarUpReq, res
 // 幂等成功但不做任何内存改动。
 func (m *Module) onField(ctx *module.Context, req *gamev1.PartnerFieldReq, resp *gamev1.PartnerFieldResp) error {
 	*resp = gamev1.PartnerFieldResp{}
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
-	star := d.Stars[req.PartnerId]
-	if star <= 0 {
-		resp.Code = codeNotOwned
-		return nil
-	}
-
-	onField := contains(d.Field, req.PartnerId)
-	switch {
-	case req.On && onField:
-		// 已上阵：幂等成功，不重复加加成。
-	case req.On && !onField:
-		if len(d.Field) >= fieldLimit {
-			resp.Code = codeFieldFull
-			return nil
+	return m.Mutate(ctx, func(d *Data) bool {
+		star := d.Stars[req.PartnerId]
+		if star <= 0 {
+			resp.Code = codeNotOwned
+			return false
 		}
-		d.Field = append(d.Field, req.PartnerId)
-		ctx.State.AddBonus("atk", atkBonus(req.PartnerId, star))
-	case !req.On && onField:
-		d.Field = remove(d.Field, req.PartnerId)
-		ctx.State.AddBonus("atk", -atkBonus(req.PartnerId, star))
-	case !req.On && !onField:
-		// 已下阵：幂等成功。
-	}
-
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	resp.AtkBonus = totalBonus(d)
-	return nil
+		on := contains(d.Field, req.PartnerId)
+		switch {
+		case req.On && on:
+			// 已上阵：幂等成功，不重复加加成，也不产生提交。
+			resp.AtkBonus = totalBonus(d)
+			return false
+		case req.On && !on:
+			if len(d.Field) >= fieldLimit {
+				resp.Code = codeFieldFull
+				return false
+			}
+			d.Field = append(d.Field, req.PartnerId)
+			ctx.State.AddBonus("atk", atkBonus(req.PartnerId, star))
+		case !req.On && on:
+			d.Field = remove(d.Field, req.PartnerId)
+			ctx.State.AddBonus("atk", -atkBonus(req.PartnerId, star))
+		case !req.On && !on:
+			// 已下阵：幂等成功，无改动。
+			resp.AtkBonus = totalBonus(d)
+			return false
+		}
+		resp.AtkBonus = totalBonus(d)
+		return true
+	})
 }
 
 // atkBonus 一个伙伴当前星级提供的攻击加成：配置基础值 × 星级。

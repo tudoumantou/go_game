@@ -155,13 +155,12 @@ func TestOnLoginRestoresBonus(t *testing.T) {
 	m := New(log.New("test"))
 
 	d := &Data{Stars: map[int32]int32{int32(cfg.Id): 2}, Field: []int32{int32(cfg.Id)}}
-	err := save(st, 1, d)
-	require.NoError(t, err)
+	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))
 	// 模拟残留：上次会话的加成还在。
 	st.bonus["atk"] = 9999
 	st.ClearBonus() // 玩家层在 LoginAll 前统一清空
 
-	err = m.OnLogin(ctx)
+	err := m.OnLogin(ctx)
 	require.NoError(t, err)
 	want := cfg.Col3 * 2
 	require.EqualValues(t, want, st.bonus["atk"])
@@ -175,7 +174,7 @@ func TestDecodeRejectsBrokenState(t *testing.T) {
 		`{"stars":{"1":1},"field":[1,1]}`, // 重复上阵
 	}
 	for _, raw := range cases {
-		_, err := decode(&model.PlayerPartner{Partners: raw})
-		require.Error(t, err, fmt.Sprintf("decode must reject %s", raw))
+		_, err := fromRow(&model.PlayerPartner{Partners: raw})
+		require.Error(t, err, fmt.Sprintf("fromRow must reject %s", raw))
 	}
 }
