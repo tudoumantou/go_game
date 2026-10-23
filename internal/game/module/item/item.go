@@ -10,63 +10,40 @@
 // 配置表：item.xml（gamedata.GetItemCfg）。
 // 懒初始化：无私有状态，不存在建行问题；保留空模块是为了让
 // 「道具域」有明确落点，新增道具玩法（礼包码、道具合成）时不必挪目录。
+//
+// 模块形态：嵌入 module.Thin 薄模块基座。不注册任何协议（MsgIDs 为 nil，
+// Registry 不会建路由项），只挂登录/下线两个观测钩子。
 package item
 
 import (
-	"context"
-
 	"game_study/internal/game/module"
 	"game_study/pkg/log"
 )
 
 // Module 道具模块。
 type Module struct {
-	logger *log.Logger
+	*module.Thin
 }
 
 // New 创建道具模块。
 func New(logger *log.Logger) *Module {
-	return &Module{logger: logger}
+	m := &Module{}
+	m.Thin = module.NewThin("item",
+		module.ThinLogger(logger),
+		module.ThinLogin(func(ctx *module.Context) error {
+			if logger != nil {
+				logger.Debug("item login", "player_id", ctx.State.PlayerID())
+			}
+			return nil
+		}),
+		// 下线标脏只是提示 flusher 关注，权威提交仍是快照 CAS。
+		module.ThinLogout(func(ctx *module.Context) error {
+			ctx.State.MarkDirty("item")
+			return nil
+		}),
+	)
+	return m
 }
 
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "item" }
-
-// MsgIDs 实现 module.Module（道具使用走 bag 模块，见 17.1 #20）。
-//
-// nil 路由是刻意的：两个模块都不注册 3001，Registry 才不会有歧义；
-// 若哪天拆出独立道具协议，在这里加协议号即可，不影响 bag。
-func (m *Module) MsgIDs() []uint32 { return nil }
-
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	// 保留参数置空：签名必须满足 module.Module 接口，
-	// 置空是「当前不消费任何入参」的自文档写法。
-	_ = ctx
-	_ = msgID
-	_ = body
-	return nil
-}
-
-// OnSave 实现 module.Module。
-//
-// 道具资产不在本模块落库（随玩家快照），无事可做。
-func (m *Module) OnSave(ctx context.Context) error {
-	_ = ctx
-	return nil
-}
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error {
-	m.logger.Debug("item login", "player_id", ctx.State.PlayerID())
-	return nil
-}
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
-	return nil
-}
+// 保证 Module 满足 module.Module（Thin 已预实现全部方法）。
+var _ module.Module = (*Module)(nil)

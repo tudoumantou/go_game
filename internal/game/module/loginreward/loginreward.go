@@ -14,10 +14,12 @@
 // 配置表：login_reward.xml（col1=第几天，col2="item_id,count"）。
 // 懒初始化：从未登录过返回零值 Data（LastDay=0 不等于任何自然日序号），
 // 首次登录才产生第一行记录。
+//
+// 模块形态：嵌入 module.Thin 薄模块基座。本模块没有客户端协议
+// （MsgIDs 为 nil），只挂 Init（配置校验）与 OnLogin（发奖）两个钩子。
 package loginreward
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -75,7 +77,12 @@ func validate(row *model.PlayerLogin) error {
 }
 
 // Module 登录礼包模块（无协议：登录时自动发放）。
+//
+// 嵌入 *module.Thin：Module 接口与可选能力由基座预装配。
+// logger 由本模块自持：Thin 内的 logger 只服务协议失败路径，
+// 而本模块没有客户端协议，告警走自己的 warn。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 	now    func() time.Time // 时钟可注入：测试跨日/断签边界，生产用 time.Now
 }
@@ -89,50 +96,38 @@ func New(logger *log.Logger, clock ...func() time.Time) *Module {
 	if len(clock) > 0 && clock[0] != nil {
 		m.now = clock[0]
 	}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		// 启动期校验配置可用：配置错误在这里暴露而不是玩家登录时——
+		// 启动期失败会中断发布，线上失败则影响每个登录玩家，
+		// 失败要早、要响。
+		module.ThinInit(func(*module.Context) error {
+			if len(gamedata.LoginRewardCfgList()) == 0 {
+				return fmt.Errorf("login_reward.xml is empty")
+			}
+			for _, cfg := range gamedata.LoginRewardCfgList() {
+				if cfg.Col1 <= 0 {
+					return fmt.Errorf("invalid login reward day %d", cfg.Col1)
+				}
+				if _, err := parseReward(cfg.Col2); err != nil {
+					return fmt.Errorf("login reward %d: %w", cfg.Id, err)
+				}
+			}
+			return nil
+		}),
+		module.ThinLogin(m.grantOnLogin),
+	)
 	return m
 }
 
-// Name 实现 module.Module。
-func (m *Module) Name() string { return stateKey }
+// 保证 Module 满足 module.Module（Thin 已预实现全部方法）。
+var _ module.Module = (*Module)(nil)
 
-// MsgIDs 实现 module.Module：登录礼包没有客户端协议。
-func (m *Module) MsgIDs() []uint32 { return nil }
-
-// Init 启动期校验配置可用。
-//
-// 配置错误在这里暴露而不是玩家登录时：启动期失败会中断发布，
-// 线上失败则影响每个登录玩家——失败要早、要响。
-func (m *Module) Init(*module.Context) error {
-	if len(gamedata.LoginRewardCfgList()) == 0 {
-		return fmt.Errorf("login_reward.xml is empty")
-	}
-	for _, cfg := range gamedata.LoginRewardCfgList() {
-		if cfg.Col1 <= 0 {
-			return fmt.Errorf("invalid login reward day %d", cfg.Col1)
-		}
-		if _, err := parseReward(cfg.Col2); err != nil {
-			return fmt.Errorf("login reward %d: %w", cfg.Id, err)
-		}
-	}
-	return nil
-}
-
-// OnMessage 实现 module.Module：不处理任何协议。
-//
-// 走到这里说明路由配错了（Registry 只按 MsgIDs 分发，而本模块返回 nil），
-// 返回错误让问题在测试/监控里暴露，而不是静默吞掉。
-func (m *Module) OnMessage(*module.Context, uint32, []byte) error {
-	return fmt.Errorf("loginreward: no client protocol expected")
-}
-
-// OnSave 实现 module.Module：状态随快照提交。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 发放当日登录礼包。
+// grantOnLogin 发放当日登录礼包。
 //
 // 重连会再次触发 OnLogin，但 LastDay 已是今天时直接返回，不会重复发奖。
 // 这是本模块幂等的全部机制：状态即事实，不需要额外业务键。
-func (m *Module) OnLogin(ctx *module.Context) error {
+func (m *Module) grantOnLogin(ctx *module.Context) error {
 	day := businessDay(m.now())
 	d, err := load(ctx.State)
 	if err != nil {
@@ -193,9 +188,6 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	}
 	return nil
 }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(*module.Context) error { return nil }
 
 // rewardForStreak 取连续第 streak 天的奖励；超过最大档按最后一档发。
 //

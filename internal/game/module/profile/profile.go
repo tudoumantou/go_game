@@ -7,20 +7,18 @@
 // Ext 槽位：无。这是典型的「纯读模块」——只做组装与序列化。
 // 事件订阅：无。
 // 配置表：attr_formula.xml（P7）；P6 五维 AttrId 1-5 为协议常量。
-// 懒初始化：无状态可初始化；Rollbackable 恒为 true 是因为
-// 整个请求零副作用（不碰任何内存），缓存写失败可直接丢弃重放。
+// 懒初始化：无状态可初始化。
+//
+// 模块形态：嵌入 module.Thin 薄模块基座。本模块零副作用（不碰任何内存），
+// 注册进 Thin 即承诺可回滚——写缓存失败可直接丢弃重放。
 package profile
 
 import (
-	"context"
-	"fmt"
-
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 // 协议号（4.9：2001 拉取 / 2002 响应）。
@@ -43,48 +41,22 @@ const (
 
 // Module 玩家信息模块。
 type Module struct {
-	logger *log.Logger
+	*module.Thin
 }
 
 // New 创建模块。
 func New(logger *log.Logger) *Module {
-	return &Module{logger: logger}
-}
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "profile" }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDPlayerInfoReq} }
-
-// Rollbackable 玩家信息查询只读，写缓存失败时可直接回滚内存。
-//
-// 恒 true 的底气：本模块任何路径都不改 State，重放零副作用。
-func (*Module) Rollbackable(uint32) bool { return true }
-
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDPlayerInfoReq:
-		return m.onPlayerInfo(ctx)
-	default:
-		return fmt.Errorf("profile: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
-	return nil
+	m := &Module{}
+	m.Thin = module.NewThin("profile",
+		module.ThinLogger(logger),
+		module.ThinHandle(msgIDPlayerInfoReq, m.onPlayerInfo),
+		// 下线标脏只是提示 flusher 关注，权威提交仍是快照 CAS。
+		module.ThinLogout(func(ctx *module.Context) error {
+			ctx.State.MarkDirty("profile")
+			return nil
+		}),
+	)
+	return m
 }
 
 // onPlayerInfo 组装玩家信息：Profile 基础字段 + 五维战斗属性。
@@ -93,9 +65,9 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 // 维护在 bonus 上，最终值 = 基础值 + 加成，这里只取最终值下发。
 // 这样新增加成来源（坐骑、称号）不需要改本模块——只要那个模块
 // 在自己 OnLogin 里 AddBonus。
-func (m *Module) onPlayerInfo(ctx *module.Context) error {
+func (m *Module) onPlayerInfo(ctx *module.Context, _ uint32, _ []byte) error {
 	p := ctx.State.Profile()
-	resp := &gamev1.PlayerInfoResp{
+	return m.Reply(ctx, msgIDPlayerInfoResp, &gamev1.PlayerInfoResp{
 		Code:   0,
 		RoleId: ctx.State.PlayerID(),
 		Name:   p.Name,
@@ -110,10 +82,8 @@ func (m *Module) onPlayerInfo(ctx *module.Context) error {
 			{AttrId: attrDEF, Value: ctx.State.GetAttr("def")},
 			{AttrId: attrSPD, Value: ctx.State.GetAttr("spd")},
 		},
-	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgIDPlayerInfoResp, body)
+	})
 }
+
+// 保证 Module 满足 module.Module（Thin 已预实现全部方法）。
+var _ module.Module = (*Module)(nil)

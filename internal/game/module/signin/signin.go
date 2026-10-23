@@ -11,10 +11,13 @@
 // 配置表：signin_reward.xml（day=周几，item_id/count）。
 // 懒初始化：从未签到返回空 Data（Days 空切片）；跨周清零由外部
 // 调用 Reset 完成，读取路径不自动清——这是「模块不持时钟锚点」的取舍。
+//
+// 模块形态：嵌入 module.Thin 薄模块基座。接口样板（分发/失败响应/
+// 可回滚声明/生命周期空实现）由基座预装配，本文件只剩业务：
+// 周几口径、领取幂等、发奖预检。改造前 620 行里约三分之一是样板。
 package signin
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -103,120 +106,97 @@ func validate(row *model.PlayerSignin) error {
 // 返回空 Data，等价于重新初始化，但不需要写一行空记录。
 func Reset(state writebehind.ExtState) { state.SetExt(stateKey, nil) }
 
+// respOf 请求协议 → （响应协议, 错误响应工厂）。
+//
+// Thin 的 CacheFailureReply/Fail 靠它把「系统维护中」翻译成客户端看得懂的
+// 回包；两个请求都是空消息体，错误响应只需置 Code。
+func respOf(msgID uint32) (uint32, module.RespFactory, bool) {
+	switch msgID {
+	case MsgInfoReq:
+		return MsgInfoResp, func(code int32) proto.Message {
+			return &gamev1.SigninInfoResp{Code: code}
+		}, true
+	case MsgClaimReq:
+		return MsgClaimResp, func(code int32) proto.Message {
+			return &gamev1.SigninClaimResp{Code: code}
+		}, true
+	default:
+		return 0, nil, false
+	}
+}
+
 // Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
+//
+// 嵌入 *module.Thin：Name/MsgIDs/OnMessage 分发/OnSave/OnLogin/OnLogout/
+// Rollbackable/CacheFailureReply 全部由基座提供，本模块只注册处理器。
+// 两个请求都满足「重放无第二次副作用」：Info 只读；Claim 按「今天已领」
+// 事实幂等（已领过直接回状态，不第二次发奖），所以注册进 Thin 即承诺
+// 可回滚——缓存提交失败时丢弃内存改动重放是安全的。
 type Module struct {
-	logger *log.Logger
-	now    func() time.Time
+	*module.Thin
+	now func() time.Time
 }
 
 // New 的可选时钟用于验证周几边界；生产默认使用服务器时间。
 func New(logger *log.Logger, clock ...func() time.Time) *Module {
-	m := &Module{logger: logger, now: time.Now}
+	m := &Module{now: time.Now}
 	if len(clock) > 0 && clock[0] != nil {
 		m.now = clock[0]
 	}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		module.ThinErrCode(codeSystem),
+		module.ThinRespOf(respOf),
+		// 缓存权威路径未就绪一律拒绝：签到发奖必须走快照 CAS，
+		// 直写路径已移除，没有降级方案——宁可不可用，不可双写。
+		module.ThinGuard(module.RequireCache),
+		// 启动期校验七天奖励配置齐全，配错不等到玩家点领取才暴露。
+		module.ThinInit(func(*module.Context) error {
+			for day := int32(1); day <= weekDays; day++ {
+				if _, err := rewardsForDay(day); err != nil {
+					return err
+				}
+			}
+			return nil
+		}),
+	)
+	m.Handle(MsgInfoReq, m.onInfo)
+	m.Handle(MsgClaimReq, m.onClaim)
 	return m
 }
 
-// Name 模块名（同时是 Ext 槽位键与落库表名 player_signin 的归属）。
-// MsgIDs 只处理信息查询与领取两个协议。
-func (*Module) Name() string     { return stateKey }
-func (*Module) MsgIDs() []uint32 { return []uint32{MsgInfoReq, MsgClaimReq} }
-
-// Rollbackable 签到请求只改内存且可幂等重放，写缓存失败时可以丢弃本次改动。
-//
-// 可重放的底气在 claim：已领过的天会命中 d.has(today) 直接返回，
-// 重放不会第二次发奖——「幂等」让「可回滚」成立，两者是配套的。
-func (*Module) Rollbackable(msgID uint32) bool { return msgID == MsgInfoReq || msgID == MsgClaimReq }
-
-// CacheFailureReply 缓存不可用时返回业务错误码，客户端无需处理通用错误通知。
-//
-// 实现 CacheFailureAware 的收益：错误码用模块自己的 codeSystem，
-// 客户端能显示「签到系统维护中」而不是通用「系统错误」。
-func (*Module) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
-	var out proto.Message
-	var id uint32
-	switch msgID {
-	case MsgInfoReq:
-		id, out = MsgInfoResp, &gamev1.SigninInfoResp{Code: codeSystem}
-	case MsgClaimReq:
-		id, out = MsgClaimResp, &gamev1.SigninClaimResp{Code: codeSystem}
-	default:
-		return 0, nil, false
-	}
-	raw, err := proto.Marshal(out)
-	if err != nil {
-		return 0, nil, false
-	}
-	return id, raw, true
-}
-
-// Init 启动期校验七天奖励配置齐全，配错不等到玩家点领取才暴露。
-func (*Module) Init(*module.Context) error {
-	for day := int32(1); day <= weekDays; day++ {
-		if _, err := rewardsForDay(day); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// OnSave / OnLogin / OnLogout 对本模块都是无操作：
-// 领取事实与道具在同一次快照 CAS 里提交，没有模块级聚合数据要单独落库；
-// 周切换清零也不在这里做（由周期回调模块调用 Reset）。
-func (*Module) OnSave(context.Context) error   { return nil }
-func (*Module) OnLogin(*module.Context) error  { return nil }
-func (*Module) OnLogout(*module.Context) error { return nil }
-
-// OnMessage 协议入口：先解码，再确认缓存权威路径可用（旧直写 MySQL 路径已移除），
-// 然后每个请求只采样一次时钟，防止处理途中跨过周零点。
-//
-// 「只采样一次时钟」是关键正确性细节：若在 has() 判断后重新取时间，
-// 跨过周日 24 点的请求会出现「按旧周几判定已领、按新周几发奖」的错位。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	var req proto.Message
-	switch msgID {
-	case MsgInfoReq:
-		req = &gamev1.SigninInfoReq{}
-	case MsgClaimReq:
-		req = &gamev1.SigninClaimReq{}
-	default:
-		return fmt.Errorf("signin: unexpected message %d", msgID)
-	}
-	if err := proto.Unmarshal(body, req); err != nil {
-		return m.failure(ctx, msgID, err)
-	}
-	if ctx.State == nil || !ctx.CacheEnabled {
-		// 缓存权威路径未就绪时一律拒绝：签到发奖必须走快照 CAS，
-		// 直写路径已移除，没有降级方案——宁可不可用，不可双写。
-		return m.failure(ctx, msgID, fmt.Errorf("signin state unavailable"))
-	}
-	// 每个请求只采样一次，防止处理途中跨周零点。
+// onInfo 签到信息查询：今天周几、今天是否已领、本周领取全貌。
+func (m *Module) onInfo(ctx *module.Context, _ uint32, _ []byte) error {
+	// 每个请求只采样一次时钟，防止处理途中跨过周零点：
+	// 若在 has() 判断后重新取时间，跨过周日 24 点的请求会出现
+	// 「按旧周几判定已领、按新周几发奖」的错位。
 	today := weekdayOf(m.now())
 	d, err := load(ctx.State)
 	if err != nil {
-		return m.failure(ctx, msgID, err)
+		return m.Fail(ctx, MsgInfoReq, codeSystem, err)
 	}
-	if msgID == MsgInfoReq {
-		return reply(ctx, MsgInfoResp, &gamev1.SigninInfoResp{
-			Today:          today,
-			ClaimedToday:   d.has(today),
-			ClaimedDays:    d.Days,
-			ClaimedRewards: d.Rewards,
-		})
-	}
-	return m.claim(ctx, d, today)
+	return m.Reply(ctx, MsgInfoResp, &gamev1.SigninInfoResp{
+		Today:          today,
+		ClaimedToday:   d.has(today),
+		ClaimedDays:    d.Days,
+		ClaimedRewards: d.Rewards,
+	})
 }
 
-// claim 领取今天对应的奖励；已领过只回状态，不重复发奖。
-func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
+// onClaim 领取今天对应的奖励；已领过只回状态，不重复发奖。
+func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
+	today := weekdayOf(m.now())
+	d, err := load(ctx.State)
+	if err != nil {
+		return m.Fail(ctx, MsgClaimReq, codeSystem, err)
+	}
 	grants, err := rewardsForDay(today)
 	if err != nil {
-		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeConfig, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
+		return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeConfig, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 	}
 	if d.has(today) {
 		// 幂等：重复领取回「已领」状态 + 奖励预览，不再发奖
-		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
+		return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
 			Already: true, Day: today, Rewards: protoRewards(grants),
 			ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
 		})
@@ -228,23 +208,23 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 		// 这是「协议宽度 < 存储宽度」的经典溢出点：内存是 int64，
 		// 序列化进 proto 会静默截断，所以发奖前显式校验。
 		if current < 0 || g.Count > math.MaxInt32-current {
-			return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
+			return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 		}
 	}
 	if !ctx.State.CanHold(grants) {
-		return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagFull, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
+		return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagFull, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
 	}
 	d.add(today, grants)
 	// 先写领取事实再发道具：两者同属一份快照，CAS 失败整体回滚，
 	// 不会出现「奖发了、状态没记」的重复可领。
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return m.failure(ctx, MsgClaimReq, err)
+		return m.Fail(ctx, MsgClaimReq, codeSystem, err)
 	}
 	for _, g := range grants {
 		ctx.State.AddItem(g.ItemID, g.Count)
 	}
 	ctx.State.MarkDirty("bag")
-	if err := reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
+	if err := m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
 		Day: today, Rewards: protoRewards(grants),
 		ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
 	}); err != nil {
@@ -254,18 +234,7 @@ func (m *Module) claim(ctx *module.Context, d *Data, today int32) error {
 	for _, g := range grants {
 		changes = append(changes, &gamev1.ItemChange{ItemUid: int64(g.ItemID), ItemId: g.ItemID, Count: int32(ctx.State.GetItemCount(g.ItemID)), Change: 1})
 	}
-	return reply(ctx, 3010, &gamev1.BagChangeNotify{Changes: changes})
-}
-
-// failure 记录告警并回系统级错误码（codeSystem）。
-func (m *Module) failure(ctx *module.Context, msgID uint32, err error) error {
-	if m.logger != nil {
-		m.logger.Warn("signin request failed", "player_id", ctx.State.PlayerID(), "msg_id", msgID, "err", err)
-	}
-	if msgID == MsgInfoReq {
-		return reply(ctx, MsgInfoResp, &gamev1.SigninInfoResp{Code: codeSystem})
-	}
-	return reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeSystem})
+	return m.Reply(ctx, 3010, &gamev1.BagChangeNotify{Changes: changes})
 }
 
 // has 今天是否已领取。
@@ -351,15 +320,6 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 		ClaimedDays:    string(days),
 		ClaimedRewards: string(rewards),
 	})
-}
-
-// reply 序列化 proto 并经 ctx.Reply 下发（Send 未注入时静默丢弃，便于单测）。
-func reply(ctx *module.Context, id uint32, msg proto.Message) error {
-	raw, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(id, raw)
 }
 
 // protoRewards 把内部发奖结构转成协议结构（按 ItemID 排序由调用方保证）。
