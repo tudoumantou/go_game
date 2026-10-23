@@ -12,15 +12,10 @@
 package equip
 
 import (
-	"encoding/json"
-	"fmt"
-
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -77,48 +72,17 @@ type Data struct {
 	Equips []Entry `json:"equips"`
 }
 
-// init 注册持久化：player_equip 主键为 (player_id)。
-//
-// Go 知识点：init 是包级副作用入口，import 本包即执行；
-// RegisterFlat 是泛型函数[T any]，把「表行类型 T + FlatOps + 校验函数」
-// 登记进 writebehind 全局注册表——类型参数让同一份注册逻辑复用于
-// 所有玩法表，无需反射或代码生成。
-func init() {
-	writebehind.RegisterFlat[model.PlayerEquip](stateKey, model.PlayerEquipFlat, validate)
-}
-
-// validate 落库前校验：UID 唯一、强化等级非负。
-//
-// 这是快照落库前的最后一道闸：校验失败会让整批写回失败（宁可丢一批
-// 也不写坏数据），因此只查「结构性不变量」，不查业务规则。
-func validate(row *model.PlayerEquip) error {
-	d, err := decode(row)
-	if err != nil {
-		return err
-	}
-	seen := make(map[int64]bool, len(d.Equips))
-	for _, e := range d.Equips {
-		if e.UID <= 0 || e.EquipID <= 0 || e.EnhanceLevel < 0 {
-			return fmt.Errorf("invalid equip %+v", e)
-		}
-		if seen[e.UID] {
-			return fmt.Errorf("duplicate equip uid %d", e.UID)
-		}
-		seen[e.UID] = true
-	}
-	return nil
-}
-
 // Module 装备模块。
 type Module struct {
-	*module.Thin
+	// Stateful 内嵌 Thin：生命周期与消息注册仍由 Thin 提供。
+	*module.Stateful[Data]
 	logger *log.Logger
 }
 
 // New 创建装备模块。
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
-	m.Thin = module.NewThin(stateKey,
+	m.Stateful = module.NewStateful(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinLogin(m.onLogin),
 	)
@@ -134,37 +98,34 @@ func New(logger *log.Logger) *Module {
 // 时序契约：玩家层在 LoginAll 之前统一 ClearBonus，本模块只叠加自己的部分；
 // 若不先清空，重连一次就会把 atk 加成翻倍。
 func (m *Module) onLogin(ctx *module.Context) error {
-	d, err := load(ctx.State)
-	if err != nil {
-		return err
-	}
-	// 不清空加成：玩家层已在 LoginAll 前统一清空，这里只叠加自己的部分。
-	for _, e := range d.Equips {
-		if !e.Equipped {
-			continue
+	return m.Read(ctx, func(d *Data) {
+		// 不清空加成：玩家层已在 LoginAll 前统一清空，这里只叠加自己的部分。
+		for _, e := range d.Equips {
+			if !e.Equipped {
+				continue
+			}
+			if cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID)); ok {
+				ctx.State.AddBonus("atk", cfg.Col4)
+			}
 		}
-		if cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID)); ok {
-			ctx.State.AddBonus("atk", cfg.Col4)
-		}
-	}
-	return nil
+	})
 }
 
 // onList 装备列表：按快照顺序原样下发（顺序即持有顺序，不做排序）。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.EquipListResp{Code: codeOK}
-	d, err := load(ctx.State)
-	if err != nil {
+	if err := m.Read(ctx, func(d *Data) {
+		for _, e := range d.Equips {
+			resp.Equips = append(resp.Equips, &gamev1.EquipEntry{
+				Uid:          e.UID,
+				EquipId:      e.EquipID,
+				EnhanceLevel: e.EnhanceLevel,
+				Quality:      e.Quality,
+				Equipped:     e.Equipped,
+			})
+		}
+	}); err != nil {
 		return err
-	}
-	for _, e := range d.Equips {
-		resp.Equips = append(resp.Equips, &gamev1.EquipEntry{
-			Uid:          e.UID,
-			EquipId:      e.EquipID,
-			EnhanceLevel: e.EnhanceLevel,
-			Quality:      e.Quality,
-			Equipped:     e.Equipped,
-		})
 	}
 	return reply(ctx, msgIDListResp, resp)
 }
@@ -172,59 +133,59 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 // onWear 穿戴：同部位冲突检查、等级校验，状态与加成同一次快照提交。
 func (m *Module) onWear(ctx *module.Context, req *gamev1.EquipWearReq, resp *gamev1.EquipWearResp) error {
 	*resp = gamev1.EquipWearResp{}
-	d, err := load(ctx.State)
+	var bonus int64
+	err := m.Mutate(ctx, func(d *Data) bool {
+		idx := findEquip(d, req.Uid)
+		if idx < 0 {
+			resp.Code = codeNotExist
+			return false
+		}
+		e := d.Equips[idx]
+		// 已穿戴再穿：幂等成功，直接回当前属性，不重复叠加 atk 加成。
+		if e.Equipped {
+			resp.Code = codeOK
+			resp.Attrs = attrPairs(ctx)
+			return false
+		}
+		cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
+		if !ok {
+			resp.Code = codeNotExist
+			return false
+		}
+		if ctx.State.Profile().Level < int32(cfg.Col2) {
+			resp.Code = codeLevelLow
+			return false
+		}
+		// 同部位冲突检查（Col3=部位）：反查同部位配置 ID 集合，一次遍历。
+		sameSlot := sameSlotEquipIDs(cfg.Col3)
+		for _, other := range d.Equips {
+			if !other.Equipped || other.UID == e.UID {
+				continue
+			}
+			for _, id := range sameSlot {
+				if other.EquipID == id {
+					resp.Code = codeSlotConflict
+					return false
+				}
+			}
+		}
+
+		e.Equipped = true
+		d.Equips[idx] = e
+		bonus = cfg.Col4
+		return true
+	})
 	if err != nil {
 		return err
 	}
-	idx := findEquip(d, req.Uid)
-	if idx < 0 {
-		resp.Code = codeNotExist
-		return nil
+	if bonus != 0 {
+		// 加成只改内存，与 Equipped 在同一条消息的快照 CAS 里一起生效：
+		// CAS 失败则属性与状态一起回滚，不会「状态说穿了、属性没加」。
+		ctx.State.AddBonus("atk", bonus)
 	}
-	e := d.Equips[idx]
-	// 已穿戴再穿：幂等成功，直接回当前属性，不重复叠加 atk 加成。
-	if e.Equipped {
-		resp.Code = codeOK
+	if resp.Attrs == nil {
 		resp.Attrs = attrPairs(ctx)
-		return nil
 	}
-	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
-	if !ok {
-		resp.Code = codeNotExist
-		return nil
-	}
-	if ctx.State.Profile().Level < int32(cfg.Col2) {
-		resp.Code = codeLevelLow
-		return nil
-	}
-	// 同部位冲突检查（Col3=部位）
-	// 反查「同部位全部配置 ID」而不是逐件读对方配置：装备表很小，
-	// 一次遍历建集合，比 N 次查配置 + 比较更直观。
-	sameSlot := sameSlotEquipIDs(cfg.Col3)
-	for _, other := range d.Equips {
-		if !other.Equipped || other.UID == e.UID {
-			continue
-		}
-		for _, id := range sameSlot {
-			if other.EquipID == id {
-				resp.Code = codeSlotConflict
-				return nil
-			}
-		}
-	}
-
-	e.Equipped = true
-	d.Equips[idx] = e
-	// save 与 AddBonus 都只改内存，真正生效是同一条消息结束时的快照 CAS：
-	// CAS 失败则 Equipped 与加成一起回滚，不会「状态说穿了、属性没加」。
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	ctx.State.AddBonus("atk", cfg.Col4)
-	ctx.State.MarkDirty(stateKey)
-
-	resp.Code = codeOK
-	resp.Attrs = attrPairs(ctx)
 	return nil
 }
 
@@ -234,37 +195,38 @@ func (m *Module) onWear(ctx *module.Context, req *gamev1.EquipWearReq, resp *gam
 // 与 Equipped 字段表达。
 func (m *Module) onTakeOff(ctx *module.Context, req *gamev1.EquipTakeOffReq, resp *gamev1.EquipTakeOffResp) error {
 	*resp = gamev1.EquipTakeOffResp{}
-	d, err := load(ctx.State)
+	var bonus int64
+	err := m.Mutate(ctx, func(d *Data) bool {
+		idx := findEquip(d, req.Uid)
+		if idx < 0 {
+			resp.Code = codeNotExist
+			return false
+		}
+		e := d.Equips[idx]
+		if !e.Equipped {
+			resp.Code = codeNotEquipped
+			return false
+		}
+		cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
+		if !ok {
+			resp.Code = codeNotExist
+			return false
+		}
+		e.Equipped = false
+		d.Equips[idx] = e
+		bonus = -cfg.Col4
+		return true
+	})
 	if err != nil {
 		return err
 	}
-	idx := findEquip(d, req.Uid)
-	if idx < 0 {
-		resp.Code = codeNotExist
-		return nil
+	if bonus != 0 {
+		// 取负扣回：与穿戴时的 +Col4 精确对冲，登录重算前不会残留。
+		ctx.State.AddBonus("atk", bonus)
 	}
-	e := d.Equips[idx]
-	if !e.Equipped {
-		resp.Code = codeNotEquipped
-		return nil
+	if resp.Attrs == nil {
+		resp.Attrs = attrPairs(ctx)
 	}
-	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
-	if !ok {
-		resp.Code = codeNotExist
-		return nil
-	}
-
-	e.Equipped = false
-	d.Equips[idx] = e
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
-	}
-	// 加成取负扣回：与穿戴时的 +Col4 精确对冲，登录重算前不会残留。
-	ctx.State.AddBonus("atk", -cfg.Col4)
-	ctx.State.MarkDirty(stateKey)
-
-	resp.Code = codeOK
-	resp.Attrs = attrPairs(ctx)
 	return nil
 }
 
@@ -290,50 +252,6 @@ func sameSlotEquipIDs(slot string) []int32 {
 		}
 	}
 	return out
-}
-
-// load 读取装备状态；从未获得装备返回空结构。
-//
-// 懒初始化落点：row == nil 时返回空 Data 而不写库——
-// 「没有装备」不需要一行记录，第一次穿戴才产生行。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.PlayerEquip](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{Equips: []Entry{}}, nil
-	}
-	return decode(row)
-}
-
-// decode 把表行 JSON 解成业务视图；保证切片非 nil。
-//
-// nil 切片与空切片的区别：JSON 里 null 解出来是 nil，直接 append 虽也能用，
-// 但序列化回库会变成 null 而非 "[]"，diff 与对账时不直观，所以统一归一。
-func decode(row *model.PlayerEquip) (*Data, error) {
-	d := &Data{Equips: []Entry{}}
-	if row.Equips != "" {
-		if err := json.Unmarshal([]byte(row.Equips), &d.Equips); err != nil {
-			return nil, fmt.Errorf("decode equip state: %w", err)
-		}
-	}
-	if d.Equips == nil {
-		d.Equips = []Entry{}
-	}
-	return d, nil
-}
-
-// save 把装备列表编码回 Ext 槽位；落库调度由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	raw, err := json.Marshal(d.Equips)
-	if err != nil {
-		return fmt.Errorf("encode equip state: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.PlayerEquip{
-		PlayerId: playerID,
-		Equips:   string(raw),
-	})
 }
 
 // attrPairs 把五维属性打包成协议对（AttrId 约定见 profile 模块 1-5）。
