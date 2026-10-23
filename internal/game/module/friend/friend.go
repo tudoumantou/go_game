@@ -30,7 +30,6 @@ import (
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -74,7 +73,12 @@ type onlineChecker interface {
 }
 
 // Module 好友模块。
+//
+// 嵌入 Thin：接口七件套与错误回包由基座提供；四个处理器经 module.Typed
+// 拿到解包后的请求与待填的响应，不再手写 Unmarshal / reply。
 type Module struct {
+	*module.Thin
+
 	repo   *Repo
 	online onlineChecker
 	logger *log.Logger
@@ -82,43 +86,21 @@ type Module struct {
 
 // New 创建模块；online 可为 nil（列表全部显示离线）。
 func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
-	return &Module{repo: NewRepo(database), online: online, logger: logger}
-}
-
-// Name 模块名（= 落库归属标签；好友关系本身直写 MySQL，不进快照）。
-func (*Module) Name() string { return "friend" }
-
-// MsgIDs 好友四件套：列表 / 申请 / 处理 / 删除。
-func (*Module) MsgIDs() []uint32 {
-	return []uint32{msgIDListReq, msgIDApplyReq, msgIDHandleReq, msgIDDeleteReq}
-}
-
-// Init 无模块级状态要初始化。
-func (*Module) Init(*module.Context) error { return nil }
-
-// 好友关系直接落库，没有快照旁路数据。
-func (*Module) OnSave(context.Context) error   { return nil }
-func (*Module) OnLogin(*module.Context) error  { return nil }
-func (*Module) OnLogout(*module.Context) error { return nil }
-
-// OnMessage 协议分发；所有数据库访问都带 3s 超时，避免玩家 Actor 被慢 SQL 拖住。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDApplyReq:
-		return m.onApply(ctx, body)
-	case msgIDHandleReq:
-		return m.onHandle(ctx, body)
-	case msgIDDeleteReq:
-		return m.onDelete(ctx, body)
-	default:
-		return fmt.Errorf("friend: unexpected msg %d", msgID)
-	}
+	m := &Module{repo: NewRepo(database), online: online, logger: logger}
+	m.Thin = module.NewThin("friend", module.ThinLogger(logger))
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.FriendListResp{},
+		module.Typed(msgIDListResp, m.onList))
+	m.HandleR(msgIDApplyReq, msgIDApplyResp, &gamev1.FriendApplyResp{},
+		module.Typed(msgIDApplyResp, m.onApply))
+	m.HandleR(msgIDHandleReq, msgIDHandleResp, &gamev1.FriendHandleResp{},
+		module.Typed(msgIDHandleResp, m.onHandle))
+	m.HandleR(msgIDDeleteReq, msgIDDeleteResp, &gamev1.FriendDeleteResp{},
+		module.Typed(msgIDDeleteResp, m.onDelete))
+	return m
 }
 
 // onList 好友 + 待处理申请列表；在线状态只作展示，不影响关系判定。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *gamev1.FriendListResp) error {
 	// Go 知识点：context.WithTimeout 派生带超时的 ctx，
 	// defer cancel() 保证函数返回时释放定时器资源（取消会沿 context
 	// 树传播到 database/sql 的驱动层，中断慢查询）。
@@ -130,7 +112,8 @@ func (m *Module) onList(ctx *module.Context) error {
 		return fmt.Errorf("list friends: %w", err)
 	}
 
-	resp := &gamev1.FriendListResp{Code: codeOK, Limit: friendLimit()}
+	resp.Code = codeOK
+	resp.Limit = friendLimit()
 	for _, f := range friends {
 		online := false
 		if m.online != nil {
@@ -154,26 +137,21 @@ func (m *Module) onList(ctx *module.Context) error {
 			CreatedAt: a.CreatedAt.Unix(),
 		})
 	}
-	return reply(ctx, msgIDListResp, resp)
+	return nil
 }
 
 // onApply 发起好友申请；自加/非法目标在模块层拦截，不发 SQL。
 //
 // 参数校验前置：非法的请求（PlayerId<=0、加自己）连库都不查，
 // 既省一次往返，也避免把无意义查询打到 DB。
-func (m *Module) onApply(ctx *module.Context, body []byte) error {
-	var req gamev1.FriendApplyReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode FriendApplyReq: %w", err)
-	}
-	resp := &gamev1.FriendApplyResp{}
+func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *gamev1.FriendApplyResp) error {
 	if req.PlayerId <= 0 {
 		resp.Code = codeTargetNotFound
-		return reply(ctx, msgIDApplyResp, resp)
+		return nil
 	}
 	if req.PlayerId == ctx.State.PlayerID() {
 		resp.Code = codeSelf
-		return reply(ctx, msgIDApplyResp, resp)
+		return nil
 	}
 
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -183,19 +161,14 @@ func (m *Module) onApply(ctx *module.Context, body []byte) error {
 		return fmt.Errorf("apply friend: %w", err)
 	}
 	resp.Code = code
-	return reply(ctx, msgIDApplyResp, resp)
+	return nil
 }
 
 // onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
-func (m *Module) onHandle(ctx *module.Context, body []byte) error {
-	var req gamev1.FriendHandleReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode FriendHandleReq: %w", err)
-	}
-	resp := &gamev1.FriendHandleResp{}
+func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp *gamev1.FriendHandleResp) error {
 	if req.PlayerId <= 0 || req.PlayerId == ctx.State.PlayerID() {
 		resp.Code = codeApplyNotFound
-		return reply(ctx, msgIDHandleResp, resp)
+		return nil
 	}
 
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -205,19 +178,14 @@ func (m *Module) onHandle(ctx *module.Context, body []byte) error {
 		return fmt.Errorf("handle friend apply: %w", err)
 	}
 	resp.Code = code
-	return reply(ctx, msgIDHandleResp, resp)
+	return nil
 }
 
 // onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
-func (m *Module) onDelete(ctx *module.Context, body []byte) error {
-	var req gamev1.FriendDeleteReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode FriendDeleteReq: %w", err)
-	}
-	resp := &gamev1.FriendDeleteResp{}
+func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp *gamev1.FriendDeleteResp) error {
 	if req.PlayerId <= 0 {
 		resp.Code = codeTargetNotFound
-		return reply(ctx, msgIDDeleteResp, resp)
+		return nil
 	}
 
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -226,16 +194,7 @@ func (m *Module) onDelete(ctx *module.Context, body []byte) error {
 		return fmt.Errorf("delete friend: %w", err)
 	}
 	resp.Code = codeOK // 删除幂等：本来不是好友也视为成功
-	return reply(ctx, msgIDDeleteResp, resp)
-}
-
-// reply 序列化 proto 并经 ctx.Reply 下发。
-func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	raw, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal friend resp: %w", err)
-	}
-	return ctx.Reply(msgID, raw)
+	return nil
 }
 
 // friendLimit 好友上限（friend_limit.xml col1），缺配置回退 50。

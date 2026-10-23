@@ -28,7 +28,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 
 	"game_study/internal/game/module"
@@ -38,7 +37,6 @@ import (
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 // 协议号（4.9：6201/6202 信息，6203/6204 创建，6205/6206 加入，6207/6208 退出）。
@@ -283,55 +281,39 @@ var (
 // 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
 // 串行执行；跨玩家的并发安全由数据库（唯一键 + FOR UPDATE）保证。
 type Module struct {
+	*module.Thin
+
 	// repo 仓储；nil 表示无 DB 环境，入口降级为「直接成功/不在队」回包
 	repo   *Repo
 	logger *log.Logger
 }
 
 // New 创建组队模块。
-func New(repo *Repo, logger *log.Logger) *Module { return &Module{repo: repo, logger: logger} }
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "team" }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 {
-	return []uint32{msgIDInfoReq, msgIDCreateReq, msgIDJoinReq, msgIDLeaveReq}
+func New(repo *Repo, logger *log.Logger) *Module {
+	m := &Module{repo: repo, logger: logger}
+	m.Thin = module.NewThin("team",
+		module.ThinLogger(logger),
+		module.ThinLogout(m.onLogout),
+	)
+	m.HandleR(msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoResp{},
+		module.Typed(msgIDInfoResp, m.onInfo))
+	m.HandleR(msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateResp{},
+		module.Typed(msgIDCreateResp, m.onCreate))
+	m.HandleR(msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinResp{},
+		module.Typed(msgIDJoinResp, m.onJoin))
+	m.HandleR(msgIDLeaveReq, msgIDLeaveResp, &gamev1.TeamLeaveResp{},
+		module.Typed(msgIDLeaveResp, m.onLeave))
+	return m
 }
 
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDInfoReq:
-		return m.onInfo(ctx)
-	case msgIDCreateReq:
-		return m.onCreate(ctx, body)
-	case msgIDJoinReq:
-		return m.onJoin(ctx, body)
-	case msgIDLeaveReq:
-		return m.onLeave(ctx)
-	default:
-		return fmt.Errorf("team: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
-
-// OnLogout 实现 module.Module：掉线自动退队。
+// onLogout 掉线自动退队。
 //
 // 与公会的关键语义差异：公会掉线不退会（持久社交关系，防误退），
 // 队伍掉线退队（临时关系，防挂机占位坑队友）——同一生命周期钩子
 // 在不同模块承载相反的产品决策。
-// _ = 忽略 Leave 错误：掉线清理尽力而为，登出流程不能被 DB 抖动卡住；
-// repo nil（无 DB 环境）时无需清理。
-func (m *Module) OnLogout(ctx *module.Context) error {
+// 注意：这是与 Thin 的日志器、守卫同处一个基座的钩子，Thin 只负责
+// 在 OnLogout 时调用它；错误被忽略——登出流程不能被 DB 抖动卡住。
+func (m *Module) onLogout(ctx *module.Context) error {
 	if m.repo == nil {
 		return nil
 	}
@@ -344,12 +326,11 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 // 两次查询（队伍 → 成员）：先查队伍，t==nil 时省掉第二次；
 // 队伍上限 5 人，分两次查的代价可接受（合并成一条 JOIN 会把
 // 「不在队」和「在队无成员」两种语义搅在一起）。
-func (m *Module) onInfo(ctx *module.Context) error {
-	resp := &gamev1.TeamInfoResp{}
+func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1.TeamInfoResp) error {
 	if m.repo == nil {
 		// 无 DB 环境按「不在队」回：与 (nil, nil) 同码
 		resp.Code = codeNotInTeam
-		return m.reply(ctx, msgIDInfoResp, resp)
+		return nil
 	}
 	t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID())
 	if err != nil {
@@ -357,7 +338,7 @@ func (m *Module) onInfo(ctx *module.Context) error {
 	}
 	if t == nil {
 		resp.Code = codeNotInTeam
-		return m.reply(ctx, msgIDInfoResp, resp)
+		return nil
 	}
 	members, err := m.repo.Members(context.Background(), t.ID)
 	if err != nil {
@@ -374,28 +355,23 @@ func (m *Module) onInfo(ctx *module.Context) error {
 			IsLeader: mb.IsLeader,
 		})
 	}
-	return m.reply(ctx, msgIDInfoResp, resp)
+	return nil
 }
 
 // onCreate 创建队伍；repo 缺失（单机/测试）时按成功降级。
 //
 // 前置 FindByPlayer 挡「已有队伍再创建」：仓储层只管建队，
 // 「一个人只能在一队」的约束在模块层显式声明（与 guild 同构）。
-func (m *Module) onCreate(ctx *module.Context, body []byte) error {
-	var req gamev1.TeamCreateReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode TeamCreateReq: %w", err)
-	}
-	resp := &gamev1.TeamCreateResp{}
+func (m *Module) onCreate(ctx *module.Context, req *gamev1.TeamCreateReq, resp *gamev1.TeamCreateResp) error {
 	if m.repo == nil {
 		resp.Code = codeOK
-		return m.reply(ctx, msgIDCreateResp, resp)
+		return nil
 	}
 	if t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if t != nil {
 		resp.Code = codeAlreadyIn
-		return m.reply(ctx, msgIDCreateResp, resp)
+		return nil
 	}
 	teamID, err := m.repo.Create(context.Background(), ctx.State.PlayerID(), req.CopyId)
 	if err != nil {
@@ -403,7 +379,7 @@ func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 	}
 	resp.Code = codeOK
 	resp.TeamId = teamID
-	return m.reply(ctx, msgIDCreateResp, resp)
+	return nil
 }
 
 // onJoin 加入指定队伍；已在别的队先拒绝，超员/不存在由仓储错误码转换。
@@ -411,21 +387,16 @@ func (m *Module) onCreate(ctx *module.Context, body []byte) error {
 // 前置查询的意义：Join 仓储层只保证「进这个队」的原子性，
 // 「你原来在别的队」需要先退再进——模块层显式拒绝跨队直加，
 // demo 期不做自动换队（避免两个队伍的成员行竞态）。
-func (m *Module) onJoin(ctx *module.Context, body []byte) error {
-	var req gamev1.TeamJoinReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode TeamJoinReq: %w", err)
-	}
-	resp := &gamev1.TeamJoinResp{}
+func (m *Module) onJoin(ctx *module.Context, req *gamev1.TeamJoinReq, resp *gamev1.TeamJoinResp) error {
 	if m.repo == nil {
 		resp.Code = codeOK
-		return m.reply(ctx, msgIDJoinResp, resp)
+		return nil
 	}
 	if t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if t != nil {
 		resp.Code = codeAlreadyIn
-		return m.reply(ctx, msgIDJoinResp, resp)
+		return nil
 	}
 	if err := m.repo.Join(context.Background(), req.TeamId, ctx.State.PlayerID()); err != nil {
 		switch {
@@ -438,38 +409,28 @@ func (m *Module) onJoin(ctx *module.Context, body []byte) error {
 		default:
 			return err
 		}
-		return m.reply(ctx, msgIDJoinResp, resp)
+		return nil
 	}
 	resp.Code = codeOK
-	return m.reply(ctx, msgIDJoinResp, resp)
+	return nil
 }
 
 // onLeave 主动退队；队长退队 = 解散（仓储层保证）。
 //
 // 解散的原子性在仓储事务内：删队长行 → 删全员 → 软删队伍，
 // 任一步失败整体回滚，不会出现「队长退了、队伍还在」的半解散态。
-func (m *Module) onLeave(ctx *module.Context) error {
-	resp := &gamev1.TeamLeaveResp{}
+func (m *Module) onLeave(ctx *module.Context, _ *gamev1.TeamLeaveReq, resp *gamev1.TeamLeaveResp) error {
 	if m.repo == nil {
 		resp.Code = codeOK
-		return m.reply(ctx, msgIDLeaveResp, resp)
+		return nil
 	}
 	if err := m.repo.Leave(context.Background(), ctx.State.PlayerID()); err != nil {
 		if errors.Is(err, ErrNotInTeam) {
 			resp.Code = codeNotInTeam
-			return m.reply(ctx, msgIDLeaveResp, resp)
+			return nil
 		}
 		return err
 	}
 	resp.Code = codeOK
-	return m.reply(ctx, msgIDLeaveResp, resp)
-}
-
-// reply 序列化 proto 并经 ctx.Reply 下发。
-func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
+	return nil
 }
