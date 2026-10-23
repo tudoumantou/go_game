@@ -164,7 +164,7 @@ func TestKafkaRechargeFlow(t *testing.T) {
 	}
 	env, err := pkgmq.NewEnvelope(orderID, topic, orderID, msg)
 	require.NoError(t, err, "envelope")
-	err := producer.ProduceEnvelope(ctx, env)
+	err = producer.ProduceEnvelope(ctx, env)
 	require.NoError(t, err, fmt.Sprintf("produce: %v", err))
 
 	// 等待消费 + 发奖
@@ -175,7 +175,7 @@ func TestKafkaRechargeFlow(t *testing.T) {
 	require.EqualValues(t, 1, act.count())
 
 	// 重复投递：验证幂等
-	err := producer.ProduceEnvelope(ctx, env)
+	err = producer.ProduceEnvelope(ctx, env)
 	require.NoError(t, err, fmt.Sprintf("produce duplicate: %v", err))
 	time.Sleep(3 * time.Second)
 	require.EqualValues(t, 1, act.count())

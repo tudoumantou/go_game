@@ -97,7 +97,7 @@ func TestR12SaveFailureKeepsDirtyThenRecovers(t *testing.T) {
 	// 制造真实故障：连接池关闭后任何查询都返回 "sql: database is closed"。
 	err := database.Close()
 	require.NoError(t, err, fmt.Sprintf("close db: %v", err))
-	err := f.FlushAll(ctx)
+	err = f.FlushAll(ctx)
 	require.Error(t, err, "FlushAll must fail when MySQL is unavailable")
 	got := f.DirtyCount()
 	require.EqualValues(t, 1, got, fmt.Sprintf("failed save must keep dirty flag, got %d", got))
@@ -109,7 +109,7 @@ func TestR12SaveFailureKeepsDirtyThenRecovers(t *testing.T) {
 	f2 := flush.New(flush.Config{ShardCount: 1, Interval: time.Minute, BatchRows: 10},
 		persist(player.NewRepository(db2)), log.New("test"))
 	f2.MarkDirty(id)
-	err := f2.FlushAll(ctx)
+	err = f2.FlushAll(ctx)
 	require.NoError(t, err, fmt.Sprintf("recovery flush: %v", err))
 
 	var count int64

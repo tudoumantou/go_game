@@ -119,17 +119,17 @@ func TestP10IDTable(t *testing.T) {
 		`SELECT id FROM player WHERE name = 'idtab_role_new'`).Scan(&newID); err != nil {
 		t.Fatalf("query new id: %v", err)
 	}
-	err := it.Add(ctx, "player", newID)
+	err = it.Add(ctx, "player", newID)
 	require.NoError(t, err, fmt.Sprintf("add: %v", err))
 	ok, _ := it.Exists(ctx, "player", newID)
 	require.True(t, ok, "newly added id should exist")
 
 	// ④ 删除同步
-	_, err := database.ExecContext(ctx, `DELETE FROM player WHERE id = ?`, newID)
+	_, err = database.ExecContext(ctx, `DELETE FROM player WHERE id = ?`, newID)
 	require.NoError(t, err, fmt.Sprintf("delete player: %v", err))
-	err := it.Remove(ctx, "player", newID)
+	err = it.Remove(ctx, "player", newID)
 	require.NoError(t, err, fmt.Sprintf("remove: %v", err))
-	ok, _ := it.Exists(ctx, "player", newID)
+	ok, _ = it.Exists(ctx, "player", newID)
 	require.False(t, ok, "removed id should not exist")
 
 	// ⑤ 对账：集合与表行数一致 → 不重建
@@ -138,12 +138,12 @@ func TestP10IDTable(t *testing.T) {
 	require.False(t, rebuilt, "should not rebuild when counts match")
 
 	// ⑥ 人为制造不一致 → 对账触发重建
-	err := rdb.SRem(ctx, cache.IDTabKey("player"), playerID).Err()
+	err = rdb.SRem(ctx, cache.IDTabKey("player"), playerID).Err()
 	require.NoError(t, err, fmt.Sprintf("srem: %v", err))
 	rebuilt, err = it.Reconcile(ctx, meta)
 	require.NoError(t, err, "reconcile 2")
 	require.True(t, rebuilt, "expect rebuild after manual removal")
-	ok, _ := it.Exists(ctx, "player", playerID)
+	ok, _ = it.Exists(ctx, "player", playerID)
 	require.True(t, ok, "id should be back after rebuild")
 
 	// ⑦ 回源：清掉实体 hash，LoadEntity 应从库里读并回填
@@ -152,11 +152,11 @@ func TestP10IDTable(t *testing.T) {
 	row, err := it.LoadEntity(ctx, meta, playerID)
 	require.NoError(t, err, "load entity")
 	require.EqualValues(t, "idtab_role_a", row["name"])
-	n, _ := rdb.HLen(ctx, key).Result()
+	n, _ = rdb.HLen(ctx, key).Result()
 	require.NotEqualValues(t, 0, n, "entity hash should be filled back")
 
 	// ⑧ 不存在的 id 直接返回 ErrNotFound（不打库）
-	_, err := it.LoadEntity(ctx, meta, 99999999)
+	_, err = it.LoadEntity(ctx, meta, 99999999)
 	require.EqualValues(t, cache.ErrNotFound, err, fmt.Sprintf("err = %v, want ErrNotFound", err))
 }
 
@@ -186,42 +186,42 @@ func TestP11IncrementalFlush(t *testing.T) {
 	dirty := state.DirtyItems()
 	require.Empty(t, dirty, fmt.Sprintf("fresh load should have no dirty items, got %v", dirty))
 
-	err := repo.Save(ctx, state)
+	err = repo.Save(ctx, state)
 	require.NoError(t, err, fmt.Sprintf("save unchanged: %v", err))
 	n := countItemRows(t, database, playerID)
 	require.EqualValues(t, 2, n, fmt.Sprintf("row count after no-op save = %d, want 2", n))
 
 	// ② 只写变更项：改 1001，1002 不动
 	state.AddItem(1001, 5)
-	dirty := state.DirtyItems()
+	dirty = state.DirtyItems()
 	require.Len(t, dirty, 1, fmt.Sprintf("dirty items = %v, want {1001:15}", dirty))
 	require.EqualValues(t, 15, dirty[1001])
-	err := repo.Save(ctx, state)
+	err = repo.Save(ctx, state)
 	require.NoError(t, err, fmt.Sprintf("save increment: %v", err))
 	got := itemCount(t, database, playerID, 1001)
 	require.EqualValues(t, 15, got, fmt.Sprintf("item 1001 = %d, want 15", got))
 	// 1002 未被重写（值不变）
-	got := itemCount(t, database, playerID, 1002)
+	got = itemCount(t, database, playerID, 1002)
 	require.EqualValues(t, 20, got, fmt.Sprintf("item 1002 = %d, want 20", got))
 	// 保存后脏标记清空
-	dirty := state.DirtyItems()
+	dirty = state.DirtyItems()
 	require.Empty(t, dirty, fmt.Sprintf("dirty should be cleared after save, got %v", dirty))
 
 	// ③ 合批 UPSERT 不产生重复行（依赖 uk_player_item 唯一键）
-	err := repo.Save(ctx, state)
+	err = repo.Save(ctx, state)
 	require.NoError(t, err, fmt.Sprintf("save again: %v", err))
 	state.AddItem(1001, 1)
-	err := repo.Save(ctx, state)
+	err = repo.Save(ctx, state)
 	require.NoError(t, err, fmt.Sprintf("save third: %v", err))
-	n := countItemRows(t, database, playerID)
+	n = countItemRows(t, database, playerID)
 	require.EqualValues(t, 2, n, fmt.Sprintf("row count = %d, want 2 (upsert must not duplicate)", n))
 
 	// ④ 数量归零走 DELETE
 	require.False(t, !state.RemoveItem(1002, 20), "remove 1002 should succeed")
-	err := repo.Save(ctx, state)
+	err = repo.Save(ctx, state)
 	require.NoError(t, err, fmt.Sprintf("save zero: %v", err))
-	got := countItemRows(t, database, playerID)
-	require.EqualValues(t, 1, got, fmt.Sprintf("row count after zeroing = %d, want 1", got))
+	rows := countItemRows(t, database, playerID)
+	require.EqualValues(t, 1, rows, fmt.Sprintf("row count after zeroing = %d, want 1", rows))
 
 	// ⑤ 墓碑合批删除
 	deleter := flush.NewSQLDeleter(database.DB)
@@ -238,10 +238,10 @@ func TestP11IncrementalFlush(t *testing.T) {
 		t.Fatalf("query item row id: %v", err)
 	}
 	f.MarkDelete("player_item", itemRowID)
-	err := f.FlushAll(ctx)
+	err = f.FlushAll(ctx)
 	require.NoError(t, err, fmt.Sprintf("flush tombstone: %v", err))
-	got := countItemRows(t, database, playerID)
-	require.EqualValues(t, 0, got, fmt.Sprintf("row count after tombstone = %d, want 0", got))
+	rows = countItemRows(t, database, playerID)
+	require.EqualValues(t, 0, rows, fmt.Sprintf("row count after tombstone = %d, want 0", rows))
 	require.EqualValues(t, 0, f.PendingDeletes())
 }
 

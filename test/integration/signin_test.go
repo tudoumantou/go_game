@@ -83,7 +83,7 @@ func TestSigninActorFlow(t *testing.T) {
 		a := player.NewActor(id, registry, logger, repo, nil, func(_ uint64, id uint32, body []byte) error { responses <- response{id, body}; return nil })
 		pid, err := sys.Spawn(fmt.Sprintf("signin:%d", id), a)
 		require.NoError(t, err)
-		err := sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)})
+		err = sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)})
 		require.NoError(t, err)
 		return pid
 	}
@@ -129,7 +129,7 @@ func TestSigninActorFlow(t *testing.T) {
 	require.EqualValues(t, "", rewards, "claim wrote SQL synchronously")
 	got := claim(p1)
 	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "duplicate claim")
-	got := claim(p2)
+	got = claim(p2)
 	require.False(t, got.Already || got.ClaimedRewards[1001] != 300, "role isolation")
 	n, err := worker.FlushBatch(ctx, writebehind.Partition(ids[0]))
 	require.NoError(t, err, fmt.Sprintf("batch flush: %d %v", n, err))
@@ -143,14 +143,21 @@ func TestSigninActorFlow(t *testing.T) {
 	sys.Stop()
 	start()
 	p1 = spawn(ids[0])
-	got := claim(p1)
+	got = claim(p1)
 	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "restart from cache")
 	// Redis 丢失：FlatPersister 走生成代码从 SQL 冷启动恢复。
+	//
+	// 必须把 state 与脏队列一起清掉：只删 state 会留下「快照没了、脏标记还在」
+	// 的不一致状态，Store 会以「脏队列里还有比 MySQL 更新的快照」为由拒绝
+	// seed（见 seedScript）。真实场景里 Redis 整体丢失，两者是一起没的。
 	sys.Stop()
-	err := rdb.Del(ctx, fmt.Sprintf("wb:{player-%d}:state:%d", writebehind.Partition(ids[0]), ids[0])).Err()
+	part := writebehind.Partition(ids[0])
+	err = rdb.Del(ctx, fmt.Sprintf("wb:{player-%d}:state:%d", part, ids[0])).Err()
+	require.NoError(t, err)
+	_, err = rdb.ZRem(ctx, fmt.Sprintf("wb:{player-%d}:dirty", part), ids[0]).Result()
 	require.NoError(t, err)
 	start()
 	p1 = spawn(ids[0])
-	got := claim(p1)
+	got = claim(p1)
 	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "cold recovery")
 }

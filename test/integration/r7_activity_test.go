@@ -74,7 +74,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 			fmt.Sprintf("progress:%s:%d:%d", instanceID, playerID, progress),
 			pkgmq.TopicActivityProgress, instanceID, msg)
 		require.NoError(t, err, "build envelope")
-		err := producer.ProduceEnvelope(ctx, env)
+		err = producer.ProduceEnvelope(ctx, env)
 		require.NoError(t, err, fmt.Sprintf("produce: %v", err))
 	}
 	send(1, 30)
@@ -98,7 +98,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 	require.EqualValues(t, 55, total, fmt.Sprintf("duplicate progress must not accumulate: total=%d", total))
 
 	// 第一次 Tick：达阈值 → 生成任务；未达的里程碑不生成。
-	err := svc.Tick(ctx)
+	err = svc.Tick(ctx)
 	require.NoError(t, err, fmt.Sprintf("tick: %v", err))
 	var tasks int
 	if err := database.QueryRow(
@@ -108,7 +108,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 	require.EqualValues(t, 2, tasks)
 
 	// 第二次 Tick：发放并标记完成。
-	err := svc.Tick(ctx)
+	err = svc.Tick(ctx)
 	require.NoError(t, err, fmt.Sprintf("tick 2: %v", err))
 	var pending int
 	if err := database.QueryRow(
@@ -121,7 +121,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 	// 第三次 Tick：不得重复发（任务已全部完成，不会新建）。
 	var before int
 	_ = database.QueryRow(`SELECT COUNT(*) FROM activity_grant_task`).Scan(&before)
-	err := svc.Tick(ctx)
+	err = svc.Tick(ctx)
 	require.NoError(t, err, fmt.Sprintf("tick 3: %v", err))
 	var after int
 	_ = database.QueryRow(`SELECT COUNT(*) FROM activity_grant_task`).Scan(&after)

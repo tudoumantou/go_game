@@ -102,11 +102,11 @@ func TestFriendFlow(t *testing.T) {
 		}
 
 		// 删除后双方都空；重复删除仍成功。
-		err := repo.Delete(ctx, a, b)
+		err = repo.Delete(ctx, a, b)
 		require.NoError(t, err, fmt.Sprintf("delete: %v", err))
 		require.EqualValues(t, 0, friendRows(t, database, a), "delete must remove both directions")
 		require.EqualValues(t, 0, friendRows(t, database, b))
-		err := repo.Delete(ctx, a, b)
+		err = repo.Delete(ctx, a, b)
 		require.NoError(t, err, fmt.Sprintf("delete must be idempotent: %v", err))
 	})
 
@@ -118,7 +118,7 @@ func TestFriendFlow(t *testing.T) {
 		require.NoError(t, err, fmt.Sprintf("a→b: code=%d err=%v", code, err))
 		require.EqualValues(t, 0, code)
 		// b 反向申请：应直接建立关系，而不是再插一条待处理。
-		code, err := repo.Apply(ctx, b, a)
+		code, err = repo.Apply(ctx, b, a)
 		require.NoError(t, err, fmt.Sprintf("b→a: code=%d err=%v", code, err))
 		require.EqualValues(t, 0, code)
 		require.EqualValues(t, 1, friendRows(t, database, a), "mutual apply must create friendship directly")
@@ -173,11 +173,11 @@ func TestFriendFlow(t *testing.T) {
 
 		code, _ := repo.Apply(ctx, a, b)
 		require.EqualValues(t, 0, code, fmt.Sprintf("apply: %d", code))
-		code, _ := repo.Handle(ctx, b, a, false, 7*24*time.Hour)
+		code, _ = repo.Handle(ctx, b, a, false, 7*24*time.Hour)
 		require.EqualValues(t, 0, code, fmt.Sprintf("reject: %d", code))
 		require.EqualValues(t, 0, friendRows(t, database, a), "reject must not create friendship")
 		// 再次同意旧申请：申请已拒绝，应返回「不存在/已处理」。
-		code, _ := repo.Handle(ctx, b, a, true, 7*24*time.Hour)
+		code, _ = repo.Handle(ctx, b, a, true, 7*24*time.Hour)
 		require.EqualValues(t, 6806, code, fmt.Sprintf("accept rejected apply: code=%d", code))
 		// 重新申请复用同一行（唯一键），状态回到待处理。
 		code, err := repo.Apply(ctx, a, b)

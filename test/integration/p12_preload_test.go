@@ -123,7 +123,7 @@ func TestP12LoginPreload(t *testing.T) {
 	gameCfg.Server.Name = "game-p12"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -146,16 +146,18 @@ func TestP12LoginPreload(t *testing.T) {
 
 	// ② 落「已穿装备」+「活动记录」到库，模拟老角色数据
 	//    战士基础 atk=50；新手剑(3001) 加成 Col4=10 → 预加载后 atk 应为 60
+	// equip 已改为整份 JSON 落库（player_equip.equips），不再是一行一件。
+	const wornSword = `[{"uid":1,"equip_id":3001,"enhance_level":0,"quality":1,"equipped":true}]`
 	if _, err := database.Exec(
-		`INSERT INTO player_equip (player_id, equip_id, enhance_level, quality, equipped) VALUES (?, 3001, 0, 1, 1)`,
-		roleID); err != nil {
+		`INSERT INTO player_equip (player_id, equips) VALUES (?, ?)`, roleID, wornSword); err != nil {
 		t.Fatalf("seed equip: %v", err)
 	}
+	// 活动状态同样整份 JSON 落库（activity_record.records）。
+	const activityRec = `{"1":{"progress":2,"reward_mask":0}}`
 	if _, err := database.Exec(
-		`INSERT INTO activity_record (player_id, activity_id, progress, reward_mask, joined_at)
-		 VALUES (?, 1, 2, 0, NOW())
-		 ON DUPLICATE KEY UPDATE progress = 2`,
-		roleID); err != nil {
+		`INSERT INTO activity_record (player_id, records) VALUES (?, ?)
+		 ON DUPLICATE KEY UPDATE records = VALUES(records)`,
+		roleID, activityRec); err != nil {
 		t.Fatalf("seed activity: %v", err)
 	}
 
@@ -175,7 +177,7 @@ func TestP12LoginPreload(t *testing.T) {
 	raw, err := json.Marshal(offlineMsg)
 	require.NoError(t, err, "marshal offline msg")
 	pendKey := fmt.Sprintf("pend:chat:%d", roleID)
-	err := rdb.RPush(context.Background(), pendKey, raw).Err()
+	err = rdb.RPush(context.Background(), pendKey, raw).Err()
 	require.NoError(t, err, fmt.Sprintf("push pend: %v", err))
 
 	// ④ 断开 → 用同一 device 重连（触发一次完整预加载）
@@ -183,14 +185,14 @@ func TestP12LoginPreload(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	client2 := robot.New(loginURL, gwAddr)
-	err := client2.GuestLogin(deviceID)
+	err = client2.GuestLogin(deviceID)
 	require.NoError(t, err, fmt.Sprintf("relogin: %v", err))
-	err := client2.Connect()
+	err = client2.Connect()
 	require.NoError(t, err, fmt.Sprintf("reconnect: %v", err))
 	defer client2.Close()
-	err := client2.Handshake()
+	err = client2.Handshake()
 	require.NoError(t, err, fmt.Sprintf("rehandshake: %v", err))
-	_, err := client2.SendHandshakeReq("1.0.0", "pc")
+	_, err = client2.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, fmt.Sprintf("rehandshake req: %v", err))
 	eg, err := client2.EnterGame()
 	require.NoError(t, err, "enter game")
@@ -243,11 +245,11 @@ func createRoleWithDevice(t *testing.T, loginURL, gwAddr, deviceID, namePrefix s
 	c := robot.New(loginURL, gwAddr)
 	err := c.GuestLogin(deviceID)
 	require.NoError(t, err, fmt.Sprintf("%s guest login: %v", namePrefix, err))
-	err := c.Connect()
+	err = c.Connect()
 	require.NoError(t, err, fmt.Sprintf("%s connect: %v", namePrefix, err))
-	err := c.Handshake()
+	err = c.Handshake()
 	require.NoError(t, err, fmt.Sprintf("%s handshake: %v", namePrefix, err))
-	_, err := c.SendHandshakeReq("1.0.0", "pc")
+	_, err = c.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, fmt.Sprintf("%s handshake req: %v", namePrefix, err))
 	roleName := fmt.Sprintf("%s%d", namePrefix, time.Now().UnixNano()%1000000)
 	cr, err := c.CreateRole(roleName, 1)

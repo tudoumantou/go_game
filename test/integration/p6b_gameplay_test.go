@@ -131,7 +131,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	gameCfg.Server.Name = "game-p6b"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -161,12 +161,16 @@ func TestP6BGameplayFlow(t *testing.T) {
 		roleA, itemDiamond, 5000, roleA, itemPotion, 10); err != nil {
 		t.Fatalf("seed player_item: %v", err)
 	}
-	// 预置一把装备（B2 穿戴用）
-	res, err := database.Exec(
-		`INSERT INTO player_equip (player_id, equip_id, enhance_level, quality, equipped) VALUES (?, ?, 0, 1, 0)`,
-		roleA, equipSword)
-	require.NoError(t, err, "seed player_equip")
-	equipUID, _ := res.LastInsertId()
+	// 预置一把装备（B2 穿戴用）。equip 表是整份 JSON（player_equip.equips），
+	// 没有自增主键，UID 由测试自己给。
+	const equipUID = int64(7001)
+	seedEquip := fmt.Sprintf(
+		`[{"uid":%d,"equip_id":%d,"enhance_level":0,"quality":1,"equipped":false}]`,
+		equipUID, equipSword)
+	if _, err := database.Exec(
+		`INSERT INTO player_equip (player_id, equips) VALUES (?, ?)`, roleA, seedEquip); err != nil {
+		t.Fatalf("seed player_equip: %v", err)
+	}
 
 	// ============ B1：任务 ============
 	ql, err := clientA.QuestList()
@@ -402,11 +406,11 @@ func newRole(t *testing.T, loginURL, gwAddr, namePrefix string) (int64, *robot.C
 	c := robot.New(loginURL, gwAddr)
 	err := c.GuestLogin(fmt.Sprintf("%s-%d", namePrefix, time.Now().UnixNano()))
 	require.NoError(t, err, fmt.Sprintf("%s guest login: %v", namePrefix, err))
-	err := c.Connect()
+	err = c.Connect()
 	require.NoError(t, err, fmt.Sprintf("%s connect: %v", namePrefix, err))
-	err := c.Handshake()
+	err = c.Handshake()
 	require.NoError(t, err, fmt.Sprintf("%s handshake: %v", namePrefix, err))
-	_, err := c.SendHandshakeReq("1.0.0", "pc")
+	_, err = c.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, fmt.Sprintf("%s handshake req: %v", namePrefix, err))
 	roleName := fmt.Sprintf("%s%d", namePrefix, time.Now().UnixNano()%1000000)
 	cr, err := c.CreateRole(roleName, 1)

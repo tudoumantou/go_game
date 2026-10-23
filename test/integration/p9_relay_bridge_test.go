@@ -174,7 +174,7 @@ func TestP9BridgeSkipsForeignNode(t *testing.T) {
 
 	n := rec.deliver(relay.Payload{ToNode: "game-c"})
 	require.EqualValues(t, 0, n, fmt.Sprintf("deliver foreign node = %d, want 0", n))
-	n := rec.deliver(relay.Payload{ToNode: "game-b"})
+	n = rec.deliver(relay.Payload{ToNode: "game-b"})
 	require.EqualValues(t, 1, n, fmt.Sprintf("deliver own node = %d, want 1", n))
 	require.EqualValues(t, 1, rec.count())
 }

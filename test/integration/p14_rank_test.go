@@ -149,7 +149,7 @@ func TestP14RankAndLeader(t *testing.T) {
 	gameCfg.Cross.BattleTimeout = "60s"
 	gameCfg.Center.Addr = fmt.Sprintf("127.0.0.1:%d", centerGRPCPort)
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -185,9 +185,9 @@ func TestP14RankAndLeader(t *testing.T) {
 	roleB, clientB := newRole(t, loginURL, gwAddr, "挑战乙")
 	defer clientB.Close()
 
-	_, err := clientA.Match("arena")
+	_, err = clientA.Match("arena")
 	require.NoError(t, err, fmt.Sprintf("match A: %v", err))
-	_, err := clientB.Match("arena")
+	_, err = clientB.Match("arena")
 	require.NoError(t, err, fmt.Sprintf("match B: %v", err))
 	startA, err := clientA.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start A")
@@ -196,13 +196,13 @@ func TestP14RankAndLeader(t *testing.T) {
 	roomID := startA.RoomId
 
 	// A 胜(0)，B 负(1)
-	_, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
+	_, err = clientA.BattleResult(roomID, startA.BattleToken, 0)
 	require.NoError(t, err, fmt.Sprintf("result A: %v", err))
-	_, err := clientB.BattleResult(roomID, startB.BattleToken, 1)
+	_, err = clientB.BattleResult(roomID, startB.BattleToken, 1)
 	require.NoError(t, err, fmt.Sprintf("result B: %v", err))
 
 	// 等结算回推（结算后才上报排行）
-	_, err := clientA.WaitBattleSettle(15 * time.Second)
+	_, err = clientA.WaitBattleSettle(15 * time.Second)
 	require.NoError(t, err, fmt.Sprintf("settle A: %v", err))
 
 	// ③ 通过 GM 接口查榜：A 应在 B 之上（+30 vs -10）
@@ -244,11 +244,11 @@ func TestP14RankAndLeader(t *testing.T) {
 	require.NoError(t, err, "wait start A2")
 	startB2, err := clientB.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start B2")
-	_, err := clientA.BattleResult(startA2.RoomId, startA2.BattleToken, 0)
+	_, err = clientA.BattleResult(startA2.RoomId, startA2.BattleToken, 0)
 	require.NoError(t, err, fmt.Sprintf("result A2: %v", err))
-	_, err := clientB.BattleResult(startB2.RoomId, startB2.BattleToken, 1)
+	_, err = clientB.BattleResult(startB2.RoomId, startB2.BattleToken, 1)
 	require.NoError(t, err, fmt.Sprintf("result B2: %v", err))
-	_, err := clientA.WaitBattleSettle(15 * time.Second)
+	_, err = clientA.WaitBattleSettle(15 * time.Second)
 	require.NoError(t, err, fmt.Sprintf("settle A2: %v", err))
 
 	waitUntil(t, 15*time.Second, "score accumulates to 60", func() bool {

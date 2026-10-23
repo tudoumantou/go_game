@@ -148,7 +148,7 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	// 关键：配了中心服 → battle 走中心服匹配主路径
 	gameCfg.Center.Addr = fmt.Sprintf("127.0.0.1:%d", centerGRPCPort)
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -211,16 +211,16 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	}
 
 	// ⑧ 战斗透传（验证中心服匹配出来的房间真实可用）
-	err := clientA.BattleOp(roomID, 8801, []byte("op-via-center"))
+	err = clientA.BattleOp(roomID, 8801, []byte("op-via-center"))
 	require.NoError(t, err, fmt.Sprintf("battle op: %v", err))
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
 	require.NoError(t, err, "wait battle sync")
 	require.EqualValues(t, "op-via-center", string(sync.Body))
 
 	// ⑨ 结算：双方上报 → CrossServer 结算回推
-	_, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
+	_, err = clientA.BattleResult(roomID, startA.BattleToken, 0)
 	require.NoError(t, err, fmt.Sprintf("result A: %v", err))
-	_, err := clientB.BattleResult(roomID, startB.BattleToken, 1)
+	_, err = clientB.BattleResult(roomID, startB.BattleToken, 1)
 	require.NoError(t, err, fmt.Sprintf("result B: %v", err))
 	settleA, err := clientA.WaitBattleSettle(15 * time.Second)
 	require.NoError(t, err, "settle A")

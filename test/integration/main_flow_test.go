@@ -185,11 +185,11 @@ func TestCRUDAndIdempotent(t *testing.T) {
 	_, err := model.UpsertPlayerByPK(ctx, testDB, p)
 	require.NoError(t, err, fmt.Sprintf("UpsertPlayerByPK: %v", err))
 	// 重复 Upsert（幂等）
-	_, err := model.UpsertPlayerByPK(ctx, testDB, p)
+	_, err = model.UpsertPlayerByPK(ctx, testDB, p)
 	require.NoError(t, err, fmt.Sprintf("重复 UpsertPlayerByPK: %v", err))
 	// 更新走 Update
 	p.Coin = 200
-	_, err := model.UpdatePlayerByPK(ctx, testDB, p)
+	_, err = model.UpdatePlayerByPK(ctx, testDB, p)
 	require.NoError(t, err, fmt.Sprintf("UpdatePlayerByPK: %v", err))
 	// 终态断言
 	got, err := model.FindPlayerByPK(ctx, testDB, 1001)
@@ -198,21 +198,21 @@ func TestCRUDAndIdempotent(t *testing.T) {
 	require.EqualValues(t, "集成测试", got.Name)
 	// 唯一性：同 account_id 下重复 name 不拦，但 player.id 唯一键冲突应报错
 	dup := &model.Player{Id: 1001, AccountId: 1, Name: "重复"}
-	_, err := model.InsertPlayer(ctx, testDB, dup)
+	_, err = model.InsertPlayer(ctx, testDB, dup)
 	require.Error(t, err, "重复 InsertPlayer 应触发唯一键冲突")
 
 	// 聊天记录幂等（uk_owner_msg，17.3 双端落库不重复）
 	msg := &model.ChatRecord{OwnerId: 1001, PeerId: 1002, MsgId: 500001, Direction: 0, Channel: 1, Content: "hello"}
-	_, err := model.InsertChatRecord(ctx, testDB, msg)
+	_, err = model.InsertChatRecord(ctx, testDB, msg)
 	require.NoError(t, err, fmt.Sprintf("InsertChatRecord: %v", err))
-	_, err := model.InsertChatRecord(ctx, testDB, msg)
+	_, err = model.InsertChatRecord(ctx, testDB, msg)
 	require.Error(t, err, "重复 chat_record 应触发 uk_owner_msg 冲突")
 
 	// 可空时间列（player_item.expire_at，DATETIME NULL）：
 	// ① 零值 sql.NullTime 写入应为 NULL（曾因 Go 零值 time.Time 越界报 1292）；
 	// ② 读出 NULL 不应报 converting 错误
 	item := &model.PlayerItem{Id: 9001, PlayerId: 1001, ItemId: 10001, Count: 5}
-	_, err := model.InsertPlayerItem(ctx, testDB, item)
+	_, err = model.InsertPlayerItem(ctx, testDB, item)
 	require.NoError(t, err, fmt.Sprintf("InsertPlayerItem: %v", err))
 	gotItem, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
 	require.NoError(t, err, "FindPlayerItemByPK")
@@ -220,14 +220,14 @@ func TestCRUDAndIdempotent(t *testing.T) {
 	// 显式设置过期时间后应可往返
 	expire := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 	item.ExpireAt = sql.NullTime{Time: expire, Valid: true}
-	_, err := model.UpdatePlayerItemByPK(ctx, testDB, item)
+	_, err = model.UpdatePlayerItemByPK(ctx, testDB, item)
 	require.NoError(t, err, fmt.Sprintf("UpdatePlayerItemByPK: %v", err))
 	gotItem2, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
 	require.NoError(t, err, "FindPlayerItemByPK(2)")
 	require.False(t, !gotItem2.ExpireAt.Valid || !gotItem2.ExpireAt.Time.Equal(expire), fmt.Sprintf("expire_at 往返异常: %+v", gotItem2.ExpireAt))
 
 	// 清理
-	_, err := model.DeletePlayerByPK(ctx, testDB, 1001)
+	_, err = model.DeletePlayerByPK(ctx, testDB, 1001)
 	require.NoError(t, err, fmt.Sprintf("DeletePlayerByPK: %v", err))
 }
 

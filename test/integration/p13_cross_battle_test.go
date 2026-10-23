@@ -138,7 +138,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	gameCfg.Cross.Nodes = []string{fmt.Sprintf("127.0.0.1:%d", crossGRPCPort)}
 	gameCfg.Cross.BattleTimeout = "60s"
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -201,7 +201,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 
 	// ⑥ 操作透传：A 的攻击应出现在 B 的 BattleSyncNotify
 	opBody := []byte("skill-fireball-9001")
-	err := clientA.BattleOp(roomID, 9001, opBody)
+	err = clientA.BattleOp(roomID, 9001, opBody)
 	require.NoError(t, err, fmt.Sprintf("battle op: %v", err))
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
 	require.NoError(t, err, "wait battle sync")

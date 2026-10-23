@@ -136,11 +136,11 @@ func TestP6GameplayFlow(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	privatePath := filepath.Join(keyDir, "gateway_rsa.pem")
-	err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600)
+	err = os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600)
 	require.NoError(t, err)
 	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	require.NoError(t, err)
-	err := os.WriteFile(filepath.Join(keyDir, "gateway_rsa_pub.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644)
+	err = os.WriteFile(filepath.Join(keyDir, "gateway_rsa_pub.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644)
 	require.NoError(t, err)
 	gwCfg.Crypto.RSAPrivateKey = privatePath
 
@@ -148,7 +148,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	gameCfg.Server.Name = "game-p6"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	// ③ 起服务
@@ -165,12 +165,12 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// ④ 机器人：登录 → 握手 → 进游戏（无角色）
 	r := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	err := r.GuestLogin(fmt.Sprintf("p6-device-%d", time.Now().UnixNano()))
+	err = r.GuestLogin(fmt.Sprintf("p6-device-%d", time.Now().UnixNano()))
 	require.NoError(t, err, fmt.Sprintf("guest login: %v", err))
-	err := r.Connect()
+	err = r.Connect()
 	require.NoError(t, err, fmt.Sprintf("connect: %v", err))
 	defer r.Close()
-	err := r.Handshake()
+	err = r.Handshake()
 	require.NoError(t, err, fmt.Sprintf("handshake: %v", err))
 	hs, err := r.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, "handshake req")
@@ -192,14 +192,14 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// 重名 → 2004（换一个账号，避免同账号多角色限制先触发）
 	r2 := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	err := r2.GuestLogin(fmt.Sprintf("p6-device2-%d", time.Now().UnixNano()))
+	err = r2.GuestLogin(fmt.Sprintf("p6-device2-%d", time.Now().UnixNano()))
 	require.NoError(t, err, fmt.Sprintf("guest login 2: %v", err))
-	err := r2.Connect()
+	err = r2.Connect()
 	require.NoError(t, err, fmt.Sprintf("connect 2: %v", err))
 	defer r2.Close()
-	err := r2.Handshake()
+	err = r2.Handshake()
 	require.NoError(t, err, fmt.Sprintf("handshake 2: %v", err))
-	_, err := r2.SendHandshakeReq("1.0.0", "pc")
+	_, err = r2.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, fmt.Sprintf("handshake req 2: %v", err))
 	dup, err := r2.CreateRole(roleName, 1)
 	require.NoError(t, err, "create duplicate role")
@@ -280,7 +280,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	require.EqualValues(t, 97, farMove.X, fmt.Sprintf("far move authority = (%d,%d), want (97,99)", farMove.X, farMove.Y))
 	require.EqualValues(t, 99, farMove.Y)
 
-	_, err := r.SceneLeave()
+	_, err = r.SceneLeave()
 	require.NoError(t, err, fmt.Sprintf("scene leave: %v", err))
 	syncResp, err := r.SceneSync(1)
 	require.NoError(t, err, "scene sync after leave")

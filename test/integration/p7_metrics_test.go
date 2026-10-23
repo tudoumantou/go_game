@@ -84,7 +84,7 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 	initSchema(t, mysqlDSN)
 
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	// ② 配置
@@ -135,7 +135,7 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 	// 触发埋点：guest 登录（/v1/ 前缀，会被中间件统计）
 	guestURL := fmt.Sprintf("http://127.0.0.1:%d/v1/auth/guest", loginHTTP)
-	_, err := httpPostJSON(guestURL, `{"device_id":"p7-metrics-1"}`)
+	_, err = httpPostJSON(guestURL, `{"device_id":"p7-metrics-1"}`)
 	require.NoError(t, err, fmt.Sprintf("trigger guest login: %v", err))
 
 	loginBase := fmt.Sprintf("http://127.0.0.1:%d", loginMetrics)
@@ -195,7 +195,7 @@ func TestP7MetricsEndpoints(t *testing.T) {
 		code := httpStatus(t, loginBase+"/readyz")
 		require.EqualValues(t, http.StatusServiceUnavailable, code, fmt.Sprintf("/readyz expect 503 after redis down, got %d", code))
 		// 关键不变量：存活探针不查依赖，避免中间件抖动引发重启风暴
-		code := httpStatus(t, loginBase+"/healthz")
+		code = httpStatus(t, loginBase+"/healthz")
 		require.EqualValues(t, http.StatusOK, code, fmt.Sprintf("/healthz expect 200 even when redis down, got %d", code))
 	})
 

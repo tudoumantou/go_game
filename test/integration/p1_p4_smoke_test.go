@@ -131,7 +131,7 @@ func TestP1toP4Smoke(t *testing.T) {
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
 	// 切到项目根目录（gateway 加载 keys/ 相对路径）
-	err := os.Chdir(projectRoot(t))
+	err = os.Chdir(projectRoot(t))
 	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	// ⑤ 启动三服务
@@ -152,13 +152,13 @@ func TestP1toP4Smoke(t *testing.T) {
 
 	// ⑥ 机器人全链路
 	r := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	err := r.GuestLogin("robot-device-1")
+	err = r.GuestLogin("robot-device-1")
 	require.NoError(t, err, fmt.Sprintf("guest login: %v", err))
-	err := r.Connect()
+	err = r.Connect()
 	require.NoError(t, err, fmt.Sprintf("connect gateway: %v", err))
 	defer r.Close()
 
-	err := r.Handshake()
+	err = r.Handshake()
 	require.NoError(t, err, fmt.Sprintf("handshake: %v", err))
 	resp, err := r.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, "handshake req")
@@ -214,7 +214,7 @@ func initSchema(t *testing.T, dsn string) {
 	for _, f := range files {
 		content, err := os.ReadFile(f)
 		require.NoError(t, err)
-		_, err := database.Exec(string(content))
+		_, err = database.Exec(string(content))
 		require.NoError(t, err, fmt.Sprintf("exec %s: %v", f, err))
 	}
 	// 种子
