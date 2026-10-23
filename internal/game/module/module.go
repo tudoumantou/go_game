@@ -220,13 +220,17 @@ type EventAware interface {
 	OnEvent(ctx *Context, evt Event)
 }
 
-// RollbackAware 可选接口：声明某个请求在写缓存失败后能否丢弃内存改动并重新加载。
+// DiscardableAware 可选接口：声明某个请求在写缓存失败后能否直接丢弃内存改动。
 //
 // 返回 true 的前提是「重放该请求不会产生第二次副作用」：要么只读，要么有业务幂等键。
 // 未实现该接口的模块按不可回滚处理（保守），失败时保留待提交快照而不是丢弃改动。
-type RollbackAware interface {
-	// Rollbackable 判定该协议是否满足「重放无第二次副作用」。
-	Rollbackable(msgID uint32) bool
+type DiscardableAware interface {
+	// Discardable 判定该协议是否满足「重放无第二次副作用」。
+	//
+	// true 的处理方式：失败后不回滚内存，只标记重载——下一条消息开头
+	// 从 Redis 整份恢复。false 的处理方式：保留待提交快照，下次补提
+	// （不可重放的消息，如充值发货已在 MySQL 落定）。
+	Discardable(msgID uint32) bool
 }
 
 // CacheFailureAware 可选接口：缓存不可用时给客户端一个有意义的错误响应。
@@ -297,17 +301,17 @@ func (r *Registry) Dispatch(ctx *Context, msgID uint32, body []byte) error {
 	return m.OnMessage(ctx, msgID, body)
 }
 
-// IsRollbackable 查询某协议失败后能否回滚内存（未注册的协议一律不可回滚）。
-func (r *Registry) IsRollbackable(msgID uint32) bool {
+// IsDiscardable 查询某协议失败后能否丢弃内存改动（未注册的协议一律不可丢弃）。
+func (r *Registry) IsDiscardable(msgID uint32) bool {
 	m, ok := r.route[msgID]
 	if !ok {
 		return false
 	}
-	rb, ok := m.(RollbackAware)
+	rb, ok := m.(DiscardableAware)
 	if !ok {
 		return false
 	}
-	return rb.Rollbackable(msgID)
+	return rb.Discardable(msgID)
 }
 
 // CacheFailureReply 取得模块自定义的缓存不可用响应（未实现时返回 false）。

@@ -118,14 +118,14 @@ func TestThinCacheFailureReply(t *testing.T) {
 	}
 }
 
-// TestThinRollbackableOnlyForRegistered 验证只有注册过的协议声明可回滚。
-func TestThinRollbackableOnlyForRegistered(t *testing.T) {
+// TestThinDiscardableOnlyForRegistered 验证只有注册过的协议声明可回滚。
+func TestThinDiscardableOnlyForRegistered(t *testing.T) {
 	th := NewThin("demo")
 	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return nil })
-	if !th.Rollbackable(1001) {
+	if !th.Discardable(1001) {
 		t.Fatal("registered msg should be rollbackable")
 	}
-	if th.Rollbackable(9999) {
+	if th.Discardable(9999) {
 		t.Fatal("unregistered msg must not be rollbackable")
 	}
 }

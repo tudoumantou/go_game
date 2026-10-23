@@ -194,7 +194,12 @@ type Actor struct {
 	// cacheVersion 本地已知的 Redis 快照版本（仅用于落库确认与日志）；
 	// 提交成功则前进为新版本，失败保持旧值（下轮按同一版本重试）。
 	cacheVersion int64
-	// legacy 快照仍是升级前的整份格式：下一次提交要写全量，否则会丢字段。
+	// legacy 快照仍是升级前的「整份 data」格式：下一次提交必须写全量，
+	// 否则 commitScript 里的 HDEL data 会把没提交的字段一起丢掉。
+	//
+	// 删除条件：所有部署环境的玩家都完成过一次登录（登录即整份迁移）。
+	// 在此之前删掉这段，旧快照会被第一条消息截断成只剩一个字段——
+	// 属于数据损坏级风险，不是「重新加载就能恢复」的那种。
 	legacy bool
 
 	// cacheReload 下一条消息前必须重新 LoadCached：上一次提交已回滚或
@@ -494,6 +499,12 @@ func (a *Actor) preload(ctx *actor.Context) error {
 		}
 		a.token = token
 		a.legacy = legacy
+		if legacy {
+			// 运维侧可据这条日志统计「还有多少玩家没迁移」；
+			// 只在首次加载打，失败重载不重复刷屏。
+			a.logger.Warn("player snapshot in legacy format, will migrate on next commit",
+				"player_id", a.playerID)
+		}
 		a.setState(state)
 		a.cacheVersion = version
 		a.loaded = true

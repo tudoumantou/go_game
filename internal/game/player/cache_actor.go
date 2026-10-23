@@ -120,7 +120,7 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 		// 先退出窗口：cacheFailure 要发的错误回包必须直发，
 		// 否则会入队随后被 defer 的 Discard 一起丢掉，客户端只能等到超时。
 		a.gate.Discard()
-		if a.canRollbackMessage(ctx.Message()) {
+		if a.canDiscardMessage(ctx.Message()) {
 			// 不回滚内存：Redis 是权威，下一条消息开头整份 LoadCached 会覆盖它。
 			// （原先的 setState(previous) 正是这样被立刻覆盖，clone 纯属白做。）
 			a.cacheReload = true
@@ -140,11 +140,11 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 	}
 }
 
-// canRollbackMessage 判断请求失败后能否丢弃内存改动。
+// canDiscardMessage 判断请求失败后能否直接丢弃内存改动。
 //
-// 协议号到「可回滚」的映射由模块自己声明（module.RollbackAware），
+// 协议号到「可丢弃」的映射由模块自己声明（module.DiscardableAware），
 // 玩家层不再硬编码任何具体玩法：新增玩法不需要改这个文件。
-func (a *Actor) canRollbackMessage(message any) bool {
+func (a *Actor) canDiscardMessage(message any) bool {
 	switch msg := message.(type) {
 	case *GrantItemsMsg:
 		return true // 与资产同快照的 BizID 负责幂等重放。
@@ -152,7 +152,7 @@ func (a *Actor) canRollbackMessage(message any) bool {
 		if a.registry == nil {
 			return false
 		}
-		return a.registry.IsRollbackable(msg.MsgID)
+		return a.registry.IsDiscardable(msg.MsgID)
 	}
 	return false
 }

@@ -31,8 +31,8 @@ const (
 // 落库交给快照提交与 Write-Behind，因此扣费与发奖天然同一次 CAS。
 type atomicSpend struct{ *bag.Module }
 
-func (*atomicSpend) MsgIDs() []uint32         { return []uint32{msgSpendReq} }
-func (*atomicSpend) Rollbackable(uint32) bool { return true }
+func (*atomicSpend) MsgIDs() []uint32        { return []uint32{msgSpendReq} }
+func (*atomicSpend) Discardable(uint32) bool { return true }
 
 func (m *atomicSpend) OnMessage(ctx *module.Context, _ uint32, _ []byte) error {
 	if !ctx.State.RemoveItem(costItem, 100) {

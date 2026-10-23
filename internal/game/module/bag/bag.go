@@ -64,11 +64,11 @@ func New(logger *log.Logger) *Module {
 // Name 实现 module.Module。
 func (m *Module) Name() string { return "bag" }
 
-// Rollbackable 实现 module.RollbackAware：背包列表只读；使用道具会改资产，按不可回滚处理。
+// Discardable 实现 module.DiscardableAware：背包列表只读；使用道具会改资产，按不可丢弃处理。
 //
 // 判据是「重放有没有第二次副作用」：列表请求重放只是再查一次；
 // 使用道具若已扣道具，重放会再扣一次，所以只有列表可回滚。
-func (*Module) Rollbackable(msgID uint32) bool { return msgID == msgIDBagListReq }
+func (*Module) Discardable(msgID uint32) bool { return msgID == msgIDBagListReq }
 
 // MsgIDs 本模块处理的协议号：使用道具 + 背包列表（推送 3010 不走请求路由）。
 //

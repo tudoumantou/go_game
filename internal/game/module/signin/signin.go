@@ -82,7 +82,7 @@ func Reset(state writebehind.ExtState) { state.SetExt(stateKey, nil) }
 // Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
 //
 // 嵌入 *module.Thin：Name/MsgIDs/OnMessage 分发/OnSave/OnLogin/OnLogout/
-// Rollbackable/CacheFailureReply 全部由基座提供，本模块只注册处理器。
+// Discardable/CacheFailureReply 全部由基座提供，本模块只注册处理器。
 // 两个请求都满足「重放无第二次副作用」：Info 只读；Claim 按「今天已领」
 // 事实幂等（已领过直接回状态，不第二次发奖），所以注册进 Thin 即承诺
 // 可回滚——缓存提交失败时丢弃内存改动重放是安全的。

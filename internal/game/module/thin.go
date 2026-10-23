@@ -2,7 +2,7 @@
 //
 // 解决什么问题：一个只有增删改查的业务模块（签到/玩家信息/属性占位…），
 // 为了满足 module.Module 接口要写 7 个方法，其中大部分是样板：
-// Rollbackable 恒 true、OnSave/OnLogin/OnLogout 空实现、
+// Discardable 恒 true、OnSave/OnLogin/OnLogout 空实现、
 // CacheFailureReply 里按 msgID  switch 构造错误回包、failure() 再 switch 一次。
 // 620 行的签到里，业务其实只占三分之一。
 //
@@ -11,10 +11,10 @@
 // 只剩三件事：声明协议、写处理器、按需挂 Init/Login/Logout 钩子。
 //
 // 适用边界（重要）：
-//   - Thin 默认把「已注册的协议」全部声明为可回滚（Rollbackable=true）。
+//   - Thin 默认把「已注册的协议」全部声明为可丢弃（Discardable=true）。
 //     前提是处理器的重放没有第二次副作用——只读，或业务状态自带幂等
 //     （如签到按「今天已领」事实去重）。不满足的协议不要注册进 Thin，
-//     或由外层类型自行实现 RollbackAware 覆盖嵌入方法。
+//     或由外层类型自行实现 DiscardableAware 覆盖嵌入方法。
 //   - Thin 不持有任何玩家状态：模块仍是「单例 + Context.State 外置」形态。
 //   - 需要 MySQL 直写事务的关系型模块（好友/公会/队伍）不建议用 Thin——
 //     它们的复杂度在事务而不在接口样板， Thin 省不下什么。
@@ -52,7 +52,7 @@ type respSpec struct {
 	prototype proto.Message
 }
 
-// Thin 「薄模块」基座：Module + RollbackAware + CacheFailureAware 的预装配实现。
+// Thin 「薄模块」基座：Module + DiscardableAware + CacheFailureAware 的预装配实现。
 //
 // 用法：
 //
@@ -297,11 +297,11 @@ func (t *Thin) OnEvent(ctx *Context, evt Event) {
 	t.eventFn(ctx, evt)
 }
 
-// Rollbackable 实现 module.RollbackAware：已注册的协议默认全部可回滚。
+// Discardable 实现 module.DiscardableAware：已注册的协议默认全部可丢弃。
 //
 // 契约（注册即承诺）：处理器的重放没有第二次副作用——只读，或业务状态
 // 自带幂等（「今天已领」这类事实去重）。外部类型可覆盖本方法收紧策略。
-func (t *Thin) Rollbackable(msgID uint32) bool {
+func (t *Thin) Discardable(msgID uint32) bool {
 	_, ok := t.handlers[msgID]
 	return ok
 }
