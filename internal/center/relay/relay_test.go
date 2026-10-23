@@ -62,9 +62,9 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 	require.EqualValues(t, 0, n)
 	require.EqualValues(t, 1, r.PendingCount())
 
-	// 到期后取重试队列
-	time.Sleep(15 * time.Millisecond)
-	due := r.NextRetry(time.Now())
+	// 到期后取重试队列：NextRetry 接受时间参数，直接给一个「已过期」的时刻，
+	// 不必真的睡 15ms（睡多久都可能因调度抖动不够）。
+	due := r.NextRetry(time.Now().Add(11 * time.Millisecond))
 	require.Len(t, due, 1, fmt.Sprintf("expect r1 due for retry, got %+v", due))
 	require.EqualValues(t, "r1", due[0].RelayID)
 	// 重新投递仍失败 → 仍在 pending（等下一轮）
@@ -73,9 +73,11 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 
 	// 模拟真实循环：每次拿到到期条目就重新投递（仍失败），直到超过上限被丢弃
 	maxRounds := r.maxRetry + 3
+	clock := time.Now()
 	for i := 0; i < maxRounds && r.PendingCount() > 0; i++ {
-		time.Sleep(15 * time.Millisecond)
-		due := r.NextRetry(time.Now())
+		// 每次把虚拟时钟推过一个退避窗口（退避是指数增长的，推 500ms 一次跨过）。
+		clock = clock.Add(500 * time.Millisecond)
+		due := r.NextRetry(clock)
 		for _, payload := range due {
 			r.Relay(payload, []Pusher{bad}) // 目标仍不可达
 		}

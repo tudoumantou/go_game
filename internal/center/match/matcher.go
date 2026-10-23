@@ -92,6 +92,9 @@ type Matcher struct {
 	tokenKey []byte
 
 	timeout time.Duration
+	// now 时钟。生产用 time.Now；测试注入可控时钟，避免为了制造
+	// 「排队超时」而真的 sleep —— 真实时钟下超时边界靠调度运气。
+	now func() time.Time
 }
 
 // New 创建匹配器。
@@ -113,6 +116,7 @@ func New(instanceID uint32, crossAddrs []string, timeout time.Duration) *Matcher
 		instanceID: instanceID & 0xFF,
 		crossAddrs: crossAddrs,
 		queues:     make(map[string][]*Ticket),
+		now:        time.Now,
 		tokenKey:   key,
 		timeout:    timeout,
 	}
@@ -140,7 +144,7 @@ func (m *Matcher) Enqueue(t *Ticket) []*Result {
 		t.Mode = DefaultMode
 	}
 	if t.Enqueued.IsZero() {
-		t.Enqueued = time.Now()
+		t.Enqueued = m.now()
 	}
 
 	m.mu.Lock()
@@ -208,7 +212,7 @@ func (m *Matcher) Sweep() []*Result {
 	defer m.mu.Unlock()
 
 	var out []*Result
-	now := time.Now()
+	now := m.now()
 	keys := make([]string, 0, len(m.queues))
 	for k := range m.queues {
 		keys = append(keys, k)
@@ -286,7 +290,7 @@ func (m *Matcher) tryPairLocked(key string) []*Result {
 // 不能把没超时的人强行配走。评分取「等待最久」而非「elo 最近」：
 // 等待越久越急需解救，elo 差一点对体验的影响小于继续排队。
 func (m *Matcher) relaxLocked(t *Ticket) []*Result {
-	now := time.Now()
+	now := m.now()
 	var bestKey string
 	var best *Ticket
 	bestGap := m.timeout

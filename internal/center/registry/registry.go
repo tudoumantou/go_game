@@ -65,6 +65,9 @@ type Registry struct {
 
 	timeout time.Duration
 	logger  Logger
+	// now 时钟。生产用 time.Now；测试注入可控时钟，避免为了制造「心跳间隔」
+	// 而真的 sleep——真实时钟下 50ms 超时和 30ms 睡眠的边界本来就靠运气。
+	now func() time.Time
 }
 
 // Sender 向节点下发指令的能力（一条 Report 流）。
@@ -96,6 +99,7 @@ func New(timeout time.Duration, logger Logger) *Registry {
 		senders: make(map[string]Sender),
 		timeout: timeout,
 		logger:  logger,
+		now:     time.Now,
 	}
 }
 
@@ -111,7 +115,7 @@ func (r *Registry) Register(n *Node, s Sender) {
 	if n == nil || n.ID == "" {
 		return
 	}
-	n.LastSeen = time.Now()
+	n.LastSeen = r.now()
 
 	r.mu.Lock()
 	old, existed := r.nodes[n.ID]
@@ -147,7 +151,7 @@ func (r *Registry) Heartbeat(nodeID string, playerNum, cpuLoad, memLoad int, qps
 	if !ok {
 		return false
 	}
-	n.LastSeen = time.Now()
+	n.LastSeen = r.now()
 	n.PlayerNum = playerNum
 	n.CPULoad = cpuLoad
 	n.MemLoad = memLoad

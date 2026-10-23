@@ -59,17 +59,21 @@ func TestDuplicateEnqueueIgnored(t *testing.T) {
 
 func TestSweepRelaxesEloAfterTimeout(t *testing.T) {
 	m := New(1, []string{"cross-01:9300"}, 50*time.Millisecond)
+	// 注入可控时钟：用虚拟时间跨过排队超时，不真的睡 120ms。
+	base := time.Now()
+	clock := base
+	m.now = func() time.Time { return clock }
 
 	_ = enqueue(m, "game-01", 1001, 100)  // bucket 0
 	_ = enqueue(m, "game-02", 1002, 5000) // bucket 25
-	time.Sleep(120 * time.Millisecond)
+	clock = base.Add(120 * time.Millisecond)
 
 	// 超时后 sweep 应跨桶配对（只产出 1 条 —— 每次 sweep 配对一对中的一个）
 	results := m.Sweep()
 	require.NotEmpty(t, results, "sweep should pair timed-out tickets across buckets")
 	// 反复 sweep 直到队列清空（每次 sweep 可能只处理一个等待者）
 	for i := 0; i < 3 && len(results) < 2; i++ {
-		time.Sleep(20 * time.Millisecond)
+		clock = clock.Add(20 * time.Millisecond)
 		results = append(results, m.Sweep()...)
 	}
 	require.False(t, len(results) < 2, fmt.Sprintf("expect both players matched after sweep, got %d results", len(results)))

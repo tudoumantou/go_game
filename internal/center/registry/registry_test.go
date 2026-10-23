@@ -72,16 +72,23 @@ func TestHeartbeatUpdatesNode(t *testing.T) {
 
 func TestTickRemovesTimeoutNodes(t *testing.T) {
 	r := New(50*time.Millisecond, testLogger{t})
+	// 注入可控时钟：用「虚拟时间」制造心跳间隔，不真的 sleep。
+	base := time.Now()
+	clock := base
+	r.now = func() time.Time { return clock }
+
 	r.Register(&Node{ID: "game-01", Type: TypeGame}, nil)
+	clock = base.Add(30 * time.Millisecond)
 	r.Register(&Node{ID: "game-02", Type: TypeGame}, nil)
 
-	// game-02 持续心跳，game-01 不心跳
+	// game-02 持续心跳（每次推进 20ms），game-01 停在 0ms 不再更新。
 	for i := 0; i < 3; i++ {
-		time.Sleep(30 * time.Millisecond)
+		clock = clock.Add(20 * time.Millisecond)
 		r.Heartbeat("game-02", 1, 0, 0, 0, "")
 	}
 
-	dead := r.Tick(time.Now())
+	// 此刻 game-01 已过 90ms（>50ms 超时），game-02 刚心跳（0ms）。
+	dead := r.Tick(clock)
 	require.Len(t, dead, 1, fmt.Sprintf("expect only game-01 removed, got %+v", dead))
 	require.EqualValues(t, "game-01", dead[0].ID)
 	_, ok := r.Get("game-01")
