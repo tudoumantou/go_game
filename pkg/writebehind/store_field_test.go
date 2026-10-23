@@ -71,64 +71,6 @@ func TestCommitWritesOnlyChangedFields(t *testing.T) {
 	require.Equal(t, "hero", got.State.Profile.Name, "未提交的字段应保留")
 	require.EqualValues(t, 3, got.State.Items[1001])
 	require.Equal(t, `{"day":2}`, string(got.State.Ext["signin"]), "变化字段应更新")
-	require.False(t, got.Legacy, "新格式不应标记 Legacy")
-}
-
-// TestLoadLegacyDataField 升级前的整份 data 仍能读，且标记 Legacy。
-func TestLoadLegacyDataField(t *testing.T) {
-	ctx := context.Background()
-	store, mr := newFieldStore(t)
-
-	old := Snapshot{
-		PlayerID: 9,
-		Profile:  Profile{Name: "old", Level: 5},
-		Items:    map[int32]int64{2001: 8},
-		Ext:      map[string]json.RawMessage{"quest": json.RawMessage(`{"p":1}`)},
-	}
-	raw, err := json.Marshal(old)
-	require.NoError(t, err)
-	mr.HSet(store.stateKey(9), "version", "3")
-	mr.HSet(store.stateKey(9), "data", string(raw))
-
-	got, err := store.Load(ctx, 9)
-	require.NoError(t, err)
-	require.True(t, got.Legacy, "整份 data 格式应标记 Legacy")
-	require.Equal(t, "old", got.State.Profile.Name)
-	require.EqualValues(t, 8, got.State.Items[2001])
-}
-
-// TestLegacyMigrationWritesFullSnapshot 旧格式经一次全量提交后迁成分字段。
-func TestLegacyMigrationWritesFullSnapshot(t *testing.T) {
-	ctx := context.Background()
-	store, mr := newFieldStore(t)
-
-	old := Snapshot{
-		PlayerID: 9,
-		Profile:  Profile{Name: "old", Level: 5},
-		Items:    map[int32]int64{2001: 8},
-	}
-	raw, err := json.Marshal(old)
-	require.NoError(t, err)
-	mr.HSet(store.stateKey(9), "version", "3")
-	mr.HSet(store.stateKey(9), "data", string(raw))
-
-	token, err := store.AcquireLease(ctx, 9)
-	require.NoError(t, err)
-	// 调用方看到 Legacy 后必须传全量字段。
-	_, err = store.Commit(ctx, old.PlayerID, old, old.FieldNames(), nil, token)
-	require.NoError(t, err)
-
-	fields, err := mr.HKeys(store.stateKey(9))
-	require.NoError(t, err)
-	require.NotContains(t, fields, "data", "迁移后应清掉旧格式字段")
-	require.Contains(t, fields, "profile")
-	require.Contains(t, fields, "items")
-
-	got, err := store.Load(ctx, 9)
-	require.NoError(t, err)
-	require.False(t, got.Legacy)
-	require.Equal(t, "old", got.State.Profile.Name, "迁移不能丢数据")
-	require.EqualValues(t, 8, got.State.Items[2001])
 }
 
 // TestCommitRemovesDeletedExtExt 模块状态被 Reset 后，Redise 里的 ext field 要删掉，

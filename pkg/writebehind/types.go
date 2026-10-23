@@ -65,12 +65,10 @@ type ItemGrant struct {
 //     player / player_attr / player_item 三张表；
 //   - Ext：模块名 → 模块快照 JSON。框架只搬运不解释，RawMessage 延迟
 //     解析到 Persister；键名即模块名（注册表契约），map 无 tag；
-//   - AppliedGrants：已应用的一次性发放流水号（防重发栅栏）；
-//   - LegacySignin：旧版内建签到的兼容位，见字段注释。
+//   - AppliedGrants：已应用的一次性发放流水号（防重发栅栏）。
 //
-// Go 细节：migrateLegacy 用指针接收者（要改字段），Validate 用值
-// 接收者（只读）——值接收杜绝方法内意外修改调用方的快照；
-// 结构体在 KB 级，按值传递的拷贝成本可接受。
+// Go 细节：Validate 用值接收者（只读）——值接收杜绝方法内意外修改
+// 调用方的快照；结构体在 KB 级，按值传递的拷贝成本可接受。
 type Snapshot struct {
 	PlayerID      int64
 	Profile       Profile
@@ -78,16 +76,6 @@ type Snapshot struct {
 	Items         map[int32]int64
 	Ext           map[string]json.RawMessage // 模块名 -> 模块快照
 	AppliedGrants map[string]bool
-
-	// LegacySignin 仅用于识别旧版快照里的内建签到字段。
-	//
-	// 字段名刻意与旧 JSON 键一致（"Signin"），Load 时被迁移进 Ext["signin"] 后清空，
-	// 避免升级瞬间把线上签到数据当成不存在而重新开始周期。
-	//
-	// Go 细节：json tag 带 omitempty——json.RawMessage 本质是 []byte，
-	// omitempty 对切片是「len==0 才省略」，迁移后置 nil 即从输出中消失，
-	// 新提交的 Redis 数据不再带 "Signin" 键，完成原地升级。
-	LegacySignin json.RawMessage `json:"Signin,omitempty"`
 }
 
 // Record 是「版本 + 快照」的组合：落库与 Ack 的最小单位。
@@ -99,12 +87,6 @@ type Record struct {
 	Version int64
 	// State 快照本体。
 	State Snapshot
-	// Legacy 该快照是升级前的「整份 data」格式。
-	//
-	// 分字段存储下，若第一条消息只提交变化字段，Lua 会 HDEL data，
-	// 其余字段（profile/items…）就丢了。所以调用方看到 Legacy=true 时
-	// 必须先做一次全量提交，把旧格式迁成分字段。
-	Legacy bool
 }
 
 // FieldSource 提交时的字段来源。
@@ -174,29 +156,6 @@ func (s Snapshot) Validate() error {
 		}
 	}
 	return nil
-}
-
-// migrateLegacy 把旧版内建字段搬进 Ext，返回是否发生了迁移。
-//
-// 旧版 Snapshot 的 Signin 字段 JSON 结构与 Ext["signin"] 完全一致，
-// 迁移只是换个存放位置，不需要改写数据本身。
-//
-// Go 细节：判 "null" 字面量是因为 json.RawMessage 对 JSON null 原样
-// 保留（不是空切片）——显式写 null 的旧数据不应被当成有值迁移。
-// 已存在 Ext["signin"] 时不覆盖：以新格式数据为准。
-func (s *Snapshot) migrateLegacy() bool {
-	if len(s.LegacySignin) == 0 || string(s.LegacySignin) == "null" {
-		s.LegacySignin = nil
-		return false
-	}
-	if s.Ext == nil {
-		s.Ext = make(map[string]json.RawMessage, 1)
-	}
-	if _, exists := s.Ext["signin"]; !exists {
-		s.Ext["signin"] = s.LegacySignin
-	}
-	s.LegacySignin = nil
-	return true
 }
 
 // Partition 玩家 → 脏队列分区（取模）。

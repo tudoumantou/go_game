@@ -113,8 +113,6 @@ while i <= #ARGV do
   i = i + 2
 end
 
--- 首次分字段提交时清掉旧格式的整份 data（否则 Load 可能读到陈旧值）。
-redis.call('HDEL', KEYS[1], 'data')
 local next=redis.call('HINCRBY',KEYS[1],'version',1)
 redis.call('ZADD',KEYS[2],'NX',ARGV[3],ARGV[2])
 return next
@@ -260,10 +258,21 @@ func (s *Store) AcquireLease(ctx context.Context, playerID int64) (int64, error)
 //  2. ZSCORE 检查：若该玩家已在脏队列里，说明有比这份 MySQL 数据更新的
 //     快照等着落库，此刻 seed 会把「更新版本」倒盖成「旧版本」——
 //     直接报错拒绝，宁可 seed 失败暴露问题，不可静默丢更新。
+//
+// seedScript 冷启动把 MySQL 读出的旧快照 seed 回 Redis（幂等 + 分字段）。
+//
+// ARGV[1]=version ARGV[2]=playerID（脏队列成员）ARGV[3..]=field/value 对。
+// 与 Commit 用同一套字段格式——两者写的必须是同一种布局，否则 Seed 写完
+// 立刻被 Load 读成空状态。
 var seedScript = redis.NewScript(`
 if redis.call('EXISTS',KEYS[1])==1 then return 0 end
-if redis.call('ZSCORE',KEYS[2],ARGV[3]) then return redis.error_reply('missing dirty snapshot; cannot recover from stale SQL') end
-redis.call('HSET',KEYS[1],'version',ARGV[1],'data',ARGV[2])
+if redis.call('ZSCORE',KEYS[2],ARGV[2]) then return redis.error_reply('missing dirty snapshot; cannot recover from stale SQL') end
+redis.call('HSET',KEYS[1],'version',ARGV[1])
+local i = 3
+while i <= #ARGV do
+  redis.call('HSET',KEYS[1],ARGV[i],ARGV[i+1])
+  i = i + 2
+end
 return 1
 `)
 
@@ -279,11 +288,22 @@ func (s *Store) Seed(ctx context.Context, state Snapshot, version int64) (Record
 	if version < 0 {
 		return Record{}, fmt.Errorf("invalid version")
 	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		return Record{}, err
+	// 逐字段写入，与 Commit 同一套布局（R2.5-B）。
+	args := []interface{}{version, state.PlayerID}
+	for _, f := range state.FieldNames() {
+		raw, err := state.Field(f)
+		if err != nil {
+			return Record{}, err
+		}
+		if raw == nil {
+			continue
+		}
+		args = append(args, f, string(raw))
 	}
-	if _, err = seedScript.Run(ctx, s.rdb, []string{s.stateKey(state.PlayerID), s.dirtyKey(Partition(state.PlayerID))}, version, string(raw), state.PlayerID).Result(); err != nil {
+	if _, err := seedScript.Run(ctx, s.rdb, []string{
+		s.stateKey(state.PlayerID),
+		s.dirtyKey(Partition(state.PlayerID)),
+	}, args...).Result(); err != nil {
 		return Record{}, err
 	}
 	return s.Load(ctx, state.PlayerID)
@@ -310,53 +330,40 @@ func (s *Store) Load(ctx context.Context, id int64) (Record, error) {
 	if err != nil || version < 0 {
 		return Record{}, fmt.Errorf("invalid cached version")
 	}
-	var state Snapshot
-	legacy := false
-	if raw := values["data"]; raw != "" {
-		legacy = true
-		// 旧格式：整份快照一个 field（升级前的数据，Commit 后会清掉）。
-		if err := json.Unmarshal([]byte(raw), &state); err != nil {
-			return Record{}, fmt.Errorf("decode player cache: %w", err)
-		}
-	} else {
-		// 新格式：一部分一个 field（R2.5-B），只解析需要的字段。
-		state = Snapshot{
-			PlayerID: id,
-			Items:    make(map[int32]int64),
-			Ext:      make(map[string]json.RawMessage),
-		}
-		for name, dst := range map[string]any{
-			"profile": &state.Profile,
-			"attr":    &state.Attr,
-			"items":   &state.Items,
-			"grants":  &state.AppliedGrants,
-		} {
-			if raw := values[name]; raw != "" {
-				if err := json.Unmarshal([]byte(raw), dst); err != nil {
-					return Record{}, fmt.Errorf("decode %s: %w", name, err)
-				}
+	// 分字段格式：一部分一个 field，只解析需要的字段（R2.5-B）。
+	state := Snapshot{
+		PlayerID: id,
+		Items:    make(map[int32]int64),
+		Ext:      make(map[string]json.RawMessage),
+	}
+	for name, dst := range map[string]any{
+		"profile": &state.Profile,
+		"attr":    &state.Attr,
+		"items":   &state.Items,
+		"grants":  &state.AppliedGrants,
+	} {
+		if raw := values[name]; raw != "" {
+			if err := json.Unmarshal([]byte(raw), dst); err != nil {
+				return Record{}, fmt.Errorf("decode %s: %w", name, err)
 			}
 		}
-		for f, raw := range values {
-			name, ok := strings.CutPrefix(f, "ext:")
-			if !ok || raw == "" {
-				continue
-			}
-			state.Ext[name] = json.RawMessage(raw)
+	}
+	for f, raw := range values {
+		name, ok := strings.CutPrefix(f, "ext:")
+		if !ok || raw == "" {
+			continue
 		}
+		state.Ext[name] = json.RawMessage(raw)
 	}
 	// 防串号：缓存内容里的 PlayerID 必须与请求的 id 一致，
 	// 不一致说明 key 被写错或数据被污染，继续用会张冠李戴
 	if state.PlayerID != id {
 		return Record{}, fmt.Errorf("cached player mismatch")
 	}
-	// 旧版把签到内建在 Snapshot 里，这里原地迁移成 Ext["signin"]；
-	// 下一次 Commit 会用新格式覆盖 Redis，无需停机刷数据。
-	state.migrateLegacy()
 	if err := state.Validate(); err != nil {
 		return Record{}, err
 	}
-	return Record{Version: version, State: state, Legacy: legacy}, nil
+	return Record{Version: version, State: state}, nil
 }
 
 // Pending 取一个分区最早的 limit 个待落库玩家（按入队时间排序）。

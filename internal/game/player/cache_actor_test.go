@@ -57,7 +57,7 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	registry.Register(mod)
 	responses := make(chan uint32, 4)
 	a := NewActor(7, registry, logger, repo, nil, func(_ uint64, id uint32, _ []byte) error { responses <- id; return nil })
-	state, version, _, err := repo.LoadCached(ctx, 7)
+	state, version, err := repo.LoadCached(ctx, 7)
 	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version
@@ -201,7 +201,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			// 先从预置 Redis 恢复；mock 没有 SQL 预期，任何回源都会导致测试失败。
 			a.sessionID = 1
 			a.loaded = true
-			state, version, _, err := repo.LoadCached(ctx, 7)
+			state, version, err := repo.LoadCached(ctx, 7)
 			require.NoError(t, err)
 			a.setState(state)
 			a.cacheVersion = version

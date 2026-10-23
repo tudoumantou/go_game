@@ -64,13 +64,12 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 	}
 	if a.cacheReload {
 		loadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		state, version, legacy, err := a.repo.LoadCached(loadCtx, a.playerID)
+		state, version, err := a.repo.LoadCached(loadCtx, a.playerID)
 		cancel()
 		if err != nil {
 			a.cacheFailure(ctx, err)
 			return
 		}
-		a.legacy = legacy
 		// 保留在线派生加成，Redis 只保存持久化基础属性。
 		state.bonus = a.state.bonus
 		a.setState(state)
@@ -101,17 +100,15 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 		// 只写本次变化的字段（R2.5-B）：签到不再重写整个背包。
 		// 字段由 State 现取现序列化，不再先构造整份快照（省一次全量复制）。
 		fields, removed := a.state.DirtyFields()
-		if len(fields) == 0 || a.legacy {
-			// 两种情况退化为整份写入：
-			//   - HasChanged 为真却没有字段标记（映射漏了）；
-			//   - 快照是旧格式，必须一次迁完，否则 HDEL data 后其余字段丢失。
+		if len(fields) == 0 {
+			// 防御：HasChanged 为真却没有字段标记，说明字段映射漏了。
+			// 宁可多写一次整份，也不能让改动不落库。
 			fields = a.state.Fields()
 		}
 		version, commitErr = a.repo.cache.Commit(saveCtx, a.playerID, a.state, fields, removed, a.token)
 		cancel()
 		if commitErr == nil {
 			a.cacheVersion = version
-			a.legacy = false // 旧格式已迁成分字段
 			a.state.ClearItemsDirty()
 			a.state.ClearDirtyFields()
 		}

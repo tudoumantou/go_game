@@ -8,8 +8,6 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -120,33 +118,5 @@ func TestUnregisteredModuleStateRejected(t *testing.T) {
 	r := Record{Version: 1, State: Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"ghost": json.RawMessage(`{}`)}}}
 	if err := NewWorker(nil, database, 100).Persist(context.Background(), []Record{r}); err == nil {
 		t.Fatal("unregistered module persisted")
-	}
-}
-
-// 旧版内建字段在 Load 时迁进 Ext，升级不清热数据。
-func TestLegacySigninSnapshotMigratesToExt(t *testing.T) {
-	resetPersisters()
-	t.Cleanup(resetPersisters)
-	RegisterPersister(demoPersister{name: "signin"})
-
-	mr := miniredis.RunT(t)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer rdb.Close()
-	store := NewStore(rdb)
-	ctx := context.Background()
-	legacy := `{"PlayerID":7,"Items":{"1001":5},"Signin":{"anchor_day":20000,"claims":{"20000":[{"item_id":1001,"count":10}]}}}`
-	if err := rdb.HSet(ctx, store.stateKey(7), "version", "1", "data", legacy).Err(); err != nil {
-		t.Fatal(err)
-	}
-	record, err := store.Load(ctx, 7)
-	require.NoError(t, err)
-	if len(record.State.Ext["signin"]) == 0 {
-		t.Fatal("legacy signin state was dropped")
-	}
-	if len(record.State.LegacySignin) != 0 {
-		t.Fatal("legacy field not cleared")
-	}
-	if !strings.Contains(string(record.State.Ext["signin"]), "anchor_day") {
-		t.Fatalf("unexpected migrated payload: %s", record.State.Ext["signin"])
 	}
 }

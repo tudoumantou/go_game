@@ -39,7 +39,7 @@ func TestStaleUnbindDoesNotDetachNewSession(t *testing.T) {
 	registry.Register(bag.New(logger))
 
 	a := NewActor(7, registry, logger, repo, nil, func(uint64, uint32, []byte) error { return nil })
-	state, version, _, err := repo.LoadCached(ctx, 7)
+	state, version, err := repo.LoadCached(ctx, 7)
 	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version

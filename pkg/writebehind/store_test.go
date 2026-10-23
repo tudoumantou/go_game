@@ -85,7 +85,8 @@ func TestCorruptCacheDoesNotBecomeColdMiss(t *testing.T) {
 	if _, err := s.Seed(ctx, Snapshot{PlayerID: 8}, 0); err != nil {
 		t.Fatal(err)
 	}
-	rdb.HSet(ctx, s.stateKey(8), "data", "broken")
+	// 破坏一个分字段（旧版是破坏整份 data；现在每个字段独立，破坏 items 即可）。
+	rdb.HSet(ctx, s.stateKey(8), "items", "{broken")
 	if _, err := s.Load(ctx, 8); err == nil || errors.Is(err, ErrMiss) {
 		t.Fatalf("corrupt cache hidden: %v", err)
 	}

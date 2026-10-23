@@ -29,23 +29,21 @@ import (
 //
 // 返回值里的 version 是调用方后续 Commit 的 CAS 期望值起点，必须与读到的
 // 快照同源，不能自行 +1。
-// legacy 表示该快照仍是升级前的「整份 data」格式：调用方下一次提交必须
-// 写全量字段，否则 HDEL data 会把没提交的字段一起丢掉。
-func (r *Repository) LoadCached(ctx context.Context, id int64) (*State, int64, bool, error) {
+func (r *Repository) LoadCached(ctx context.Context, id int64) (*State, int64, error) {
 	record, err := r.cache.Load(ctx, id)
 	if errors.Is(err, writebehind.ErrMiss) {
 		cold, err := r.loadColdSnapshot(ctx, id)
 		if err != nil {
-			return nil, 0, false, err
+			return nil, 0, err
 		}
 		record, err = r.cache.Seed(ctx, cold.State, cold.Version)
 		if err != nil {
-			return nil, 0, false, err
+			return nil, 0, err
 		}
 	} else if err != nil {
-		return nil, 0, false, err
+		return nil, 0, err
 	}
-	return stateFromSnapshot(record.State), record.Version, record.Legacy, nil
+	return stateFromSnapshot(record.State), record.Version, nil
 }
 
 // SQL 只承担一致性冷启动读取，不参与在线签到查询、领取。
