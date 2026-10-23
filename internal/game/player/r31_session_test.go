@@ -3,6 +3,7 @@ package player
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -26,9 +27,8 @@ func TestStaleUnbindDoesNotDetachNewSession(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	defer rdb.Close()
 	store := writebehind.NewStore(rdb)
-	if _, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Items: map[int32]int64{}}, 0); err != nil {
-		t.Fatal(err)
-	}
+	_, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Items: map[int32]int64{}}, 0)
+	require.NoError(t, err)
 	database, _, err := sqlmock.New()
 	require.NoError(t, err)
 	defer database.Close()
@@ -55,22 +55,16 @@ func TestStaleUnbindDoesNotDetachNewSession(t *testing.T) {
 	require.NoError(t, err)
 
 	// 旧会话 1 断开：必须被忽略
-	if err := sys.Send(pid, &UnbindMsg{SessionID: 1}); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(pid, &UnbindMsg{SessionID: 1})
+	require.NoError(t, err)
 	waitIdle(t, sys)
-	if !a.online || a.sessionID != 2 {
-		t.Fatalf("stale unbind detached the new session: online=%v session=%d", a.online, a.sessionID)
-	}
+	require.False(t, !a.online || a.sessionID != 2, fmt.Sprintf("stale unbind detached the new session: online=%v session=%d", a.online, a.sessionID))
 
 	// 当前会话 2 断开：正常解绑
-	if err := sys.Send(pid, &UnbindMsg{SessionID: 2}); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(pid, &UnbindMsg{SessionID: 2})
+	require.NoError(t, err)
 	waitIdle(t, sys)
-	if a.online || a.sessionID != 0 {
-		t.Fatalf("current session unbind ignored: online=%v session=%d", a.online, a.sessionID)
-	}
+	require.False(t, a.online || a.sessionID != 0, fmt.Sprintf("current session unbind ignored: online=%v session=%d", a.online, a.sessionID))
 }
 
 // waitIdle 等 Actor 把已投递的消息处理完，避免用固定 sleep 造成偶发失败。
@@ -78,7 +72,6 @@ func waitIdle(t *testing.T, sys *actor.System) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := sys.Drain(ctx); err != nil {
-		t.Fatalf("drain: %v", err)
-	}
+	err := sys.Drain(ctx)
+	require.NoError(t, err, fmt.Sprintf("drain: %v", err))
 }

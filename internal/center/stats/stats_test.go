@@ -3,6 +3,7 @@ package stats
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,9 +38,8 @@ func TestWriteAndQuery(t *testing.T) {
 
 	list := s.Query("group-01", "arena_match", now-600, now)
 	require.Len(t, list, 1)
-	if got := list[0].Metrics["total"]; got != 5 {
-		t.Fatalf("expect total 5, got %d", got)
-	}
+	got := list[0].Metrics["total"]
+	require.EqualValues(t, 5, got, fmt.Sprintf("expect total 5, got %d", got))
 	require.EqualValues(t, "arena_match", list[0].Feature)
 }
 
@@ -61,9 +61,8 @@ func TestQueryFilterByGroupAndFeature(t *testing.T) {
 	require.Len(t, a, 2)
 
 	one := s.Query("g2", "a", now-60, now)
-	if len(one) != 1 || one[0].Metrics["total"] != 3 {
-		t.Fatalf("expect g2/a total 3, got %+v", one)
-	}
+	require.Len(t, one, 1, fmt.Sprintf("expect g2/a total 3, got %+v", one))
+	require.EqualValues(t, 3, one[0].Metrics["total"])
 }
 
 func TestWindowRollover(t *testing.T) {
@@ -82,9 +81,8 @@ func TestWindowRollover(t *testing.T) {
 
 	list := s.Query("g1", "f", now.Add(-time.Hour).Unix(), now.Unix())
 	require.Len(t, list, 1)
-	if got := list[0].Metrics["total"]; got != 10 {
-		t.Fatalf("1h window should only count recent writes (10), got %d", got)
-	}
+	got := list[0].Metrics["total"]
+	require.EqualValues(t, 10, got, fmt.Sprintf("1h window should only count recent writes (10), got %d", got))
 }
 
 func TestSeriesCountAndFeatures(t *testing.T) {
@@ -98,9 +96,9 @@ func TestSeriesCountAndFeatures(t *testing.T) {
 
 	require.EqualValues(t, 2, s.SeriesCount())
 	feats := s.Features()
-	if len(feats) != 2 || feats[0] != "a" || feats[1] != "b" {
-		t.Fatalf("features mismatch: %v", feats)
-	}
+	require.Len(t, feats, 2, fmt.Sprintf("features mismatch: %v", feats))
+	require.EqualValues(t, "a", feats[0])
+	require.EqualValues(t, "b", feats[1])
 }
 
 func TestSnapshotWritesRedis(t *testing.T) {
@@ -111,9 +109,8 @@ func TestSnapshotWritesRedis(t *testing.T) {
 		GroupId: "g1", Feature: "arena", Metrics: map[string]int64{"v": 7}, Ts: now,
 	})
 
-	if err := s.Snapshot(context.Background()); err != nil {
-		t.Fatalf("snapshot: %v", err)
-	}
+	err := s.Snapshot(context.Background())
+	require.NoError(t, err, fmt.Sprintf("snapshot: %v", err))
 
 	// 快照按实例写一个字段，字段值是该实例各窗口的 JSON（R8.4：
 	// 多实例各写各的字段，读取时求和，不再互相覆盖）。
@@ -125,18 +122,16 @@ func TestSnapshotWritesRedis(t *testing.T) {
 	require.Len(t, vals, 1)
 	merged := s.MergedMetrics(context.Background(), "g1", "arena")
 	for _, w := range []string{Window1m, Window5m, Window1h, Window1d} {
-		if _, ok := merged[w]; !ok {
-			t.Fatalf("snapshot missing window %s: %v", w, merged)
-		}
+		_, ok := merged[w]
+		require.True(t, ok, fmt.Sprintf("snapshot missing window %s: %v", w, merged))
 	}
 	require.EqualValues(t, 7, merged[Window1h])
 }
 
 func TestSnapshotEmptyNoError(t *testing.T) {
 	s, _ := newTestService(t)
-	if err := s.Snapshot(context.Background()); err != nil {
-		t.Fatalf("empty snapshot should not error: %v", err)
-	}
+	err := s.Snapshot(context.Background())
+	require.NoError(t, err, fmt.Sprintf("empty snapshot should not error: %v", err))
 }
 
 // TestSnapshotMergedAcrossInstances 多实例快照求和而不是互相覆盖（R8.4）。
@@ -162,16 +157,13 @@ func TestSnapshotMergedAcrossInstances(t *testing.T) {
 	b.Write(rep())
 
 	ctx := context.Background()
-	if err := a.Snapshot(ctx); err != nil {
-		t.Fatalf("snapshot a: %v", err)
-	}
-	if err := b.Snapshot(ctx); err != nil {
-		t.Fatalf("snapshot b: %v", err)
-	}
+	err := a.Snapshot(ctx)
+	require.NoError(t, err, fmt.Sprintf("snapshot a: %v", err))
+	err = b.Snapshot(ctx)
+	require.NoError(t, err, fmt.Sprintf("snapshot b: %v", err))
 
-	if n := a.InstanceCount(ctx, "group-01", "battle"); n != 2 {
-		t.Fatalf("instance fields = %d, want 2（覆盖会退化成 1）", n)
-	}
+	n := a.InstanceCount(ctx, "group-01", "battle")
+	require.EqualValues(t, 2, n, fmt.Sprintf("instance fields = %d, want 2（覆盖会退化成 1）", n))
 	merged := a.MergedMetrics(ctx, "group-01", "battle")
 	// 两个实例各上报 5，合并后必须是 10。
 	require.EqualValues(t, 10, merged[Window1h])

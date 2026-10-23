@@ -6,10 +6,10 @@
 package main
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -38,9 +38,8 @@ CREATE TABLE player_quest (
 func writeTempSQL(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "schema.sql")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(path, []byte(content), 0o644)
+	require.NoError(t, err)
 	return path
 }
 
@@ -57,16 +56,13 @@ func TestParseSQLFlatAnnotation(t *testing.T) {
 	for _, tb := range tables {
 		byName[tb.Name] = tb
 	}
-	if got := byName["player_settings"].FlatModule; got != "settings" {
-		t.Fatalf("player_settings flat module = %q, want settings", got)
-	}
-	if got := byName["player_quest"].FlatModule; got != "" {
-		t.Fatalf("player_quest must not be flat, got %q", got)
-	}
+	got := byName["player_settings"].FlatModule
+	require.EqualValues(t, "settings", got, fmt.Sprintf("player_settings flat module = %q, want settings", got))
+	got = byName["player_quest"].FlatModule
+	require.EqualValues(t, "", got, fmt.Sprintf("player_quest must not be flat, got %q", got))
 	// 标注不影响列解析。
-	if n := len(byName["player_settings"].Columns); n != 3 {
-		t.Fatalf("columns=%d, want 3", n)
-	}
+	n := len(byName["player_settings"].Columns)
+	require.EqualValues(t, 3, n, fmt.Sprintf("columns=%d, want 3", n))
 }
 
 // TestParseSQLRejectsFlatOnCollectionTable 多行集合表（PK 是自增 id）被标成
@@ -83,9 +79,8 @@ CREATE TABLE player_quest (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 `
-	if _, err := parseSQL(writeTempSQL(t, bad)); err == nil {
-		t.Fatal("flat annotation on table with id PK must fail")
-	}
+	_, err := parseSQL(writeTempSQL(t, bad))
+	require.Error(t, err, "flat annotation on table with id PK must fail")
 }
 
 // TestGenModelGeneratesFlatSpec 生成物必须含 PlayerSettingsFlat 适配
@@ -96,9 +91,8 @@ func TestGenModelGeneratesFlatSpec(t *testing.T) {
 	require.NoError(t, err)
 	out := t.TempDir()
 	for _, tb := range tables {
-		if err := genModel(out, tb); err != nil {
-			t.Fatal(err)
-		}
+		err := genModel(out, tb)
+		require.NoError(t, err)
 	}
 	raw, err := os.ReadFile(filepath.Join(out, "player_settings_gen.go"))
 	require.NoError(t, err)
@@ -108,15 +102,11 @@ func TestGenModelGeneratesFlatSpec(t *testing.T) {
 		"Upsert: UpsertPlayerSettingsBatch,",
 		"Load:   FindPlayerSettingsByPK,",
 	} {
-		if !strings.Contains(src, want) {
-			t.Fatalf("generated spec missing %q\n---\n%s", want, src)
-		}
+		require.Contains(t, src, want, fmt.Sprintf("generated spec missing %q\n---\n%s", want, src))
 	}
 
 	// 未标注的表不能出现 Flat spec。
 	quest, err := os.ReadFile(filepath.Join(out, "player_quest_gen.go"))
 	require.NoError(t, err)
-	if strings.Contains(string(quest), "FlatOps") {
-		t.Fatal("unannotated table must not generate FlatOps")
-	}
+	require.NotContains(t, string(quest), "FlatOps", "unannotated table must not generate FlatOps")
 }

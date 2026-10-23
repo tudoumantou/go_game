@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -36,9 +37,7 @@ func TestRSAOAEPRoundTrip(t *testing.T) {
 	require.NoError(t, err, "encrypt")
 	got, err := RSADecrypt(pair.Private, ct)
 	require.NoError(t, err, "decrypt")
-	if !bytes.Equal(got, plain) {
-		t.Fatalf("roundtrip mismatch")
-	}
+	require.False(t, !bytes.Equal(got, plain), "roundtrip mismatch")
 }
 
 // TestAESGCMRoundTrip 覆盖 AES-256-GCM 加解密往返。
@@ -58,9 +57,7 @@ func TestAESGCMRoundTrip(t *testing.T) {
 	require.NoError(t, err, "encrypt")
 	got, err := gcm.Decrypt(ct)
 	require.NoError(t, err, "decrypt")
-	if !bytes.Equal(got, plain) {
-		t.Fatalf("roundtrip mismatch")
-	}
+	require.False(t, !bytes.Equal(got, plain), "roundtrip mismatch")
 }
 
 // TestHandshakeRoundTrip 覆盖完整握手四步流程：
@@ -80,28 +77,21 @@ func TestHandshakeRoundTrip(t *testing.T) {
 	require.NoError(t, err, "new client")
 
 	pub, salt := server.ServerHello()
-	if err := client.OnServerHello(pub, salt); err != nil {
-		t.Fatalf("client server hello: %v", err)
-	}
+	err = client.OnServerHello(pub, salt)
+	require.NoError(t, err, fmt.Sprintf("client server hello: %v", err))
 
 	cek, err := client.ClientKeyExchange()
 	require.NoError(t, err, "client key exchange")
-	if err := server.OnClientKeyExchange(cek); err != nil {
-		t.Fatalf("server key exchange: %v", err)
-	}
+	err = server.OnClientKeyExchange(cek)
+	require.NoError(t, err, fmt.Sprintf("server key exchange: %v", err))
 
 	finished, err := client.Finished()
 	require.NoError(t, err, "client finished")
-	if err := server.VerifyFinished(finished); err != nil {
-		t.Fatalf("server verify finished: %v", err)
-	}
+	err = server.VerifyFinished(finished)
+	require.NoError(t, err, fmt.Sprintf("server verify finished: %v", err))
 
-	if !server.IsFinished() {
-		t.Fatalf("server not finished")
-	}
-	if !bytes.Equal(server.SessionKey(), client.SessionKey()) {
-		t.Fatalf("session key mismatch")
-	}
+	require.False(t, !server.IsFinished(), "server not finished")
+	require.False(t, !bytes.Equal(server.SessionKey(), client.SessionKey()), "session key mismatch")
 }
 
 // TestSessionCipherRoundTripAndReplay 覆盖 SessionCipher 的三类行为：
@@ -128,14 +118,11 @@ func TestSessionCipherRoundTripAndReplay(t *testing.T) {
 
 	gotID, gotSeq, gotPlain, err := s.Decrypt(ct1)
 	require.NoError(t, err, "decrypt")
-	if gotID != 1001 || gotSeq != 1 || !bytes.Equal(gotPlain, plain) {
-		t.Fatalf("decrypt mismatch")
-	}
+	require.False(t, gotID != 1001 || gotSeq != 1 || !bytes.Equal(gotPlain, plain), "decrypt mismatch")
 
 	// 重放同一条应被拒绝
-	if _, _, _, err := s.Decrypt(ct1); err == nil {
-		t.Fatalf("replay should be rejected")
-	}
+	_, _, _, err = s.Decrypt(ct1)
+	require.Error(t, err, "replay should be rejected")
 
 	// seq 0 不合法
 	bad := make([]byte, len(ct1))

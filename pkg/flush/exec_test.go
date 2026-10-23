@@ -22,9 +22,8 @@ func TestUpsertBatchSkipsEmptyInput(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // 超过单批行数上限时自动切分成多条语句。
@@ -47,9 +46,8 @@ func TestUpsertBatchChunksByRowLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestDeleteByPlayerUsesPlayerColumn(t *testing.T) {
@@ -60,10 +58,8 @@ func TestDeleteByPlayerUsesPlayerColumn(t *testing.T) {
 	tx, err := database.Begin()
 	require.NoError(t, err)
 	mock.ExpectExec("DELETE FROM demo WHERE player_id = ?").WithArgs(int64(7)).WillReturnResult(sqlmock.NewResult(0, 3))
-	if err := DeleteByPlayer(context.Background(), tx, "demo", "player_id", 7); err != nil {
-		t.Fatal(err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = DeleteByPlayer(context.Background(), tx, "demo", "player_id", 7)
+	require.NoError(t, err)
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }

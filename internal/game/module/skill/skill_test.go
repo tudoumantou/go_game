@@ -5,6 +5,7 @@ package skill
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -87,17 +88,15 @@ func TestLearnAndUpgrade(t *testing.T) {
 	m := New(nil)
 
 	learn, _ := proto.Marshal(&gamev1.SkillLearnReq{SkillId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDLearnReq, learn); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDLearnReq, learn)
+	require.NoError(t, err)
 	d, _ := load(st)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)])
 
 	st.items[upgradeItemID] = 1000
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDUpgradeReq, upgrade); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgIDUpgradeReq, upgrade)
+	require.NoError(t, err)
 	d, _ = load(st)
 	require.EqualValues(t, 2, d.Levels[int32(cfg.Id)])
 	want := 1000 - int64(cfg.Col3)
@@ -110,13 +109,11 @@ func TestLearnDuplicate(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
 	m := New(nil)
-	if err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{int32(cfg.Id): 3}}); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{int32(cfg.Id): 3}})
+	require.NoError(t, err)
 	learn, _ := proto.Marshal(&gamev1.SkillLearnReq{SkillId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDLearnReq, learn); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgIDLearnReq, learn)
+	require.NoError(t, err)
 	d, _ := load(st)
 	require.EqualValues(t, 3, d.Levels[int32(cfg.Id)])
 }
@@ -127,13 +124,11 @@ func TestUpgradeWithoutResource(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
 	m := New(nil)
-	if err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{int32(cfg.Id): 1}}); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{int32(cfg.Id): 1}})
+	require.NoError(t, err)
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDUpgradeReq, upgrade); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgIDUpgradeReq, upgrade)
+	require.NoError(t, err)
 	d, _ := load(st)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)], "level changed without resource")
 	require.EqualValues(t, 0, st.GetItemCount(upgradeItemID), "item deducted on failed upgrade")
@@ -142,17 +137,14 @@ func TestUpgradeWithoutResource(t *testing.T) {
 // TestSnapshotShape 落库形状 {"player_id":..,"skills":"{...}"}。
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
-	if err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{101: 4}}); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), &Data{Levels: map[int32]int32{101: 4}})
+	require.NoError(t, err)
 	var row struct {
 		PlayerId int64
 		Skills   string
 	}
-	if err := json.Unmarshal(st.Ext(stateKey), &row); err != nil {
-		t.Fatal(err)
-	}
-	if row.PlayerId != 9 || row.Skills != `{"101":4}` {
-		t.Fatalf("unexpected row: %+v", row)
-	}
+	err = json.Unmarshal(st.Ext(stateKey), &row)
+	require.NoError(t, err)
+	require.EqualValues(t, 9, row.PlayerId, fmt.Sprintf("unexpected row: %+v", row))
+	require.EqualValues(t, `{"101":4}`, row.Skills)
 }

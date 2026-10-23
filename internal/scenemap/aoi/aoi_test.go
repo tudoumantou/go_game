@@ -3,6 +3,7 @@ package aoi_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -163,9 +164,8 @@ func put(t *testing.T, a *aoi.AOI, id int64, kind scenemap.EntityKind, cell aoi.
 func moveTo(t *testing.T, a *aoi.AOI, id int64, cell aoi.CellKey) {
 	t.Helper()
 	x, y := pixelOf(cell)
-	if err := a.CallSync(context.Background(), scenemap.UUID(id), x, y, scenemap.DirRight, 0); err != nil {
-		t.Fatalf("sync %d: %v", id, err)
-	}
+	err := a.CallSync(context.Background(), scenemap.UUID(id), x, y, scenemap.DirRight, 0)
+	require.NoError(t, err, fmt.Sprintf("sync %d: %v", id, err))
 }
 
 // ---------------------------------------------------------------------------
@@ -190,31 +190,24 @@ func TestViewGridIndex(t *testing.T) {
 
 	// 同格不迁移
 	old, moved := g.Move(1, a)
-	if moved || old != a {
-		t.Fatalf("Move 同格: old=%v moved=%v, want %v false", old, moved, a)
-	}
+	require.False(t, moved || old != a, fmt.Sprintf("Move 同格: old=%v moved=%v, want %v false", old, moved, a))
 	// 跨格迁移
 	old, moved = g.Move(1, b)
-	if !moved || old != a {
-		t.Fatalf("Move 跨格: old=%v moved=%v, want %v true", old, moved, a)
-	}
-	if cell, _ := g.CellOf(1); cell != b {
-		t.Fatalf("CellOf(1)=%v, want %v", cell, b)
-	}
+	require.True(t, moved, fmt.Sprintf("Move 跨格: old=%v moved=%v, want %v true", old, moved, a))
+	require.EqualValues(t, a, old)
+	cell, _ := g.CellOf(1)
+	require.EqualValues(t, b, cell, fmt.Sprintf("CellOf(1)=%v, want %v", cell, b))
 
-	if _, ok := g.Remove(1); !ok {
-		t.Fatal("Remove(1) 应成功")
-	}
-	if _, ok := g.Remove(1); ok {
-		t.Fatal("重复 Remove 应返回 false")
-	}
+	_, ok := g.Remove(1)
+	require.True(t, ok, "Remove(1) 应成功")
+	_, ok = g.Remove(1)
+	require.False(t, ok, "重复 Remove 应返回 false")
 	require.EqualValues(t, 2, g.Len())
 
 	// 九宫格：含自身、9 个、顺序固定
 	n := aoi.Neighbors9(b)
-	if len(n) != 9 || n[0] != b {
-		t.Fatalf("Neighbors9 = %v", n)
-	}
+	require.Len(t, n, 9, fmt.Sprintf("Neighbors9 = %v", n))
+	require.EqualValues(t, b, n[0])
 	want := []aoi.CellKey{
 		{2, 1}, {3, 1}, {3, 2}, {2, 2}, {1, 2}, {1, 1}, {1, 0}, {2, 0}, {3, 0},
 	}
@@ -223,12 +216,8 @@ func TestViewGridIndex(t *testing.T) {
 	}
 
 	// 九宫格可见性：切比雪夫距离 <= 1
-	if !aoi.ASeeB(aoi.CellKey{X: 1, Y: 1}, aoi.CellKey{X: 2, Y: 2}) {
-		t.Fatal("对角相邻应可见")
-	}
-	if aoi.ASeeB(aoi.CellKey{X: 1, Y: 1}, aoi.CellKey{X: 1, Y: 3}) {
-		t.Fatal("距离 2 应不可见")
-	}
+	require.False(t, !aoi.ASeeB(aoi.CellKey{X: 1, Y: 1}, aoi.CellKey{X: 2, Y: 2}), "对角相邻应可见")
+	require.False(t, aoi.ASeeB(aoi.CellKey{X: 1, Y: 1}, aoi.CellKey{X: 1, Y: 3}), "距离 2 应不可见")
 
 	// 清空
 	g.Clear()
@@ -239,16 +228,13 @@ func TestViewCellOfMatchesGeometry(t *testing.T) {
 	geo := testGeo()
 	// 视野格 (2,3) 的中心行走格是 (2*6+3, 3*6+3) = (15,21)
 	x, y := pixelOf(aoi.CellKey{X: 2, Y: 3})
-	if got := aoi.ViewCellOf(geo, x, y); got != (aoi.CellKey{X: 2, Y: 3}) {
-		t.Fatalf("ViewCellOf=%v, want (2,3)", got)
-	}
+	got := aoi.ViewCellOf(geo, x, y)
+	require.EqualValues(t, (aoi.CellKey{X: 2, Y: 3}), got, fmt.Sprintf("ViewCellOf=%v, want (2,3)", got))
 	// 视野格边界：行走格 17 属于视野格 2（17/6=2），18 属于 3
-	if got := aoi.ViewCellOf(geo, 17*testCellW+1, 0); got.X != 2 {
-		t.Fatalf("行走格 17 应属视野格 2, got %v", got)
-	}
-	if got := aoi.ViewCellOf(geo, 18*testCellW+1, 0); got.X != 3 {
-		t.Fatalf("行走格 18 应属视野格 3, got %v", got)
-	}
+	got = aoi.ViewCellOf(geo, 17*testCellW+1, 0)
+	require.EqualValues(t, 2, got.X, fmt.Sprintf("行走格 17 应属视野格 2, got %v", got))
+	got = aoi.ViewCellOf(geo, 18*testCellW+1, 0)
+	require.EqualValues(t, 3, got.X, fmt.Sprintf("行走格 18 应属视野格 3, got %v", got))
 }
 
 // ---------------------------------------------------------------------------
@@ -275,17 +261,14 @@ func TestEnterSendsFullView(t *testing.T) {
 	}
 	require.True(t, found, "2 没有收到 EnterViewMsg")
 	require.EqualValues(t, 2, got.Self.UUID)
-	if len(got.Entities) != 1 || got.Entities[0].UUID != 1 {
-		t.Fatalf("全量包实体=%v, want [1]", got.Entities)
-	}
+	require.Len(t, got.Entities, 1, fmt.Sprintf("全量包实体=%v, want [1]", got.Entities))
+	require.EqualValues(t, 1, got.Entities[0].UUID)
 
 	// 老实体收到新实体的出现
-	if n := sink.countTo(1, isAppear); n != 1 {
-		t.Fatalf("1 收到 %d 条 Appear, want 1", n)
-	}
-	if n := a.Snapshot().Len(); n != 2 {
-		t.Fatalf("快照实体数=%d, want 2", n)
-	}
+	n := sink.countTo(1, isAppear)
+	require.EqualValues(t, 1, n, fmt.Sprintf("1 收到 %d 条 Appear, want 1", n))
+	n = a.Snapshot().Len()
+	require.EqualValues(t, 2, n, fmt.Sprintf("快照实体数=%d, want 2", n))
 }
 
 func TestNineGridVisibility(t *testing.T) {
@@ -299,38 +282,31 @@ func TestNineGridVisibility(t *testing.T) {
 	// 2 自己会收到一条空的全量包（这是协议约定："进图必有一次全量"），
 	// 但 1 不该收到任何出现包。
 	put(t, a, 2, scenemap.EntityKindPlayer, aoi.CellKey{X: 0, Y: 3})
-	if n := sink.countTo(1, nil); n != 0 {
-		t.Fatalf("九宫格外 1 收到 %d 条投递, want 0: %v", n, sink.all())
-	}
+	n := sink.countTo(1, nil)
+	require.EqualValues(t, 0, n, fmt.Sprintf("九宫格外 1 收到 %d 条投递, want 0: %v", n, sink.all()))
 	for _, d := range sink.all() {
 		require.EqualValues(t, 2, d.uuid)
 		m, ok := d.msg.(aoi.EnterViewMsg)
-		if !ok || len(m.Entities) != 0 {
-			t.Fatalf("2 的全量包不该含实体: %+v", d.msg)
-		}
+		require.True(t, ok, fmt.Sprintf("2 的全量包不该含实体: %+v", d.msg))
+		require.Empty(t, m.Entities)
 	}
-	if n := a.Snapshot().Len(); n != 2 {
-		t.Fatalf("快照实体数=%d, want 2", n)
-	}
+	n = a.Snapshot().Len()
+	require.EqualValues(t, 2, n, fmt.Sprintf("快照实体数=%d, want 2", n))
 
 	// 走近到相邻格：双向出现
 	moveTo(t, a, 2, aoi.CellKey{X: 0, Y: 1})
-	if n := sink.countTo(1, isAppear); n != 1 {
-		t.Fatalf("1 收到 %d 条 Appear, want 1", n)
-	}
-	if n := sink.countTo(2, isAppear); n != 1 {
-		t.Fatalf("2 收到 %d 条 Appear, want 1", n)
-	}
+	n = sink.countTo(1, isAppear)
+	require.EqualValues(t, 1, n, fmt.Sprintf("1 收到 %d 条 Appear, want 1", n))
+	n = sink.countTo(2, isAppear)
+	require.EqualValues(t, 1, n, fmt.Sprintf("2 收到 %d 条 Appear, want 1", n))
 
 	sink.reset()
 	// 再走远：双向消失
 	moveTo(t, a, 2, aoi.CellKey{X: 0, Y: 4})
-	if n := sink.countTo(1, isLeave); n != 1 {
-		t.Fatalf("1 收到 %d 条 Leave, want 1", n)
-	}
-	if n := sink.countTo(2, isLeave); n != 1 {
-		t.Fatalf("2 收到 %d 条 Leave, want 1", n)
-	}
+	n = sink.countTo(1, isLeave)
+	require.EqualValues(t, 1, n, fmt.Sprintf("1 收到 %d 条 Leave, want 1", n))
+	n = sink.countTo(2, isLeave)
+	require.EqualValues(t, 1, n, fmt.Sprintf("2 收到 %d 条 Leave, want 1", n))
 }
 
 func TestMoveBroadcastUnion(t *testing.T) {
@@ -347,23 +323,19 @@ func TestMoveBroadcastUnion(t *testing.T) {
 	moveTo(t, a, 1, aoi.CellKey{X: 1, Y: 5})
 
 	// 自己不该收到自己的移动包
-	if n := sink.countTo(1, isMove); n != 0 {
-		t.Fatalf("移动者收到 %d 条自己的 Move, want 0", n)
-	}
+	n := sink.countTo(1, isMove)
+	require.EqualValues(t, 0, n, fmt.Sprintf("移动者收到 %d 条自己的 Move, want 0", n))
 	// 旧九宫格内的 2、3 都收到移动包（并集语义）
 	for _, id := range []scenemap.UUID{2, 3} {
-		if n := sink.countTo(id, isMove); n != 1 {
-			t.Fatalf("%d 收到 %d 条 Move, want 1", id, n)
-		}
+		n := sink.countTo(id, isMove)
+		require.EqualValues(t, 1, n, fmt.Sprintf("%d 收到 %d 条 Move, want 1", id, n))
 	}
 	// 一直不可见的 4 什么都收不到
-	if n := sink.countTo(4, nil); n != 0 {
-		t.Fatalf("不可见的 4 收到 %d 条投递, want 0", n)
-	}
+	n = sink.countTo(4, nil)
+	require.EqualValues(t, 0, n, fmt.Sprintf("不可见的 4 收到 %d 条投递, want 0", n))
 	// 移动者收到 2、3 的消失（走出视野）
-	if n := sink.countTo(1, isLeave); n != 2 {
-		t.Fatalf("移动者收到 %d 条 Leave, want 2", n)
-	}
+	n = sink.countTo(1, isLeave)
+	require.EqualValues(t, 2, n, fmt.Sprintf("移动者收到 %d 条 Leave, want 2", n))
 }
 
 func TestSameCellNoBroadcast(t *testing.T) {
@@ -376,16 +348,16 @@ func TestSameCellNoBroadcast(t *testing.T) {
 
 	// 同一视野格内的像素微调：只更新快照位置，不广播
 	x, y := pixelOf(aoi.CellKey{X: 1, Y: 1})
-	if err := a.CallSync(context.Background(), 1, x+3, y+2, scenemap.DirDown, 1); err != nil {
-		t.Fatalf("CallSync: %v", err)
-	}
-	if n := len(sink.all()); n != 0 {
-		t.Fatalf("同格微调产生 %d 条投递, want 0: %v", n, sink.all())
-	}
+	err := a.CallSync(context.Background(), 1, x+3, y+2, scenemap.DirDown, 1)
+	require.NoError(t, err, fmt.Sprintf("CallSync: %v", err))
+	n := len(sink.all())
+	require.EqualValues(t, 0, n, fmt.Sprintf("同格微调产生 %d 条投递, want 0: %v", n, sink.all()))
 	b, ok := a.Snapshot().Entity(1)
-	if !ok || b.X != x+3 || b.Y != y+2 || b.Dir != scenemap.DirDown || b.State != 1 {
-		t.Fatalf("快照位置未更新: %+v ok=%v", b, ok)
-	}
+	require.True(t, ok, fmt.Sprintf("快照位置未更新: %+v ok=%v", b, ok))
+	require.EqualValues(t, x+3, b.X)
+	require.EqualValues(t, y+2, b.Y)
+	require.EqualValues(t, scenemap.DirDown, b.Dir)
+	require.EqualValues(t, 1, b.State)
 }
 
 func TestLeaveNotifiesViewers(t *testing.T) {
@@ -396,23 +368,18 @@ func TestLeaveNotifiesViewers(t *testing.T) {
 	put(t, a, 2, scenemap.EntityKindPlayer, aoi.CellKey{X: 1, Y: 2})
 	sink.reset()
 
-	if err := a.CallLeave(context.Background(), 1); err != nil {
-		t.Fatalf("CallLeave: %v", err)
-	}
-	if n := sink.countTo(2, isLeave); n != 1 {
-		t.Fatalf("2 收到 %d 条 Leave, want 1", n)
-	}
-	if _, ok := a.Snapshot().Entity(1); ok {
-		t.Fatal("离图后快照里仍有 1")
-	}
-	if n := a.Snapshot().Len(); n != 1 {
-		t.Fatalf("快照实体数=%d, want 1", n)
-	}
+	err := a.CallLeave(context.Background(), 1)
+	require.NoError(t, err, fmt.Sprintf("CallLeave: %v", err))
+	n := sink.countTo(2, isLeave)
+	require.EqualValues(t, 1, n, fmt.Sprintf("2 收到 %d 条 Leave, want 1", n))
+	_, ok := a.Snapshot().Entity(1)
+	require.False(t, ok, "离图后快照里仍有 1")
+	n = a.Snapshot().Len()
+	require.EqualValues(t, 1, n, fmt.Sprintf("快照实体数=%d, want 1", n))
 
 	// 重复离图：Not Found，不 panic、不误发
-	if err := a.CallLeave(context.Background(), 1); !errors.Is(err, scenemap.ErrNotFound) {
-		t.Fatalf("重复离图 err=%v, want ErrNotFound", err)
-	}
+	err = a.CallLeave(context.Background(), 1)
+	require.False(t, !errors.Is(err, scenemap.ErrNotFound), fmt.Sprintf("重复离图 err=%v, want ErrNotFound", err))
 }
 
 // ---------------------------------------------------------------------------
@@ -433,28 +400,22 @@ func TestBroadcastMapSkipsNPE(t *testing.T) {
 	put(t, a, 3, scenemap.EntityKindNPE, aoi.CellKey{X: 1, Y: 2})
 	sink.reset()
 
-	if err := a.CallBroadcast(context.Background(), typedMsg{typ: 4001}, aoi.MapScope()); err != nil {
-		t.Fatalf("CallBroadcast: %v", err)
-	}
-	if n := sink.countTo(1, nil); n != 1 {
-		t.Fatalf("玩家 1 收到 %d 条, want 1", n)
-	}
-	if n := sink.countTo(2, nil); n != 1 {
-		t.Fatalf("玩家 2 收到 %d 条, want 1", n)
-	}
+	err := a.CallBroadcast(context.Background(), typedMsg{typ: 4001}, aoi.MapScope())
+	require.NoError(t, err, fmt.Sprintf("CallBroadcast: %v", err))
+	n := sink.countTo(1, nil)
+	require.EqualValues(t, 1, n, fmt.Sprintf("玩家 1 收到 %d 条, want 1", n))
+	n = sink.countTo(2, nil)
+	require.EqualValues(t, 1, n, fmt.Sprintf("玩家 2 收到 %d 条, want 1", n))
 	// 怪物不收玩家类消息（msgType > 0）
-	if n := sink.countTo(3, nil); n != 0 {
-		t.Fatalf("怪物收到 %d 条, want 0", n)
-	}
+	n = sink.countTo(3, nil)
+	require.EqualValues(t, 0, n, fmt.Sprintf("怪物收到 %d 条, want 0", n))
 
 	// 系统消息（msgType <= 0）怪物也收：用于 Buff 刷新这类全图同步
 	sink.reset()
-	if err := a.CallBroadcast(context.Background(), typedMsg{typ: 0}, aoi.MapScope()); err != nil {
-		t.Fatalf("CallBroadcast 系统消息: %v", err)
-	}
-	if n := sink.countTo(3, nil); n != 1 {
-		t.Fatalf("怪物收到 %d 条系统消息, want 1", n)
-	}
+	err = a.CallBroadcast(context.Background(), typedMsg{typ: 0}, aoi.MapScope())
+	require.NoError(t, err, fmt.Sprintf("CallBroadcast 系统消息: %v", err))
+	n = sink.countTo(3, nil)
+	require.EqualValues(t, 1, n, fmt.Sprintf("怪物收到 %d 条系统消息, want 1", n))
 }
 
 func TestBroadcastViewportScope(t *testing.T) {
@@ -466,23 +427,18 @@ func TestBroadcastViewportScope(t *testing.T) {
 	put(t, a, 3, scenemap.EntityKindPlayer, aoi.CellKey{X: 5, Y: 5})
 	sink.reset()
 
-	if err := a.CallBroadcast(context.Background(), typedMsg{typ: 4100}, aoi.ViewportScope(1)); err != nil {
-		t.Fatalf("CallBroadcast: %v", err)
-	}
-	if n := sink.countTo(2, nil); n != 1 {
-		t.Fatalf("视野内 2 收到 %d 条, want 1", n)
-	}
-	if n := sink.countTo(3, nil); n != 0 {
-		t.Fatalf("视野外 3 收到 %d 条, want 0", n)
-	}
-	if n := sink.countTo(1, nil); n != 0 {
-		t.Fatalf("发送者自己收到 %d 条, want 0", n)
-	}
+	err := a.CallBroadcast(context.Background(), typedMsg{typ: 4100}, aoi.ViewportScope(1))
+	require.NoError(t, err, fmt.Sprintf("CallBroadcast: %v", err))
+	n := sink.countTo(2, nil)
+	require.EqualValues(t, 1, n, fmt.Sprintf("视野内 2 收到 %d 条, want 1", n))
+	n = sink.countTo(3, nil)
+	require.EqualValues(t, 0, n, fmt.Sprintf("视野外 3 收到 %d 条, want 0", n))
+	n = sink.countTo(1, nil)
+	require.EqualValues(t, 0, n, fmt.Sprintf("发送者自己收到 %d 条, want 0", n))
 
 	// 发送者不存在
-	if err := a.CallBroadcast(context.Background(), typedMsg{typ: 1}, aoi.ViewportScope(99)); !errors.Is(err, scenemap.ErrNotFound) {
-		t.Fatalf("err=%v, want ErrNotFound", err)
-	}
+	err = a.CallBroadcast(context.Background(), typedMsg{typ: 1}, aoi.ViewportScope(99))
+	require.False(t, !errors.Is(err, scenemap.ErrNotFound), fmt.Sprintf("err=%v, want ErrNotFound", err))
 }
 
 // ---------------------------------------------------------------------------
@@ -498,19 +454,15 @@ func TestSlowConsumerDoesNotBlock(t *testing.T) {
 	for i := int64(1); i <= 5; i++ {
 		put(t, a, i, scenemap.EntityKindPlayer, aoi.CellKey{X: int32(i), Y: 1})
 	}
-	if n := a.Snapshot().Len(); n != 5 {
-		t.Fatalf("快照实体数=%d, want 5（投递失败不应回滚状态）", n)
-	}
-	if a.Dropped() == 0 {
-		t.Fatal("Dropped()=0，投递失败没有计数")
-	}
+	n := a.Snapshot().Len()
+	require.EqualValues(t, 5, n, fmt.Sprintf("快照实体数=%d, want 5（投递失败不应回滚状态）", n))
+	require.NotEqualValues(t, 0, a.Dropped(), "Dropped()=0，投递失败没有计数")
 
 	// 下游恢复后仍能继续处理后续命令（这就是"不被一个慢消费者拖死"）
 	sink.setErr(nil)
 	put(t, a, 6, scenemap.EntityKindPlayer, aoi.CellKey{X: 6, Y: 1})
-	if n := a.Snapshot().Len(); n != 6 {
-		t.Fatalf("恢复后快照实体数=%d, want 6", n)
-	}
+	n = a.Snapshot().Len()
+	require.EqualValues(t, 6, n, fmt.Sprintf("恢复后快照实体数=%d, want 6", n))
 }
 
 func TestSnapshotConcurrentRead(t *testing.T) {
@@ -551,9 +503,8 @@ func TestSnapshotConcurrentRead(t *testing.T) {
 		}
 	}
 	for i := int64(1); i <= 20; i++ {
-		if err := a.CallLeave(context.Background(), scenemap.UUID(i)); err != nil {
-			t.Fatalf("CallLeave(%d): %v", i, err)
-		}
+		err := a.CallLeave(context.Background(), scenemap.UUID(i))
+		require.NoError(t, err, fmt.Sprintf("CallLeave(%d): %v", i, err))
 	}
 
 	close(stop)
@@ -571,29 +522,24 @@ func TestSnapshotConsistent(t *testing.T) {
 	_ = a.CallLeave(context.Background(), 2)
 
 	s := a.Snapshot()
-	if s.Revision == 0 {
-		t.Fatal("Revision 未推进")
-	}
+	require.NotEqualValues(t, 0, s.Revision, "Revision 未推进")
 	require.EqualValues(t, len(s.CellOf), len(s.Entities))
 	total := 0
 	for cell, list := range s.Views {
 		total += len(list)
 		for _, u := range list {
-			if c, ok := s.CellOf[u]; !ok || c != cell {
-				t.Fatalf("实体 %d 在 Views[%v] 里，但 CellOf=%v ok=%v", u, cell, c, ok)
-			}
-			if _, ok := s.Entities[u]; !ok {
-				t.Fatalf("实体 %d 在 Views 里但不在 Entities 里", u)
-			}
+			c, ok := s.CellOf[u]
+			require.True(t, ok, fmt.Sprintf("实体 %d 在 Views[%v] 里，但 CellOf=%v ok=%v", u, cell, c, ok))
+			require.EqualValues(t, cell, c)
+			_, ok = s.Entities[u]
+			require.True(t, ok, fmt.Sprintf("实体 %d 在 Views 里但不在 Entities 里", u))
 		}
 	}
 	require.EqualValues(t, len(s.Entities), total)
 	// 快照里的切片必须按 UUID 升序（客户端不抖动的前提）
 	for cell, list := range s.Views {
 		for i := 1; i < len(list); i++ {
-			if list[i-1] >= list[i] {
-				t.Fatalf("Views[%v] 未排序: %v", cell, list)
-			}
+			require.False(t, list[i-1] >= list[i], fmt.Sprintf("Views[%v] 未排序: %v", cell, list))
 		}
 	}
 }
@@ -651,15 +597,13 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 	// 容量 2：第二个可以开，第三个必须被拒（池空 ⇒ 明确过载，而不是排队）
 	a2, err := pool.Acquire(keyB)
 	require.NoError(t, err, "Acquire B")
-	if _, err := pool.Acquire(keyC); !errors.Is(err, scenemap.ErrRoomPoolExhausted) {
-		t.Fatalf("第三个 Acquire err=%v, want ErrRoomPoolExhausted", err)
-	}
+	_, err = pool.Acquire(keyC)
+	require.False(t, !errors.Is(err, scenemap.ErrRoomPoolExhausted), fmt.Sprintf("第三个 Acquire err=%v, want ErrRoomPoolExhausted", err))
 	require.EqualValues(t, 2, pool.InUse())
 
 	// 归还前必须先关（Pool 契约）：关掉 A 再还池
-	if err := a1.Close(context.Background()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	err = a1.Close(context.Background())
+	require.NoError(t, err, fmt.Sprintf("Close: %v", err))
 	pool.Release(a1)
 	require.EqualValues(t, 1, pool.Idle())
 
@@ -674,14 +618,11 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 func TestAOIClosedRejectsCommands(t *testing.T) {
 	sink := &stubSink{}
 	a := newTestAOI(t, sink)
-	if err := a.Close(context.Background()); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := a.Enter(context.Background(), aoi.Entity{UUID: 9, Kind: scenemap.EntityKindPlayer}); err == nil {
-		t.Fatal("关闭后 Enter 应报错")
-	}
+	err := a.Close(context.Background())
+	require.NoError(t, err, fmt.Sprintf("Close: %v", err))
+	err = a.Enter(context.Background(), aoi.Entity{UUID: 9, Kind: scenemap.EntityKindPlayer})
+	require.Error(t, err, "关闭后 Enter 应报错")
 	// 幂等：重复关闭不 panic、不返回错误
-	if err := a.Close(context.Background()); err != nil {
-		t.Fatalf("重复 Close: %v", err)
-	}
+	err = a.Close(context.Background())
+	require.NoError(t, err, fmt.Sprintf("重复 Close: %v", err))
 }

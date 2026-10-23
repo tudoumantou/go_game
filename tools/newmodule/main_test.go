@@ -2,51 +2,42 @@
 package main
 
 import (
-	"strings"
+	"fmt"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
 // TestParseMsgs 协议对解析：显式响应、按约定推导、非法输入。
 func TestParseMsgs(t *testing.T) {
 	got, err := parseMsgs("MailboxListReq:MailboxListResp, MailboxClaimReq")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d", len(got))
-	}
-	if got[0].req != "MailboxListReq" || got[0].resp != "MailboxListResp" {
-		t.Fatalf("[0] = %+v", got[0])
-	}
+	require.NoError(t, err)
+	require.Len(t, got, 2, fmt.Sprintf("len = %d", len(got)))
+	require.EqualValues(t, "MailboxListReq", got[0].req, fmt.Sprintf("[0] = %+v", got[0]))
+	require.EqualValues(t, "MailboxListResp", got[0].resp)
 	// 省略响应时按 XxxReq → XxxResp 推导
-	if got[1].resp != "MailboxClaimResp" {
-		t.Fatalf("[1].resp = %q", got[1].resp)
-	}
+	require.EqualValues(t, "MailboxClaimResp", got[1].resp, fmt.Sprintf("[1].resp = %q", got[1].resp))
 
 	// 既不给响应又不以 Req 结尾：无法推导，必须报错而不是猜
-	if _, err := parseMsgs("SomethingWeird"); err == nil {
-		t.Fatal("无法推导的协议应报错")
-	}
+	_, err = parseMsgs("SomethingWeird")
+	require.Error(t, err, "无法推导的协议应报错")
 
 	// 空串返回空列表（只生成骨架、不生成协议）
-	if got, err := parseMsgs(""); err != nil || got != nil {
-		t.Fatalf("空输入应返回 nil,nil: %v %v", got, err)
-	}
+	got, err = parseMsgs("")
+	require.NoError(t, err, fmt.Sprintf("空输入应返回 nil,nil: %v %v", got, err))
+	require.Nil(t, got)
 }
 
 // TestNamingHelpers 命名规则：模块名 snake_case、表名转 PascalCase。
 func TestNamingHelpers(t *testing.T) {
 	cases := map[string]bool{"mailbox": true, "probe_mod": true, "a1": true, "Mailbox": false, "a-b": false, "": false}
 	for in, want := range cases {
-		if got := isLowerSnake(in); got != want {
-			t.Fatalf("isLowerSnake(%q) = %v", in, got)
-		}
+		got := isLowerSnake(in)
+		require.EqualValues(t, want, got, fmt.Sprintf("isLowerSnake(%q) = %v", in, got))
 	}
 	// 与 tools/gendb 的表→类型规则一致
 	for in, want := range map[string]string{"player_mailbox": "PlayerMailbox", "guild": "Guild", "a_b_c": "ABC"} {
-		if got := pascal(in); got != want {
-			t.Fatalf("pascal(%q) = %q, want %q", in, got, want)
-		}
+		got := pascal(in)
+		require.EqualValues(t, want, got, fmt.Sprintf("pascal(%q) = %q, want %q", in, got, want))
 	}
 }
 
@@ -69,15 +60,11 @@ func TestModuleTemplate(t *testing.T) {
 		"func (m *Module) onMailboxList(ctx *module.Context",
 		"*module.Stateful[Data]",
 	} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("模板缺少片段 %q\n---\n%s", want, out)
-		}
+		require.Contains(t, out, want, fmt.Sprintf("模板缺少片段 %q\n---\n%s", want, out))
 	}
 	// 不能出现未定义的标识符或占位符
 	for _, bad := range []string{"<TODO>", "msgIDMailboxListRespResp"} {
-		if strings.Contains(out, bad) {
-			t.Fatalf("模板含非法片段 %q", bad)
-		}
+		require.NotContains(t, out, bad, fmt.Sprintf("模板含非法片段 %q", bad))
 	}
 }
 
@@ -85,11 +72,7 @@ func TestModuleTemplate(t *testing.T) {
 func TestPersistTemplate(t *testing.T) {
 	out := persistTmpl("mailbox", "player_mailbox")
 	for _, want := range []string{"model.PlayerMailboxFlat", "model.PlayerMailbox,", "*model.PlayerMailbox"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("缺少 %q\n%s", want, out)
-		}
+		require.Contains(t, out, want, fmt.Sprintf("缺少 %q\n%s", want, out))
 	}
-	if strings.Contains(out, "<TODO>") {
-		t.Fatal("persist 模板不应留 <TODO>（那不是合法 Go）")
-	}
+	require.NotContains(t, out, "<TODO>", "persist 模板不应留 <TODO>（那不是合法 Go）")
 }

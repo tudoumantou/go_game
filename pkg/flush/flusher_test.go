@@ -3,6 +3,7 @@ package flush
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -17,16 +18,12 @@ func TestNextTickAligned(t *testing.T) {
 
 	for _, offset := range []time.Duration{0, 6 * time.Second, 54 * time.Second} {
 		next := nextTick(time.Minute, offset)
-		if !next.After(now) {
-			t.Fatalf("offset %s: next tick %s is not in the future", offset, next)
-		}
-		if d := next.Sub(now); d > time.Minute+offset {
-			t.Fatalf("offset %s: next tick too far away: %s", offset, d)
-		}
+		require.False(t, !next.After(now), fmt.Sprintf("offset %s: next tick %s is not in the future", offset, next))
+		d := next.Sub(now)
+		require.False(t, d > time.Minute+offset, fmt.Sprintf("offset %s: next tick too far away: %s", offset, d))
 		// 秒数必须精确等于偏移（10 片均匀铺满一分钟）
-		if got := next.Second(); got != int(offset/time.Second) {
-			t.Fatalf("offset %s: next tick second = %d", offset, got)
-		}
+		got := next.Second()
+		require.EqualValues(t, int(offset/time.Second), got, fmt.Sprintf("offset %s: next tick second = %d", offset, got))
 		require.EqualValues(t, 0, next.Nanosecond())
 	}
 }
@@ -38,9 +35,8 @@ func TestNextTickAligned(t *testing.T) {
 func TestNextTickFollowsInterval(t *testing.T) {
 	now := time.Now()
 	next := nextTick(2*time.Second, 0)
-	if d := next.Sub(now); d > 2*time.Second+100*time.Millisecond {
-		t.Fatalf("next tick with 2s interval should be within 2s, got %s", d)
-	}
+	d := next.Sub(now)
+	require.False(t, d > 2*time.Second+100*time.Millisecond, fmt.Sprintf("next tick with 2s interval should be within 2s, got %s", d))
 	require.EqualValues(t, 0, next.Nanosecond())
 }
 
@@ -67,13 +63,11 @@ func TestMarkDeleteFlush(t *testing.T) {
 	f.MarkDelete("mail", 2)
 	f.MarkDelete("team_member", 3)
 
-	if got := f.PendingDeletes(); got != 3 {
-		t.Fatalf("pending deletes = %d, want 3", got)
-	}
+	got := f.PendingDeletes()
+	require.EqualValues(t, 3, got, fmt.Sprintf("pending deletes = %d, want 3", got))
 
-	if err := f.shards[0].flush(context.Background()); err != nil {
-		t.Fatalf("flush: %v", err)
-	}
+	err := f.shards[0].flush(context.Background())
+	require.NoError(t, err, fmt.Sprintf("flush: %v", err))
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -82,9 +76,8 @@ func TestMarkDeleteFlush(t *testing.T) {
 	for _, tb := range tables {
 		count[tb]++
 	}
-	if count["mail"] != 1 || count["team_member"] != 1 {
-		t.Fatalf("expect one batch per table, got %v", count)
-	}
+	require.EqualValues(t, 1, count["mail"], fmt.Sprintf("expect one batch per table, got %v", count))
+	require.EqualValues(t, 1, count["team_member"])
 	require.EqualValues(t, 0, f.PendingDeletes())
 }
 
@@ -100,12 +93,10 @@ func TestMarkDeleteFailureKeepsTombstone(t *testing.T) {
 
 	f.MarkDelete("mail", 9)
 
-	if err := f.shards[0].flush(context.Background()); err == nil {
-		t.Fatal("expect flush error")
-	}
-	if got := f.PendingDeletes(); got != 1 {
-		t.Fatalf("tombstone should be kept for retry, got %d", got)
-	}
+	err := f.shards[0].flush(context.Background())
+	require.Error(t, err, "expect flush error")
+	got := f.PendingDeletes()
+	require.EqualValues(t, 1, got, fmt.Sprintf("tombstone should be kept for retry, got %d", got))
 }
 
 // TestMarkDeleteWithoutFn 未注入删除器时丢弃并计数，不能无限堆积。
@@ -114,12 +105,10 @@ func TestMarkDeleteWithoutFn(t *testing.T) {
 		func(context.Context, int64) error { return nil }, log.New("test"))
 
 	f.MarkDelete("mail", 1)
-	if err := f.shards[0].flush(context.Background()); err != nil {
-		t.Fatalf("flush should not fail without deleter: %v", err)
-	}
-	if got := f.PendingDeletes(); got != 0 {
-		t.Fatalf("dropped tombstones should be cleared, got %d", got)
-	}
+	err := f.shards[0].flush(context.Background())
+	require.NoError(t, err, fmt.Sprintf("flush should not fail without deleter: %v", err))
+	got := f.PendingDeletes()
+	require.EqualValues(t, 0, got, fmt.Sprintf("dropped tombstones should be cleared, got %d", got))
 }
 
 // TestDeleteBeforeUpsert 墓碑必须先于 upsert 执行。
@@ -143,12 +132,11 @@ func TestDeleteBeforeUpsert(t *testing.T) {
 	f.MarkDelete("mail", 1)
 	f.MarkDirty(2)
 
-	if err := f.shards[0].flush(context.Background()); err != nil {
-		t.Fatalf("flush: %v", err)
-	}
-	if len(order) != 2 || order[0] != "delete" || order[1] != "upsert" {
-		t.Fatalf("order = %v, want [delete upsert]", order)
-	}
+	err := f.shards[0].flush(context.Background())
+	require.NoError(t, err, fmt.Sprintf("flush: %v", err))
+	require.Len(t, order, 2, fmt.Sprintf("order = %v, want [delete upsert]", order))
+	require.EqualValues(t, "delete", order[0])
+	require.EqualValues(t, "upsert", order[1])
 }
 
 // TestChunkIDs id 列表按批大小切分。
@@ -156,9 +144,8 @@ func TestChunkIDs(t *testing.T) {
 	ids := []int64{1, 2, 3, 4, 5}
 	batches := chunkIDs(ids, 2)
 	require.Len(t, batches, 3)
-	if len(batches[0]) != 2 || len(batches[2]) != 1 {
-		t.Fatalf("batch sizes = %d/%d", len(batches[0]), len(batches[2]))
-	}
+	require.Len(t, batches[0], 2, fmt.Sprintf("batch sizes = %d/%d", len(batches[0]), len(batches[2])))
+	require.Len(t, batches[2], 1)
 	require.Len(t, chunkIDs(nil, 2), 0, "empty ids should produce no batches")
 }
 
@@ -166,13 +153,10 @@ func TestChunkIDs(t *testing.T) {
 func TestShardIndexStable(t *testing.T) {
 	first := ShardIndex(12345, 10)
 	for i := 0; i < 100; i++ {
-		if got := ShardIndex(12345, 10); got != first {
-			t.Fatalf("shard index unstable: %d != %d", got, first)
-		}
+		got := ShardIndex(12345, 10)
+		require.EqualValues(t, first, got, fmt.Sprintf("shard index unstable: %d != %d", got, first))
 	}
-	if first < 0 || first >= 10 {
-		t.Fatalf("shard index out of range: %d", first)
-	}
+	require.False(t, first < 0 || first >= 10, fmt.Sprintf("shard index out of range: %d", first))
 }
 
 // TestFlushAllDrainsAllBatches 关服落库必须排空全部批次，不能只落第一批。
@@ -192,13 +176,11 @@ func TestFlushAllDrainsAllBatches(t *testing.T) {
 	for i := int64(1); i <= 5; i++ {
 		f.MarkDirty(i)
 	}
-	if err := f.FlushAll(context.Background()); err != nil {
-		t.Fatalf("flush all: %v", err)
-	}
+	err := f.FlushAll(context.Background())
+	require.NoError(t, err, fmt.Sprintf("flush all: %v", err))
 	require.Len(t, persisted, 5)
-	if got := f.shards[0].dirtyCount(); got != 0 {
-		t.Fatalf("dirty left after FlushAll: %d", got)
-	}
+	got := f.shards[0].dirtyCount()
+	require.EqualValues(t, 0, got, fmt.Sprintf("dirty left after FlushAll: %d", got))
 }
 
 // TestPersistFailureKeepsDirty 保存失败必须保留脏标记，下一轮重试；
@@ -209,10 +191,8 @@ func TestPersistFailureKeepsDirty(t *testing.T) {
 	}, log.New("test"))
 
 	f.MarkDirty(1)
-	if err := f.FlushAll(context.Background()); err == nil {
-		t.Fatal("FlushAll must report persistence failure")
-	}
-	if got := f.shards[0].dirtyCount(); got != 1 {
-		t.Fatalf("failed player must stay dirty, got %d", got)
-	}
+	err := f.FlushAll(context.Background())
+	require.Error(t, err, "FlushAll must report persistence failure")
+	got := f.shards[0].dirtyCount()
+	require.EqualValues(t, 1, got, fmt.Sprintf("failed player must stay dirty, got %d", got))
 }

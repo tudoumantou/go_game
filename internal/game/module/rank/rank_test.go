@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -67,9 +68,8 @@ func decodeResp(t *testing.T, raw []byte) *gamev1.RankListResp {
 	t.Helper()
 	require.NotNil(t, raw, "no reply captured")
 	var resp gamev1.RankListResp
-	if err := proto.Unmarshal(raw, &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	err := proto.Unmarshal(raw, &resp)
+	require.NoError(t, err, fmt.Sprintf("unmarshal: %v", err))
 	return &resp
 }
 
@@ -87,20 +87,15 @@ func TestListReturnsTopAndMine(t *testing.T) {
 	ctx, raw, msgID := newCtx(t, 2)
 
 	body, _ := proto.Marshal(&gamev1.RankListReq{RankType: "arena_score"})
-	if err := m.OnMessage(ctx, msgIDListReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDListReq, body)
+	require.NoError(t, err)
 	require.EqualValues(t, msgIDListResp, *msgID)
 	resp := decodeResp(t, *raw)
-	if resp.Code != codeOK || len(resp.Entries) != 2 || resp.MyRank != 2 || !resp.OnBoard {
-		t.Fatalf("unexpected resp: %+v", resp)
-	}
-	if resp.UpdatedAt != 1700000000 || resp.Season != "s1" {
-		t.Fatalf("meta lost: %+v", resp)
-	}
-	if q.gotPID != 2 || q.gotType != "arena_score" {
-		t.Fatalf("querier got pid=%d type=%q", q.gotPID, q.gotType)
-	}
+	require.False(t, resp.Code != codeOK || len(resp.Entries) != 2 || resp.MyRank != 2 || !resp.OnBoard, fmt.Sprintf("unexpected resp: %+v", resp))
+	require.EqualValues(t, 1700000000, resp.UpdatedAt, fmt.Sprintf("meta lost: %+v", resp))
+	require.EqualValues(t, "s1", resp.Season)
+	require.EqualValues(t, 2, q.gotPID, fmt.Sprintf("querier got pid=%d type=%q", q.gotPID, q.gotType))
+	require.EqualValues(t, "arena_score", q.gotType)
 }
 
 func TestListDefaultsRankType(t *testing.T) {
@@ -109,13 +104,11 @@ func TestListDefaultsRankType(t *testing.T) {
 	ctx, raw, _ := newCtx(t, 7)
 
 	body, _ := proto.Marshal(&gamev1.RankListReq{})
-	if err := m.OnMessage(ctx, msgIDListReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDListReq, body)
+	require.NoError(t, err)
 	require.EqualValues(t, defaultRankType, q.gotType)
-	if resp := decodeResp(t, *raw); resp.RankType != defaultRankType {
-		t.Fatalf("resp rank type = %q", resp.RankType)
-	}
+	resp := decodeResp(t, *raw)
+	require.EqualValues(t, defaultRankType, resp.RankType, fmt.Sprintf("resp rank type = %q", resp.RankType))
 }
 
 // TestListUnavailable 中心服不可用时不伪造空榜（R8.1）。
@@ -132,9 +125,8 @@ func TestListUnavailable(t *testing.T) {
 			m := New(c.q, log.New("test"))
 			ctx, raw, _ := newCtx(t, 1)
 			body, _ := proto.Marshal(&gamev1.RankListReq{RankType: "arena_score"})
-			if err := m.OnMessage(ctx, msgIDListReq, body); err != nil {
-				t.Fatal(err)
-			}
+			err := m.OnMessage(ctx, msgIDListReq, body)
+			require.NoError(t, err)
 			resp := decodeResp(t, *raw)
 			require.EqualValues(t, codeUnavailable, resp.Code)
 			require.Len(t, resp.Entries, 0, "unavailable must not return fake entries")
@@ -150,10 +142,8 @@ func TestListRejectsLongRankType(t *testing.T) {
 		long[i] = 'a'
 	}
 	body, _ := proto.Marshal(&gamev1.RankListReq{RankType: string(long)})
-	if err := m.OnMessage(ctx, msgIDListReq, body); err != nil {
-		t.Fatal(err)
-	}
-	if resp := decodeResp(t, *raw); resp.Code != codeBadType {
-		t.Fatalf("code = %d, want %d", resp.Code, codeBadType)
-	}
+	err := m.OnMessage(ctx, msgIDListReq, body)
+	require.NoError(t, err)
+	resp := decodeResp(t, *raw)
+	require.EqualValues(t, codeBadType, resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, codeBadType))
 }

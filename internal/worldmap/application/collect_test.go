@@ -6,6 +6,7 @@ package application
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"game_study/internal/worldmap/domain"
@@ -36,17 +37,14 @@ func TestPlanCollectStart(t *testing.T) {
 					t.Fatalf("会话=%+v", sess)
 				}
 				// 三件套：会话 + 资源 active_collect_id + Troop→COLLECTING。
-				if countUpsert(plan, domain.ObjectKindResource) != 1 || countUpsert(plan, domain.ObjectKindTroop) != 1 {
-					t.Fatalf("对象数量=%d", len(plan.ObjectsUpsert))
-				}
+				require.EqualValues(t, 1, countUpsert(plan, domain.ObjectKindResource), fmt.Sprintf("对象数量=%d", len(plan.ObjectsUpsert)))
+				require.EqualValues(t, 1, countUpsert(plan, domain.ObjectKindTroop))
 				resUp, _ := findUpsert(plan, domain.ObjectKindResource)
-				if resUp.Resource.ActiveCollectID != sess.ID || resUp.Resource.Header.Version != 2 {
-					t.Fatalf("资源=%+v", resUp.Resource)
-				}
+				require.EqualValues(t, sess.ID, resUp.Resource.ActiveCollectID, fmt.Sprintf("资源=%+v", resUp.Resource))
+				require.EqualValues(t, 2, resUp.Resource.Header.Version)
 				trUp, _ := findUpsert(plan, domain.ObjectKindTroop)
-				if trUp.Troop.Phase != domain.TroopPhaseCollecting || trUp.Troop.Header.Version != 2 {
-					t.Fatalf("部队=%+v", trUp.Troop)
-				}
+				require.EqualValues(t, domain.TroopPhaseCollecting, trUp.Troop.Phase, fmt.Sprintf("部队=%+v", trUp.Troop))
+				require.EqualValues(t, 2, trUp.Troop.Header.Version)
 				require.Nil(t, trUp.Troop.Move, "采集阶段应清 Move")
 				require.EqualValues(t, domain.CodeOK, plan.CommandReceipt.ResultCode)
 			},
@@ -113,9 +111,7 @@ func TestPlanCollectStart(t *testing.T) {
 			snap, cmd := tc.build(t)
 			plan, err := h.planner.Plan(snap, testEnv(1, "req-cs-"+tc.name, 1), cmd, 10000)
 			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err=%v, want %v", err, tc.wantErr)
-				}
+				require.False(t, !errors.Is(err, tc.wantErr), fmt.Sprintf("err=%v, want %v", err, tc.wantErr))
 				return
 			}
 			require.NoError(t, err, "意外错误")
@@ -150,21 +146,16 @@ func TestPlanCollectSettle(t *testing.T) {
 		plan, err := h.planner.Plan(settleFixture(t, 100), testEnv(1, "req-settle", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 3000}}, 3000)
 		require.NoError(t, err, "结算")
-		if len(plan.CollectSettle) != 1 || plan.CollectSettle[0].SettledQty != 7 {
-			t.Fatalf("CollectSettle=%+v", plan.CollectSettle)
-		}
+		require.Len(t, plan.CollectSettle, 1, fmt.Sprintf("CollectSettle=%+v", plan.CollectSettle))
+		require.EqualValues(t, 7, plan.CollectSettle[0].SettledQty)
 		resUp, ok := findUpsert(plan, domain.ObjectKindResource)
-		if !ok || resUp.Resource.Remaining != 93 {
-			t.Fatalf("资源余量=%+v", resUp.Resource)
-		}
+		require.True(t, ok, fmt.Sprintf("资源余量=%+v", resUp.Resource))
+		require.EqualValues(t, 93, resUp.Resource.Remaining)
 		require.EqualValues(t, "", resUp.Resource.ActiveCollectID, "必须清 active_collect_id")
-		if resUp.Resource.PendingDestroy {
-			t.Fatalf("仍有剩余时不应标删除")
-		}
+		require.False(t, resUp.Resource.PendingDestroy, "仍有剩余时不应标删除")
 		trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
-		if !ok || trUp.Troop.Cargo[101] != 7 {
-			t.Fatalf("Cargo=%+v", trUp.Troop)
-		}
+		require.True(t, ok, fmt.Sprintf("Cargo=%+v", trUp.Troop))
+		require.EqualValues(t, 7, trUp.Troop.Cargo[101])
 		// 结算只做账务，阶段转换交给召回/回城命令。
 		require.EqualValues(t, domain.TroopPhaseCollecting, trUp.Troop.Phase)
 	})
@@ -176,9 +167,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		require.NoError(t, err, "结算")
 		require.EqualValues(t, 5, plan.CollectSettle[0].SettledQty)
 		resUp, _ := findUpsert(plan, domain.ObjectKindResource)
-		if resUp.Resource.Remaining != 0 || !resUp.Resource.PendingDestroy {
-			t.Fatalf("资源=%+v", resUp.Resource)
-		}
+		require.False(t, resUp.Resource.Remaining != 0 || !resUp.Resource.PendingDestroy, fmt.Sprintf("资源=%+v", resUp.Resource))
 	})
 
 	t.Run("重复结算幂等", func(t *testing.T) {
@@ -202,13 +191,10 @@ func TestPlanCollectSettle(t *testing.T) {
 		second, err := h.planner.Plan(snap, testEnv(1, "req-settle-b", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 9000}}, 9000)
 		require.NoError(t, err, "重复结算")
-		if len(second.ObjectsUpsert) != 0 || len(second.CollectSettle) != 0 {
-			t.Fatalf("重复结算不得改状态: %+v", second)
-		}
+		require.Empty(t, second.ObjectsUpsert, fmt.Sprintf("重复结算不得改状态: %+v", second))
+		require.Empty(t, second.CollectSettle)
 		m := receiptMap(t, second)
-		if jsonInt(t, m, "settled_qty") != qty || !jsonBool(t, m, "idempotent") {
-			t.Fatalf("回执=%v, want qty=%d", m, qty)
-		}
+		require.False(t, jsonInt(t, m, "settled_qty") != qty || !jsonBool(t, m, "idempotent"), fmt.Sprintf("回执=%v, want qty=%d", m, qty))
 	})
 
 	t.Run("会话不存在", func(t *testing.T) {
@@ -216,8 +202,6 @@ func TestPlanCollectSettle(t *testing.T) {
 		_, err := h.planner.Plan(snapshot(SnapshotOptions{Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0)}}),
 			testEnv(1, "req-settle-missing", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "nope"}}, 3000)
-		if !errors.Is(err, domain.ErrObjectNotFound) {
-			t.Fatalf("err=%v", err)
-		}
+		require.False(t, !errors.Is(err, domain.ErrObjectNotFound), fmt.Sprintf("err=%v", err))
 	})
 }

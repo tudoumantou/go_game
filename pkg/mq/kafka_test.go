@@ -4,7 +4,7 @@ package mq
 import (
 	"context"
 	"errors"
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
@@ -77,12 +77,10 @@ func newTestConsumer(r messageReader, d deadLetterWriter, retries int) *Consumer
 func TestRunCommitsOnSuccess(t *testing.T) {
 	reader := &fakeReader{msgs: []kafka.Message{validMessage(t, 1)}}
 	c := newTestConsumer(reader, &fakeDLQ{}, 0)
-	if err := c.Run(context.Background(), func(context.Context, *Envelope) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if len(reader.committed) != 1 || reader.committed[0].Offset != 1 {
-		t.Fatalf("committed: %+v", reader.committed)
-	}
+	err := c.Run(context.Background(), func(context.Context, *Envelope) error { return nil })
+	require.NoError(t, err)
+	require.Len(t, reader.committed, 1, fmt.Sprintf("committed: %+v", reader.committed))
+	require.EqualValues(t, 1, reader.committed[0].Offset)
 }
 
 // TestRunRetriesThenDeadLettersAndCommits 处理失败重试耗尽后写死信，死信成功才提交。
@@ -97,9 +95,8 @@ func TestRunRetriesThenDeadLettersAndCommits(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.EqualValues(t, 2, attempts)
-	if len(dlq.got) != 1 || len(reader.committed) != 1 {
-		t.Fatalf("dead=%d committed=%d", len(dlq.got), len(reader.committed))
-	}
+	require.Len(t, dlq.got, 1, fmt.Sprintf("dead=%d committed=%d", len(dlq.got), len(reader.committed)))
+	require.Len(t, reader.committed, 1)
 }
 
 // TestRunDeadLetterFailureKeepsOffset 死信写失败必须不提交并返回错误，
@@ -112,9 +109,7 @@ func TestRunDeadLetterFailureKeepsOffset(t *testing.T) {
 		return errors.New("boom")
 	})
 	require.Error(t, err, "dead letter failure must surface as an error")
-	if !strings.Contains(err.Error(), "dead letter") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Contains(t, err.Error(), "dead letter", fmt.Sprintf("unexpected error: %v", err))
 	require.Len(t, reader.committed, 0)
 }
 
@@ -126,9 +121,8 @@ func TestRunMalformedGoesToDeadLetter(t *testing.T) {
 	dlq := &fakeDLQ{}
 	c := newTestConsumer(reader, dlq, 0)
 	handled := 0
-	if err := c.Run(context.Background(), func(context.Context, *Envelope) error { handled++; return nil }); err != nil {
-		t.Fatal(err)
-	}
+	err := c.Run(context.Background(), func(context.Context, *Envelope) error { handled++; return nil })
+	require.NoError(t, err)
 	require.EqualValues(t, 0, handled, "malformed message must not reach the handler")
 	require.Len(t, dlq.got, 1)
 	if raw := dlq.got[0].Headers["dlq_raw"]; raw != "bm90LWpzb24=" { // base64("not-json")
@@ -144,9 +138,8 @@ func TestRunWithoutDeadLetterWriterKeepsOffset(t *testing.T) {
 	err := c.Run(context.Background(), func(context.Context, *Envelope) error {
 		return errors.New("boom")
 	})
-	if err == nil || !strings.Contains(err.Error(), "no dead letter writer") {
-		t.Fatalf("expected dead letter writer error, got %v", err)
-	}
+	require.Error(t, err, fmt.Sprintf("expected dead letter writer error, got %v", err))
+	require.Contains(t, err.Error(), "no dead letter writer")
 	require.Len(t, reader.committed, 0, "offset advanced without a dead letter channel")
 }
 
@@ -155,9 +148,8 @@ func TestRunCommitFailureSurfaces(t *testing.T) {
 	reader := &fakeReader{msgs: []kafka.Message{validMessage(t, 6)}, commitErr: errors.New("coordinator down")}
 	c := newTestConsumer(reader, &fakeDLQ{}, 0)
 	err := c.Run(context.Background(), func(context.Context, *Envelope) error { return nil })
-	if err == nil || !strings.Contains(err.Error(), "commit") {
-		t.Fatalf("expected commit error, got %v", err)
-	}
+	require.Error(t, err, fmt.Sprintf("expected commit error, got %v", err))
+	require.Contains(t, err.Error(), "commit")
 }
 
 // TestRunCancelDoesNotCommit 关服中断时不提交，重启后从该 offset 重放。

@@ -3,6 +3,7 @@ package mq
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -175,19 +176,17 @@ func TestRechargeDeliversOnce(t *testing.T) {
 	c, act := setupConsumer(t, presence, deduper)
 	env := mustEnvelope(t, "O1001", 1001, 600)
 
-	if err := c.handle(context.Background(), env); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	err := c.handle(context.Background(), env)
+	require.NoError(t, err, fmt.Sprintf("handle: %v", err))
 	grants, items := act.snapshot()
 	require.EqualValues(t, 1, grants)
-	if len(items) != 1 || items[0].ItemID != 1001 || items[0].Count != 600 {
-		t.Fatalf("items = %+v", items)
-	}
+	require.Len(t, items, 1, fmt.Sprintf("items = %+v", items))
+	require.EqualValues(t, 1001, items[0].ItemID)
+	require.EqualValues(t, 600, items[0].Count)
 
 	// 重复消费：幂等跳过
-	if err := c.handle(context.Background(), env); err != nil {
-		t.Fatalf("second handle: %v", err)
-	}
+	err = c.handle(context.Background(), env)
+	require.NoError(t, err, fmt.Sprintf("second handle: %v", err))
 	grants, _ = act.snapshot()
 	require.EqualValues(t, 1, grants)
 }
@@ -198,27 +197,22 @@ func TestRechargeSkipOtherNode(t *testing.T) {
 	presence.node[1001] = "game-2" // 玩家在别的服
 
 	c, act := setupConsumer(t, presence, deduper)
-	if err := c.handle(context.Background(), mustEnvelope(t, "O1002", 1001, 100)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if grants, _ := act.snapshot(); grants != 0 {
-		t.Fatalf("should not grant on other node, grants = %d", grants)
-	}
+	err := c.handle(context.Background(), mustEnvelope(t, "O1002", 1001, 100))
+	require.NoError(t, err, fmt.Sprintf("handle: %v", err))
+	grants, _ := act.snapshot()
+	require.EqualValues(t, 0, grants, fmt.Sprintf("should not grant on other node, grants = %d", grants))
 	// 关键：异服改走离线发放（biz_id 幂等），不占在线幂等键
-	if fm, ok := c.deps.Mail.(*fakeMail); !ok || len(fm.delivered) != 1 || fm.delivered[0] != "O1002" {
-		t.Fatalf("offline delivery not recorded: %+v", c.deps.Mail)
-	}
-	if deduper.seen[pkgmq.IdemKey(pkgmq.TopicRechargeOrder, "O1002")] {
-		t.Fatalf("offline path must not set online idem key")
-	}
+	fm, ok := c.deps.Mail.(*fakeMail)
+	require.True(t, ok, fmt.Sprintf("offline delivery not recorded: %+v", c.deps.Mail))
+	require.Len(t, fm.delivered, 1)
+	require.EqualValues(t, "O1002", fm.delivered[0])
+	require.False(t, deduper.seen[pkgmq.IdemKey(pkgmq.TopicRechargeOrder, "O1002")], "offline path must not set online idem key")
 
 	presence.node[1001] = "game-1"
-	if err := c.handle(context.Background(), mustEnvelope(t, "O1002", 1001, 100)); err != nil {
-		t.Fatalf("handle after migrate: %v", err)
-	}
-	if grants, _ := act.snapshot(); grants != 1 {
-		t.Fatalf("after migrate grants = %d, want 1", grants)
-	}
+	err = c.handle(context.Background(), mustEnvelope(t, "O1002", 1001, 100))
+	require.NoError(t, err, fmt.Sprintf("handle after migrate: %v", err))
+	grants, _ = act.snapshot()
+	require.EqualValues(t, 1, grants, fmt.Sprintf("after migrate grants = %d, want 1", grants))
 }
 
 func TestRechargeSkipOffline(t *testing.T) {
@@ -226,16 +220,14 @@ func TestRechargeSkipOffline(t *testing.T) {
 	deduper := newMemDeduper()
 	// 不在线
 	c, act := setupConsumer(t, presence, deduper)
-	if err := c.handle(context.Background(), mustEnvelope(t, "O1003", 1001, 100)); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if grants, _ := act.snapshot(); grants != 0 {
-		t.Fatalf("offline player must not be granted in actor")
-	}
+	err := c.handle(context.Background(), mustEnvelope(t, "O1003", 1001, 100))
+	require.NoError(t, err, fmt.Sprintf("handle: %v", err))
+	grants, _ := act.snapshot()
+	require.EqualValues(t, 0, grants, "offline player must not be granted in actor")
 	fm, ok := c.deps.Mail.(*fakeMail)
-	if !ok || len(fm.delivered) != 1 || fm.delivered[0] != "O1003" {
-		t.Fatalf("offline delivery not recorded: %+v", fm)
-	}
+	require.True(t, ok, fmt.Sprintf("offline delivery not recorded: %+v", fm))
+	require.Len(t, fm.delivered, 1)
+	require.EqualValues(t, "O1003", fm.delivered[0])
 }
 
 func TestRechargeInvalidPayload(t *testing.T) {
@@ -244,7 +236,6 @@ func TestRechargeInvalidPayload(t *testing.T) {
 	c, _ := setupConsumer(t, presence, deduper)
 
 	env, _ := pkgmq.NewEnvelope("bad", pkgmq.TopicRechargeOrder, "bad", pkgmq.RechargeOrderMsg{OrderID: "bad", PlayerID: 0})
-	if err := c.handle(context.Background(), env); err == nil {
-		t.Fatalf("invalid payload should fail")
-	}
+	err := c.handle(context.Background(), env)
+	require.Error(t, err, "invalid payload should fail")
 }

@@ -3,6 +3,7 @@ package battle
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -123,9 +124,8 @@ func TestRoomSettlesWhenAllReported(t *testing.T) {
 	for _, f := range results {
 		got[f.frame.GetResult().PlayerId] = f.frame.GetResult().Result
 	}
-	if got[1] != 0 || got[2] != 1 {
-		t.Fatalf("result mismatch: %+v", got)
-	}
+	require.EqualValues(t, 0, got[1], fmt.Sprintf("result mismatch: %+v", got))
+	require.EqualValues(t, 1, got[2])
 	// 房间应通知管理器摘除
 	waitFor(t, func() bool {
 		sink.mu.Lock()
@@ -184,9 +184,8 @@ func TestRoomRejectsBadToken(t *testing.T) {
 		RoomId: 300, PlayerId: 1, Result: 0, BattleToken: "forged-token",
 	}})
 	time.Sleep(200 * time.Millisecond)
-	if n := len(sink.framesOf("result")); n != 0 {
-		t.Fatalf("forged token must not settle, got %d result frames", n)
-	}
+	n := len(sink.framesOf("result"))
+	require.EqualValues(t, 0, n, fmt.Sprintf("forged token must not settle, got %d result frames", n))
 
 	// 正确令牌 → 正常结算
 	for _, p := range []int64{1, 2} {
@@ -252,9 +251,8 @@ func TestRoomDuplicateReportIdempotent(t *testing.T) {
 
 	waitFor(t, func() bool { return len(sink.framesOf("result")) == 2 }, "settle once per player")
 	time.Sleep(200 * time.Millisecond)
-	if n := len(sink.framesOf("result")); n != 2 {
-		t.Fatalf("duplicate report must not double settle, got %d frames", n)
-	}
+	n := len(sink.framesOf("result"))
+	require.EqualValues(t, 2, n, fmt.Sprintf("duplicate report must not double settle, got %d frames", n))
 }
 
 func tokenOf(playerID int64) string {

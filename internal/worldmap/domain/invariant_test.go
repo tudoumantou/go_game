@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -143,16 +144,13 @@ func TestValidateTroop(t *testing.T) {
 				require.NoError(t, err, "合法组合被拒绝")
 				return
 			}
-			if !isErr(err, tc.wantErr) {
-				t.Fatalf("错误类型不符: got %v, want %v", err, tc.wantErr)
-			}
+			require.False(t, !isErr(err, tc.wantErr), fmt.Sprintf("错误类型不符: got %v, want %v", err, tc.wantErr))
 		})
 	}
 
 	// nil 部队。
-	if err := ValidateTroop(nil, false); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("nil 部队错误类型不符: %v", err)
-	}
+	err := ValidateTroop(nil, false)
+	require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("nil 部队错误类型不符: %v", err))
 
 	// 说明：文档 6.1 要求“FIGHTING 不能同时 RETURNING”。
 	// Phase 是单值枚举，一个字段不可能既是 4 又是 5，
@@ -160,9 +158,7 @@ func TestValidateTroop(t *testing.T) {
 	// 验证这一点，防止将来改成位组合状态时失去覆盖。
 	tr := validTroop()
 	tr.Phase = TroopPhaseFighting
-	if tr.Phase == TroopPhaseReturning {
-		t.Fatal("单值枚举不应同时为两个阶段")
-	}
+	require.NotEqualValues(t, TroopPhaseReturning, tr.Phase, "单值枚举不应同时为两个阶段")
 }
 
 // TestValidateResource 覆盖资源点不变量（文档 10.3/INV-03）。
@@ -230,15 +226,12 @@ func TestValidateResource(t *testing.T) {
 				require.NoError(t, err, "合法资源被拒绝")
 				return
 			}
-			if !isErr(err, tc.wantErr) {
-				t.Fatalf("错误类型不符: got %v, want %v", err, tc.wantErr)
-			}
+			require.False(t, !isErr(err, tc.wantErr), fmt.Sprintf("错误类型不符: got %v, want %v", err, tc.wantErr))
 		})
 	}
 
-	if err := ValidateResource(nil); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("nil 资源错误类型不符: %v", err)
-	}
+	err := ValidateResource(nil)
+	require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("nil 资源错误类型不符: %v", err))
 }
 
 // TestValidateOccupancyClaim 覆盖占位声明校验（文档 5.3）。
@@ -311,9 +304,7 @@ func TestValidateOccupancyClaim(t *testing.T) {
 				require.NoError(t, err, "合法占位被拒绝")
 				return
 			}
-			if !isErr(err, tc.wantErr) {
-				t.Fatalf("错误类型不符: got %v, want %v", err, tc.wantErr)
-			}
+			require.False(t, !isErr(err, tc.wantErr), fmt.Sprintf("错误类型不符: got %v, want %v", err, tc.wantErr))
 		})
 	}
 }

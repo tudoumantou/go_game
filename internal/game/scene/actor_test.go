@@ -6,6 +6,7 @@ package scene
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -62,9 +63,8 @@ func newRigWith(t *testing.T, cfg Config) (*Actor, *actor.System, *actor.PID) {
 // send 通过真实 System 投递：保证与 Actor 内部执行有 happens-before 关系。
 func send(t *testing.T, sys *actor.System, pid *actor.PID, msg any) {
 	t.Helper()
-	if err := sys.Send(pid, msg); err != nil {
-		t.Fatalf("send %T: %v", msg, err)
-	}
+	err := sys.Send(pid, msg)
+	require.NoError(t, err, fmt.Sprintf("send %T: %v", msg, err))
 }
 
 // spawnCollector 起一个假玩家 Actor：分通道回收场景发来的回执与推送，供断言。
@@ -107,9 +107,8 @@ func waitPush(t *testing.T, c *collector) *player.ScenePush {
 func decodeEnter(t *testing.T, r *player.SceneResult) *gamev1.SceneEnterResp {
 	t.Helper()
 	var resp gamev1.SceneEnterResp
-	if err := proto.Unmarshal(r.Body, &resp); err != nil {
-		t.Fatalf("decode enter resp: %v", err)
-	}
+	err := proto.Unmarshal(r.Body, &resp)
+	require.NoError(t, err, fmt.Sprintf("decode enter resp: %v", err))
 	return &resp
 }
 
@@ -122,12 +121,9 @@ func TestEnterClampsAndSnapshots(t *testing.T) {
 	r := waitResult(t, c)
 	resp := decodeEnter(t, r)
 	require.EqualValues(t, codeOK, resp.Code)
-	if resp.X != 0 || resp.Y != 99 {
-		t.Fatalf("clamped = (%d,%d), want (0,99)", resp.X, resp.Y)
-	}
-	if !r.SetScene {
-		t.Fatal("first successful enter must set scene")
-	}
+	require.EqualValues(t, 0, resp.X, fmt.Sprintf("clamped = (%d,%d), want (0,99)", resp.X, resp.Y))
+	require.EqualValues(t, 99, resp.Y)
+	require.False(t, !r.SetScene, "first successful enter must set scene")
 }
 
 // TestEnterFull 人数上限：第 3 个玩家被拒，且不占用名额。
@@ -158,9 +154,7 @@ func TestEnterTwiceDoesNotDoubleCount(t *testing.T) {
 	send(t, sys, scPID, &EnterMsg{PlayerID: 1, PID: p1, X: 12, Y: 12})
 	r := waitResult(t, c1)
 	require.EqualValues(t, 1, sc.Count())
-	if r.SetScene {
-		t.Fatal("re-enter must not re-set scene（避免无意义的标脏）")
-	}
+	require.False(t, r.SetScene, "re-enter must not re-set scene（避免无意义的标脏）")
 }
 
 // TestMoveRejectsTeleport 超出速度上限不移动，回权威坐标。
@@ -175,12 +169,11 @@ func TestMoveRejectsTeleport(t *testing.T) {
 	var resp gamev1.SceneMoveResp
 	_ = proto.Unmarshal(r.Body, &resp)
 	require.EqualValues(t, codeTooFast, resp.Code)
-	if resp.X != 10 || resp.Y != 10 {
-		t.Fatalf("authority = (%d,%d), want (10,10)", resp.X, resp.Y)
-	}
-	if e := sc.ents[1]; e.x != 10 || e.y != 10 {
-		t.Fatalf("entity moved despite rejection: (%d,%d)", e.x, e.y)
-	}
+	require.EqualValues(t, 10, resp.X, fmt.Sprintf("authority = (%d,%d), want (10,10)", resp.X, resp.Y))
+	require.EqualValues(t, 10, resp.Y)
+	e := sc.ents[1]
+	require.EqualValues(t, 10, e.x, fmt.Sprintf("entity moved despite rejection: (%d,%d)", e.x, e.y))
+	require.EqualValues(t, 10, e.y)
 }
 
 // TestMoveBroadcastsToOthers 移动广播给场景内其他玩家，不回给自己。
@@ -209,12 +202,11 @@ func TestMoveBroadcastsToOthers(t *testing.T) {
 	waitResult(t, c2)
 	push := waitPush(t, c1)
 	var notify gamev1.SceneEntityNotify
-	if err := proto.Unmarshal(push.Body, &notify); err != nil {
-		t.Fatal(err)
-	}
-	if notify.Type != 2 || notify.Entity.PlayerId != 2 || notify.Entity.X != 22 {
-		t.Fatalf("notify = %s", notify.String())
-	}
+	err := proto.Unmarshal(push.Body, &notify)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, notify.Type, fmt.Sprintf("notify = %s", notify.String()))
+	require.EqualValues(t, 2, notify.Entity.PlayerId)
+	require.EqualValues(t, 22, notify.Entity.X)
 }
 
 // TestLeaveIsIdempotent 离开幂等；离开后广播 Leave。
@@ -233,9 +225,8 @@ func TestLeaveIsIdempotent(t *testing.T) {
 	push := waitPush(t, c1)
 	var notify gamev1.SceneEntityNotify
 	_ = proto.Unmarshal(push.Body, &notify)
-	if notify.Type != 3 || notify.Entity.PlayerId != 2 {
-		t.Fatalf("leave notify = %s", notify.String())
-	}
+	require.EqualValues(t, 3, notify.Type, fmt.Sprintf("leave notify = %s", notify.String()))
+	require.EqualValues(t, 2, notify.Entity.PlayerId)
 
 	// 重复离开：不报错、不广播。
 	send(t, sys, scPID, &LeaveMsg{PlayerID: 2})
@@ -262,10 +253,10 @@ func TestSyncReturnsFullView(t *testing.T) {
 	send(t, sys, scPID, &SyncMsg{PlayerID: 1, PID: p1})
 	r := waitResult(t, c1)
 	var resp gamev1.SceneSyncResp
-	if err := proto.Unmarshal(r.Body, &resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp.Code != codeOK || resp.X != 10 || len(resp.Entities) != 1 || resp.Entities[0].PlayerId != 2 {
-		t.Fatalf("sync resp = %s", resp.String())
-	}
+	err := proto.Unmarshal(r.Body, &resp)
+	require.NoError(t, err)
+	require.EqualValues(t, codeOK, resp.Code, fmt.Sprintf("sync resp = %s", resp.String()))
+	require.EqualValues(t, 10, resp.X)
+	require.Len(t, resp.Entities, 1)
+	require.EqualValues(t, 2, resp.Entities[0].PlayerId)
 }

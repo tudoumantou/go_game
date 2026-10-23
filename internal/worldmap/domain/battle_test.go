@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
@@ -58,14 +59,10 @@ func TestFakeResolverDeterministic(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		got, err := r.Resolve(context.Background(), in)
 		require.NoError(t, err)
-		if !reflect.DeepEqual(first, got) {
-			t.Fatalf("第 %d 次结果与首次不一致:\nfirst=%+v\ngot=%+v", i, first, got)
-		}
+		require.False(t, !reflect.DeepEqual(first, got), fmt.Sprintf("第 %d 次结果与首次不一致:\nfirst=%+v\ngot=%+v", i, first, got))
 	}
 	// 胜者必须是双方之一，且与 AttackerWon 自洽。
-	if first.WinnerID != in.AttackerID && first.WinnerID != in.DefenderID {
-		t.Fatalf("胜者 %d 不是攻守任何一方", first.WinnerID)
-	}
+	require.False(t, first.WinnerID != in.AttackerID && first.WinnerID != in.DefenderID, fmt.Sprintf("胜者 %d 不是攻守任何一方", first.WinnerID))
 	wantWon := first.WinnerID == in.AttackerID
 	require.EqualValues(t, wantWon, first.AttackerWon)
 	require.EqualValues(t, in.ResolveAtMS, first.AppliedAtMS)
@@ -96,9 +93,7 @@ func TestFakeResolverSeedVariation(t *testing.T) {
 		require.NoError(t, err)
 		seen[outcome{got.WinnerID, got.AttackerWon}] = true
 	}
-	if len(seen) < 2 {
-		t.Fatalf("16 个种子只产生 %d 种结果，随机性不足", len(seen))
-	}
+	require.False(t, len(seen) < 2, fmt.Sprintf("16 个种子只产生 %d 种结果，随机性不足", len(seen)))
 
 	// 相同 seed、不同 input_hash 同样应产生不同结果：
 	// hash 参与随机流派生，改参数必须改结果。
@@ -110,9 +105,7 @@ func TestFakeResolverSeedVariation(t *testing.T) {
 		require.NoError(t, err)
 		hashSeen[outcome{got.WinnerID, got.AttackerWon}] = true
 	}
-	if len(hashSeen) < 2 {
-		t.Fatalf("16 个 hash 变体只产生 %d 种结果，派生不敏感", len(hashSeen))
-	}
+	require.False(t, len(hashSeen) < 2, fmt.Sprintf("16 个 hash 变体只产生 %d 种结果，派生不敏感", len(hashSeen)))
 }
 
 // TestFakeResolverRejects 验证输入校验与 ctx 取消路径。
@@ -157,9 +150,7 @@ func TestFakeResolverRejects(t *testing.T) {
 			require.Error(t, err)
 			// errors.Is 穿透 %w 包装链；context.Canceled 经
 			// fmt.Errorf %w 包装后同样可判定。
-			if !isErr(err, tc.wantErr) {
-				t.Fatalf("错误类型不符: got %v, want %v", err, tc.wantErr)
-			}
+			require.False(t, !isErr(err, tc.wantErr), fmt.Sprintf("错误类型不符: got %v, want %v", err, tc.wantErr))
 		})
 	}
 }
@@ -202,19 +193,13 @@ func TestApplyBattleResultPending(t *testing.T) {
 
 	got, err := ApplyBattleResult(rec, attacker, defender, res, "op-7001")
 	require.NoError(t, err, "ApplyBattleResult 失败")
-	if !reflect.DeepEqual(got, res) {
-		t.Fatalf("返回结果与传入不一致:\ngot=%+v\nwant=%+v", got, res)
-	}
+	require.False(t, !reflect.DeepEqual(got, res), fmt.Sprintf("返回结果与传入不一致:\ngot=%+v\nwant=%+v", got, res))
 	require.EqualValues(t, BattleStatusResolved, rec.Status)
-	if rec.Result == nil || !reflect.DeepEqual(*rec.Result, res) {
-		t.Fatalf("记录结果未正确写入: %+v", rec.Result)
-	}
+	require.False(t, rec.Result == nil || !reflect.DeepEqual(*rec.Result, res), fmt.Sprintf("记录结果未正确写入: %+v", rec.Result))
 	require.EqualValues(t, "op-7001", rec.AppliedOperationID)
 	// 记录里的结果必须是拷贝：外部改 res 不能污染已生效事实。
 	res.WinnerID = 9999
-	if rec.Result.WinnerID == 9999 {
-		t.Fatal("记录结果与传入结果共享指针")
-	}
+	require.NotEqualValues(t, 9999, rec.Result.WinnerID, "记录结果与传入结果共享指针")
 
 	for _, tt := range []struct {
 		name  string
@@ -222,15 +207,12 @@ func TestApplyBattleResultPending(t *testing.T) {
 	}{{"攻方", attacker}, {"守方", defender}} {
 		require.EqualValues(t, TroopPhaseReturning, tt.troop.Phase)
 		require.EqualValues(t, "", tt.troop.BattleID)
-		if !tt.troop.Busy.Idle() {
-			t.Errorf("%s Busy 未解除: %+v", tt.name, tt.troop.Busy)
-		}
+		require.False(t, !tt.troop.Busy.Idle(), fmt.Sprintf("%s Busy 未解除: %+v", tt.name, tt.troop.Busy))
 	}
 	// 败者保留 Cargo 回城（9.5：先保留货物及交接单，
 	// 不能先把 Cargo 清零再尝试发奖）。
-	if attacker.Cargo[9001] != 5 || defender.Cargo[9002] != 3 {
-		t.Fatalf("Cargo 被篡改: attacker=%v defender=%v", attacker.Cargo, defender.Cargo)
-	}
+	require.EqualValues(t, 5, attacker.Cargo[9001], fmt.Sprintf("Cargo 被篡改: attacker=%v defender=%v", attacker.Cargo, defender.Cargo))
+	require.EqualValues(t, 3, defender.Cargo[9002])
 }
 
 // TestApplyBattleResultLateDoesNotOverride 验证 INV-06：
@@ -270,9 +252,7 @@ func TestApplyBattleResultLateDoesNotOverride(t *testing.T) {
 			got, err := ApplyBattleResult(rec, attacker, defender, late, "op-late")
 			require.NoError(t, err, "ApplyBattleResult 失败")
 			require.EqualValues(t, tc.wantWinner, got.WinnerID)
-			if got.AttackerWon {
-				t.Fatal("迟到结果不应让攻击方获胜")
-			}
+			require.False(t, got.AttackerWon, "迟到结果不应让攻击方获胜")
 			// 部队状态必须保持首次生效时的样子。
 			for _, tt := range []struct {
 				name  string
@@ -300,9 +280,7 @@ func TestApplyBattleResultIdempotent(t *testing.T) {
 	require.NoError(t, err, "首次应用失败")
 	second, err := ApplyBattleResult(rec, attacker, defender, res, "op-2")
 	require.NoError(t, err, "二次应用失败")
-	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("两次返回不一致:\nfirst=%+v\nsecond=%+v", first, second)
-	}
+	require.False(t, !reflect.DeepEqual(first, second), fmt.Sprintf("两次返回不一致:\nfirst=%+v\nsecond=%+v", first, second))
 	require.EqualValues(t, "op-1", rec.AppliedOperationID)
 }
 
@@ -346,19 +324,15 @@ func TestApplyBattleResultRejects(t *testing.T) {
 				tc.mutRec(rec)
 			}
 			_, err := ApplyBattleResult(rec, attacker, defender, tc.res, "op-x")
-			if !isErr(err, tc.wantErr) {
-				t.Fatalf("错误类型不符: got %v, want %v", err, tc.wantErr)
-			}
+			require.False(t, !isErr(err, tc.wantErr), fmt.Sprintf("错误类型不符: got %v, want %v", err, tc.wantErr))
 		})
 	}
 
 	// nil 入参。
-	if _, err := ApplyBattleResult(nil, nil, nil, BattleResult{}, "op"); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("nil 记录错误类型不符: %v", err)
-	}
+	_, err := ApplyBattleResult(nil, nil, nil, BattleResult{}, "op")
+	require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("nil 记录错误类型不符: %v", err))
 	_, defender := testBattleTroops()
 	rec := &BattleRecord{BattleID: "bt-1001", Status: BattleStatusPending}
-	if _, err := ApplyBattleResult(rec, nil, defender, BattleResult{WinnerID: 2001}, "op"); !isErr(err, ErrInvalidArgument) {
-		t.Fatalf("nil 攻方错误类型不符: %v", err)
-	}
+	_, err = ApplyBattleResult(rec, nil, defender, BattleResult{WinnerID: 2001}, "op")
+	require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("nil 攻方错误类型不符: %v", err))
 }

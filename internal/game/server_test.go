@@ -3,10 +3,12 @@ package game
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"game_study/pkg/config"
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 // TestOnUnbindIgnoresStaleSession 旧会话被顶号后断开：不能删除玩家→会话映射，
@@ -21,17 +23,13 @@ func TestOnUnbindIgnoresStaleSession(t *testing.T) {
 	}
 
 	// 旧会话 1 迟到解绑
-	if err := s.OnUnbind(context.Background(), 1); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.players2sess[7]; got != 2 {
-		t.Fatalf("stale unbind removed authoritative session: %d", got)
-	}
-	if _, ok := s.sessions[1]; ok {
-		t.Fatal("stale session still registered")
-	}
+	err := s.OnUnbind(context.Background(), 1)
+	require.NoError(t, err)
+	got := s.players2sess[7]
+	require.EqualValues(t, 2, got, fmt.Sprintf("stale unbind removed authoritative session: %d", got))
+	_, ok := s.sessions[1]
+	require.False(t, ok, "stale session still registered")
 	// 新会话的登记不受影响
-	if _, ok := s.sessions[2]; !ok {
-		t.Fatal("authoritative session lost")
-	}
+	_, ok = s.sessions[2]
+	require.True(t, ok, "authoritative session lost")
 }

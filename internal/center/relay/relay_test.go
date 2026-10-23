@@ -41,18 +41,16 @@ func TestRelayPointToPoint(t *testing.T) {
 	n := r.Relay(Payload{FromNode: "game-03", ToNode: "game-07", Body: []byte("hello")}, []Pusher{p})
 	require.EqualValues(t, 1, n)
 	require.EqualValues(t, 1, p.count())
-	if got := p.got[0]; got.FromNode != "game-03" || string(got.Payload) != "hello" {
-		t.Fatalf("payload mismatch: %+v", got)
-	}
+	got := p.got[0]
+	require.EqualValues(t, "game-03", got.FromNode, fmt.Sprintf("payload mismatch: %+v", got))
+	require.EqualValues(t, "hello", string(got.Payload))
 	// relay_id 自动生成
-	if p.got[0].RelayID == "" {
-		t.Fatal("relay_id should be auto-generated")
-	}
+	require.NotEqualValues(t, "", p.got[0].RelayID, "relay_id should be auto-generated")
 
 	sent, delivered, failed, _ := r.StatsSnapshot()
-	if sent != 1 || delivered != 1 || failed != 0 {
-		t.Fatalf("stats mismatch: sent=%d delivered=%d failed=%d", sent, delivered, failed)
-	}
+	require.EqualValues(t, 1, sent, fmt.Sprintf("stats mismatch: sent=%d delivered=%d failed=%d", sent, delivered, failed))
+	require.EqualValues(t, 1, delivered)
+	require.EqualValues(t, 0, failed)
 	require.EqualValues(t, 0, r.PendingCount())
 }
 
@@ -67,9 +65,8 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 	// 到期后取重试队列
 	time.Sleep(15 * time.Millisecond)
 	due := r.NextRetry(time.Now())
-	if len(due) != 1 || due[0].RelayID != "r1" {
-		t.Fatalf("expect r1 due for retry, got %+v", due)
-	}
+	require.Len(t, due, 1, fmt.Sprintf("expect r1 due for retry, got %+v", due))
+	require.EqualValues(t, "r1", due[0].RelayID)
 	// 重新投递仍失败 → 仍在 pending（等下一轮）
 	r.Relay(due[0], []Pusher{bad})
 	require.EqualValues(t, 1, r.PendingCount())
@@ -85,9 +82,7 @@ func TestRelayRetriesOnFailure(t *testing.T) {
 	}
 	require.EqualValues(t, 0, r.PendingCount())
 	_, _, failed, _ := r.StatsSnapshot()
-	if failed == 0 {
-		t.Fatal("failed counter should be positive")
-	}
+	require.NotEqualValues(t, 0, failed, "failed counter should be positive")
 }
 
 func TestRelayBroadcastNoRetry(t *testing.T) {

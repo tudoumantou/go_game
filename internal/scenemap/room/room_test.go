@@ -3,7 +3,7 @@ package room_test
 import (
 	"context"
 	"errors"
-	"strings"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -155,17 +155,15 @@ func TestOpenAndGet(t *testing.T) {
 
 	r := open(t, m, key, 1, sink)
 	require.EqualValues(t, room.StateRunning, r.CurrentState())
-	if r.MGR == nil || r.AOI == nil {
-		t.Fatal("Room 的 MGR/AOI 未装配")
-	}
+	require.NotNil(t, r.MGR, "Room 的 MGR/AOI 未装配")
+	require.NotNil(t, r.AOI)
 	got, ok := m.Get(key)
-	if !ok || got != r {
-		t.Fatalf("Get=%v,%v want 同一实例", got, ok)
-	}
+	require.True(t, ok, fmt.Sprintf("Get=%v,%v want 同一实例", got, ok))
+	require.EqualValues(t, r, got)
 	require.EqualValues(t, 1, m.Len())
-	if routes := m.List(key.MapID); len(routes) != 1 || routes[0] != 1 {
-		t.Fatalf("List=%v, want [1]", routes)
-	}
+	routes := m.List(key.MapID)
+	require.Len(t, routes, 1, fmt.Sprintf("List=%v, want [1]", routes))
+	require.EqualValues(t, 1, routes[0])
 }
 
 func TestOpenDuplicate(t *testing.T) {
@@ -174,9 +172,7 @@ func TestOpenDuplicate(t *testing.T) {
 
 	open(t, m, key, 1, sink)
 	_, err := m.Open(context.Background(), key, 1, testConfig(sink))
-	if !errors.Is(err, scenemap.ErrAlreadyExists) {
-		t.Fatalf("重复开房 err=%v, want ErrAlreadyExists", err)
-	}
+	require.False(t, !errors.Is(err, scenemap.ErrAlreadyExists), fmt.Sprintf("重复开房 err=%v, want ErrAlreadyExists", err))
 }
 
 // TestOpenConcurrentSameKey 验证占位集合：并发开同一个 Key 只有一个成功。
@@ -212,18 +208,15 @@ func TestOpenFactoryErrorRollsBack(t *testing.T) {
 	key := scenemap.MapKey{MapID: 1, CliKey: "bad"}
 
 	factory.setErr(errors.New("加载地图失败"))
-	if _, err := m.Open(context.Background(), key, 1, testConfig(sink)); err == nil {
-		t.Fatal("工厂失败时 Open 应报错")
-	}
-	if _, ok := m.Get(key); ok {
-		t.Fatal("失败后房间不应被登记")
-	}
+	_, err := m.Open(context.Background(), key, 1, testConfig(sink))
+	require.Error(t, err, "工厂失败时 Open 应报错")
+	_, ok := m.Get(key)
+	require.False(t, ok, "失败后房间不应被登记")
 	require.EqualValues(t, 1, pool.Idle())
 	// 占位必须被摘掉，否则这张图再也开不起来
 	factory.setErr(nil)
-	if _, err := m.Open(context.Background(), key, 1, testConfig(sink)); err != nil {
-		t.Fatalf("回滚后重开失败: %v", err)
-	}
+	_, err = m.Open(context.Background(), key, 1, testConfig(sink))
+	require.NoError(t, err, fmt.Sprintf("回滚后重开失败: %v", err))
 }
 
 func TestCloseReleasesAOIToPool(t *testing.T) {
@@ -239,16 +232,13 @@ func TestCloseReleasesAOIToPool(t *testing.T) {
 	}
 	require.EqualValues(t, 1, r.AOI.Len())
 
-	if err := m.Close(context.Background(), key, "test"); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if _, ok := m.Get(key); ok {
-		t.Fatal("关房后 Get 仍能查到")
-	}
+	err := m.Close(context.Background(), key, "test")
+	require.NoError(t, err, fmt.Sprintf("Close: %v", err))
+	_, ok := m.Get(key)
+	require.False(t, ok, "关房后 Get 仍能查到")
 	require.EqualValues(t, room.StateClosed, r.CurrentState())
-	if c := factory.closer.(*stubCloser); c.closeCalls.Load() != 1 {
-		t.Fatalf("MGR.Close 调用 %d 次, want 1", c.closeCalls.Load())
-	}
+	c := factory.closer.(*stubCloser)
+	require.EqualValues(t, 1, c.closeCalls.Load(), fmt.Sprintf("MGR.Close 调用 %d 次, want 1", c.closeCalls.Load()))
 	require.EqualValues(t, 1, pool.Idle())
 	require.EqualValues(t, 0, r.AOI.Len())
 }
@@ -256,9 +246,7 @@ func TestCloseReleasesAOIToPool(t *testing.T) {
 func TestCloseNotFound(t *testing.T) {
 	m, _, _, _ := newHarness(t, 1)
 	err := m.Close(context.Background(), scenemap.MapKey{MapID: 1, CliKey: "nope"}, "test")
-	if !errors.Is(err, scenemap.ErrNotFound) {
-		t.Fatalf("err=%v, want ErrNotFound", err)
-	}
+	require.False(t, !errors.Is(err, scenemap.ErrNotFound), fmt.Sprintf("err=%v, want ErrNotFound", err))
 }
 
 // TestConcurrentCloseOnlyOneWins：10 个 goroutine 同时关，
@@ -291,9 +279,8 @@ func TestConcurrentCloseOnlyOneWins(t *testing.T) {
 
 	require.EqualValues(t, 1, okCount.Load())
 	require.EqualValues(t, n-1, notFoundCount.Load())
-	if c := factory.closer.(*stubCloser); c.closeCalls.Load() != 1 {
-		t.Fatalf("MGR.Close 调用 %d 次, want 1", c.closeCalls.Load())
-	}
+	c := factory.closer.(*stubCloser)
+	require.EqualValues(t, 1, c.closeCalls.Load(), fmt.Sprintf("MGR.Close 调用 %d 次, want 1", c.closeCalls.Load()))
 	require.EqualValues(t, 1, pool.Idle())
 }
 
@@ -304,20 +291,15 @@ func TestPoolExhausted(t *testing.T) {
 
 	open(t, m, keyA, 1, sink)
 	_, err := m.Open(context.Background(), keyB, 1, testConfig(sink))
-	if !errors.Is(err, scenemap.ErrRoomPoolExhausted) {
-		t.Fatalf("池耗尽 err=%v, want ErrRoomPoolExhausted", err)
-	}
-	if _, ok := m.Get(keyA); !ok {
-		t.Fatal("开房失败不应影响已有房间")
-	}
+	require.False(t, !errors.Is(err, scenemap.ErrRoomPoolExhausted), fmt.Sprintf("池耗尽 err=%v, want ErrRoomPoolExhausted", err))
+	_, ok := m.Get(keyA)
+	require.True(t, ok, "开房失败不应影响已有房间")
 
 	// 关掉 A 腾出槽位后 B 才能开
-	if err := m.Close(context.Background(), keyA, "free"); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if _, err := m.Open(context.Background(), keyB, 1, testConfig(sink)); err != nil {
-		t.Fatalf("腾槽后开房失败: %v", err)
-	}
+	err = m.Close(context.Background(), keyA, "free")
+	require.NoError(t, err, fmt.Sprintf("Close: %v", err))
+	_, err = m.Open(context.Background(), keyB, 1, testConfig(sink))
+	require.NoError(t, err, fmt.Sprintf("腾槽后开房失败: %v", err))
 }
 
 // TestCloseJoinsErrorsButStillCleans：MGR 关失败也要继续关 AOI、还要还池，
@@ -329,12 +311,10 @@ func TestCloseJoinsErrorsButStillCleans(t *testing.T) {
 	open(t, m, key, 1, sink)
 
 	err := m.Close(context.Background(), key, "test")
-	if err == nil || !strings.Contains(err.Error(), "mgr boom") {
-		t.Fatalf("err=%v, 应包含 MGR 的失败原因", err)
-	}
-	if _, ok := m.Get(key); ok {
-		t.Fatal("即使失败，房间也必须从登记表摘除（否则永远关不掉）")
-	}
+	require.Error(t, err, fmt.Sprintf("err=%v, 应包含 MGR 的失败原因", err))
+	require.Contains(t, err.Error(), "mgr boom")
+	_, ok := m.Get(key)
+	require.False(t, ok, "即使失败，房间也必须从登记表摘除（否则永远关不掉）")
 	require.EqualValues(t, 1, pool.Idle())
 }
 
@@ -353,16 +333,14 @@ func TestListRoutes(t *testing.T) {
 		require.EqualValues(t, want[i], routes[i])
 	}
 
-	if err := m.Close(context.Background(), scenemap.MapKey{MapID: mapID, CliKey: "b"}, "test"); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if routes := m.List(mapID); len(routes) != 2 || routes[0] != 2 {
-		t.Fatalf("关房后 List=%v, want [2 3]", routes)
-	}
+	err := m.Close(context.Background(), scenemap.MapKey{MapID: mapID, CliKey: "b"}, "test")
+	require.NoError(t, err, fmt.Sprintf("Close: %v", err))
+	routes = m.List(mapID)
+	require.Len(t, routes, 2, fmt.Sprintf("关房后 List=%v, want [2 3]", routes))
+	require.EqualValues(t, 2, routes[0])
 	// 未开过的地图返回空
-	if routes := m.List(999); routes != nil {
-		t.Fatalf("List(999)=%v, want nil", routes)
-	}
+	routes = m.List(999)
+	require.Nil(t, routes, fmt.Sprintf("List(999)=%v, want nil", routes))
 }
 
 func TestNodeDownRoutesToCrossNodeRooms(t *testing.T) {
@@ -375,22 +353,19 @@ func TestNodeDownRoutesToCrossNodeRooms(t *testing.T) {
 	// 两个跨节点房间，Node 不同；每次开房换一个工厂，便于分别观察
 	c1 := &nodeCloser{}
 	m.SetFactory(&stubFactory{closer: c1})
-	if _, err := m.Open(context.Background(), scenemap.MapKey{MapID: 1, CliKey: "x", Node: "n1"}, 1, testConfig(sink)); err != nil {
-		t.Fatalf("Open n1: %v", err)
-	}
+	_, err := m.Open(context.Background(), scenemap.MapKey{MapID: 1, CliKey: "x", Node: "n1"}, 1, testConfig(sink))
+	require.NoError(t, err, fmt.Sprintf("Open n1: %v", err))
 	c2 := &nodeCloser{}
 	m.SetFactory(&stubFactory{closer: c2})
-	if _, err := m.Open(context.Background(), scenemap.MapKey{MapID: 1, CliKey: "y", Node: "n2"}, 1, testConfig(sink)); err != nil {
-		t.Fatalf("Open n2: %v", err)
-	}
+	_, err = m.Open(context.Background(), scenemap.MapKey{MapID: 1, CliKey: "y", Node: "n2"}, 1, testConfig(sink))
+	require.NoError(t, err, fmt.Sprintf("Open n2: %v", err))
 
-	if err := m.NodeDown(context.Background(), []string{"n1"}); err != nil {
-		t.Fatalf("NodeDown: %v", err)
-	}
+	err = m.NodeDown(context.Background(), []string{"n1"})
+	require.NoError(t, err, fmt.Sprintf("NodeDown: %v", err))
 	require.EqualValues(t, 1, c1.nodeCalls.Load())
-	if got, _ := c1.nodes.Load().([]string); len(got) != 1 || got[0] != "n1" {
-		t.Fatalf("nodes=%v, want [n1]", got)
-	}
+	got, _ := c1.nodes.Load().([]string)
+	require.Len(t, got, 1, fmt.Sprintf("nodes=%v, want [n1]", got))
+	require.EqualValues(t, "n1", got[0])
 	// n2 不在通知列表里，不应被打扰
 	require.EqualValues(t, 0, c2.nodeCalls.Load())
 }
@@ -414,9 +389,8 @@ func TestNodeDownFallbackBroadcast(t *testing.T) {
 	}
 	sink.reset()
 
-	if err := m.NodeDown(context.Background(), []string{"n1"}); err != nil {
-		t.Fatalf("NodeDown: %v", err)
-	}
+	err := m.NodeDown(context.Background(), []string{"n1"})
+	require.NoError(t, err, fmt.Sprintf("NodeDown: %v", err))
 	// 兜底广播走 AOI 的异步邮箱，这里等它落地（最多 2s）
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -437,7 +411,5 @@ func TestOpenRequiresFactory(t *testing.T) {
 
 	m := room.NewManager(pool, nil, nil)
 	_, err := m.Open(context.Background(), scenemap.MapKey{MapID: 1, CliKey: "nofactory"}, 1, testConfig(sink))
-	if !errors.Is(err, scenemap.ErrInvalidState) {
-		t.Fatalf("err=%v, want ErrInvalidState", err)
-	}
+	require.False(t, !errors.Is(err, scenemap.ErrInvalidState), fmt.Sprintf("err=%v, want ErrInvalidState", err))
 }

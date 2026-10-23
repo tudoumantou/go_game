@@ -3,6 +3,7 @@ package actor
 
 import (
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"sync/atomic"
 	"testing"
@@ -44,18 +45,15 @@ func TestDrainWaitsForInFlight(t *testing.T) {
 	require.NoError(t, err)
 	const n = 50
 	for i := 0; i < n; i++ {
-		if err := sys.Send(pid, i); err != nil {
-			t.Fatal(err)
-		}
+		err := sys.Send(pid, i)
+		require.NoError(t, err)
 	}
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer drainCancel()
-	if err := sys.Drain(drainCtx); err != nil {
-		t.Fatalf("drain: %v", err)
-	}
-	if got := a.done.Load(); got != n {
-		t.Fatalf("drain returned before handlers finished: %d/%d", got, n)
-	}
+	err = sys.Drain(drainCtx)
+	require.NoError(t, err, fmt.Sprintf("drain: %v", err))
+	got := a.done.Load()
+	require.EqualValues(t, n, got, fmt.Sprintf("drain returned before handlers finished: %d/%d", got, n))
 }
 
 // TestDrainTimesOut 处理中的消息超过截止时间时，Drain 必须如实报错，
@@ -70,9 +68,8 @@ func TestDrainTimesOut(t *testing.T) {
 	a := &slowActor{delay: 200 * time.Millisecond, started: make(chan struct{}, 1)}
 	pid, err := sys.Spawn("slow", a)
 	require.NoError(t, err)
-	if err := sys.Send(pid, 1); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(pid, 1)
+	require.NoError(t, err)
 	select {
 	case <-a.started:
 	case <-time.After(time.Second):
@@ -80,15 +77,13 @@ func TestDrainTimesOut(t *testing.T) {
 	}
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer drainCancel()
-	if err := sys.Drain(drainCtx); err == nil {
-		t.Fatal("drain should time out while a handler is still running")
-	}
+	err = sys.Drain(drainCtx)
+	require.Error(t, err, "drain should time out while a handler is still running")
 }
 
 // TestDrainIdleSystem 空系统立即返回，不引入固定等待。
 func TestDrainIdleSystem(t *testing.T) {
 	sys := NewSystem(Config{ShardCount: 4})
-	if err := sys.Drain(context.Background()); err != nil {
-		t.Fatalf("idle drain: %v", err)
-	}
+	err := sys.Drain(context.Background())
+	require.NoError(t, err, fmt.Sprintf("idle drain: %v", err))
 }

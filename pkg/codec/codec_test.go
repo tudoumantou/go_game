@@ -4,6 +4,7 @@ package codec
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 
 	gatev1 "game_study/pkg/pb/gate/v1"
@@ -26,9 +27,7 @@ func TestPacketEncodeDecode(t *testing.T) {
 	require.EqualValues(t, HeaderSize+len(p.Body), length)
 	got, err := DecodePacket(buf[LengthFieldSize:])
 	require.NoError(t, err, "decode")
-	if got.MsgID != p.MsgID || got.Seq != p.Seq || !bytes.Equal(got.Body, p.Body) {
-		t.Fatalf("decode mismatch: %+v", got)
-	}
+	require.False(t, got.MsgID != p.MsgID || got.Seq != p.Seq || !bytes.Equal(got.Body, p.Body), fmt.Sprintf("decode mismatch: %+v", got))
 }
 
 // TestMessageRegistry 验证 Create 返回**正确类型**的空消息实例。
@@ -43,9 +42,8 @@ func TestMessageRegistry(t *testing.T) {
 
 	m, err := r.Create(1001)
 	require.NoError(t, err, "create")
-	if _, ok := m.(*gatev1.HandshakeReq); !ok {
-		t.Fatalf("type mismatch")
-	}
+	_, ok := m.(*gatev1.HandshakeReq)
+	require.True(t, ok, "type mismatch")
 }
 
 // TestHandlerRegistry 验证 Handle 按 MsgID 路由到注册的 handler。
@@ -59,8 +57,7 @@ func TestHandlerRegistry(t *testing.T) {
 		called = true
 		return nil
 	})
-	if err := r.Handle(context.Background(), 1001, &gatev1.HandshakeReq{}); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
+	err := r.Handle(context.Background(), 1001, &gatev1.HandshakeReq{})
+	require.NoError(t, err, fmt.Sprintf("handle: %v", err))
 	require.True(t, called, "handler not called")
 }

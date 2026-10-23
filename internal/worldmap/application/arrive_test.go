@@ -6,6 +6,7 @@ package application
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"game_study/internal/worldmap/domain"
@@ -39,13 +40,11 @@ func TestPlanArrive(t *testing.T) {
 				}), Command{Kind: CmdArrive, Arrive: ArriveParams{TroopID: 200, MoveID: "m-old"}}
 			},
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
-				if len(plan.ObjectsUpsert) != 0 || len(plan.CollectStart) != 0 || len(plan.BattleUpsert) != 0 {
-					t.Fatalf("过期任务不得改任何状态")
-				}
+				require.Empty(t, plan.ObjectsUpsert, "过期任务不得改任何状态")
+				require.Empty(t, plan.CollectStart)
+				require.Empty(t, plan.BattleUpsert)
 				m := receiptMap(t, plan)
-				if !jsonBool(t, m, "stale") {
-					t.Fatalf("回执=%v", m)
-				}
+				require.False(t, !jsonBool(t, m, "stale"), fmt.Sprintf("回执=%v", m))
 				require.EqualValues(t, domain.CodeOK, plan.CommandReceipt.ResultCode)
 			},
 		},
@@ -61,9 +60,8 @@ func TestPlanArrive(t *testing.T) {
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				require.EqualValues(t, domain.CodeObjectNotFound, plan.CommandReceipt.ResultCode)
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok || up.Troop.Phase != domain.TroopPhaseReturning {
-					t.Fatalf("目标消失必须回城")
-				}
+				require.True(t, ok, "目标消失必须回城")
+				require.EqualValues(t, domain.TroopPhaseReturning, up.Troop.Phase)
 				require.EqualValues(t, (domain.Pos{X: 0, Y: 0}), up.Troop.Move.To)
 			},
 		},
@@ -80,9 +78,8 @@ func TestPlanArrive(t *testing.T) {
 				require.EqualValues(t, domain.CodeCapacityExhausted, plan.CommandReceipt.ResultCode)
 				require.Len(t, plan.CollectStart, 0, "不得为空资源建会话")
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok || up.Troop.Phase != domain.TroopPhaseReturning {
-					t.Fatalf("必须回城")
-				}
+				require.True(t, ok, "必须回城")
+				require.EqualValues(t, domain.TroopPhaseReturning, up.Troop.Phase)
 			},
 		},
 		{
@@ -100,18 +97,15 @@ func TestPlanArrive(t *testing.T) {
 				require.EqualValues(t, h.rules.CollectRateMilliPerSec, sess.RateMilliItemsPerSec)
 				// capacity=100、cargo=0、remaining=100 → planned=100，
 				// need_ms = ceil(100*1e6/2500) = 40000。
-				if sess.PlannedQty != 100 || sess.EndAtMS != 50000 {
-					t.Fatalf("会话=%+v", sess)
-				}
+				require.EqualValues(t, 100, sess.PlannedQty, fmt.Sprintf("会话=%+v", sess))
+				require.EqualValues(t, 50000, sess.EndAtMS)
 				require.EqualValues(t, domain.CollectStatusActive, sess.Status)
 				resUp, ok := findUpsert(plan, domain.ObjectKindResource)
-				if !ok || resUp.Resource.ActiveCollectID != sess.ID {
-					t.Fatalf("资源未绑定活动会话: %+v", resUp.Resource)
-				}
+				require.True(t, ok, fmt.Sprintf("资源未绑定活动会话: %+v", resUp.Resource))
+				require.EqualValues(t, sess.ID, resUp.Resource.ActiveCollectID)
 				trUp, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok || trUp.Troop.Phase != domain.TroopPhaseCollecting {
-					t.Fatalf("部队未转 COLLECTING")
-				}
+				require.True(t, ok, "部队未转 COLLECTING")
+				require.EqualValues(t, domain.TroopPhaseCollecting, trUp.Troop.Phase)
 				require.Nil(t, trUp.Troop.Move, "采集阶段应清 Move")
 				m := receiptMap(t, plan)
 				require.EqualValues(t, sess.ID, jsonStr(t, m, "session_id"))
@@ -138,9 +132,8 @@ func TestPlanArrive(t *testing.T) {
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				require.EqualValues(t, domain.CodeTargetOccupied, plan.CommandReceipt.ResultCode)
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok || up.Troop.Phase != domain.TroopPhaseReturning {
-					t.Fatalf("必须回城，不排采集 FIFO")
-				}
+				require.True(t, ok, "必须回城，不排采集 FIFO")
+				require.EqualValues(t, domain.TroopPhaseReturning, up.Troop.Phase)
 			},
 		},
 		{
@@ -165,24 +158,19 @@ func TestPlanArrive(t *testing.T) {
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				require.Len(t, plan.BattleUpsert, 1)
 				rec := plan.BattleUpsert[0]
-				if rec.Status != domain.BattleStatusPending || rec.DeadlineMS != 10000+h.rules.BattleTimeoutMS {
-					t.Fatalf("战斗记录=%+v", rec)
-				}
-				if rec.AttackerID != 200 || rec.DefenderID != 900 || rec.TargetID != 1000 {
-					t.Fatalf("攻守/目标=%+v", rec)
-				}
+				require.EqualValues(t, domain.BattleStatusPending, rec.Status, fmt.Sprintf("战斗记录=%+v", rec))
+				require.EqualValues(t, 10000+h.rules.BattleTimeoutMS, rec.DeadlineMS)
+				require.EqualValues(t, 200, rec.AttackerID, fmt.Sprintf("攻守/目标=%+v", rec))
+				require.EqualValues(t, 900, rec.DefenderID)
+				require.EqualValues(t, 1000, rec.TargetID)
 				require.EqualValues(t, 55, rec.DefenderStats.Attack)
-				if rec.InputHash == ([32]byte{}) {
-					t.Fatalf("InputHash 不能为空")
-				}
+				require.NotEqualValues(t, ([32]byte{}), rec.InputHash, "InputHash 不能为空")
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
 				require.True(t, ok, "缺少部队 upsert")
-				if up.Troop.Phase != domain.TroopPhaseFighting || up.Troop.BattleID != rec.BattleID {
-					t.Fatalf("部队未进战斗: %+v", up.Troop)
-				}
-				if up.Troop.Busy.Reason != domain.BusyReasonBattle || up.Troop.Busy.OpID != rec.BattleID {
-					t.Fatalf("Busy=%+v", up.Troop.Busy)
-				}
+				require.EqualValues(t, domain.TroopPhaseFighting, up.Troop.Phase, fmt.Sprintf("部队未进战斗: %+v", up.Troop))
+				require.EqualValues(t, rec.BattleID, up.Troop.BattleID)
+				require.EqualValues(t, domain.BusyReasonBattle, up.Troop.Busy.Reason, fmt.Sprintf("Busy=%+v", up.Troop.Busy))
+				require.EqualValues(t, rec.BattleID, up.Troop.Busy.OpID)
 			},
 		},
 		{
@@ -212,23 +200,16 @@ func TestPlanArrive(t *testing.T) {
 				require.Len(t, plan.BattleUpsert, 0)
 				require.Len(t, plan.QueueEnqueue, 1)
 				en := plan.QueueEnqueue[0]
-				if en.TargetID != 1000 || en.TroopID != 200 {
-					t.Fatalf("入队记录=%+v", en)
-				}
-				if en.Seq <= 0 {
-					t.Fatalf("入队序号必须为正（FIFO 依据）: %d", en.Seq)
-				}
+				require.EqualValues(t, 1000, en.TargetID, fmt.Sprintf("入队记录=%+v", en))
+				require.EqualValues(t, 200, en.TroopID)
+				require.False(t, en.Seq <= 0, fmt.Sprintf("入队序号必须为正（FIFO 依据）: %d", en.Seq))
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok || up.Troop.Phase != domain.TroopPhaseQueued {
-					t.Fatalf("部队未进队列")
-				}
-				if up.Troop.BattleID != "" || up.Troop.Busy.Reason != domain.BusyReasonNone {
-					t.Fatalf("排队不得挂战斗锁: %+v", up.Troop)
-				}
+				require.True(t, ok, "部队未进队列")
+				require.EqualValues(t, domain.TroopPhaseQueued, up.Troop.Phase)
+				require.EqualValues(t, "", up.Troop.BattleID, fmt.Sprintf("排队不得挂战斗锁: %+v", up.Troop))
+				require.EqualValues(t, domain.BusyReasonNone, up.Troop.Busy.Reason)
 				m := receiptMap(t, plan)
-				if !jsonBool(t, m, "queued") || jsonStr(t, m, "battle_id") != "battle-live" {
-					t.Fatalf("回执=%v", m)
-				}
+				require.False(t, !jsonBool(t, m, "queued") || jsonStr(t, m, "battle_id") != "battle-live", fmt.Sprintf("回执=%v", m))
 				require.EqualValues(t, en.Seq, jsonInt(t, m, "enqueue_seq"))
 			},
 		},
@@ -258,9 +239,8 @@ func TestPlanArrive(t *testing.T) {
 				require.EqualValues(t, domain.CodeQueueFull, plan.CommandReceipt.ResultCode)
 				require.Len(t, plan.BattleUpsert, 0, "队列满不得再写战斗记录")
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
-				if !ok || up.Troop.Phase != domain.TroopPhaseReturning {
-					t.Fatalf("必须回城")
-				}
+				require.True(t, ok, "必须回城")
+				require.EqualValues(t, domain.TroopPhaseReturning, up.Troop.Phase)
 			},
 		},
 		{
@@ -278,13 +258,11 @@ func TestPlanArrive(t *testing.T) {
 			check: func(t *testing.T, h *harness, plan *domain.MutationPlan) {
 				require.Len(t, plan.DeliveryCreate, 1)
 				d := plan.DeliveryCreate[0]
-				if d.Status != domain.DeliveryStatusPending || d.PlayerID != 1 {
-					t.Fatalf("交接单=%+v", d)
-				}
+				require.EqualValues(t, domain.DeliveryStatusPending, d.Status, fmt.Sprintf("交接单=%+v", d))
+				require.EqualValues(t, 1, d.PlayerID)
 				require.EqualValues(t, 3, d.SettlementNo)
-				if d.Cargo[101] != 5 || d.Cargo[102] != 2 {
-					t.Fatalf("交接单 Cargo=%v", d.Cargo)
-				}
+				require.EqualValues(t, 5, d.Cargo[101], fmt.Sprintf("交接单 Cargo=%v", d.Cargo))
+				require.EqualValues(t, 2, d.Cargo[102])
 				require.EqualValues(t, cargoHash(d.Cargo), d.PayloadHash, "PayloadHash 与 Cargo 不一致")
 				up, ok := findUpsert(plan, domain.ObjectKindTroop)
 				require.True(t, ok, "缺少部队 upsert")
@@ -292,9 +270,8 @@ func TestPlanArrive(t *testing.T) {
 				require.EqualValues(t, domain.TroopPhaseSettling, tr.Phase)
 				require.EqualValues(t, d.DeliveryID, tr.SettlementID)
 				// 文档 9.5：先留货再交接，Cargo 不能在到达时清空。
-				if tr.Cargo[101] != 5 || tr.Cargo[102] != 2 {
-					t.Fatalf("Cargo 被提前清空: %v", tr.Cargo)
-				}
+				require.EqualValues(t, 5, tr.Cargo[101], fmt.Sprintf("Cargo 被提前清空: %v", tr.Cargo))
+				require.EqualValues(t, 2, tr.Cargo[102])
 				require.Nil(t, tr.Move, "SETTLING 应清除 Move")
 				require.EqualValues(t, 4, tr.Header.Version)
 			},
@@ -308,9 +285,7 @@ func TestPlanArrive(t *testing.T) {
 			snap, cmd := tc.build(t)
 			plan, err := h.planner.Plan(snap, testEnv(1, "req-arrive-"+tc.name, 1), cmd, tc.nowMS)
 			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("err=%v, want %v", err, tc.wantErr)
-				}
+				require.False(t, !errors.Is(err, tc.wantErr), fmt.Sprintf("err=%v, want %v", err, tc.wantErr))
 				return
 			}
 			require.NoError(t, err, "意外错误")
@@ -325,7 +300,5 @@ func TestPlanArriveTroopMissing(t *testing.T) {
 	snap := snapshot(SnapshotOptions{Objects: []domain.ObjectSnapshot{cityObject(100, 1, 0, 0)}})
 	_, err := h.planner.Plan(snap, testEnv(1, "req-arrive-missing", 1),
 		Command{Kind: CmdArrive, Arrive: ArriveParams{TroopID: 404, MoveID: "m"}}, 1000)
-	if !errors.Is(err, domain.ErrObjectNotFound) {
-		t.Fatalf("err=%v", err)
-	}
+	require.False(t, !errors.Is(err, domain.ErrObjectNotFound), fmt.Sprintf("err=%v", err))
 }

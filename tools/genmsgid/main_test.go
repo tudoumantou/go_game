@@ -6,6 +6,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
@@ -18,9 +19,8 @@ func writeProto(t *testing.T, name, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	p := filepath.Join(dir, name)
-	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(p, []byte(body), 0o644)
+	require.NoError(t, err)
 	return p
 }
 
@@ -51,12 +51,10 @@ message UseItemResp {}
 	decls, err := scanFile(p)
 	require.NoError(t, err, "scan")
 	require.Len(t, decls, 2)
-	if decls[0].ID != 3001 || decls[0].Name != "UseItemReq" {
-		t.Fatalf("unexpected first decl: %+v", decls[0])
-	}
-	if decls[1].ID != 3002 || decls[1].Name != "UseItemResp" {
-		t.Fatalf("unexpected second decl: %+v", decls[1])
-	}
+	require.EqualValues(t, 3001, decls[0].ID, fmt.Sprintf("unexpected first decl: %+v", decls[0]))
+	require.EqualValues(t, "UseItemReq", decls[0].Name)
+	require.EqualValues(t, 3002, decls[1].ID, fmt.Sprintf("unexpected second decl: %+v", decls[1]))
+	require.EqualValues(t, "UseItemResp", decls[1].Name)
 }
 
 // TestScanRejectsDanglingAnnotation @msg 之后不是 message（如 enum）必须报错：
@@ -66,9 +64,8 @@ func TestScanRejectsDanglingAnnotation(t *testing.T) {
 enum Color { RED = 0; }
 `)
 	_, err := scanFile(p)
-	if err == nil || !strings.Contains(err.Error(), "不是 message") {
-		t.Fatalf("dangling annotation must fail, got %v", err)
-	}
+	require.Error(t, err, fmt.Sprintf("dangling annotation must fail, got %v", err))
+	require.Contains(t, err.Error(), "不是 message")
 }
 
 // TestScanRejectsOutOfRange 号必须在 1..65535：帧头 msg_id 只有 16 位，
@@ -77,9 +74,8 @@ func TestScanRejectsOutOfRange(t *testing.T) {
 	p := writeProto(t, "bad.proto", `// @msg 70000
 message TooBig {}
 `)
-	if _, err := scanFile(p); err == nil {
-		t.Fatal("id above 65535 must be rejected at scan time")
-	}
+	_, err := scanFile(p)
+	require.Error(t, err, "id above 65535 must be rejected at scan time")
 }
 
 // TestValidateDuplicateID 同一号被两个 message 声明必须报错，且错误信息同时含
@@ -107,9 +103,8 @@ func TestValidateDuplicateName(t *testing.T) {
 		{ID: 3002, Name: "Same", File: "b.proto", Line: 3},
 	}
 	problems := validate(decls, testSegs)
-	if len(problems) != 1 || !strings.Contains(problems[0], "message 重名 Same") {
-		t.Fatalf("duplicate message name not reported: %v", problems)
-	}
+	require.Len(t, problems, 1, fmt.Sprintf("duplicate message name not reported: %v", problems))
+	require.Contains(t, problems[0], "message 重名 Same")
 }
 
 // TestValidateOutOfSegmentAndInternal 两类越界都要拦：不在任何号段内（无主号）、
@@ -129,9 +124,8 @@ func TestValidateOutOfSegmentAndInternal(t *testing.T) {
 			internal = true
 		}
 	}
-	if !noSeg || !internal {
-		t.Fatalf("segment checks missing: %v", problems)
-	}
+	require.True(t, noSeg, fmt.Sprintf("segment checks missing: %v", problems))
+	require.True(t, internal)
 }
 
 // TestGenerateIsStable 输出必须确定：同一输入两次生成逐字节相同，且常量按号排序
@@ -144,12 +138,9 @@ func TestGenerateIsStable(t *testing.T) {
 	first := generate(decls, testSegs)
 	second := generate(decls, testSegs)
 	require.EqualValues(t, second, first, "generate must be deterministic")
-	if strings.Index(first, "MsgA") > strings.Index(first, "MsgB") {
-		t.Fatal("constants should follow numeric order for stable diffs")
-	}
-	if !strings.Contains(first, "MsgA") || !strings.Contains(first, "func MsgID(") {
-		t.Fatalf("generated source missing expected pieces:\n%s", first)
-	}
+	require.False(t, strings.Index(first, "MsgA") > strings.Index(first, "MsgB"), "constants should follow numeric order for stable diffs")
+	require.Contains(t, first, "MsgA", fmt.Sprintf("generated source missing expected pieces:\n%s", first))
+	require.Contains(t, first, "func MsgID(")
 }
 
 // TestRepoProtoDeclarations 真实 proto 必须全部通过校验：
@@ -159,10 +150,7 @@ func TestRepoProtoDeclarations(t *testing.T) {
 	require.NoError(t, err, "segments")
 	decls, err := scanProtos("../../api/proto/game/v1")
 	require.NoError(t, err, "scan")
-	if len(decls) < 60 {
-		t.Fatalf("unexpectedly few declarations: %d", len(decls))
-	}
-	if problems := validate(decls, segs); len(problems) > 0 {
-		t.Fatalf("repo proto declarations invalid:\n%s", strings.Join(problems, "\n"))
-	}
+	require.False(t, len(decls) < 60, fmt.Sprintf("unexpectedly few declarations: %d", len(decls)))
+	problems := validate(decls, segs)
+	require.Empty(t, problems, fmt.Sprintf("repo proto declarations invalid:\n%s", strings.Join(problems, "\n")))
 }

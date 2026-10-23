@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -56,19 +57,16 @@ func TestCommitItemsAtomic(t *testing.T) {
 			})
 			if fail == "" {
 				require.NoError(t, err)
-				if s.GetItemCount(1001) != 35 || len(s.DirtyItems()) != 0 {
-					t.Fatal("committed reward not synchronized")
-				}
+				require.EqualValues(t, 35, s.GetItemCount(1001), "committed reward not synchronized")
+				require.Empty(t, s.DirtyItems())
 			} else {
 				require.Error(t, err, "expected failure")
-				if s.GetItemCount(1001) != 15 || s.DirtyItems()[1001] != 15 {
-					t.Fatal("failed transaction mutated memory")
-				}
+				require.EqualValues(t, 15, s.GetItemCount(1001), "failed transaction mutated memory")
+				require.EqualValues(t, 15, s.DirtyItems()[1001])
 				require.EqualValues(t, errors.Is(err, ErrCommitUnknown), (fail == "commit"))
 			}
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Fatal(err)
-			}
+			err = mock.ExpectationsWereMet()
+			require.NoError(t, err)
 		})
 	}
 }
@@ -85,18 +83,16 @@ func TestReloadItemsPreservesOtherActorState(t *testing.T) {
 	mock.ExpectQuery("SELECT id FROM player.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
 	mock.ExpectQuery("SELECT item_id, count FROM player_item").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"item_id", "count"}).AddRow(1001, 35).AddRow(1002, 1))
 	mock.ExpectCommit()
-	if err := NewRepository(&db.DB{DB: sqlDB}).ReloadItems(context.Background(), s); err != nil {
-		t.Fatal(err)
-	}
-	if s.GetItemCount(1001) != 35 || s.GetItemCount(1002) != 1 || len(s.DirtyItems()) != 0 {
-		t.Fatal("backpack not recovered")
-	}
-	if s.Profile().Level != 9 || s.Profile().Exp != 17 || s.GetAttr("atk") != 77 {
-		t.Fatal("recovery replaced unrelated player state")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = NewRepository(&db.DB{DB: sqlDB}).ReloadItems(context.Background(), s)
+	require.NoError(t, err)
+	require.EqualValues(t, 35, s.GetItemCount(1001), "backpack not recovered")
+	require.EqualValues(t, 1, s.GetItemCount(1002))
+	require.Empty(t, s.DirtyItems())
+	require.EqualValues(t, 9, s.Profile().Level, "recovery replaced unrelated player state")
+	require.EqualValues(t, 17, s.Profile().Exp)
+	require.EqualValues(t, 77, s.GetAttr("atk"))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
@@ -135,9 +131,7 @@ func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	mock.ExpectExec("INSERT INTO player_item").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(errors.New("connection lost"))
 	err = a.moduleCtx(nil).CommitItems(context.Background(), []module.ItemGrant{{ItemID: 1001, Count: 20}}, func(tx *sql.Tx) error { _, err := tx.Exec("INSERT INTO claim_test VALUES (7)"); return err })
-	if !errors.Is(err, ErrCommitUnknown) || !a.needsReload {
-		t.Fatalf("uncertainty not retained: %v", err)
-	}
+	require.False(t, !errors.Is(err, ErrCommitUnknown) || !a.needsReload, fmt.Sprintf("uncertainty not retained: %v", err))
 	// SaveMsg 必须跳过。下一条背包请求先锁行恢复，再读取新数量。
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id FROM player.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
@@ -150,25 +144,19 @@ func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	defer sys.Stop()
 	pid, err := sys.Spawn("unknown-commit", a)
 	require.NoError(t, err)
-	if err := sys.Send(pid, &SaveMsg{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sys.Send(pid, &PacketMsg{MsgID: 3003}); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(pid, &SaveMsg{})
+	require.NoError(t, err)
+	err = sys.Send(pid, &PacketMsg{MsgID: 3003})
+	require.NoError(t, err)
 	select {
 	case out := <-response:
-		if len(out.Items) != 1 || out.Items[0].Count != 35 {
-			t.Fatalf("stale backpack response: %v", out)
-		}
+		require.Len(t, out.Items, 1, fmt.Sprintf("stale backpack response: %v", out))
+		require.EqualValues(t, 35, out.Items[0].Count)
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovery response timeout")
 	}
 	sys.Stop()
-	if a.needsReload || a.state.GetAttr("atk") != 77 {
-		t.Fatal("recovery did not preserve actor state")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, a.needsReload || a.state.GetAttr("atk") != 77, "recovery did not preserve actor state")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }

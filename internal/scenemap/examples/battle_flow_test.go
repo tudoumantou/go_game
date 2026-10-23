@@ -1,6 +1,7 @@
 package examples
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -42,9 +43,8 @@ func TestBattleFlowDungeon(t *testing.T) {
 		WithGameplay(d),
 		WithBattle(func(o *battle.Options) { o.Table = table }),
 	)
-	if err := h.EnterPlayer(1, scenemap.GridPos{X: 5, Y: 5}); err != nil {
-		t.Fatalf("进图失败: %v", err)
-	}
+	err := h.EnterPlayer(1, scenemap.GridPos{X: 5, Y: 5})
+	require.NoError(t, err, fmt.Sprintf("进图失败: %v", err))
 
 	// 第一波已由 MgrInit 刷出。
 	v, err := h.Read(func(s *mgr.State) any { return len(s.NPES) })
@@ -55,9 +55,7 @@ func TestBattleFlowDungeon(t *testing.T) {
 
 	res, err := h.Cast(1, 6001, ids[0], nil)
 	require.NoError(t, err, "施法失败")
-	if !res.Accepted {
-		t.Fatalf("施法被拒: code=%d", res.Code)
-	}
+	require.False(t, !res.Accepted, fmt.Sprintf("施法被拒: code=%d", res.Code))
 
 	// 结果回路：击杀者主人（玩家）收到 MonDeadEvent；玩法收到 HandleNpcDead。
 	waitFor(t, 2*time.Second, "怪物死亡事件", func() bool {
@@ -72,9 +70,8 @@ func TestBattleFlowDungeon(t *testing.T) {
 		return countHarmBroadcasts(h, 1) > 0
 	})
 	// 波次推进：击杀数 1，当前波次 2。
-	if d.Killed != 1 || d.CurrentWave != 2 {
-		t.Fatalf("波次未推进: killed=%d wave=%d", d.Killed, d.CurrentWave)
-	}
+	require.EqualValues(t, 1, d.Killed, fmt.Sprintf("波次未推进: killed=%d wave=%d", d.Killed, d.CurrentWave))
+	require.EqualValues(t, 2, d.CurrentWave)
 	// 第二波怪已刷出，且尸体已被清出 NPES（leave 命令收口）。
 	waitFor(t, 2*time.Second, "第二波刷出", func() bool {
 		nv, err := h.Read(func(s *mgr.State) any { return len(s.NPES) })
@@ -97,17 +94,12 @@ func TestLaunchDoesNotBroadcast(t *testing.T) {
 		WithGameplay(d),
 		WithBattle(func(o *battle.Options) { o.Table = table }),
 	)
-	if err := h.EnterPlayer(1, scenemap.GridPos{X: 5, Y: 5}); err != nil {
-		t.Fatalf("进图失败: %v", err)
-	}
+	err := h.EnterPlayer(1, scenemap.GridPos{X: 5, Y: 5})
+	require.NoError(t, err, fmt.Sprintf("进图失败: %v", err))
 	ids := h.monsterIDs(t)
 	res, err := h.Cast(1, 6002, ids[0], nil)
-	if err != nil || !res.Accepted {
-		t.Fatalf("施法应受理: res=%+v err=%v", res, err)
-	}
-	if res.PrefixMS < 100 {
-		t.Fatalf("前摇应大于 100ms，实际 %d", res.PrefixMS)
-	}
+	require.False(t, err != nil || !res.Accepted, fmt.Sprintf("施法应受理: res=%+v err=%v", res, err))
+	require.False(t, res.PrefixMS < 100, fmt.Sprintf("前摇应大于 100ms，实际 %d", res.PrefixMS))
 	// 前摇窗口内：不应有任何飘字（用时间窗断言，避免"只是还没投递"）。
 	neverFor(t, time.Duration(res.PrefixMS/2)*time.Millisecond, "LAUNCH 阶段飘字", func() bool {
 		return countHarmBroadcasts(h, 1) > 0
@@ -129,14 +121,11 @@ func TestCityBlocksSkill(t *testing.T) {
 	h := NewHarness(t, 1003, 1,
 		WithBattle(func(o *battle.Options) { o.Table = table; o.NoBattle = true }),
 	)
-	if err := h.EnterPlayer(1, scenemap.GridPos{X: 5, Y: 5}); err != nil {
-		t.Fatalf("进图失败: %v", err)
-	}
+	err := h.EnterPlayer(1, scenemap.GridPos{X: 5, Y: 5})
+	require.NoError(t, err, fmt.Sprintf("进图失败: %v", err))
 	res, err := h.Cast(1, 6003, 0, nil)
 	require.NoError(t, err, "施法调用失败")
-	if res.Accepted || res.Code != battle.ErrCodeNoBattle {
-		t.Fatalf("主城应拒绝: %+v", res)
-	}
+	require.False(t, res.Accepted || res.Code != battle.ErrCodeNoBattle, fmt.Sprintf("主城应拒绝: %+v", res))
 	require.EqualValues(t, 0, h.Events.Len())
 }
 

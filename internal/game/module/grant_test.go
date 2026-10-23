@@ -3,6 +3,7 @@ package module
 
 import (
 	"errors"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"math"
 	"testing"
@@ -61,9 +62,8 @@ func TestGrantAppliesAndReports(t *testing.T) {
 		{ItemID: 1002, Count: 7},
 	})
 	require.NoError(t, err)
-	if st.items[1001] != 8 || st.items[1002] != 7 {
-		t.Fatalf("背包内容不符: %+v", st.items)
-	}
+	require.EqualValues(t, 8, st.items[1001], fmt.Sprintf("背包内容不符: %+v", st.items))
+	require.EqualValues(t, 7, st.items[1002])
 	require.Len(t, changes, 2)
 	// 顺序与入参一致，Count 是发放后存量而非本次数量。
 	require.EqualValues(t, (BagChange{ItemID: 1001, Count: 8, Delta: 3}), changes[0])
@@ -75,17 +75,13 @@ func TestGrantRejectsBagFullWithoutSideEffect(t *testing.T) {
 	// 容量 1，已有 1 种，再发新种类必然超。
 	st := newGrantState(1, map[int32]int64{1001: 5})
 	_, err := Grant(st, []ItemGrant{{ItemID: 2001, Count: 1}})
-	if !errors.Is(err, ErrBagFull) {
-		t.Fatalf("err = %v, want ErrBagFull", err)
-	}
-	if _, ok := st.items[2001]; ok {
-		t.Fatalf("满包拒绝后不应写入: %+v", st.items)
-	}
+	require.False(t, !errors.Is(err, ErrBagFull), fmt.Sprintf("err = %v, want ErrBagFull", err))
+	_, ok := st.items[2001]
+	require.False(t, ok, fmt.Sprintf("满包拒绝后不应写入: %+v", st.items))
 
 	// 同种道具追加种类数不变，不应被容量挡住。
-	if _, err := Grant(st, []ItemGrant{{ItemID: 1001, Count: 1}}); err != nil {
-		t.Fatalf("同种道具追加被误拒: %v", err)
-	}
+	_, err = Grant(st, []ItemGrant{{ItemID: 1001, Count: 1}})
+	require.NoError(t, err, fmt.Sprintf("同种道具追加被误拒: %v", err))
 	require.EqualValues(t, 6, st.items[1001])
 }
 
@@ -99,13 +95,10 @@ func TestGrantRejectsOverflowWithoutSideEffect(t *testing.T) {
 		{ItemID: 2001, Count: 5}, // 这一项本身合法
 		{ItemID: 1001, Count: 2}, // 这一项会溢出
 	})
-	if !errors.Is(err, ErrItemLimit) {
-		t.Fatalf("err = %v, want ErrItemLimit", err)
-	}
+	require.False(t, !errors.Is(err, ErrItemLimit), fmt.Sprintf("err = %v, want ErrItemLimit", err))
 	// 原子性：前一项也不能被写入。
-	if st.items[2001] != 0 || st.items[1001] != math.MaxInt32-1 {
-		t.Fatalf("溢出拒绝后状态被改: %+v", st.items)
-	}
+	require.EqualValues(t, 0, st.items[2001], fmt.Sprintf("溢出拒绝后状态被改: %+v", st.items))
+	require.EqualValues(t, math.MaxInt32-1, st.items[1001])
 }
 
 // TestGrantIgnoresEmptyEntries 空配置（非正 ID/数量）按不发处理，不算失败。
@@ -116,9 +109,8 @@ func TestGrantIgnoresEmptyEntries(t *testing.T) {
 		{ItemID: 1001, Count: 0},
 		{ItemID: -1, Count: 5},
 	})
-	if err != nil || changes != nil {
-		t.Fatalf("空配置应返回 nil,nil: %+v %v", changes, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("空配置应返回 nil,nil: %+v %v", changes, err))
+	require.Nil(t, changes)
 	require.Len(t, st.items, 0)
 }
 
@@ -126,29 +118,26 @@ func TestGrantIgnoresEmptyEntries(t *testing.T) {
 func TestPrecheckGrantDoesNotMutate(t *testing.T) {
 	st := newGrantState(2, map[int32]int64{1001: 10})
 	grants := []ItemGrant{{ItemID: 2001, Count: 3}}
-	if err := PrecheckGrant(st, grants); err != nil {
-		t.Fatalf("预检失败: %v", err)
-	}
-	if st.items[2001] != 0 || st.items[1001] != 10 {
-		t.Fatalf("预检改了状态: %+v", st.items)
-	}
+	err := PrecheckGrant(st, grants)
+	require.NoError(t, err, fmt.Sprintf("预检失败: %v", err))
+	require.EqualValues(t, 0, st.items[2001], fmt.Sprintf("预检改了状态: %+v", st.items))
+	require.EqualValues(t, 10, st.items[1001])
 
 	// 满包时预检报错，且同样不改状态。
 	full := newGrantState(1, map[int32]int64{1001: 1, 2001: 1})
-	if err := PrecheckGrant(full, []ItemGrant{{ItemID: 3001, Count: 1}}); !errors.Is(err, ErrBagFull) {
-		t.Fatalf("err = %v, want ErrBagFull", err)
-	}
+	err = PrecheckGrant(full, []ItemGrant{{ItemID: 3001, Count: 1}})
+	require.False(t, !errors.Is(err, ErrBagFull), fmt.Sprintf("err = %v, want ErrBagFull", err))
 }
 
 // TestToItemChanges 协议映射：ItemUid 占位、Count 取发放后存量、Change 恒 1。
 func TestToItemChanges(t *testing.T) {
-	if got := ToItemChanges(nil); got != nil {
-		t.Fatalf("nil 输入应返回 nil: %v", got)
-	}
-	got := ToItemChanges([]BagChange{{ItemID: 1001, Count: 8, Delta: 3}})
+	got := ToItemChanges(nil)
+	require.Nil(t, got, fmt.Sprintf("nil 输入应返回 nil: %v", got))
+	got = ToItemChanges([]BagChange{{ItemID: 1001, Count: 8, Delta: 3}})
 	require.Len(t, got, 1)
 	c := got[0]
-	if c.ItemUid != 1001 || c.ItemId != 1001 || c.Count != 8 || c.Change != 1 {
-		t.Fatalf("字段映射不符: %+v", c)
-	}
+	require.EqualValues(t, 1001, c.ItemUid, fmt.Sprintf("字段映射不符: %+v", c))
+	require.EqualValues(t, 1001, c.ItemId)
+	require.EqualValues(t, 8, c.Count)
+	require.EqualValues(t, 1, c.Change)
 }

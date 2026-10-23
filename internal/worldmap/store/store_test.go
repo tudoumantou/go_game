@@ -16,8 +16,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -178,18 +178,13 @@ func TestCommitNormal(t *testing.T) {
 	mock.ExpectCommit()
 
 	res := r.Commit(context.Background(), plan)
-	if !res.Committed || res.Unknown || res.Err != nil {
-		t.Fatalf("应提交成功, got %+v", res)
-	}
-	if len(res.SceneRevisions) != 1 || res.SceneRevisions[0].Revision != 6 {
-		t.Fatalf("场景 revision 应为 5+1=6, got %+v", res.SceneRevisions)
-	}
-	if len(res.ObjectVersions) != 1 || res.ObjectVersions[0].Version != 3 {
-		t.Fatalf("对象版本应回传计划版本, got %+v", res.ObjectVersions)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !res.Committed || res.Unknown || res.Err != nil, fmt.Sprintf("应提交成功, got %+v", res))
+	require.Len(t, res.SceneRevisions, 1, fmt.Sprintf("场景 revision 应为 5+1=6, got %+v", res.SceneRevisions))
+	require.EqualValues(t, 6, res.SceneRevisions[0].Revision)
+	require.Len(t, res.ObjectVersions, 1, fmt.Sprintf("对象版本应回传计划版本, got %+v", res.ObjectVersions))
+	require.EqualValues(t, 3, res.ObjectVersions[0].Version)
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- Commit：幂等 ----------
@@ -208,18 +203,14 @@ func TestCommitIdempotentHit(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if !res.Committed || res.Unknown || res.Err != nil {
-		t.Fatalf("幂等命中应返回已提交, got %+v", res)
-	}
+	require.False(t, !res.Committed || res.Unknown || res.Err != nil, fmt.Sprintf("幂等命中应返回已提交, got %+v", res))
 	// 关键：返回的是库里当前 revision，而不是「期望+1」。
 	// 若这里返回 6（5+1），上层会把内存 revision 停在 6，
 	// 但库其实已经 6，下一次提交仍会以 6 为期望——这里必须精确。
-	if len(res.SceneRevisions) != 1 || res.SceneRevisions[0].Revision != 6 {
-		t.Fatalf("幂等命中应回传当前 revision=6, got %+v", res.SceneRevisions)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.Len(t, res.SceneRevisions, 1, fmt.Sprintf("幂等命中应回传当前 revision=6, got %+v", res.SceneRevisions))
+	require.EqualValues(t, 6, res.SceneRevisions[0].Revision)
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestCommitIdempotencyConflict(t *testing.T) {
@@ -235,15 +226,10 @@ func TestCommitIdempotencyConflict(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if res.Committed || res.Unknown {
-		t.Fatalf("同键不同参不应提交, got %+v", res)
-	}
-	if !errors.Is(res.Err, domain.ErrIdempotencyConflict) {
-		t.Fatalf("应返回 ErrIdempotencyConflict, got %v", res.Err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, res.Committed || res.Unknown, fmt.Sprintf("同键不同参不应提交, got %+v", res))
+	require.False(t, !errors.Is(res.Err, domain.ErrIdempotencyConflict), fmt.Sprintf("应返回 ErrIdempotencyConflict, got %v", res.Err))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- Commit：栅栏与版本校验 ----------
@@ -260,15 +246,10 @@ func TestCommitStaleEpoch(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if !errors.Is(res.Err, ErrStaleEpoch) {
-		t.Fatalf("应返回 ErrStaleEpoch, got %v", res.Err)
-	}
-	if res.Committed || res.Unknown {
-		t.Fatalf("旧 epoch 的计划不能提交, got %+v", res)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !errors.Is(res.Err, ErrStaleEpoch), fmt.Sprintf("应返回 ErrStaleEpoch, got %v", res.Err))
+	require.False(t, res.Committed || res.Unknown, fmt.Sprintf("旧 epoch 的计划不能提交, got %+v", res))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestCommitLeaseLostOnOwnerMismatch(t *testing.T) {
@@ -282,12 +263,9 @@ func TestCommitLeaseLostOnOwnerMismatch(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if !errors.Is(res.Err, ErrLeaseLost) {
-		t.Fatalf("owner 不匹配应返回 ErrLeaseLost, got %v", res.Err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !errors.Is(res.Err, ErrLeaseLost), fmt.Sprintf("owner 不匹配应返回 ErrLeaseLost, got %v", res.Err))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestCommitStaleRevision(t *testing.T) {
@@ -307,12 +285,9 @@ func TestCommitStaleRevision(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if !errors.Is(res.Err, domain.ErrStaleVersion) {
-		t.Fatalf("应返回 ErrStaleVersion, got %v", res.Err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !errors.Is(res.Err, domain.ErrStaleVersion), fmt.Sprintf("应返回 ErrStaleVersion, got %v", res.Err))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestCommitObjectVersionConflict(t *testing.T) {
@@ -327,12 +302,9 @@ func TestCommitObjectVersionConflict(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if !errors.Is(res.Err, domain.ErrStaleVersion) {
-		t.Fatalf("对象版本不符应返回 ErrStaleVersion, got %v", res.Err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !errors.Is(res.Err, domain.ErrStaleVersion), fmt.Sprintf("对象版本不符应返回 ErrStaleVersion, got %v", res.Err))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- Commit：唯一键冲突 ----------
@@ -351,15 +323,10 @@ func TestCommitPositionOccupied(t *testing.T) {
 	mock.ExpectRollback()
 
 	res := r.Commit(context.Background(), plan)
-	if !errors.Is(res.Err, domain.ErrPositionOccupied) {
-		t.Fatalf("1062 应映射为 ErrPositionOccupied, got %v", res.Err)
-	}
-	if res.Committed || res.Unknown {
-		t.Fatalf("占位冲突必须整笔回滚, got %+v", res)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !errors.Is(res.Err, domain.ErrPositionOccupied), fmt.Sprintf("1062 应映射为 ErrPositionOccupied, got %v", res.Err))
+	require.False(t, res.Committed || res.Unknown, fmt.Sprintf("占位冲突必须整笔回滚, got %+v", res))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- Commit：结果未知 ----------
@@ -391,16 +358,11 @@ func TestCommitUnknownOnCommitError(t *testing.T) {
 	mock.ExpectCommit().WillReturnError(errors.New("driver: bad connection"))
 
 	res := r.Commit(context.Background(), plan)
-	if !res.Unknown {
-		t.Fatalf("COMMIT 出错必须返回 Unknown, got %+v", res)
-	}
-	if res.Committed {
-		t.Fatal("Unknown 不能同时标记 Committed")
-	}
+	require.False(t, !res.Unknown, fmt.Sprintf("COMMIT 出错必须返回 Unknown, got %+v", res))
+	require.False(t, res.Committed, "Unknown 不能同时标记 Committed")
 	require.NotNil(t, res.Err, "Unknown 应携带底层错误供日志/解析使用")
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- Commit：死锁重试 ----------
@@ -441,12 +403,9 @@ func TestCommitRetryOnDeadlock(t *testing.T) {
 	mock.ExpectCommit()
 
 	res := r.Commit(context.Background(), plan)
-	if !res.Committed || res.Unknown || res.Err != nil {
-		t.Fatalf("死锁后重试应成功, got %+v", res)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !res.Committed || res.Unknown || res.Err != nil, fmt.Sprintf("死锁后重试应成功, got %+v", res))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestCommitLockWaitTimeoutExhaustsRetries(t *testing.T) {
@@ -462,15 +421,10 @@ func TestCommitLockWaitTimeoutExhaustsRetries(t *testing.T) {
 	}
 
 	res := r.Commit(context.Background(), plan)
-	if res.Committed || res.Unknown {
-		t.Fatalf("锁等待超时最终应确定失败, got %+v", res)
-	}
-	if !isMySQLCode(res.Err, mysqlErrLockWaitTimeout) {
-		t.Fatalf("应保留原始 1205 错误, got %v", res.Err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, res.Committed || res.Unknown, fmt.Sprintf("锁等待超时最终应确定失败, got %+v", res))
+	require.False(t, !isMySQLCode(res.Err, mysqlErrLockWaitTimeout), fmt.Sprintf("应保留原始 1205 错误, got %v", res.Err))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestCommitSkipsRetryWhenContextCanceled(t *testing.T) {
@@ -481,15 +435,10 @@ func TestCommitSkipsRetryWhenContextCanceled(t *testing.T) {
 
 	// ctx 已取消：连 BEGIN 都不会发起。
 	res := r.Commit(ctx, plan)
-	if res.Committed || res.Unknown {
-		t.Fatalf("取消的上下文不能提交, got %+v", res)
-	}
-	if !errors.Is(res.Err, context.Canceled) {
-		t.Fatalf("应返回 context.Canceled, got %v", res.Err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, res.Committed || res.Unknown, fmt.Sprintf("取消的上下文不能提交, got %+v", res))
+	require.False(t, !errors.Is(res.Err, context.Canceled), fmt.Sprintf("应返回 context.Canceled, got %v", res.Err))
+	err := mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- payload JSON 往返 ----------
@@ -535,13 +484,10 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 			require.NoError(t, err, "编码")
 			// snake_case 契约：数据库里绝不能出现 Go 字段名。
 			for _, want := range []string{`"kind"`, `"header"`, `"object_id"`, `"schema_version"`} {
-				if !strings.Contains(string(raw), want) {
-					t.Fatalf("payload 缺少键 %s: %s", want, raw)
-				}
+				require.Contains(t, string(raw), want, fmt.Sprintf("payload 缺少键 %s: %s", want, raw))
 			}
-			if strings.Contains(string(raw), `"Header"`) || strings.Contains(string(raw), `"PlayerID"`) {
-				t.Fatalf("payload 泄漏了 Go 字段名: %s", raw)
-			}
+			require.NotContains(t, string(raw), `"Header"`, fmt.Sprintf("payload 泄漏了 Go 字段名: %s", raw))
+			require.NotContains(t, string(raw), `"PlayerID"`)
 
 			row := objectRow{
 				worldID: uint64(tc.snap.Key.WorldID), objectID: uint64(tc.snap.Key.ID),
@@ -551,9 +497,7 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 			}
 			got, err := row.toSnapshot()
 			require.NoError(t, err, "解码")
-			if !reflect.DeepEqual(got, tc.snap) {
-				t.Fatalf("JSON 往返不相等:\n got=%+v\nwant=%+v", got, tc.snap)
-			}
+			require.False(t, !reflect.DeepEqual(got, tc.snap), fmt.Sprintf("JSON 往返不相等:\n got=%+v\nwant=%+v", got, tc.snap))
 		})
 	}
 }
@@ -577,15 +521,12 @@ func TestLoadScene(t *testing.T) {
 
 	objects, maxVersion, err := r.LoadScene(context.Background(), 1, 1)
 	require.NoError(t, err, "LoadScene")
-	if len(objects) != 1 || maxVersion != 4 {
-		t.Fatalf("应读到 1 个对象且 maxVersion=4, got %d/%d", len(objects), maxVersion)
-	}
-	if objects[0].Troop == nil || objects[0].Troop.Header.ID != 101 {
-		t.Fatalf("对象未正确解码: %+v", objects[0].Troop)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.Len(t, objects, 1, fmt.Sprintf("应读到 1 个对象且 maxVersion=4, got %d/%d", len(objects), maxVersion))
+	require.EqualValues(t, 4, maxVersion)
+	require.NotNil(t, objects[0].Troop, fmt.Sprintf("对象未正确解码: %+v", objects[0].Troop))
+	require.EqualValues(t, 101, objects[0].Troop.Header.ID)
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestAllocObjectID(t *testing.T) {
@@ -595,9 +536,8 @@ func TestAllocObjectID(t *testing.T) {
 	id, err := r.AllocObjectID(context.Background(), r.db)
 	require.NoError(t, err, "AllocObjectID")
 	require.EqualValues(t, 4321, id)
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- 恢复 ----------
@@ -649,29 +589,24 @@ func TestRecoverWorldOrder(t *testing.T) {
 	got, err := r.RecoverWorld(context.Background(), 1)
 	require.NoError(t, err, "RecoverWorld")
 	require.EqualValues(t, 9, got.Epoch)
-	if len(got.Scenes) != 2 || got.Scenes[2].Revision != 12 {
-		t.Fatalf("场景状态不符: %+v", got.Scenes)
-	}
-	if len(got.Objects) != 1 || got.Objects[0].Troop == nil {
-		t.Fatalf("对象恢复失败: %+v", got.Objects)
-	}
-	if len(got.Sessions) != 1 || got.Sessions[0].ID != "sess-1" {
-		t.Fatalf("会话恢复失败: %+v", got.Sessions)
-	}
-	if len(got.Battles) != 1 || got.Battles[0].Status != domain.BattleStatusPending {
-		t.Fatalf("战斗恢复失败: %+v", got.Battles)
-	}
+	require.Len(t, got.Scenes, 2, fmt.Sprintf("场景状态不符: %+v", got.Scenes))
+	require.EqualValues(t, 12, got.Scenes[2].Revision)
+	require.Len(t, got.Objects, 1, fmt.Sprintf("对象恢复失败: %+v", got.Objects))
+	require.NotNil(t, got.Objects[0].Troop)
+	require.Len(t, got.Sessions, 1, fmt.Sprintf("会话恢复失败: %+v", got.Sessions))
+	require.EqualValues(t, "sess-1", got.Sessions[0].ID)
+	require.Len(t, got.Battles, 1, fmt.Sprintf("战斗恢复失败: %+v", got.Battles))
+	require.EqualValues(t, domain.BattleStatusPending, got.Battles[0].Status)
 	// FIFO：enqueue_seq 升序被保留。
-	if q := got.Queues[500]; len(q) != 2 || q[0] != 101 || q[1] != 102 {
-		t.Fatalf("队列顺序错误: %+v", got.Queues)
-	}
-	if len(got.Deliveries) != 1 || got.Deliveries[0].Cargo[1001] != 5 {
-		t.Fatalf("交接单恢复失败: %+v", got.Deliveries)
-	}
+	q := got.Queues[500]
+	require.Len(t, q, 2, fmt.Sprintf("队列顺序错误: %+v", got.Queues))
+	require.EqualValues(t, 101, q[0])
+	require.EqualValues(t, 102, q[1])
+	require.Len(t, got.Deliveries, 1, fmt.Sprintf("交接单恢复失败: %+v", got.Deliveries))
+	require.EqualValues(t, 5, got.Deliveries[0].Cargo[1001])
 	// ExpectationsWereMet 同时证明了查询顺序（sqlmock 按注册顺序匹配）。
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- 租约 ----------
@@ -689,9 +624,8 @@ func TestAcquireLease(t *testing.T) {
 		epoch, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
 		require.NoError(t, err, "Acquire")
 		require.EqualValues(t, 1, epoch)
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatal(err)
-		}
+		err = mock.ExpectationsWereMet()
+		require.NoError(t, err)
 	})
 
 	t.Run("租约被他人持有", func(t *testing.T) {
@@ -703,12 +637,9 @@ func TestAcquireLease(t *testing.T) {
 		mock.ExpectRollback()
 
 		_, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
-		if !errors.Is(err, ErrLeaseHeld) {
-			t.Fatalf("应返回 ErrLeaseHeld, got %v", err)
-		}
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatal(err)
-		}
+		require.False(t, !errors.Is(err, ErrLeaseHeld), fmt.Sprintf("应返回 ErrLeaseHeld, got %v", err))
+		err = mock.ExpectationsWereMet()
+		require.NoError(t, err)
 	})
 
 	t.Run("旧租约过期后接管", func(t *testing.T) {
@@ -723,9 +654,8 @@ func TestAcquireLease(t *testing.T) {
 		epoch, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
 		require.NoError(t, err, "Acquire")
 		require.EqualValues(t, 6, epoch)
-		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatal(err)
-		}
+		err = mock.ExpectationsWereMet()
+		require.NoError(t, err)
 	})
 }
 
@@ -733,23 +663,19 @@ func TestRenewAndReleaseLease(t *testing.T) {
 	r, mock := newTestRepo(t)
 
 	mock.ExpectExec(`UPDATE map_world SET lease_until_ms`).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.Renew(context.Background(), 1, "node-a", 6, 30*time.Second); err != nil {
-		t.Fatalf("Renew: %v", err)
-	}
+	err := r.Renew(context.Background(), 1, "node-a", 6, 30*time.Second)
+	require.NoError(t, err, fmt.Sprintf("Renew: %v", err))
 
 	// epoch 不符：说明已被接管，续租必须失败。
 	mock.ExpectExec(`UPDATE map_world SET lease_until_ms`).WillReturnResult(sqlmock.NewResult(0, 0))
-	if err := r.Renew(context.Background(), 1, "node-a", 5, 30*time.Second); !errors.Is(err, ErrLeaseLost) {
-		t.Fatalf("过期 epoch 续租应返回 ErrLeaseLost, got %v", err)
-	}
+	err = r.Renew(context.Background(), 1, "node-a", 5, 30*time.Second)
+	require.False(t, !errors.Is(err, ErrLeaseLost), fmt.Sprintf("过期 epoch 续租应返回 ErrLeaseLost, got %v", err))
 
 	mock.ExpectExec(`UPDATE map_world SET owner_id = ''`).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.Release(context.Background(), 1, "node-a", 6); err != nil {
-		t.Fatalf("Release: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = r.Release(context.Background(), 1, "node-a", 6)
+	require.NoError(t, err, fmt.Sprintf("Release: %v", err))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- 幂等回执与 actor_key ----------
@@ -764,42 +690,34 @@ func TestFindReceipt(t *testing.T) {
 			AddRow("cmd-1", hash[:], int32(0), []byte(`{"ok":true}`), int64(6000)))
 
 	rc, found, err := r.FindReceiptByKey(context.Background(), domain.CommandKey{WorldID: 1, PlayerID: 7, RequestID: "req-1"})
-	if err != nil || !found {
-		t.Fatalf("应找到回执 found=%v err=%v", found, err)
-	}
-	if rc.CommandID != "cmd-1" || rc.PayloadHash != hash || rc.Key.PlayerID != 7 {
-		t.Fatalf("回执内容不符: %+v", rc)
-	}
+	require.NoError(t, err, fmt.Sprintf("应找到回执 found=%v err=%v", found, err))
+	require.True(t, found)
+	require.EqualValues(t, "cmd-1", rc.CommandID, fmt.Sprintf("回执内容不符: %+v", rc))
+	require.EqualValues(t, hash, rc.PayloadHash)
+	require.EqualValues(t, 7, rc.Key.PlayerID)
 
 	// 未命中：返回 (nil,false,nil) —— 与查询失败区分开。
 	mock.ExpectQuery(`SELECT command_id, payload_hash, result_code, result_json, committed_at_ms FROM map_command`).
 		WillReturnRows(sqlmock.NewRows([]string{"command_id", "payload_hash", "result_code", "result_json", "committed_at_ms"}))
 	rc, found, err = r.FindReceipt(context.Background(), 1, "p:8", "req-x")
-	if err != nil || found || rc != nil {
-		t.Fatalf("未命中应返回 (nil,false,nil), got %+v/%v/%v", rc, found, err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, err != nil || found || rc != nil, fmt.Sprintf("未命中应返回 (nil,false,nil), got %+v/%v/%v", rc, found, err))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestActorKey(t *testing.T) {
-	if got := ActorKey(7); got != "p:7" {
-		t.Fatalf("ActorKey(7)=%q", got)
-	}
-	if got := SystemActorKey("refresh"); got != "sys:refresh" {
-		t.Fatalf("SystemActorKey=%q", got)
-	}
+	got := ActorKey(7)
+	require.EqualValues(t, "p:7", got, fmt.Sprintf("ActorKey(7)=%q", got))
+	got = SystemActorKey("refresh")
+	require.EqualValues(t, "sys:refresh", got, fmt.Sprintf("SystemActorKey=%q", got))
 	// 解析回填只在 p: 前缀时发生。
-	if id, ok := parseActorKey("p:123"); !ok || id != 123 {
-		t.Fatalf("parseActorKey(p:123)=%d,%v", id, ok)
-	}
-	if _, ok := parseActorKey("sys:refresh"); ok {
-		t.Fatal("sys: 前缀不应解析出 player_id")
-	}
-	if _, ok := parseActorKey("p:12x"); ok {
-		t.Fatal("非数字后缀不应被当作合法 player_id")
-	}
+	id, ok := parseActorKey("p:123")
+	require.True(t, ok, fmt.Sprintf("parseActorKey(p:123)=%d,%v", id, ok))
+	require.EqualValues(t, 123, id)
+	_, ok = parseActorKey("sys:refresh")
+	require.False(t, ok, "sys: 前缀不应解析出 player_id")
+	_, ok = parseActorKey("p:12x")
+	require.False(t, ok, "非数字后缀不应被当作合法 player_id")
 }
 
 // ---------- 交接单 ----------
@@ -813,38 +731,33 @@ func TestDeliveryLifecycle(t *testing.T) {
 			AddRow("dl-1", int64(1), uint64(101), int64(7), hash[:], []byte(`{"1001":5}`), int32(1), int32(0), int64(0), int64(1), int64(0), int64(5000)))
 	list, err := r.ListDeliveryPending(context.Background(), 10)
 	require.NoError(t, err, "ListDeliveryPending")
-	if len(list) != 1 || list[0].DeliveryID != "dl-1" || list[0].Cargo[1001] != 5 {
-		t.Fatalf("待投递单不符: %+v", list)
-	}
+	require.Len(t, list, 1, fmt.Sprintf("待投递单不符: %+v", list))
+	require.EqualValues(t, "dl-1", list[0].DeliveryID)
+	require.EqualValues(t, 5, list[0].Cargo[1001])
 
 	// APPLIED 是 CAS：0 行时再查一次以区分「不存在」与「已不是 PENDING」。
 	mock.ExpectExec(`UPDATE map_delivery SET status = .`).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.MarkDeliveryApplied(context.Background(), "dl-1", 88); err != nil {
-		t.Fatalf("MarkDeliveryApplied: %v", err)
-	}
+	err = r.MarkDeliveryApplied(context.Background(), "dl-1", 88)
+	require.NoError(t, err, fmt.Sprintf("MarkDeliveryApplied: %v", err))
 
 	mock.ExpectExec(`UPDATE map_delivery SET attempts = .`).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.MarkDeliveryRetry(context.Background(), "dl-1", 2, testNowMS+2000); err != nil {
-		t.Fatalf("MarkDeliveryRetry: %v", err)
-	}
+	err = r.MarkDeliveryRetry(context.Background(), "dl-1", 2, testNowMS+2000)
+	require.NoError(t, err, fmt.Sprintf("MarkDeliveryRetry: %v", err))
 
 	mock.ExpectExec(`UPDATE map_delivery SET status = .* WHERE delivery_id`).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(`SELECT delivery_id, world_id, troop_id`).
 		WillReturnRows(sqlmock.NewRows([]string{"delivery_id", "world_id", "troop_id", "player_id", "payload_hash", "cargo", "status", "attempts", "next_retry_ms", "settlement_no", "applied_player_version", "created_at_ms"}).
 			AddRow("dl-1", int64(1), uint64(101), int64(7), hash[:], []byte(`{"1001":5}`), int32(2), int32(0), int64(0), int64(1), int64(88), int64(5000)))
-	if err := r.MarkDeliveryApplied(context.Background(), "dl-1", 99); !errors.Is(err, ErrDeliveryNotPending) {
-		t.Fatalf("重复确认应返回 ErrDeliveryNotPending, got %v", err)
-	}
+	err = r.MarkDeliveryApplied(context.Background(), "dl-1", 99)
+	require.False(t, !errors.Is(err, ErrDeliveryNotPending), fmt.Sprintf("重复确认应返回 ErrDeliveryNotPending, got %v", err))
 
 	mock.ExpectExec(`UPDATE map_delivery SET status = .* WHERE delivery_id`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.QuarantineDelivery(context.Background(), "dl-1", "payload hash mismatch"); err != nil {
-		t.Fatalf("QuarantineDelivery: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = r.QuarantineDelivery(context.Background(), "dl-1", "payload hash mismatch")
+	require.NoError(t, err, fmt.Sprintf("QuarantineDelivery: %v", err))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- 刷新进度 ----------
@@ -853,56 +766,46 @@ func TestRefreshProgress(t *testing.T) {
 	r, mock := newTestRepo(t)
 
 	mock.ExpectExec(`INSERT INTO map_refresh`).WillReturnResult(sqlmock.NewResult(0, 1))
-	if err := r.UpsertRefreshProgress(context.Background(), 1, 8, 2, 120, false); err != nil {
-		t.Fatalf("UpsertRefreshProgress: %v", err)
-	}
+	err := r.UpsertRefreshProgress(context.Background(), 1, 8, 2, 120, false)
+	require.NoError(t, err, fmt.Sprintf("UpsertRefreshProgress: %v", err))
 
 	mock.ExpectQuery(`SELECT world_id, rich_block_id, generation`).
 		WillReturnRows(sqlmock.NewRows([]string{"world_id", "rich_block_id", "generation", "config_version", "seed", "cursor", "finished", "version"}).
 			AddRow(int64(1), int64(8), int64(2), "r1", int64(99), int32(120), int32(0), uint64(3)))
 	got, found, err := r.LoadRefreshProgress(context.Background(), 1, 8, 2)
-	if err != nil || !found {
-		t.Fatalf("LoadRefreshProgress found=%v err=%v", found, err)
-	}
-	if got.Cursor != 120 || got.Seed != 99 || got.Finished {
-		t.Fatalf("刷新进度不符: %+v", got)
-	}
+	require.NoError(t, err, fmt.Sprintf("LoadRefreshProgress found=%v err=%v", found, err))
+	require.True(t, found)
+	require.False(t, got.Cursor != 120 || got.Seed != 99 || got.Finished, fmt.Sprintf("刷新进度不符: %+v", got))
 
 	// 没有进度不是错误：刷新任务第一次跑就处于这个状态。
 	mock.ExpectQuery(`SELECT world_id, rich_block_id, generation`).
 		WillReturnRows(sqlmock.NewRows([]string{"world_id", "rich_block_id", "generation", "config_version", "seed", "cursor", "finished", "version"}))
-	if _, found, err := r.LoadRefreshProgress(context.Background(), 1, 9, 2); err != nil || found {
-		t.Fatalf("无进度应返回 (nil,false,nil), got found=%v err=%v", found, err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	_, found, err = r.LoadRefreshProgress(context.Background(), 1, 9, 2)
+	require.False(t, err != nil || found, fmt.Sprintf("无进度应返回 (nil,false,nil), got found=%v err=%v", found, err))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // ---------- 辅助函数单测 ----------
 
 func TestCommitRejectsEmptyPlan(t *testing.T) {
 	r, _ := newTestRepo(t)
-	if res := r.Commit(context.Background(), nil); res.Err == nil {
-		t.Fatal("nil 计划应报错")
-	}
-	if res := r.Commit(context.Background(), &domain.MutationPlan{}); res.Err == nil {
-		t.Fatal("缺少 command_id/world_id 的计划应报错")
-	}
+	res := r.Commit(context.Background(), nil)
+	require.NotNil(t, res.Err, "nil 计划应报错")
+	res = r.Commit(context.Background(), &domain.MutationPlan{})
+	require.NotNil(t, res.Err, "缺少 command_id/world_id 的计划应报错")
 	// 确认返回值不是 *sql.Tx 相关的零值哨兵（避免调用方误判为已提交）。
 	var zero domain.CommitResult
-	if reflect.DeepEqual(r.Commit(context.Background(), &domain.MutationPlan{}), zero) {
-		t.Fatal("失败结果不应是全零值")
-	}
+	require.False(t, reflect.DeepEqual(r.Commit(context.Background(), &domain.MutationPlan{}), zero), "失败结果不应是全零值")
 }
 
 func TestSortedHelpersDoNotMutateInput(t *testing.T) {
 	in := []domain.SceneRevision{{SceneID: 3, Revision: 1}, {SceneID: 1, Revision: 2}, {SceneID: 1, Revision: 2}}
 	out := sortedSceneRevisions(in)
 	require.EqualValues(t, 3, in[0].SceneID, "排序不应修改调用方切片")
-	if len(out) != 2 || out[0].SceneID != 1 || out[1].SceneID != 3 {
-		t.Fatalf("排序/去重结果错误: %+v", out)
-	}
+	require.Len(t, out, 2, fmt.Sprintf("排序/去重结果错误: %+v", out))
+	require.EqualValues(t, 1, out[0].SceneID)
+	require.EqualValues(t, 3, out[1].SceneID)
 
 	snaps := []domain.ObjectSnapshot{
 		{Key: domain.ObjectKey{ID: 20}}, {Key: domain.ObjectKey{ID: 10}},
@@ -913,13 +816,12 @@ func TestSortedHelpersDoNotMutateInput(t *testing.T) {
 }
 
 func TestRetryBackoff(t *testing.T) {
-	if retryBackoff(0) != 5*time.Millisecond || retryBackoff(1) != 10*time.Millisecond || retryBackoff(2) != 20*time.Millisecond {
-		t.Fatalf("退避序列应为 5/10/20ms, got %v/%v/%v", retryBackoff(0), retryBackoff(1), retryBackoff(2))
-	}
+	require.EqualValues(t, 5*time.Millisecond, retryBackoff(0), fmt.Sprintf("退避序列应为 5/10/20ms, got %v/%v/%v", retryBackoff(0), retryBackoff(1), retryBackoff(2)))
+	require.EqualValues(t, 10*time.Millisecond, retryBackoff(1))
+	require.EqualValues(t, 20*time.Millisecond, retryBackoff(2))
 	// 上界钳制：不能出现 0（0 等待等于忙等）或溢出成负数。
 	for i := 0; i < 20; i++ {
-		if d := retryBackoff(i); d <= 0 {
-			t.Fatalf("退避必须为正, attempt=%d got=%v", i, d)
-		}
+		d := retryBackoff(i)
+		require.False(t, d <= 0, fmt.Sprintf("退避必须为正, attempt=%d got=%v", i, d))
 	}
 }

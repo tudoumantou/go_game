@@ -1,6 +1,7 @@
 package battle
 
 import (
+	"fmt"
 	"testing"
 
 	"game_study/internal/scenemap"
@@ -29,12 +30,8 @@ func TestLaunchDoesNotHarmUntilCast(t *testing.T) {
 	rt.sprites[T.UUID] = T
 
 	res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001, Target: T.UUID})
-	if !res.Accepted {
-		t.Fatalf("出手应被受理: code=%d", res.Code)
-	}
-	if res.PrefixMS <= 0 {
-		t.Fatalf("普攻前摇应大于 0，实际 %d", res.PrefixMS)
-	}
+	require.False(t, !res.Accepted, fmt.Sprintf("出手应被受理: code=%d", res.Code))
+	require.False(t, res.PrefixMS <= 0, fmt.Sprintf("普攻前摇应大于 0，实际 %d", res.PrefixMS))
 	require.EqualValues(t, 1000, T.HP)
 	require.EqualValues(t, 1, rt.PendingDelayed())
 
@@ -53,12 +50,10 @@ func TestCastCooldownRejects(t *testing.T) {
 	rt.sprites[A.UUID] = A
 	rt.sprites[T.UUID] = T
 
-	if res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001, Target: T.UUID}); !res.Accepted {
-		t.Fatalf("首次出手应受理: %d", res.Code)
-	}
-	if res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001, Target: T.UUID}); res.Code != ErrCodeCooldown {
-		t.Fatalf("第二次应报冷却，实际 code=%d", res.Code)
-	}
+	res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001, Target: T.UUID})
+	require.False(t, !res.Accepted, fmt.Sprintf("首次出手应受理: %d", res.Code))
+	res = rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001, Target: T.UUID})
+	require.EqualValues(t, ErrCodeCooldown, res.Code, fmt.Sprintf("第二次应报冷却，实际 code=%d", res.Code))
 }
 
 // TestCastRejectsCityAndMissingSkill 验证 §13.9 与 §13.13：
@@ -69,17 +64,15 @@ func TestCastRejectsCityAndMissingSkill(t *testing.T) {
 	rt := testRuntime(s, &now, &Options{NoBattle: true})
 	A := testPlayer(1, 5, 5)
 	rt.sprites[A.UUID] = A
-	if res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001}); res.Code != ErrCodeNoBattle {
-		t.Fatalf("主城应拒绝结算，实际 code=%d", res.Code)
-	}
+	res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001})
+	require.EqualValues(t, ErrCodeNoBattle, res.Code, fmt.Sprintf("主城应拒绝结算，实际 code=%d", res.Code))
 
 	s2 := newTestState()
 	rt2 := testRuntime(s2, &now, nil)
 	A2 := testPlayer(1, 5, 5)
 	rt2.sprites[A2.UUID] = A2
-	if res := rt2.cast(s2, Cast{Caster: A2.UUID, SkillID: 424242}); res.Code != ErrCodeMissingSkill {
-		t.Fatalf("缺失技能应显式报错，实际 code=%d", res.Code)
-	}
+	res = rt2.cast(s2, Cast{Caster: A2.UUID, SkillID: 424242})
+	require.EqualValues(t, ErrCodeMissingSkill, res.Code, fmt.Sprintf("缺失技能应显式报错，实际 code=%d", res.Code))
 }
 
 // TestMirrorWhitelist 验证 §13.15：镜像施法必须在地图白名单内。
@@ -90,18 +83,16 @@ func TestMirrorWhitelist(t *testing.T) {
 	A := testPlayer(1, 5, 5)
 	A.Kind = scenemap.EntityKindMirror
 	rt.sprites[A.UUID] = A
-	if res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001}); res.Code != ErrCodeMirrorForbidden {
-		t.Fatalf("白名单为空时应拒绝镜像施法，实际 code=%d", res.Code)
-	}
+	res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2001})
+	require.EqualValues(t, ErrCodeMirrorForbidden, res.Code, fmt.Sprintf("白名单为空时应拒绝镜像施法，实际 code=%d", res.Code))
 
 	s2 := newTestState()
 	rt2 := testRuntime(s2, &now, &Options{MapType: 1, MirrorMaps: []int32{1}})
 	A2 := testPlayer(1, 5, 5)
 	A2.Kind = scenemap.EntityKindMirror
 	rt2.sprites[A2.UUID] = A2
-	if res := rt2.cast(s2, Cast{Caster: A2.UUID, SkillID: 2001}); !res.Accepted {
-		t.Fatalf("白名单命中应允许镜像施法，实际 code=%d", res.Code)
-	}
+	res = rt2.cast(s2, Cast{Caster: A2.UUID, SkillID: 2001})
+	require.False(t, !res.Accepted, fmt.Sprintf("白名单命中应允许镜像施法，实际 code=%d", res.Code))
 }
 
 // TestMultiPartDamage 验证多段伤害按段间隔逐段结算（§10.3 step 3）。
@@ -122,9 +113,7 @@ func TestMultiPartDamage(t *testing.T) {
 	rt.sprites[T.UUID] = T
 
 	res := rt.cast(s, Cast{Caster: A.UUID, SkillID: cfg.ID, Target: T.UUID})
-	if !res.Accepted {
-		t.Fatalf("出手应受理: %d", res.Code)
-	}
+	require.False(t, !res.Accepted, fmt.Sprintf("出手应受理: %d", res.Code))
 	// 第 0 段无前摇 → 立即结算。
 	require.EqualValues(t, 990, T.HP)
 	now += 150
@@ -152,15 +141,11 @@ func TestAreaSkillHitsMultiple(t *testing.T) {
 		addNpcState(s, id, 9001, 1000, pos[i])
 	}
 	res := rt.cast(s, Cast{Caster: A.UUID, SkillID: 2002, Target: 91})
-	if !res.Accepted {
-		t.Fatalf("范围技应受理: %d", res.Code)
-	}
+	require.False(t, !res.Accepted, fmt.Sprintf("范围技应受理: %d", res.Code))
 	now += 10000
 	rt.RunDue(s, now)
 	for _, id := range ids {
-		if rt.sprites[id].HP >= 1000 {
-			t.Fatalf("怪 %d 未被范围技命中: hp=%d", id, rt.sprites[id].HP)
-		}
+		require.False(t, rt.sprites[id].HP >= 1000, fmt.Sprintf("怪 %d 未被范围技命中: hp=%d", id, rt.sprites[id].HP))
 	}
 }
 
@@ -193,16 +178,15 @@ func TestKillIsIdempotent(t *testing.T) {
 	for _, evt := range events {
 		if m, ok := evt.(MonDeadEvent); ok {
 			monDead++
-			if m.Monster != 9 || m.NpcID != 9001 {
-				t.Fatalf("死亡事件内容错误: %+v", m)
-			}
+			require.EqualValues(t, 9, m.Monster, fmt.Sprintf("死亡事件内容错误: %+v", m))
+			require.EqualValues(t, 9001, m.NpcID)
 		}
 	}
 	require.EqualValues(t, 1, monDead)
 	info := s.NPES[9]
-	if info.HP != 0 || info.AI != mgr.AIStateDead || info.DeadAt == 0 {
-		t.Fatalf("场景权威未同步死亡态: %+v", info)
-	}
+	require.EqualValues(t, 0, info.HP, fmt.Sprintf("场景权威未同步死亡态: %+v", info))
+	require.EqualValues(t, mgr.AIStateDead, info.AI)
+	require.NotEqualValues(t, 0, info.DeadAt)
 }
 
 // TestDeadTargetIgnoredByNewCast 验证死亡目标不会被后续技能再次结算。
@@ -221,9 +205,7 @@ func TestDeadTargetIgnoredByNewCast(t *testing.T) {
 		Range: 2, TargetNum: 1, TargetType: TargetEnemy, Area: AreaSingle}
 	rt.table.AddSkill(*cfg)
 	rt.cast(s, Cast{Caster: A.UUID, SkillID: cfg.ID, Target: T.UUID})
-	if !T.Dead {
-		t.Fatalf("应已击杀: hp=%d", T.HP)
-	}
+	require.False(t, !T.Dead, fmt.Sprintf("应已击杀: hp=%d", T.HP))
 	before := T.HP
 	// 用另一个技能再打一次（绕过冷却），目标已死应被过滤。
 	cfg2 := &SkillConfig{ID: 5003, HarmType: HarmTypeNormal, Coeff: PermilleOne, Range: 2,
@@ -243,9 +225,7 @@ func TestEnsureIsIdempotent(t *testing.T) {
 	rt1 := testRuntime(s, &now, nil)
 	rt2 := Ensure(s, Options{Table: DefaultTable(), Now: func() int64 { return now }, NoBattle: true})
 	require.EqualValues(t, rt2, rt1, "重复 Ensure 应复用同一运行时")
-	if rt2.NoBattle() {
-		t.Fatal("复用后不应被第二次参数覆盖（单写者语义）")
-	}
+	require.False(t, rt2.NoBattle(), "复用后不应被第二次参数覆盖（单写者语义）")
 }
 
 // TestAllySingleTargetsCasterByDefault 验证友方单体的默认目标是自己
@@ -260,7 +240,6 @@ func TestAllySingleTargetsCasterByDefault(t *testing.T) {
 		Range: 5, TargetNum: 1, TargetType: TargetAlly, Area: AreaSingle}
 	sc := &SkillContext{SkillID: cfg.ID, Caster: A.UUID, Action: ActionCast}
 	got := rt.selectTargets(s, A, cfg, sc)
-	if len(got) != 1 || got[0].UUID != A.UUID {
-		t.Fatalf("友方单体默认应选中自己，实际 %+v", got)
-	}
+	require.Len(t, got, 1, fmt.Sprintf("友方单体默认应选中自己，实际 %+v", got))
+	require.EqualValues(t, A.UUID, got[0].UUID)
 }

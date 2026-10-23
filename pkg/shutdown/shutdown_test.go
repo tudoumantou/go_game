@@ -4,8 +4,8 @@ package shutdown
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/stretchr/testify/require"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -61,9 +61,8 @@ func TestRunOrdersByPhase(t *testing.T) {
 	m.Register("unregister", PhaseDrain, rec.step("unregister"))
 	m.Register("stop-rpc", PhaseDraining, rec.step("stop-rpc"))
 
-	if err := m.Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	err := m.Run(context.Background())
+	require.NoError(t, err)
 	want := []string{"unregister", "drain-inflight", "stop-rpc", "flush", "stop-actor"}
 	got := rec.got()
 	require.EqualValues(t, len(want), len(got))
@@ -86,16 +85,13 @@ func TestRunAggregatesErrors(t *testing.T) {
 	err := m.Run(context.Background())
 	require.Error(t, err, "expected aggregated error")
 	msg := err.Error()
-	if !strings.Contains(msg, "flush") || !strings.Contains(msg, "mysql down") {
-		t.Fatalf("flush error missing: %v", err)
-	}
-	if !strings.Contains(msg, "stop-rpc") {
-		t.Fatalf("rpc error missing: %v", err)
-	}
+	require.Contains(t, msg, "flush", fmt.Sprintf("flush error missing: %v", err))
+	require.Contains(t, msg, "mysql down")
+	require.Contains(t, msg, "stop-rpc", fmt.Sprintf("rpc error missing: %v", err))
 	// 后续步骤仍执行
-	if got := rec.got(); len(got) != 3 || got[2] != "stop-actor" {
-		t.Fatalf("stop step skipped: %v", got)
-	}
+	got := rec.got()
+	require.Len(t, got, 3, fmt.Sprintf("stop step skipped: %v", got))
+	require.EqualValues(t, "stop-actor", got[2])
 }
 
 // TestRunStopsWhenBudgetExhausted 总预算耗尽后不再启动新步骤，并报告从哪一步中断。
@@ -111,13 +107,9 @@ func TestRunStopsWhenBudgetExhausted(t *testing.T) {
 	defer cancel()
 	err := m.Run(ctx)
 	require.Error(t, err, "expected budget error")
-	if !strings.Contains(err.Error(), "budget") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.Contains(t, err.Error(), "budget", fmt.Sprintf("unexpected error: %v", err))
 	for _, name := range rec.got() {
-		if name == "flush" {
-			t.Fatal("flush must not run after budget exhaustion")
-		}
+		require.NotEqualValues(t, "flush", name, "flush must not run after budget exhaustion")
 	}
 }
 
@@ -131,10 +123,9 @@ func TestRunStepTimeout(t *testing.T) {
 	m.Register("flush", PhaseFlush, rec.step("flush"))
 
 	err := m.Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "stop-rpc") {
-		t.Fatalf("expected step timeout error, got %v", err)
-	}
-	if got := rec.got(); len(got) != 2 || got[1] != "flush" {
-		t.Fatalf("flush skipped after step timeout: %v", got)
-	}
+	require.Error(t, err, fmt.Sprintf("expected step timeout error, got %v", err))
+	require.Contains(t, err.Error(), "stop-rpc")
+	got := rec.got()
+	require.Len(t, got, 2, fmt.Sprintf("flush skipped after step timeout: %v", got))
+	require.EqualValues(t, "flush", got[1])
 }

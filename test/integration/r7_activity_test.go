@@ -34,9 +34,8 @@ func TestR7ActivityMilestone(t *testing.T) {
 	brokers := strings.Split(raw, ",")
 
 	database, rdb, _ := startStorage(t)
-	if err := ensureTopics(brokers, pkgmq.TopicActivityProgress, pkgmq.TopicMail); err != nil {
-		t.Fatalf("ensure topics: %v", err)
-	}
+	err := ensureTopics(brokers, pkgmq.TopicActivityProgress, pkgmq.TopicMail)
+	require.NoError(t, err, fmt.Sprintf("ensure topics: %v", err))
 
 	logger := log.New("r7-test", log.WithLevel("error"))
 	producer := pkgmq.NewProducer(pkgmq.Config{Brokers: brokers})
@@ -75,9 +74,8 @@ func TestR7ActivityMilestone(t *testing.T) {
 			fmt.Sprintf("progress:%s:%d:%d", instanceID, playerID, progress),
 			pkgmq.TopicActivityProgress, instanceID, msg)
 		require.NoError(t, err, "build envelope")
-		if err := producer.ProduceEnvelope(ctx, env); err != nil {
-			t.Fatalf("produce: %v", err)
-		}
+		err := producer.ProduceEnvelope(ctx, env)
+		require.NoError(t, err, fmt.Sprintf("produce: %v", err))
 	}
 	send(1, 30)
 	send(2, 25)
@@ -89,23 +87,19 @@ func TestR7ActivityMilestone(t *testing.T) {
 		if err == nil && total >= 55 {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("total not accumulated, got %d err=%v", total, err)
-		}
+		require.False(t, time.Now().After(deadline), fmt.Sprintf("total not accumulated, got %d err=%v", total, err))
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	// 重投同一条：绝对值上报的差值应为 0，总量不变。
 	send(1, 30)
 	time.Sleep(800 * time.Millisecond)
-	if total, _ := rdb.Get(ctx, totalKey).Int64(); total != 55 {
-		t.Fatalf("duplicate progress must not accumulate: total=%d", total)
-	}
+	total, _ := rdb.Get(ctx, totalKey).Int64()
+	require.EqualValues(t, 55, total, fmt.Sprintf("duplicate progress must not accumulate: total=%d", total))
 
 	// 第一次 Tick：达阈值 → 生成任务；未达的里程碑不生成。
-	if err := svc.Tick(ctx); err != nil {
-		t.Fatalf("tick: %v", err)
-	}
+	err := svc.Tick(ctx)
+	require.NoError(t, err, fmt.Sprintf("tick: %v", err))
 	var tasks int
 	if err := database.QueryRow(
 		`SELECT COUNT(*) FROM activity_grant_task WHERE instance_id = ?`, instanceID).Scan(&tasks); err != nil {
@@ -114,9 +108,8 @@ func TestR7ActivityMilestone(t *testing.T) {
 	require.EqualValues(t, 2, tasks)
 
 	// 第二次 Tick：发放并标记完成。
-	if err := svc.Tick(ctx); err != nil {
-		t.Fatalf("tick 2: %v", err)
-	}
+	err := svc.Tick(ctx)
+	require.NoError(t, err, fmt.Sprintf("tick 2: %v", err))
 	var pending int
 	if err := database.QueryRow(
 		`SELECT COUNT(*) FROM activity_grant_task WHERE instance_id = ? AND status = ?`,
@@ -128,9 +121,8 @@ func TestR7ActivityMilestone(t *testing.T) {
 	// 第三次 Tick：不得重复发（任务已全部完成，不会新建）。
 	var before int
 	_ = database.QueryRow(`SELECT COUNT(*) FROM activity_grant_task`).Scan(&before)
-	if err := svc.Tick(ctx); err != nil {
-		t.Fatalf("tick 3: %v", err)
-	}
+	err := svc.Tick(ctx)
+	require.NoError(t, err, fmt.Sprintf("tick 3: %v", err))
 	var after int
 	_ = database.QueryRow(`SELECT COUNT(*) FROM activity_grant_task`).Scan(&after)
 	require.EqualValues(t, before, after)

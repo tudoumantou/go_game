@@ -5,6 +5,7 @@ package copy
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -71,9 +72,7 @@ func newCtx(st *fakeState) *module.Context {
 
 func firstCopy(t *testing.T) gamedata.CopyCfg {
 	t.Helper()
-	if len(gamedata.CopyCfgList()) == 0 {
-		t.Fatal("copy config is empty")
-	}
+	require.NotEmpty(t, gamedata.CopyCfgList(), "copy config is empty")
 	return gamedata.CopyCfgList()[0]
 }
 
@@ -85,9 +84,8 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 	m := New(nil)
 	body, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 2})
 
-	if err := m.OnMessage(ctx, msgIDSettleReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDSettleReq, body)
+	require.NoError(t, err)
 	drops := 0
 	for _, drop := range gamedata.CopyDropCfgList() {
 		if drop.Col1 == cfg.Id {
@@ -102,17 +100,14 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 	for id, n := range st.items {
 		before[id] = n
 	}
-	if err := m.OnMessage(ctx, msgIDSettleReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgIDSettleReq, body)
+	require.NoError(t, err)
 	for id, n := range st.items {
 		require.EqualValues(t, before[id], n)
 	}
 	d, _ := load(st)
 	rec := d.Records[int32(cfg.Id)]
-	if rec.PassCount != 2 || !rec.FirstPass || rec.Star != 2 {
-		t.Fatalf("record not updated: %+v", rec)
-	}
+	require.False(t, rec.PassCount != 2 || !rec.FirstPass || rec.Star != 2, fmt.Sprintf("record not updated: %+v", rec))
 }
 
 // TestStarKeepsBest 星级取历史最佳，不回退。
@@ -123,16 +118,13 @@ func TestStarKeepsBest(t *testing.T) {
 	m := New(nil)
 	high, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 3})
 	low, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 1})
-	if err := m.OnMessage(ctx, msgIDSettleReq, high); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.OnMessage(ctx, msgIDSettleReq, low); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDSettleReq, high)
+	require.NoError(t, err)
+	err = m.OnMessage(ctx, msgIDSettleReq, low)
+	require.NoError(t, err)
 	d, _ := load(st)
-	if got := d.Records[int32(cfg.Id)].Star; got != 3 {
-		t.Fatalf("star regressed to %d", got)
-	}
+	got := d.Records[int32(cfg.Id)].Star
+	require.EqualValues(t, 3, got, fmt.Sprintf("star regressed to %d", got))
 }
 
 // TestLevelGate 等级不足不结算、不发奖。
@@ -152,11 +144,9 @@ func TestLevelGate(t *testing.T) {
 	ctx := newCtx(st)
 	m := New(nil)
 	body, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 3})
-	if err := m.OnMessage(ctx, msgIDSettleReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDSettleReq, body)
+	require.NoError(t, err)
 	d, _ := load(st)
-	if _, ok := d.Records[int32(cfg.Id)]; ok {
-		t.Fatal("settle must be rejected below required level")
-	}
+	_, ok := d.Records[int32(cfg.Id)]
+	require.False(t, ok, "settle must be rejected below required level")
 }

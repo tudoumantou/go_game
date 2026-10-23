@@ -6,10 +6,10 @@
 package metrics
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"os"
 	"os/exec"
-	"strings"
 	"testing"
 	"time"
 )
@@ -27,9 +27,7 @@ func TestNoInitIsSafeInChild(t *testing.T) {
 	cmd.Env = append(os.Environ(), childEnv+"=1")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err)
-	if strings.Contains(string(out), "panic") {
-		t.Fatalf("子进程出现 panic:\n%s", out)
-	}
+	require.NotContains(t, string(out), "panic", fmt.Sprintf("子进程出现 panic:\n%s", out))
 }
 
 // runAllMetricCalls 覆盖所有导出指标函数（新增指标时同步补充）。

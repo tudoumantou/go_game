@@ -2,6 +2,7 @@
 package errcode
 
 import (
+	"fmt"
 	"testing"
 
 	commonv1 "game_study/pkg/pb/common/v1"
@@ -29,18 +30,14 @@ func TestParityWithProto(t *testing.T) {
 	}
 	require.EqualValues(t, len(protoVals), len(goVals))
 	for v := range goVals {
-		if !protoVals[v] {
-			t.Fatalf("Go 常量 %d 不在 proto 枚举中", int32(v))
-		}
+		require.False(t, !protoVals[v], fmt.Sprintf("Go 常量 %d 不在 proto 枚举中", int32(v)))
 	}
 	// 文案表覆盖全部常量
 	for v := range goVals {
 		if v == OK {
 			continue
 		}
-		if Message(v) == "" {
-			t.Fatalf("错误码 %d 缺少中文文案", int32(v))
-		}
+		require.NotEqualValues(t, "", Message(v), fmt.Sprintf("错误码 %d 缺少中文文案", int32(v)))
 	}
 }
 
@@ -48,13 +45,10 @@ func TestParityWithProto(t *testing.T) {
 // *Error → 原样取码（含 Newf 带上下文文案的场景）、其它 error → ErrParam 兜底。
 // 兜底策略保证接入层转 Resp.code 时永远不会漏码成 0（0 会被客户端当成功）。
 func TestFromError(t *testing.T) {
-	if got := FromError(nil); got != OK {
-		t.Fatalf("nil 应映射 OK，得到 %d", int32(got))
-	}
-	if got := FromError(New(ErrBagFull)); got != ErrBagFull {
-		t.Fatalf("应提取 ErrBagFull，得到 %d", int32(got))
-	}
-	if got := FromError(Newf(ErrItemNotEnough, "缺少 %d 个", 3)); got != ErrItemNotEnough {
-		t.Fatalf("应提取 ErrItemNotEnough，得到 %d", int32(got))
-	}
+	got := FromError(nil)
+	require.EqualValues(t, OK, got, fmt.Sprintf("nil 应映射 OK，得到 %d", int32(got)))
+	got = FromError(New(ErrBagFull))
+	require.EqualValues(t, ErrBagFull, got, fmt.Sprintf("应提取 ErrBagFull，得到 %d", int32(got)))
+	got = FromError(Newf(ErrItemNotEnough, "缺少 %d 个", 3))
+	require.EqualValues(t, ErrItemNotEnough, got, fmt.Sprintf("应提取 ErrItemNotEnough，得到 %d", int32(got)))
 }

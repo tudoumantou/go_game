@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -25,13 +26,9 @@ func TestDueKindValues(t *testing.T) {
 		if tc.kind == DueKindUnspecified {
 			continue
 		}
-		if !tc.kind.Valid() {
-			t.Errorf("%s 应合法", tc.kind)
-		}
+		require.False(t, !tc.kind.Valid(), fmt.Sprintf("%s 应合法", tc.kind))
 	}
-	if DueKind(99).Valid() {
-		t.Error("DueKind(99) 应非法")
-	}
+	require.False(t, DueKind(99).Valid(), "DueKind(99) 应非法")
 }
 
 // TestDueLess 表驱动验证 (due_at_ms, kind, object_id)
@@ -75,13 +72,10 @@ func TestDueLess(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := DueLess(tc.a, tc.b); got != tc.want {
-				t.Fatalf("DueLess(%+v, %+v) = %v, want %v", tc.a, tc.b, got, tc.want)
-			}
+			got := DueLess(tc.a, tc.b)
+			require.EqualValues(t, tc.want, got, fmt.Sprintf("DueLess(%+v, %+v) = %v, want %v", tc.a, tc.b, got, tc.want))
 			// 反对称性：a<b 与 b<a 不能同时为真。
-			if DueLess(tc.a, tc.b) && DueLess(tc.b, tc.a) {
-				t.Fatal("比较器不满足反对称性")
-			}
+			require.False(t, DueLess(tc.a, tc.b) && DueLess(tc.b, tc.a), "比较器不满足反对称性")
 		})
 	}
 }
@@ -141,9 +135,7 @@ func TestEventKeys(t *testing.T) {
 		require.EqualValues(t, tc.want, tc.got)
 	}
 	// 键的唯一性：不同 (troop, move) 不碰撞。
-	if ArriveKey(1, "2:x") == ArriveKey(12, "x") {
-		t.Fatal("ArriveKey 存在键碰撞")
-	}
+	require.NotEqualValues(t, ArriveKey(12, "x"), ArriveKey(1, "2:x"), "ArriveKey 存在键碰撞")
 }
 
 // TestDueEventCommandKey 验证事件到命令键的分发，
@@ -187,9 +179,8 @@ func TestDueEventCommandKey(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.ev.CommandKey(); got != tc.want {
-				t.Fatalf("CommandKey() = %q, want %q", got, tc.want)
-			}
+			got := tc.ev.CommandKey()
+			require.EqualValues(t, tc.want, got, fmt.Sprintf("CommandKey() = %q, want %q", got, tc.want))
 		})
 	}
 }

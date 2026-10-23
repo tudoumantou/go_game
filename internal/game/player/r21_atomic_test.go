@@ -3,6 +3,7 @@ package player
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -67,9 +68,8 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	t.Cleanup(func() { rdb.Close() })
 	store := writebehind.NewStore(rdb)
-	if _, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Items: items}, 0); err != nil {
-		t.Fatal(err)
-	}
+	_, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Items: items}, 0)
+	require.NoError(t, err)
 	database, _, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
@@ -101,9 +101,8 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 
 func (r *spendRig) send(t *testing.T) uint32 {
 	t.Helper()
-	if err := r.sys.Send(r.pid, &PacketMsg{MsgID: msgSpendReq}); err != nil {
-		t.Fatal(err)
-	}
+	err := r.sys.Send(r.pid, &PacketMsg{MsgID: msgSpendReq})
+	require.NoError(t, err)
 	select {
 	case id := <-r.responses:
 		return id
@@ -116,14 +115,12 @@ func (r *spendRig) send(t *testing.T) uint32 {
 // TestSpendAndRewardCommitTogether 扣费与发奖在同一个快照里一起生效。
 func TestSpendAndRewardCommitTogether(t *testing.T) {
 	rig := newSpendRig(t, map[int32]int64{costItem: 100})
-	if id := rig.send(t); id != msgSpendResp {
-		t.Fatalf("unexpected reply %d", id)
-	}
+	id := rig.send(t)
+	require.EqualValues(t, msgSpendResp, id, fmt.Sprintf("unexpected reply %d", id))
 	record, err := rig.store.Load(context.Background(), 7)
 	require.NoError(t, err)
-	if record.State.Items[costItem] != 0 || record.State.Items[gainItem] != 200 {
-		t.Fatalf("snapshot items: %v", record.State.Items)
-	}
+	require.EqualValues(t, 0, record.State.Items[costItem], fmt.Sprintf("snapshot items: %v", record.State.Items))
+	require.EqualValues(t, 200, record.State.Items[gainItem])
 }
 
 // TestSpendResetsToAuthorityWhenCacheFails Redis 提交失败时，客户端收到错误，
@@ -142,14 +139,11 @@ func TestSpendResetsToAuthorityWhenCacheFails(t *testing.T) {
 		t.Fatalf("failed commit must reply with error, got %d", id)
 	}
 	// R2.5：失败后内存保留改动（不回滚），由 cacheReload 在下条消息前重置。
-	if !rig.actor.cacheReload {
-		t.Fatal("failed commit must schedule reload")
-	}
+	require.False(t, !rig.actor.cacheReload, "failed commit must schedule reload")
 	// Redis 权威状态保持提交前版本。
 	rig.mr.SetError("")
 	after, err := rig.store.Load(context.Background(), 7)
 	require.NoError(t, err)
-	if after.Version != before.Version || after.State.Items[costItem] != 100 {
-		t.Fatalf("snapshot changed after failed commit: %+v", after)
-	}
+	require.EqualValues(t, before.Version, after.Version, fmt.Sprintf("snapshot changed after failed commit: %+v", after))
+	require.EqualValues(t, 100, after.State.Items[costItem])
 }

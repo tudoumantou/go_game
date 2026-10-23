@@ -84,9 +84,8 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 	initSchema(t, mysqlDSN)
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	// ② 配置
 	loginHTTP := freePort(t)
@@ -136,9 +135,8 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 	// 触发埋点：guest 登录（/v1/ 前缀，会被中间件统计）
 	guestURL := fmt.Sprintf("http://127.0.0.1:%d/v1/auth/guest", loginHTTP)
-	if _, err := httpPostJSON(guestURL, `{"device_id":"p7-metrics-1"}`); err != nil {
-		t.Fatalf("trigger guest login: %v", err)
-	}
+	_, err := httpPostJSON(guestURL, `{"device_id":"p7-metrics-1"}`)
+	require.NoError(t, err, fmt.Sprintf("trigger guest login: %v", err))
 
 	loginBase := fmt.Sprintf("http://127.0.0.1:%d", loginMetrics)
 
@@ -147,32 +145,22 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 		// Go 运行时 / 进程指标（registry 装配正确）
 		for _, want := range []string{"go_goroutines", "process_start_time_seconds"} {
-			if !strings.Contains(body, want) {
-				t.Fatalf("/metrics missing %s", want)
-			}
+			require.Contains(t, body, want, fmt.Sprintf("/metrics missing %s", want))
 		}
 		// 自定义指标 + service 标签（埋点已在上方请求中产生）
-		if !strings.Contains(body, "gs_message_total") {
-			t.Fatal("/metrics missing gs_message_total（登录服 HTTP 埋点未生效）")
-		}
-		if !strings.Contains(body, `service="login-p7"`) {
-			t.Fatal(`/metrics missing service="login-p7" label`)
-		}
-		if !strings.Contains(body, `direction="in"`) {
-			t.Fatal(`/metrics missing direction="in" label`)
-		}
+		require.Contains(t, body, "gs_message_total", "/metrics missing gs_message_total（登录服 HTTP 埋点未生效）")
+		require.Contains(t, body, `service="login-p7"`)
+		require.Contains(t, body, `direction="in"`)
 	})
 
 	t.Run("login_healthz", func(t *testing.T) {
-		if code := httpStatus(t, loginBase+"/healthz"); code != http.StatusOK {
-			t.Fatalf("/healthz expect 200, got %d", code)
-		}
+		code := httpStatus(t, loginBase+"/healthz")
+		require.EqualValues(t, http.StatusOK, code, fmt.Sprintf("/healthz expect 200, got %d", code))
 	})
 
 	t.Run("login_readyz_ok", func(t *testing.T) {
-		if code := httpStatus(t, loginBase+"/readyz"); code != http.StatusOK {
-			t.Fatalf("/readyz expect 200, got %d", code)
-		}
+		code := httpStatus(t, loginBase+"/readyz")
+		require.EqualValues(t, http.StatusOK, code, fmt.Sprintf("/readyz expect 200, got %d", code))
 	})
 
 	// ④ 再起网关 → 建一条 TCP 连接（触发 ConnInc）→ 校验网关指标
@@ -189,34 +177,26 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 	t.Run("gateway_metrics", func(t *testing.T) {
 		body := httpGet(t, gwBase+"/metrics")
-		if !strings.Contains(body, "gs_gateway_connections") {
-			t.Fatal("/metrics missing gs_gateway_connections（网关埋点未生效）")
-		}
-		if !strings.Contains(body, `service="gateway-p7"`) {
-			t.Fatalf(`/metrics missing service="gateway-p7" label`)
-		}
+		require.Contains(t, body, "gs_gateway_connections", "/metrics missing gs_gateway_connections（网关埋点未生效）")
+		require.Contains(t, body, `service="gateway-p7"`)
 	})
 
 	t.Run("gateway_healthz", func(t *testing.T) {
-		if code := httpStatus(t, gwBase+"/healthz"); code != http.StatusOK {
-			t.Fatalf("/healthz expect 200, got %d", code)
-		}
+		code := httpStatus(t, gwBase+"/healthz")
+		require.EqualValues(t, http.StatusOK, code, fmt.Sprintf("/healthz expect 200, got %d", code))
 	})
 
 	// ⑤ 依赖故障 → readyz 503，但 healthz 仍 200
 	t.Run("login_readyz_redis_down", func(t *testing.T) {
-		if err := redisC.Stop(context.Background(), nil); err != nil {
-			t.Fatalf("stop redis: %v", err)
-		}
+		err := redisC.Stop(context.Background(), nil)
+		require.NoError(t, err, fmt.Sprintf("stop redis: %v", err))
 		time.Sleep(600 * time.Millisecond)
 
-		if code := httpStatus(t, loginBase+"/readyz"); code != http.StatusServiceUnavailable {
-			t.Fatalf("/readyz expect 503 after redis down, got %d", code)
-		}
+		code := httpStatus(t, loginBase+"/readyz")
+		require.EqualValues(t, http.StatusServiceUnavailable, code, fmt.Sprintf("/readyz expect 503 after redis down, got %d", code))
 		// 关键不变量：存活探针不查依赖，避免中间件抖动引发重启风暴
-		if code := httpStatus(t, loginBase+"/healthz"); code != http.StatusOK {
-			t.Fatalf("/healthz expect 200 even when redis down, got %d", code)
-		}
+		code := httpStatus(t, loginBase+"/healthz")
+		require.EqualValues(t, http.StatusOK, code, fmt.Sprintf("/healthz expect 200 even when redis down, got %d", code))
 	})
 
 	// ⑥ 优雅关闭

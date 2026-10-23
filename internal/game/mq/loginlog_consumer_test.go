@@ -5,6 +5,7 @@ import (
 	"context"
 	"testing"
 
+	"fmt"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
@@ -32,12 +33,10 @@ func TestLoginLogConsumerInserts(t *testing.T) {
 	env := loginLogEnvelope(t, pkgmq.LoginLogMsg{
 		AccountID: 9, PlayerID: 0, IP: "1.2.3.4", Device: "device-a", Result: 1, Reason: "invalid token",
 	})
-	if err := c.handle(context.Background(), env); err != nil {
-		t.Fatalf("handle: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = c.handle(context.Background(), env)
+	require.NoError(t, err, fmt.Sprintf("handle: %v", err))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestLoginLogConsumerRejectsEmptyAccount 缺账号的事件不写库，交给重试/死信。
@@ -46,12 +45,10 @@ func TestLoginLogConsumerRejectsEmptyAccount(t *testing.T) {
 	require.NoError(t, err)
 	defer database.Close()
 	c := NewLoginLogConsumer(nil, &db.DB{DB: database}, log.New("test", log.WithLevel("error")))
-	if err := c.handle(context.Background(), loginLogEnvelope(t, pkgmq.LoginLogMsg{Result: 0})); err == nil {
-		t.Fatal("missing account_id must be rejected")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = c.handle(context.Background(), loginLogEnvelope(t, pkgmq.LoginLogMsg{Result: 0}))
+	require.Error(t, err, "missing account_id must be rejected")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestLoginLogConsumerSurfacesWriteError 写库失败要上报，让消费端重试。
@@ -64,7 +61,6 @@ func TestLoginLogConsumerSurfacesWriteError(t *testing.T) {
 
 	c := NewLoginLogConsumer(nil, &db.DB{DB: database}, log.New("test", log.WithLevel("error")))
 	env := loginLogEnvelope(t, pkgmq.LoginLogMsg{AccountID: 9})
-	if err := c.handle(context.Background(), env); err == nil {
-		t.Fatal("write error must be surfaced")
-	}
+	err = c.handle(context.Background(), env)
+	require.Error(t, err, "write error must be surfaced")
 }

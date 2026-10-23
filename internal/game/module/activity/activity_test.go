@@ -5,6 +5,7 @@ package activity
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -65,9 +66,7 @@ func newCtx(st *fakeState) *module.Context {
 
 func firstActivity(t *testing.T) gamedata.ActivityCfg {
 	t.Helper()
-	if len(gamedata.ActivityCfgList()) == 0 {
-		t.Fatal("activity config is empty")
-	}
+	require.NotEmpty(t, gamedata.ActivityCfgList(), "activity config is empty")
 	return gamedata.ActivityCfgList()[0]
 }
 
@@ -84,16 +83,13 @@ func TestClaimOnce(t *testing.T) {
 	}
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
 	for i := 0; i < 2; i++ {
-		if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
-			t.Fatal(err)
-		}
+		err := m.OnMessage(ctx, msgIDClaimReq, body)
+		require.NoError(t, err)
 	}
 	want := int64(cfg.Col3) * 20
 	require.EqualValues(t, want, st.GetItemCount(itemDiamond))
 	d, _ := load(st)
-	if d.Records[int32(cfg.Id)].RewardMask&1 == 0 {
-		t.Fatal("claim fact not persisted in snapshot")
-	}
+	require.NotEqualValues(t, 0, d.Records[int32(cfg.Id)].RewardMask&1, "claim fact not persisted in snapshot")
 }
 
 // TestClaimUnfinished 进度不足不发奖。
@@ -103,9 +99,8 @@ func TestClaimUnfinished(t *testing.T) {
 	ctx := newCtx(st)
 	m := New(nil, nil)
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDClaimReq, body)
+	require.NoError(t, err)
 	require.EqualValues(t, 0, st.GetItemCount(itemDiamond), "unfinished activity must not grant")
 }
 
@@ -120,7 +115,6 @@ func TestEventClampsProgress(t *testing.T) {
 	m := New(nil, nil)
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3) + 100})
 	d, _ := load(st)
-	if got := d.Records[int32(cfg.Id)].Progress; got != int32(cfg.Col3) {
-		t.Fatalf("progress not clamped: %d", got)
-	}
+	got := d.Records[int32(cfg.Id)].Progress
+	require.EqualValues(t, int32(cfg.Col3), got, fmt.Sprintf("progress not clamped: %d", got))
 }

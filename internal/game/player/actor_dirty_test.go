@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPreloadRebindsDirtyHook 预加载替换 State 后，dirty 回调必须仍然生效。
@@ -24,23 +25,15 @@ func TestPreloadRebindsDirtyHook(t *testing.T) {
 	a.setState(NewState(42))
 
 	a.state.AddItem(1001, 3)
-	if calls.Load() == 0 {
-		t.Fatal("dirty hook lost after setState: AddItem did not notify flusher")
-	}
+	require.NotEqualValues(t, 0, calls.Load(), "dirty hook lost after setState: AddItem did not notify flusher")
 
 	before := calls.Load()
 	a.state.MarkDirty("bag")
-	if calls.Load() == before {
-		t.Fatal("dirty hook lost after setState: MarkDirty did not notify flusher")
-	}
+	require.NotEqualValues(t, before, calls.Load(), "dirty hook lost after setState: MarkDirty did not notify flusher")
 
 	before = calls.Load()
-	if !a.state.RemoveItem(1001, 1) {
-		t.Fatal("remove item failed")
-	}
-	if calls.Load() == before {
-		t.Fatal("dirty hook lost after setState: RemoveItem did not notify flusher")
-	}
+	require.False(t, !a.state.RemoveItem(1001, 1), "remove item failed")
+	require.NotEqualValues(t, before, calls.Load(), "dirty hook lost after setState: RemoveItem did not notify flusher")
 }
 
 // TestNewActorBindsDirtyHook 构造时就应挂上回调。
@@ -49,9 +42,7 @@ func TestNewActorBindsDirtyHook(t *testing.T) {
 	a := NewActor(7, nil, log.New("test"), nil, func(int64) { calls.Add(1) }, nil)
 
 	a.state.AddItem(1002, 1)
-	if calls.Load() == 0 {
-		t.Fatal("NewActor did not bind dirty hook")
-	}
+	require.NotEqualValues(t, 0, calls.Load(), "NewActor did not bind dirty hook")
 }
 
 // TestSetStateWithoutHook onDirty 为空时不 panic（单测/无落库场景）。

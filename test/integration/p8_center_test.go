@@ -148,9 +148,8 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	// 关键：配了中心服 → battle 走中心服匹配主路径
 	gameCfg.Center.Addr = fmt.Sprintf("127.0.0.1:%d", centerGRPCPort)
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()
@@ -199,12 +198,9 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	require.NoError(t, err, "wait start A")
 	startB, err := clientB.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start B")
-	if startA.RoomId == 0 || startA.RoomId != startB.RoomId {
-		t.Fatalf("room mismatch: A=%d B=%d", startA.RoomId, startB.RoomId)
-	}
-	if startA.BattleToken == startB.BattleToken {
-		t.Fatal("tokens must differ per player")
-	}
+	require.NotEqualValues(t, 0, startA.RoomId, fmt.Sprintf("room mismatch: A=%d B=%d", startA.RoomId, startB.RoomId))
+	require.EqualValues(t, startB.RoomId, startA.RoomId)
+	require.NotEqualValues(t, startB.BattleToken, startA.BattleToken, "tokens must differ per player")
 	roomID := startA.RoomId
 	t.Logf("match ok: room=%d playerA=%d playerB=%d", roomID, roleA, roleB)
 
@@ -215,25 +211,21 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	}
 
 	// ⑧ 战斗透传（验证中心服匹配出来的房间真实可用）
-	if err := clientA.BattleOp(roomID, 8801, []byte("op-via-center")); err != nil {
-		t.Fatalf("battle op: %v", err)
-	}
+	err := clientA.BattleOp(roomID, 8801, []byte("op-via-center"))
+	require.NoError(t, err, fmt.Sprintf("battle op: %v", err))
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
 	require.NoError(t, err, "wait battle sync")
 	require.EqualValues(t, "op-via-center", string(sync.Body))
 
 	// ⑨ 结算：双方上报 → CrossServer 结算回推
-	if _, err := clientA.BattleResult(roomID, startA.BattleToken, 0); err != nil {
-		t.Fatalf("result A: %v", err)
-	}
-	if _, err := clientB.BattleResult(roomID, startB.BattleToken, 1); err != nil {
-		t.Fatalf("result B: %v", err)
-	}
+	_, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
+	require.NoError(t, err, fmt.Sprintf("result A: %v", err))
+	_, err := clientB.BattleResult(roomID, startB.BattleToken, 1)
+	require.NoError(t, err, fmt.Sprintf("result B: %v", err))
 	settleA, err := clientA.WaitBattleSettle(15 * time.Second)
 	require.NoError(t, err, "settle A")
-	if settleA.RoomId != roomID || settleA.Code != 0 {
-		t.Fatalf("settle A unexpected: %+v", settleA)
-	}
+	require.EqualValues(t, roomID, settleA.RoomId, fmt.Sprintf("settle A unexpected: %+v", settleA))
+	require.EqualValues(t, 0, settleA.Code)
 
 	// ⑩ 优雅关闭：中心服→跨服→游戏→网关→登录
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 45*time.Second)

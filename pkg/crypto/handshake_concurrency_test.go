@@ -52,9 +52,7 @@ func TestHandshakeConcurrentIntegrity(t *testing.T) {
 	}
 	wg.Wait()
 
-	if len(errs) > 0 {
-		t.Fatalf("%d/%d 次并发握手失败（会话密钥不一致）:\n%v", len(errs), rounds, errs)
-	}
+	require.Empty(t, errs, fmt.Sprintf("%d/%d 次并发握手失败（会话密钥不一致）:\n%v", len(errs), rounds, errs))
 }
 
 // runHandshake 跑一次完整握手：ServerHello → ClientKeyExchange → Finished。

@@ -4,6 +4,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"sync/atomic"
@@ -33,18 +34,16 @@ func TestSpawnAndSend(t *testing.T) {
 	pid, err := sys.Spawn("p1", a)
 	require.NoError(t, err, "spawn")
 	for i := 0; i < 100; i++ {
-		if err := sys.Send(pid, i); err != nil {
-			t.Fatalf("send: %v", err)
-		}
+		err := sys.Send(pid, i)
+		require.NoError(t, err, fmt.Sprintf("send: %v", err))
 	}
 	// 等待处理
 	deadline := time.Now().Add(3 * time.Second)
 	for a.count.Load() < 100 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := a.count.Load(); got != 100 {
-		t.Fatalf("expected 100 messages, got %d", got)
-	}
+	got := a.count.Load()
+	require.EqualValues(t, 100, got, fmt.Sprintf("expected 100 messages, got %d", got))
 }
 
 func TestMailboxBackpressure(t *testing.T) {
@@ -62,9 +61,7 @@ func TestMailboxBackpressure(t *testing.T) {
 	rejected := 0
 	for i := 0; i < 20; i++ {
 		if err := sys.Send(pid, i); err != nil {
-			if !errors.Is(err, ErrMailboxFull) && !errors.Is(err, ErrActorGone) {
-				t.Fatalf("unexpected send error: %v", err)
-			}
+			require.False(t, !errors.Is(err, ErrMailboxFull) && !errors.Is(err, ErrActorGone), fmt.Sprintf("unexpected send error: %v", err))
 			rejected++
 		}
 	}
@@ -108,7 +105,6 @@ func TestSendToMissingActor(t *testing.T) {
 	sys.Start(ctx)
 	defer sys.Stop()
 
-	if err := sys.Send(&PID{ID: "not-exist"}, 1); err == nil {
-		t.Fatalf("expected error for missing actor")
-	}
+	err := sys.Send(&PID{ID: "not-exist"}, 1)
+	require.Error(t, err, "expected error for missing actor")
 }

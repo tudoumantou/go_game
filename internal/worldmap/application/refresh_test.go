@@ -5,6 +5,7 @@ package application
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"game_study/internal/worldmap/domain"
@@ -39,24 +40,18 @@ func TestPlanRefresh(t *testing.T) {
 		seen := make(map[cellKey]struct{}, len(plan.ObjectsUpsert))
 		for _, o := range plan.ObjectsUpsert {
 			r := o.Resource
-			if r == nil || o.Kind != domain.ObjectKindResource {
-				t.Fatalf("对象种类=%s", o.Kind)
-			}
+			require.NotNil(t, r, fmt.Sprintf("对象种类=%s", o.Kind))
+			require.EqualValues(t, domain.ObjectKindResource, o.Kind)
 			require.EqualValues(t, r.Remaining, r.Total)
-			if r.RefreshGeneration != 1 || r.ConfigVersion != m1RuleVersion {
-				t.Fatalf("资源=%+v", r)
-			}
-			if r.Header.OwnerScene != testScene || r.Header.Version != 1 {
-				t.Fatalf("Header=%+v", r.Header)
-			}
+			require.EqualValues(t, 1, r.RefreshGeneration, fmt.Sprintf("资源=%+v", r))
+			require.EqualValues(t, m1RuleVersion, r.ConfigVersion)
+			require.EqualValues(t, testScene, r.Header.OwnerScene, fmt.Sprintf("Header=%+v", r.Header))
+			require.EqualValues(t, 1, r.Header.Version)
 			// 富饶块 0 是格 [0,50)×[0,50)，换算成 units 必须落在 [0,50000)。
-			if r.Position.X < 0 || r.Position.X >= 50000 || r.Position.Y < 0 || r.Position.Y >= 50000 {
-				t.Fatalf("位置越出富饶块: %+v", r.Position)
-			}
+			require.False(t, r.Position.X < 0 || r.Position.X >= 50000 || r.Position.Y < 0 || r.Position.Y >= 50000, fmt.Sprintf("位置越出富饶块: %+v", r.Position))
 			cell := cellKey{r.Position.X / 1000, r.Position.Y / 1000}
-			if _, dup := seen[cell]; dup {
-				t.Fatalf("批内位置重复: %+v", cell)
-			}
+			_, dup := seen[cell]
+			require.False(t, dup, fmt.Sprintf("批内位置重复: %+v", cell))
 			seen[cell] = struct{}{}
 		}
 		m := receiptMap(t, plan)
@@ -87,9 +82,7 @@ func TestPlanRefresh(t *testing.T) {
 		require.NoError(t, err, "刷新")
 		require.Len(t, plan.ObjectsUpsert, 0, "幂等分支不应创建对象")
 		m := receiptMap(t, plan)
-		if !jsonBool(t, m, "idempotent") {
-			t.Fatalf("回执=%v", m)
-		}
+		require.False(t, !jsonBool(t, m, "idempotent"), fmt.Sprintf("回执=%v", m))
 	})
 
 	t.Run("按最低数量补齐", func(t *testing.T) {
@@ -117,9 +110,8 @@ func TestPlanRefresh(t *testing.T) {
 		require.Len(t, plan.ObjectsUpsert, h.rules.RefreshBatchSize)
 		// 批次 3 里前两个必须是 tier1（缺 2 个最低量），第三个按权重抽。
 		for i := 0; i < 2; i++ {
-			if got := plan.ObjectsUpsert[i].Resource.ResourceType; got != 1 {
-				t.Fatalf("第 %d 个应是 tier1, got %d", i, got)
-			}
+			got := plan.ObjectsUpsert[i].Resource.ResourceType
+			require.EqualValues(t, 1, got, fmt.Sprintf("第 %d 个应是 tier1, got %d", i, got))
 		}
 	})
 
@@ -130,15 +122,13 @@ func TestPlanRefresh(t *testing.T) {
 		require.NoError(t, err, "刷新 1")
 		p2, err := h2.planner.Plan(snapshot(SnapshotOptions{}), testEnv(1, "rf-seed-2", 1), refreshCmd(0, 9, 0), 1000)
 		require.NoError(t, err, "刷新 2")
-		if len(p1.ObjectsUpsert) != 6 || len(p2.ObjectsUpsert) != 6 {
-			t.Fatalf("batches=%d/%d", len(p1.ObjectsUpsert), len(p2.ObjectsUpsert))
-		}
+		require.Len(t, p1.ObjectsUpsert, 6, fmt.Sprintf("batches=%d/%d", len(p1.ObjectsUpsert), len(p2.ObjectsUpsert)))
+		require.Len(t, p2.ObjectsUpsert, 6)
 		for i := range p1.ObjectsUpsert {
 			a, b := p1.ObjectsUpsert[i].Resource, p2.ObjectsUpsert[i].Resource
 			require.EqualValues(t, b.Position, a.Position)
-			if a.ResourceType != b.ResourceType || a.ItemID != b.ItemID {
-				t.Fatalf("第 %d 个档位不一致: %+v vs %+v", i, a, b)
-			}
+			require.EqualValues(t, b.ResourceType, a.ResourceType, fmt.Sprintf("第 %d 个档位不一致: %+v vs %+v", i, a, b))
+			require.EqualValues(t, b.ItemID, a.ItemID)
 		}
 	})
 }
@@ -153,7 +143,6 @@ func TestNewPlannerRejectsInvalidRichBlock(t *testing.T) {
 	}
 	ids, _ := seqIDs("x-")
 	objs, _ := seqObjectIDs(1)
-	if _, err := NewPlanner(domain.DefaultTopology(testWorld), rules, ids, objs, fixedSeeds); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("err=%v, want ErrInvalidArgument", err)
-	}
+	_, err := NewPlanner(domain.DefaultTopology(testWorld), rules, ids, objs, fixedSeeds)
+	require.False(t, !errors.Is(err, domain.ErrInvalidArgument), fmt.Sprintf("err=%v, want ErrInvalidArgument", err))
 }

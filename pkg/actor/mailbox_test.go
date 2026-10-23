@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
@@ -11,38 +12,31 @@ import (
 
 func TestMailboxRejectsWhenFull(t *testing.T) {
 	m := newMailbox(2)
-	if err := m.push(envelope{message: 1}); err != nil {
-		t.Fatalf("push 1: %v", err)
-	}
-	if err := m.push(envelope{message: 2}); err != nil {
-		t.Fatalf("push 2: %v", err)
-	}
+	err := m.push(envelope{message: 1})
+	require.NoError(t, err, fmt.Sprintf("push 1: %v", err))
+	err = m.push(envelope{message: 2})
+	require.NoError(t, err, fmt.Sprintf("push 2: %v", err))
 	// 满队列必须拒绝新消息，而不是挤掉旧消息。
-	if err := m.push(envelope{message: 3}); !errors.Is(err, ErrMailboxFull) {
-		t.Fatalf("want ErrMailboxFull, got %v", err)
-	}
-	if got := m.rejectedCount(); got != 1 {
-		t.Fatalf("rejected count = %d, want 1", got)
-	}
+	err = m.push(envelope{message: 3})
+	require.False(t, !errors.Is(err, ErrMailboxFull), fmt.Sprintf("want ErrMailboxFull, got %v", err))
+	got := m.rejectedCount()
+	require.EqualValues(t, 1, got, fmt.Sprintf("rejected count = %d, want 1", got))
 	// 旧消息按先进先出原样保留。
 	for _, want := range []int{1, 2} {
 		env, ok := m.pop()
-		if !ok || env.message != want {
-			t.Fatalf("pop = %v ok=%v, want %d", env.message, ok, want)
-		}
+		require.True(t, ok, fmt.Sprintf("pop = %v ok=%v, want %d", env.message, ok, want))
+		require.EqualValues(t, want, env.message)
 	}
-	if _, ok := m.pop(); ok {
-		t.Fatal("mailbox should be empty")
-	}
+	_, ok := m.pop()
+	require.False(t, ok, "mailbox should be empty")
 }
 
 func TestMailboxCloseRejectsPush(t *testing.T) {
 	m := newMailbox(2)
 	m.close()
 	m.close() // 重复关闭必须安全
-	if err := m.push(envelope{message: 1}); !errors.Is(err, ErrActorGone) {
-		t.Fatalf("want ErrActorGone, got %v", err)
-	}
+	err := m.push(envelope{message: 1})
+	require.False(t, !errors.Is(err, ErrActorGone), fmt.Sprintf("want ErrActorGone, got %v", err))
 }
 
 // TestShardPerActorBudget 验证每轮预算是「每 Actor 100 条」而不是整分片共享。
@@ -55,26 +49,20 @@ func TestShardPerActorBudget(t *testing.T) {
 	a1, a2 := &counterActor{}, &counterActor{}
 	c1 := newActorCell(&PID{ID: "a", Shard: 0}, a1, 512, sys)
 	c2 := newActorCell(&PID{ID: "b", Shard: 0}, a2, 512, sys)
-	if err := sh.add(c1); err != nil {
-		t.Fatal(err)
-	}
-	if err := sh.add(c2); err != nil {
-		t.Fatal(err)
-	}
+	err := sh.add(c1)
+	require.NoError(t, err)
+	err = sh.add(c2)
+	require.NoError(t, err)
 	for i := 0; i < 150; i++ {
-		if err := c1.mbox.push(envelope{message: i}); err != nil {
-			t.Fatal(err)
-		}
-		if err := c2.mbox.push(envelope{message: i}); err != nil {
-			t.Fatal(err)
-		}
+		err := c1.mbox.push(envelope{message: i})
+		require.NoError(t, err)
+		err = c2.mbox.push(envelope{message: i})
+		require.NoError(t, err)
 	}
-	if got := sh.drain(100); got != 200 {
-		t.Fatalf("drain processed %d, want 200 (100 per actor)", got)
-	}
-	if a1.count.Load() != 100 || a2.count.Load() != 100 {
-		t.Fatalf("per-actor budget violated: a1=%d a2=%d", a1.count.Load(), a2.count.Load())
-	}
+	got := sh.drain(100)
+	require.EqualValues(t, 200, got, fmt.Sprintf("drain processed %d, want 200 (100 per actor)", got))
+	require.EqualValues(t, 100, a1.count.Load(), fmt.Sprintf("per-actor budget violated: a1=%d a2=%d", a1.count.Load(), a2.count.Load()))
+	require.EqualValues(t, 100, a2.count.Load())
 }
 
 // TestConcurrentSendTerminate 覆盖「投递与终止并发」：不允许 panic，

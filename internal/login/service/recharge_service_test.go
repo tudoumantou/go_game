@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -32,31 +33,26 @@ func TestCreateOrderUsesServerPrice(t *testing.T) {
 
 	orderID, amountFen, err := svc.CreateOrder(context.Background(), 7, 3, 1)
 	require.NoError(t, err, "create order")
-	if orderID == "" || amountFen != 9800 {
-		t.Fatalf("order=%q amount=%d, want 9800", orderID, amountFen)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.NotEqualValues(t, "", orderID, fmt.Sprintf("order=%q amount=%d, want 9800", orderID, amountFen))
+	require.EqualValues(t, 9800, amountFen)
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestCreateOrderRejectsUnknownProduct 未配置的档位不写库。
 func TestCreateOrderRejectsUnknownProduct(t *testing.T) {
 	svc, mock := newRechargeService(t)
-	if _, _, err := svc.CreateOrder(context.Background(), 7, 9999, 1); err == nil {
-		t.Fatal("unknown product must be rejected")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	_, _, err := svc.CreateOrder(context.Background(), 7, 9999, 1)
+	require.Error(t, err, "unknown product must be rejected")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestCreateOrderRejectsInvalidPlayer 非法角色不写库。
 func TestCreateOrderRejectsInvalidPlayer(t *testing.T) {
 	svc, _ := newRechargeService(t)
-	if _, _, err := svc.CreateOrder(context.Background(), 0, 1, 1); err == nil {
-		t.Fatal("invalid player must be rejected")
-	}
+	_, _, err := svc.CreateOrder(context.Background(), 0, 1, 1)
+	require.Error(t, err, "invalid player must be rejected")
 }
 
 func orderRow(orderID string, amountFen int32, status int32) *sqlmock.Rows {
@@ -75,9 +71,8 @@ func TestPayCallbackRejectsAmountMismatch(t *testing.T) {
 
 	_, err := svc.PayCallback(context.Background(), "O1", 1)
 	require.Error(t, err, "amount mismatch must be rejected")
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestPayCallbackIdempotentOnPaid 已支付订单重复回调返回成功，且不再推进/发消息。
@@ -90,9 +85,8 @@ func TestPayCallbackIdempotentOnPaid(t *testing.T) {
 	res, err := svc.PayCallback(context.Background(), "O1", 9800)
 	require.NoError(t, err, "idempotent callback")
 	require.EqualValues(t, 0, res.Code)
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestPayCallbackNotFound 不存在订单返回可识别错误。
@@ -103,9 +97,7 @@ func TestPayCallbackNotFound(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
 	_, err := svc.PayCallback(context.Background(), "OX", 100)
-	if err == nil || !IsNotFound(err) {
-		t.Fatalf("expected not-found, got %v", err)
-	}
+	require.False(t, err == nil || !IsNotFound(err), fmt.Sprintf("expected not-found, got %v", err))
 }
 
 // TestPayCallbackClosedOrderRejected 已关闭订单不能支付。

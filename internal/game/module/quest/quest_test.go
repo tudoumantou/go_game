@@ -5,6 +5,7 @@ package quest
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -79,9 +80,7 @@ func newCtx(st *fakeState) (*module.Context, *[]uint32) {
 
 func firstQuest(t *testing.T) gamedata.QuestCfg {
 	t.Helper()
-	if len(gamedata.QuestCfgList()) == 0 {
-		t.Fatal("quest config is empty")
-	}
+	require.NotEmpty(t, gamedata.QuestCfgList(), "quest config is empty")
 	return gamedata.QuestCfgList()[0]
 }
 
@@ -93,23 +92,20 @@ func TestAcceptProgressClaim(t *testing.T) {
 	m := New(nil)
 
 	acceptBody, _ := proto.Marshal(&gamev1.QuestAcceptReq{QuestId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDAcceptReq, acceptBody); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnMessage(ctx, msgIDAcceptReq, acceptBody)
+	require.NoError(t, err)
 	// 事件推进（类型取自配置，增量给足）
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3)})
 
 	d, err := load(st)
 	require.NoError(t, err)
 	rec := d.Quests[int32(cfg.Id)]
-	if rec.Status != statusDone || rec.Progress != int32(cfg.Col3) {
-		t.Fatalf("progress not advanced: %+v", rec)
-	}
+	require.EqualValues(t, statusDone, rec.Status, fmt.Sprintf("progress not advanced: %+v", rec))
+	require.EqualValues(t, int32(cfg.Col3), rec.Progress)
 
 	claimBody, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDClaimReq, claimBody); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgIDClaimReq, claimBody)
+	require.NoError(t, err)
 	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
 	require.EqualValues(t, int64(cfg.Col3)*100, st.exp)
 	d, _ = load(st)
@@ -125,13 +121,11 @@ func TestClaimIdempotent(t *testing.T) {
 
 	body, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
 	d := &Data{Quests: map[int32]Record{int32(cfg.Id): {Status: statusDone, Progress: int32(cfg.Col3)}}}
-	if err := save(st, st.PlayerID(), d); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), d)
+	require.NoError(t, err)
 	for i := 0; i < 2; i++ {
-		if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
-			t.Fatal(err)
-		}
+		err := m.OnMessage(ctx, msgIDClaimReq, body)
+		require.NoError(t, err)
 	}
 	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
 }
@@ -143,13 +137,11 @@ func TestClaimUnfinished(t *testing.T) {
 	ctx, _ := newCtx(st)
 	m := New(nil)
 	d := &Data{Quests: map[int32]Record{int32(cfg.Id): {Status: statusDoing}}}
-	if err := save(st, st.PlayerID(), d); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), d)
+	require.NoError(t, err)
 	body, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
-	if err := m.OnMessage(ctx, msgIDClaimReq, body); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgIDClaimReq, body)
+	require.NoError(t, err)
 	require.EqualValues(t, 0, st.GetItemCount(1001), "unfinished quest must not grant")
 	back, _ := load(st)
 	require.EqualValues(t, statusDoing, back.Quests[int32(cfg.Id)].Status, "status changed on failed claim")
@@ -159,17 +151,14 @@ func TestClaimUnfinished(t *testing.T) {
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
 	d := &Data{Quests: map[int32]Record{101: {Status: statusClaimed, Progress: 5}}}
-	if err := save(st, st.PlayerID(), d); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), d)
+	require.NoError(t, err)
 	var row struct {
 		PlayerId int64
 		Quests   string
 	}
-	if err := json.Unmarshal(st.Ext(stateKey), &row); err != nil {
-		t.Fatal(err)
-	}
-	if row.PlayerId != 9 || row.Quests != `{"101":{"status":2,"progress":5}}` {
-		t.Fatalf("unexpected row: %+v", row)
-	}
+	err = json.Unmarshal(st.Ext(stateKey), &row)
+	require.NoError(t, err)
+	require.EqualValues(t, 9, row.PlayerId, fmt.Sprintf("unexpected row: %+v", row))
+	require.EqualValues(t, `{"101":{"status":2,"progress":5}}`, row.Quests)
 }

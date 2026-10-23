@@ -138,9 +138,8 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	gameCfg.Cross.Nodes = []string{fmt.Sprintf("127.0.0.1:%d", crossGRPCPort)}
 	gameCfg.Cross.BattleTimeout = "60s"
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()
@@ -165,9 +164,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if gameSrv.CrossReady() == 0 {
-		t.Fatal("game server failed to bind to cross node within 15s")
-	}
+	require.NotEqualValues(t, 0, gameSrv.CrossReady(), "game server failed to bind to cross node within 15s")
 	t.Logf("cross stream bound, ready nodes=%d", gameSrv.CrossReady())
 
 	loginURL := fmt.Sprintf("http://127.0.0.1:%d", loginPort)
@@ -194,33 +191,24 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	require.NoError(t, err, "wait start A")
 	startB, err := clientB.WaitBattleStart(15 * time.Second)
 	require.NoError(t, err, "wait start B")
-	if startA.RoomId == 0 || startA.RoomId != startB.RoomId {
-		t.Fatalf("room mismatch: A=%d B=%d", startA.RoomId, startB.RoomId)
-	}
-	if startA.BattleToken == "" || startB.BattleToken == "" {
-		t.Fatal("battle token must not be empty")
-	}
-	if startA.BattleToken == startB.BattleToken {
-		t.Fatal("each player must get its own token")
-	}
-	if startA.TimeoutSec <= 0 {
-		t.Fatalf("timeout_sec must be positive, got %d", startA.TimeoutSec)
-	}
+	require.NotEqualValues(t, 0, startA.RoomId, fmt.Sprintf("room mismatch: A=%d B=%d", startA.RoomId, startB.RoomId))
+	require.EqualValues(t, startB.RoomId, startA.RoomId)
+	require.NotEqualValues(t, "", startA.BattleToken, "battle token must not be empty")
+	require.NotEqualValues(t, "", startB.BattleToken)
+	require.NotEqualValues(t, startB.BattleToken, startA.BattleToken, "each player must get its own token")
+	require.False(t, startA.TimeoutSec <= 0, fmt.Sprintf("timeout_sec must be positive, got %d", startA.TimeoutSec))
 	roomID := startA.RoomId
 
 	// ⑥ 操作透传：A 的攻击应出现在 B 的 BattleSyncNotify
 	opBody := []byte("skill-fireball-9001")
-	if err := clientA.BattleOp(roomID, 9001, opBody); err != nil {
-		t.Fatalf("battle op: %v", err)
-	}
+	err := clientA.BattleOp(roomID, 9001, opBody)
+	require.NoError(t, err, fmt.Sprintf("battle op: %v", err))
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
 	require.NoError(t, err, "wait battle sync")
 	require.EqualValues(t, roomID, sync.RoomId)
 	require.EqualValues(t, 9001, sync.MsgId)
 	require.EqualValues(t, string(opBody), string(sync.Body))
-	if sync.PlayerId == 0 {
-		t.Fatal("sync must carry source player id")
-	}
+	require.NotEqualValues(t, 0, sync.PlayerId, "sync must carry source player id")
 
 	// ⑦ 伪造令牌上报 → 被拒（6002）
 	bad, err := clientA.BattleResult(roomID, "forged-token", 0)
@@ -245,14 +233,12 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	// ⑨ 双方都收到兜底结算推送（5011）
 	settleA, err := clientA.WaitBattleSettle(15 * time.Second)
 	require.NoError(t, err, "wait settle A")
-	if settleA.RoomId != roomID || settleA.Code != 0 {
-		t.Fatalf("settle A unexpected: %+v", settleA)
-	}
+	require.EqualValues(t, roomID, settleA.RoomId, fmt.Sprintf("settle A unexpected: %+v", settleA))
+	require.EqualValues(t, 0, settleA.Code)
 	settleB, err := clientB.WaitBattleSettle(15 * time.Second)
 	require.NoError(t, err, "wait settle B")
-	if settleB.RoomId != roomID || settleB.Code != 0 {
-		t.Fatalf("settle B unexpected: %+v", settleB)
-	}
+	require.EqualValues(t, roomID, settleB.RoomId, fmt.Sprintf("settle B unexpected: %+v", settleB))
+	require.EqualValues(t, 0, settleB.Code)
 
 	// ⑩ 优雅关闭（跨服先 drain 房间，再停 gRPC）—— 分段计时便于定位耗时
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 45*time.Second)

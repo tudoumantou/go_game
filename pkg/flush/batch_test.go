@@ -1,6 +1,7 @@
 package flush
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
@@ -21,37 +22,31 @@ func TestBuildBatchUpsert(t *testing.T) {
 		" ON DUPLICATE KEY UPDATE item_id=VALUES(item_id), count=VALUES(count)"
 	require.EqualValues(t, want, sql)
 	require.Len(t, args, 6)
-	if args[0] != int64(1) || args[1] != int32(1001) || args[5] != int64(3) {
-		t.Fatalf("args order wrong: %v", args)
-	}
+	require.EqualValues(t, int64(1), args[0], fmt.Sprintf("args order wrong: %v", args))
+	require.EqualValues(t, int32(1001), args[1])
+	require.EqualValues(t, int64(3), args[5])
 }
 
 // TestBuildBatchUpsertRowMismatch 行内字段数不匹配必须报错，不能生成错位 SQL。
 func TestBuildBatchUpsertRowMismatch(t *testing.T) {
 	_, _, err := BuildBatchUpsert("t", []string{"a", "b"}, [][]any{{1}})
 	require.Error(t, err, "expect error for column count mismatch")
-	if !strings.Contains(err.Error(), "row 0") {
-		t.Fatalf("error should point at the bad row: %v", err)
-	}
+	require.Contains(t, err.Error(), "row 0", fmt.Sprintf("error should point at the bad row: %v", err))
 }
 
 // TestBuildBatchUpsertEmpty 空输入报错（避免生成 `VALUES` 非法 SQL）。
 func TestBuildBatchUpsertEmpty(t *testing.T) {
-	if _, _, err := BuildBatchUpsert("t", nil, [][]any{{1}}); err == nil {
-		t.Fatal("expect error for no columns")
-	}
-	if _, _, err := BuildBatchUpsert("t", []string{"a"}, nil); err == nil {
-		t.Fatal("expect error for no rows")
-	}
+	_, _, err := BuildBatchUpsert("t", nil, [][]any{{1}})
+	require.Error(t, err, "expect error for no columns")
+	_, _, err = BuildBatchUpsert("t", []string{"a"}, nil)
+	require.Error(t, err, "expect error for no rows")
 }
 
 // TestBuildBatchUpsertSingleColumn 只有一列时更新子句不能留下悬空逗号。
 func TestBuildBatchUpsertSingleColumn(t *testing.T) {
 	sql, _, err := BuildBatchUpsert("t", []string{"id"}, [][]any{{1}})
 	require.NoError(t, err, "build")
-	if strings.Contains(sql, "UPDATE ,") || strings.HasSuffix(strings.TrimSpace(sql), "UPDATE") {
-		t.Fatalf("malformed update clause: %s", sql)
-	}
+	require.False(t, strings.Contains(sql, "UPDATE ,") || strings.HasSuffix(strings.TrimSpace(sql), "UPDATE"), fmt.Sprintf("malformed update clause: %s", sql))
 }
 
 // TestBuildBatchDelete 合批删除。
@@ -68,22 +63,18 @@ func TestBuildBatchDeleteWhere(t *testing.T) {
 	require.NoError(t, err, "build")
 	require.EqualValues(t, "DELETE FROM player_item WHERE player_id = ? AND item_id IN (?,?)", sql)
 	// 条件参数必须排在 id 之前
-	if len(args) != 3 || args[0] != int64(7) {
-		t.Fatalf("args = %v", args)
-	}
+	require.Len(t, args, 3, fmt.Sprintf("args = %v", args))
+	require.EqualValues(t, int64(7), args[0])
 }
 
 // TestBuildBatchDeleteEmpty 空条件/空 id 报错。
 func TestBuildBatchDeleteEmpty(t *testing.T) {
-	if _, _, err := BuildBatchDelete("t", "", []any{1}); err == nil {
-		t.Fatal("expect error for empty pk")
-	}
-	if _, _, err := BuildBatchDelete("t", "id", nil); err == nil {
-		t.Fatal("expect error for empty ids")
-	}
-	if _, _, err := BuildBatchDeleteWhere("t", "", nil, "id", []any{1}); err == nil {
-		t.Fatal("expect error for empty condition")
-	}
+	_, _, err := BuildBatchDelete("t", "", []any{1})
+	require.Error(t, err, "expect error for empty pk")
+	_, _, err = BuildBatchDelete("t", "id", nil)
+	require.Error(t, err, "expect error for empty ids")
+	_, _, err = BuildBatchDeleteWhere("t", "", nil, "id", []any{1})
+	require.Error(t, err, "expect error for empty condition")
 }
 
 // TestChunkByRows 行数上限切分。
@@ -94,9 +85,9 @@ func TestChunkByRows(t *testing.T) {
 	}
 	batches := Chunk(rows, 3, 0)
 	require.Len(t, batches, 3)
-	if len(batches[0]) != 3 || len(batches[1]) != 3 || len(batches[2]) != 1 {
-		t.Fatalf("batch sizes = %d/%d/%d", len(batches[0]), len(batches[1]), len(batches[2]))
-	}
+	require.Len(t, batches[0], 3, fmt.Sprintf("batch sizes = %d/%d/%d", len(batches[0]), len(batches[1]), len(batches[2])))
+	require.Len(t, batches[1], 3)
+	require.Len(t, batches[2], 1)
 }
 
 // TestChunkByBytes 字节预算切分：长字符串必须提前换批。
@@ -109,13 +100,9 @@ func TestChunkByBytes(t *testing.T) {
 	}
 	// 每行约 400+ 字节，预算 1000 → 每批最多 2 行
 	batches := Chunk(rows, 100, 1000)
-	if len(batches) < 2 {
-		t.Fatalf("expect multiple batches by bytes, got %d", len(batches))
-	}
+	require.False(t, len(batches) < 2, fmt.Sprintf("expect multiple batches by bytes, got %d", len(batches)))
 	for i, b := range batches {
-		if len(b) > 2 {
-			t.Fatalf("batch %d has %d rows, exceeded byte budget", i, len(b))
-		}
+		require.False(t, len(b) > 2, fmt.Sprintf("batch %d has %d rows, exceeded byte budget", i, len(b)))
 	}
 }
 
@@ -132,9 +119,8 @@ func TestChunkSingleOversizeRow(t *testing.T) {
 
 // TestChunkEmpty 空输入返回空切片。
 func TestChunkEmpty(t *testing.T) {
-	if batches := Chunk(nil, 10, 100); len(batches) != 0 {
-		t.Fatalf("expect no batches, got %d", len(batches))
-	}
+	batches := Chunk(nil, 10, 100)
+	require.Empty(t, batches, fmt.Sprintf("expect no batches, got %d", len(batches)))
 }
 
 // TestTableName 表名解析与白名单。
@@ -146,8 +132,7 @@ func TestTableName(t *testing.T) {
 		"":                 "",
 	}
 	for in, want := range cases {
-		if got := TableName(in); got != want {
-			t.Fatalf("TableName(%q) = %q, want %q", in, got, want)
-		}
+		got := TableName(in)
+		require.EqualValues(t, want, got, fmt.Sprintf("TableName(%q) = %q, want %q", in, got, want))
 	}
 }

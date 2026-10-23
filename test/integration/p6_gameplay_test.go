@@ -136,23 +136,20 @@ func TestP6GameplayFlow(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	privatePath := filepath.Join(keyDir, "gateway_rsa.pem")
-	if err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600)
+	require.NoError(t, err)
 	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	require.NoError(t, err)
-	if err := os.WriteFile(filepath.Join(keyDir, "gateway_rsa_pub.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(filepath.Join(keyDir, "gateway_rsa_pub.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644)
+	require.NoError(t, err)
 	gwCfg.Crypto.RSAPrivateKey = privatePath
 
 	gameCfg := *baseCfg
 	gameCfg.Server.Name = "game-p6"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	// ③ 起服务
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -168,21 +165,17 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// ④ 机器人：登录 → 握手 → 进游戏（无角色）
 	r := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	if err := r.GuestLogin(fmt.Sprintf("p6-device-%d", time.Now().UnixNano())); err != nil {
-		t.Fatalf("guest login: %v", err)
-	}
-	if err := r.Connect(); err != nil {
-		t.Fatalf("connect: %v", err)
-	}
+	err := r.GuestLogin(fmt.Sprintf("p6-device-%d", time.Now().UnixNano()))
+	require.NoError(t, err, fmt.Sprintf("guest login: %v", err))
+	err := r.Connect()
+	require.NoError(t, err, fmt.Sprintf("connect: %v", err))
 	defer r.Close()
-	if err := r.Handshake(); err != nil {
-		t.Fatalf("handshake: %v", err)
-	}
+	err := r.Handshake()
+	require.NoError(t, err, fmt.Sprintf("handshake: %v", err))
 	hs, err := r.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, "handshake req")
-	if hs.Code != 0 || hs.AccountId == 0 {
-		t.Fatalf("handshake resp code=%d account=%d", hs.Code, hs.AccountId)
-	}
+	require.EqualValues(t, 0, hs.Code, fmt.Sprintf("handshake resp code=%d account=%d", hs.Code, hs.AccountId))
+	require.NotEqualValues(t, 0, hs.AccountId)
 
 	// 无角色 → 2003
 	eg, err := r.EnterGame()
@@ -193,26 +186,21 @@ func TestP6GameplayFlow(t *testing.T) {
 	roleName := fmt.Sprintf("勇士%d", time.Now().UnixNano()%1000000)
 	cr, err := r.CreateRole(roleName, 1)
 	require.NoError(t, err, "create role")
-	if cr.Code != 0 || cr.RoleId == 0 {
-		t.Fatalf("create role resp code=%d role=%d", cr.Code, cr.RoleId)
-	}
+	require.EqualValues(t, 0, cr.Code, fmt.Sprintf("create role resp code=%d role=%d", cr.Code, cr.RoleId))
+	require.NotEqualValues(t, 0, cr.RoleId)
 	roleID := cr.RoleId
 
 	// 重名 → 2004（换一个账号，避免同账号多角色限制先触发）
 	r2 := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	if err := r2.GuestLogin(fmt.Sprintf("p6-device2-%d", time.Now().UnixNano())); err != nil {
-		t.Fatalf("guest login 2: %v", err)
-	}
-	if err := r2.Connect(); err != nil {
-		t.Fatalf("connect 2: %v", err)
-	}
+	err := r2.GuestLogin(fmt.Sprintf("p6-device2-%d", time.Now().UnixNano()))
+	require.NoError(t, err, fmt.Sprintf("guest login 2: %v", err))
+	err := r2.Connect()
+	require.NoError(t, err, fmt.Sprintf("connect 2: %v", err))
 	defer r2.Close()
-	if err := r2.Handshake(); err != nil {
-		t.Fatalf("handshake 2: %v", err)
-	}
-	if _, err := r2.SendHandshakeReq("1.0.0", "pc"); err != nil {
-		t.Fatalf("handshake req 2: %v", err)
-	}
+	err := r2.Handshake()
+	require.NoError(t, err, fmt.Sprintf("handshake 2: %v", err))
+	_, err := r2.SendHandshakeReq("1.0.0", "pc")
+	require.NoError(t, err, fmt.Sprintf("handshake req 2: %v", err))
 	dup, err := r2.CreateRole(roleName, 1)
 	require.NoError(t, err, "create duplicate role")
 	require.EqualValues(t, 2004, dup.Code)
@@ -220,9 +208,9 @@ func TestP6GameplayFlow(t *testing.T) {
 	// ⑥ 玩家信息
 	info, err := r.PlayerInfo()
 	require.NoError(t, err, "player info")
-	if info.RoleId != roleID || info.Name != roleName || info.Level != 1 {
-		t.Fatalf("player info mismatch: %+v", info)
-	}
+	require.EqualValues(t, roleID, info.RoleId, fmt.Sprintf("player info mismatch: %+v", info))
+	require.EqualValues(t, roleName, info.Name)
+	require.EqualValues(t, 1, info.Level)
 	if len(info.Attrs) != 5 || info.Attrs[2].Value != 50 { // atk=50（战士）
 		t.Fatalf("attrs unexpected: %+v", info.Attrs)
 	}
@@ -242,16 +230,13 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	list, err := r.MailList()
 	require.NoError(t, err, "mail list")
-	if len(list.Mails) != 1 || !list.Mails[0].HasAttachment {
-		t.Fatalf("mail list unexpected: %+v", list.Mails)
-	}
+	require.False(t, len(list.Mails) != 1 || !list.Mails[0].HasAttachment, fmt.Sprintf("mail list unexpected: %+v", list.Mails))
 
 	// ⑧ 领取附件
 	take, err := r.TakeMail(mailID)
 	require.NoError(t, err, "take mail")
-	if take.Code != 0 || len(take.Rewards) == 0 {
-		t.Fatalf("take mail code=%d rewards=%d", take.Code, len(take.Rewards))
-	}
+	require.EqualValues(t, 0, take.Code, fmt.Sprintf("take mail code=%d rewards=%d", take.Code, len(take.Rewards)))
+	require.NotEmpty(t, take.Rewards)
 
 	// 幂等：重复领取 → 5002
 	take2, err := r.TakeMail(mailID)
@@ -272,36 +257,31 @@ func TestP6GameplayFlow(t *testing.T) {
 	// ⑩ 使用道具（1001 配置 Col3=1 → 单次上限 1 个）
 	use, err := r.UseItem(1001, 10)
 	require.NoError(t, err, "use item")
-	if use.Code != 0 || use.RemainCount != diamondBase+49 {
-		t.Fatalf("use item code=%d remain=%d (base %d)", use.Code, use.RemainCount, diamondBase)
-	}
+	require.EqualValues(t, 0, use.Code, fmt.Sprintf("use item code=%d remain=%d (base %d)", use.Code, use.RemainCount, diamondBase))
+	require.EqualValues(t, diamondBase+49, use.RemainCount)
 
 	// ⑪ 场景：越界钳制 → 近距离移动成功 → 瞬移被拒 → 离开后同步报「不在场景」
 	sceneEnt, err := r.SceneEnter(1, 150, 150)
 	require.NoError(t, err, "scene enter")
 	require.EqualValues(t, 0, sceneEnt.Code)
 	// 地图 100x100，坐标上界是开区间：150 必须钳制到 99。
-	if sceneEnt.X != 99 || sceneEnt.Y != 99 {
-		t.Fatalf("scene enter clamped to (%d,%d), want (99,99)", sceneEnt.X, sceneEnt.Y)
-	}
+	require.EqualValues(t, 99, sceneEnt.X, fmt.Sprintf("scene enter clamped to (%d,%d), want (99,99)", sceneEnt.X, sceneEnt.Y))
+	require.EqualValues(t, 99, sceneEnt.Y)
 
 	nearMove, err := r.SceneMove(97, 99, 1)
 	require.NoError(t, err, "scene move")
-	if nearMove.Code != 0 || nearMove.X != 97 {
-		t.Fatalf("near move = %+v", nearMove)
-	}
+	require.EqualValues(t, 0, nearMove.Code, fmt.Sprintf("near move = %+v", nearMove))
+	require.EqualValues(t, 97, nearMove.X)
 
 	// 跨地图瞬移：超出「距上次移动时间 × 速度上限」，应被拒并回权威坐标。
 	farMove, err := r.SceneMove(10, 10, 2)
 	require.NoError(t, err, "scene move (far)")
 	require.EqualValues(t, 4004, farMove.Code)
-	if farMove.X != 97 || farMove.Y != 99 {
-		t.Fatalf("far move authority = (%d,%d), want (97,99)", farMove.X, farMove.Y)
-	}
+	require.EqualValues(t, 97, farMove.X, fmt.Sprintf("far move authority = (%d,%d), want (97,99)", farMove.X, farMove.Y))
+	require.EqualValues(t, 99, farMove.Y)
 
-	if _, err := r.SceneLeave(); err != nil {
-		t.Fatalf("scene leave: %v", err)
-	}
+	_, err := r.SceneLeave()
+	require.NoError(t, err, fmt.Sprintf("scene leave: %v", err))
 	syncResp, err := r.SceneSync(1)
 	require.NoError(t, err, "scene sync after leave")
 	require.EqualValues(t, 4005, syncResp.Code)

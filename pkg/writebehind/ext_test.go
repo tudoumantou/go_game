@@ -2,6 +2,8 @@ package writebehind
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -21,24 +23,23 @@ func TestLoadSaveExt(t *testing.T) {
 	st := &memState{}
 
 	// 未写过：必须是 (nil, nil)，与「数据损坏」区分。
-	if v, err := LoadExt[flatRow](st, "settings"); err != nil || v != nil {
-		t.Fatalf("empty slot: %v %v", v, err)
-	}
+	v, err := LoadExt[flatRow](st, "settings")
+	require.NoError(t, err, fmt.Sprintf("empty slot: %v %v", v, err))
+	require.Nil(t, v)
 
 	in := &flatRow{PlayerID: 1, Anchor: 9}
-	if err := SaveExt(st, "settings", in); err != nil {
-		t.Fatal(err)
-	}
+	err = SaveExt(st, "settings", in)
+	require.NoError(t, err)
 	out, err := LoadExt[flatRow](st, "settings")
-	if err != nil || out == nil || out.Anchor != 9 || out.PlayerID != 1 {
-		t.Fatalf("round trip: %+v %v", out, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("round trip: %+v %v", out, err))
+	require.NotNil(t, out)
+	require.EqualValues(t, 9, out.Anchor)
+	require.EqualValues(t, 1, out.PlayerID)
 
 	// nil 表示清空槽位（等价于 SetExt(name, nil)）。
-	if err := SaveExt[flatRow](st, "settings", nil); err != nil {
-		t.Fatal(err)
-	}
-	if raw, ok := st.ext["settings"]; !ok || raw != nil {
-		t.Fatalf("nil save must clear slot: ok=%v raw=%v", ok, raw)
-	}
+	err = SaveExt[flatRow](st, "settings", nil)
+	require.NoError(t, err)
+	raw, ok := st.ext["settings"]
+	require.True(t, ok, fmt.Sprintf("nil save must clear slot: ok=%v raw=%v", ok, raw))
+	require.Nil(t, raw)
 }

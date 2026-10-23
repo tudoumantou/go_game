@@ -4,6 +4,7 @@ package module
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -63,16 +64,12 @@ func TestApplyOnceIdempotent(t *testing.T) {
 		return nil
 	}
 	applied, err := ctx.ApplyOnce("recharge:order-1", fn)
-	if err != nil || !applied {
-		t.Fatalf("first apply: applied=%v err=%v", applied, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("first apply: applied=%v err=%v", applied, err))
+	require.True(t, applied)
 	applied, err = ctx.ApplyOnce("recharge:order-1", fn)
-	if err != nil || applied {
-		t.Fatalf("duplicate apply: applied=%v err=%v", applied, err)
-	}
-	if calls != 1 || st.GetItemCount(1001) != 10 {
-		t.Fatalf("side effects repeated: calls=%d count=%d", calls, st.GetItemCount(1001))
-	}
+	require.False(t, err != nil || applied, fmt.Sprintf("duplicate apply: applied=%v err=%v", applied, err))
+	require.EqualValues(t, 1, calls, fmt.Sprintf("side effects repeated: calls=%d count=%d", calls, st.GetItemCount(1001)))
+	require.EqualValues(t, 10, st.GetItemCount(1001))
 }
 
 // TestApplyOnceFailureDoesNotClaimKey 业务失败不能占键，否则一次配置错误就永久锁死。
@@ -80,20 +77,17 @@ func TestApplyOnceFailureDoesNotClaimKey(t *testing.T) {
 	st := newBizState()
 	ctx := &Context{State: st}
 	boom := errors.New("config missing")
-	if _, err := ctx.ApplyOnce("mail:7", func() error { return boom }); !errors.Is(err, boom) {
-		t.Fatalf("expected business error, got %v", err)
-	}
-	if st.HasBiz("mail:7") {
-		t.Fatal("failed apply must not claim the key")
-	}
+	_, err := ctx.ApplyOnce("mail:7", func() error { return boom })
+	require.False(t, !errors.Is(err, boom), fmt.Sprintf("expected business error, got %v", err))
+	require.False(t, st.HasBiz("mail:7"), "failed apply must not claim the key")
 	// 修好配置后重试可以正常生效。
 	applied, err := ctx.ApplyOnce("mail:7", func() error {
 		st.AddItem(1001, 1)
 		return nil
 	})
-	if err != nil || !applied || st.GetItemCount(1001) != 1 {
-		t.Fatalf("retry after fix: applied=%v err=%v count=%d", applied, err, st.GetItemCount(1001))
-	}
+	require.NoError(t, err, fmt.Sprintf("retry after fix: applied=%v err=%v count=%d", applied, err, st.GetItemCount(1001)))
+	require.True(t, applied)
+	require.EqualValues(t, 1, st.GetItemCount(1001))
 }
 
 // TestApplyOnceEmptyKeySkipsIdempotency 无键业务直接执行，不写 applied_grants。
@@ -105,9 +99,8 @@ func TestApplyOnceEmptyKeySkipsIdempotency(t *testing.T) {
 			st.AddItem(1001, 1)
 			return nil
 		})
-		if err != nil || !applied {
-			t.Fatalf("empty key apply: applied=%v err=%v", applied, err)
-		}
+		require.NoError(t, err, fmt.Sprintf("empty key apply: applied=%v err=%v", applied, err))
+		require.True(t, applied)
 	}
 	require.Len(t, st.biz, 0)
 	require.EqualValues(t, 2, st.GetItemCount(1001))
@@ -116,7 +109,6 @@ func TestApplyOnceEmptyKeySkipsIdempotency(t *testing.T) {
 // TestApplyOnceWithoutState Context 缺少玩家状态时明确报错，不静默成功。
 func TestApplyOnceWithoutState(t *testing.T) {
 	ctx := &Context{}
-	if _, err := ctx.ApplyOnce("k", func() error { return nil }); err == nil {
-		t.Fatal("missing state must be an error")
-	}
+	_, err := ctx.ApplyOnce("k", func() error { return nil })
+	require.Error(t, err, "missing state must be an error")
 }

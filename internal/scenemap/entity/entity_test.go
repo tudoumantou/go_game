@@ -1,6 +1,7 @@
 package entity
 
 import (
+	"fmt"
 	"testing"
 
 	"game_study/internal/scenemap"
@@ -65,20 +66,18 @@ func TestSpawnWritesStateAndIndex(t *testing.T) {
 
 	info := s.NPES[id]
 	require.NotNil(t, info)
-	if info.TemplateID != 101 || info.HP != 80 || info.MaxHP != 80 || info.AI != StateGuard {
-		t.Fatalf("状态写入不对: %+v", info)
-	}
-	if info.Hate == nil || len(info.Hate) != 0 {
-		t.Fatalf("HateList 应为空切片, got %#v", info.Hate)
-	}
+	require.EqualValues(t, 101, info.TemplateID, fmt.Sprintf("状态写入不对: %+v", info))
+	require.EqualValues(t, 80, info.HP)
+	require.EqualValues(t, 80, info.MaxHP)
+	require.EqualValues(t, StateGuard, info.AI)
+	require.NotNil(t, info.Hate, fmt.Sprintf("HateList 应为空切片, got %#v", info.Hate))
+	require.Empty(t, info.Hate)
 	require.EqualValues(t, 0, info.BornAt)
-	if pos, ok := s.Index.At(id); !ok || pos != (scenemap.GridPos{X: 3, Y: 4}) {
-		t.Fatalf("索引落点不对: %s %v", pos, ok)
-	}
+	pos, ok := s.Index.At(id)
+	require.True(t, ok, fmt.Sprintf("索引落点不对: %s %v", pos, ok))
+	require.EqualValues(t, (scenemap.GridPos{X: 3, Y: 4}), pos)
 	// 负数段 UUID：与玩家（正数）永不冲突。
-	if id >= 0 {
-		t.Fatalf("怪物 UUID 应为负数, got %d", id)
-	}
+	require.False(t, id >= 0, fmt.Sprintf("怪物 UUID 应为负数, got %d", id))
 }
 
 func TestSpawnFallsBackToRingWhenBlocked(t *testing.T) {
@@ -88,12 +87,9 @@ func TestSpawnFallsBackToRingWhenBlocked(t *testing.T) {
 	require.NoError(t, err, "第二只怪应能在附近找到空位")
 	p1, _ := s.Index.At(first)
 	p2, _ := s.Index.At(second)
-	if p1 == p2 {
-		t.Fatalf("两只怪重叠在 %s", p1)
-	}
-	if d := grid.Chebyshev(p1, p2); d > spawnSearchR {
-		t.Fatalf("落点距离 %d 超过搜索半径 %d", d, spawnSearchR)
-	}
+	require.NotEqualValues(t, p2, p1, fmt.Sprintf("两只怪重叠在 %s", p1))
+	d := grid.Chebyshev(p1, p2)
+	require.False(t, d > spawnSearchR, fmt.Sprintf("落点距离 %d 超过搜索半径 %d", d, spawnSearchR))
 }
 
 func TestDespawnReturnsSpecAndReclaimsFootprint(t *testing.T) {
@@ -101,47 +97,33 @@ func TestDespawnReturnsSpecAndReclaimsFootprint(t *testing.T) {
 	// 半径 1 的体积怪：占 (2*1+1)² = 9 格。
 	id := mustSpawn(t, s, Spec{ConfigID: 7, HP: 30, Radius: 1}, scenemap.GridPos{X: 4, Y: 4})
 
-	if got := s.Index.BlockCount(scenemap.GridPos{X: 3, Y: 3}); got != 1 {
-		t.Fatalf("体积怪未登记动态阻挡, BlockCount=%d", got)
-	}
+	got := s.Index.BlockCount(scenemap.GridPos{X: 3, Y: 3})
+	require.EqualValues(t, 1, got, fmt.Sprintf("体积怪未登记动态阻挡, BlockCount=%d", got))
 
 	spec, ok := Despawn(s, id)
 	require.True(t, ok, "Despawn 应返回 true")
-	if spec.ConfigID != 7 || spec.Radius != 1 {
-		t.Fatalf("返回的 Spec 不对: %+v", spec)
-	}
-	if _, exists := s.NPES[id]; exists {
-		t.Fatal("NPES 未删除")
-	}
-	if got := s.Index.BlockCount(scenemap.GridPos{X: 3, Y: 3}); got != 0 {
-		t.Fatalf("动态阻挡未回收, BlockCount=%d", got)
-	}
-	if _, ok := Despawn(s, id); ok {
-		t.Fatal("重复 Despawn 应返回 false（幂等）")
-	}
+	require.EqualValues(t, 7, spec.ConfigID, fmt.Sprintf("返回的 Spec 不对: %+v", spec))
+	require.EqualValues(t, 1, spec.Radius)
+	_, exists := s.NPES[id]
+	require.False(t, exists, "NPES 未删除")
+	got = s.Index.BlockCount(scenemap.GridPos{X: 3, Y: 3})
+	require.EqualValues(t, 0, got, fmt.Sprintf("动态阻挡未回收, BlockCount=%d", got))
+	_, ok = Despawn(s, id)
+	require.False(t, ok, "重复 Despawn 应返回 false（幂等）")
 }
 
 func TestDamageDeathIsIdempotent(t *testing.T) {
 	s := newTestState(grid.Size{Width: 8, Height: 8})
 	id := mustSpawn(t, s, Spec{ConfigID: 1, HP: 20}, scenemap.GridPos{X: 2, Y: 2})
 
-	if Damage(s, id, 5, 0) {
-		t.Fatal("未致死却返回了 true")
-	}
-	if !Damage(s, id, 100, 0) {
-		t.Fatal("致死应返回 true")
-	}
+	require.False(t, Damage(s, id, 5, 0), "未致死却返回了 true")
+	require.False(t, !Damage(s, id, 100, 0), "致死应返回 true")
 	// 第二次致死必须返回 false：否则玩法会重复掉落、重复通关（规格 8.2）。
-	if Damage(s, id, 100, 0) {
-		t.Fatal("死亡结算不幂等：第二次仍返回 true")
-	}
+	require.False(t, Damage(s, id, 100, 0), "死亡结算不幂等：第二次仍返回 true")
 	info := s.NPES[id]
-	if info.HP != 0 || info.AI != StateDead {
-		t.Fatalf("死亡状态不对: HP=%d AI=%s", info.HP, info.AI)
-	}
-	if info.Alive() {
-		t.Fatal("Alive() 应为 false")
-	}
+	require.EqualValues(t, 0, info.HP, fmt.Sprintf("死亡状态不对: HP=%d AI=%s", info.HP, info.AI))
+	require.EqualValues(t, StateDead, info.AI)
+	require.False(t, info.Alive(), "Alive() 应为 false")
 }
 
 // ============================================================================
@@ -160,9 +142,8 @@ func TestGuardAcquiresNearestPlayer(t *testing.T) {
 	info := s.NPES[id]
 	require.EqualValues(t, StateFight, info.AI)
 	require.EqualValues(t, 2, info.Target)
-	if len(info.Hate) != 1 || info.Hate[0].UUID != 2 {
-		t.Fatalf("HateList 不对: %+v", info.Hate)
-	}
+	require.Len(t, info.Hate, 1, fmt.Sprintf("HateList 不对: %+v", info.Hate))
+	require.EqualValues(t, 2, info.Hate[0].UUID)
 }
 
 func TestFixedNeverAcquires(t *testing.T) {
@@ -171,9 +152,8 @@ func TestFixedNeverAcquires(t *testing.T) {
 	addPlayer(t, s, 1, scenemap.GridPos{X: 6, Y: 5})
 	TickAll(s, 1000)
 
-	if info := s.NPES[id]; info.AI != StateFixed || info.Target.Valid() {
-		t.Fatalf("FIXED 不应索敌: AI=%s Target=%s", info.AI, info.Target)
-	}
+	info := s.NPES[id]
+	require.False(t, info.AI != StateFixed || info.Target.Valid(), fmt.Sprintf("FIXED 不应索敌: AI=%s Target=%s", info.AI, info.Target))
 }
 
 func TestFightAttackIsThrottledAndEmitsEvent(t *testing.T) {
@@ -185,29 +165,25 @@ func TestFightAttackIsThrottledAndEmitsEvent(t *testing.T) {
 	TickAll(s, 1000)
 	evs := DrainEvents(s)
 	require.Len(t, evs, 1)
-	if evs[0].UUID != id || evs[0].Target != 1 || evs[0].Damage != 12 {
-		t.Fatalf("事件内容不对: %+v", evs[0])
-	}
+	require.EqualValues(t, id, evs[0].UUID, fmt.Sprintf("事件内容不对: %+v", evs[0]))
+	require.EqualValues(t, 1, evs[0].Target)
+	require.EqualValues(t, 12, evs[0].Damage)
 	// 再取一次应为空：Drain 是"取走即清空"，避免同一刀结算两次。
-	if again := DrainEvents(s); len(again) != 0 {
-		t.Fatalf("事件应已清空, got %d", len(again))
-	}
+	again := DrainEvents(s)
+	require.Empty(t, again, fmt.Sprintf("事件应已清空, got %d", len(again)))
 
 	// 1 秒内不再攻击。
 	TickAll(s, 1500)
-	if evs := DrainEvents(s); len(evs) != 0 {
-		t.Fatalf("攻击节流失效: %d", len(evs))
-	}
+	evs = DrainEvents(s)
+	require.Empty(t, evs, fmt.Sprintf("攻击节流失效: %d", len(evs)))
 	// 到 2000ms 再攻击一次。
 	TickAll(s, 2000)
-	if evs := DrainEvents(s); len(evs) != 1 {
-		t.Fatalf("2000ms 应再攻击一次, got %d", len(evs))
-	}
+	evs = DrainEvents(s)
+	require.Len(t, evs, 1, fmt.Sprintf("2000ms 应再攻击一次, got %d", len(evs)))
 	// 玩家 HP 不在这里扣（权威在玩家 Actor）：NpeAIInfo 没有玩家血量字段，
 	// 这里只需断言"我们没动 Users"。
-	if u := s.Users[1]; u == nil {
-		t.Fatal("玩家不应被 AI 删掉")
-	}
+	u := s.Users[1]
+	require.NotNil(t, u, "玩家不应被 AI 删掉")
 }
 
 func TestFightGivesUpBeyondRange(t *testing.T) {
@@ -220,9 +196,7 @@ func TestFightGivesUpBeyondRange(t *testing.T) {
 	TickAll(s, 1000)
 	info := s.NPES[id]
 	require.EqualValues(t, StateReturn, info.AI)
-	if info.Target.Valid() || len(info.Hate) != 0 {
-		t.Fatalf("RETURN 应清空目标与仇恨: %+v", info)
-	}
+	require.False(t, info.Target.Valid() || len(info.Hate) != 0, fmt.Sprintf("RETURN 应清空目标与仇恨: %+v", info))
 }
 
 func TestReturnWalksHomeHealsAndGuards(t *testing.T) {
@@ -231,17 +205,15 @@ func TestReturnWalksHomeHealsAndGuards(t *testing.T) {
 	home := scenemap.GridPos{X: 7, Y: 5}
 
 	// 先把它挪远，再切成 RETURN。
-	if err := MoveOne(s, id, scenemap.GridPos{X: 9, Y: 5}); err != nil {
-		t.Fatalf("MoveOne 失败: %v", err)
-	}
+	err := MoveOne(s, id, scenemap.GridPos{X: 9, Y: 5})
+	require.NoError(t, err, fmt.Sprintf("MoveOne 失败: %v", err))
 	info := s.NPES[id]
 	info.HP = 50
 	info.AI = StateReturn
 
 	TickAll(s, 1000)
-	if d := grid.Chebyshev(info.GridPos, home); d >= 2 {
-		t.Fatalf("应朝出生点走近一步, got %s (距离 %d)", info.GridPos, d)
-	}
+	d := grid.Chebyshev(info.GridPos, home)
+	require.False(t, d >= 2, fmt.Sprintf("应朝出生点走近一步, got %s (距离 %d)", info.GridPos, d))
 	// 回血：每秒 5% of 100 = 5。
 	require.EqualValues(t, 55, info.HP)
 
@@ -254,9 +226,7 @@ func TestReturnWalksHomeHealsAndGuards(t *testing.T) {
 	// 到家之后的第一拍才切 GUARD（状态迁移发生在 tick 开头）。
 	TickAll(s, 4000)
 	require.EqualValues(t, StateGuard, info.AI)
-	if info.HP <= 55 || info.HP > 100 {
-		t.Fatalf("回血异常: %d", info.HP)
-	}
+	require.False(t, info.HP <= 55 || info.HP > 100, fmt.Sprintf("回血异常: %d", info.HP))
 }
 
 func TestHateAccumulatesAndClearsAfterIdle(t *testing.T) {
@@ -268,20 +238,16 @@ func TestHateAccumulatesAndClearsAfterIdle(t *testing.T) {
 	Damage(s, id, 5, 2)
 	info := s.NPES[id]
 	require.EqualValues(t, 2, info.Target)
-	if len(info.Hate) != 2 || info.Hate[0].Hate != 35 {
-		t.Fatalf("仇恨累加不对: %+v", info.Hate)
-	}
+	require.Len(t, info.Hate, 2, fmt.Sprintf("仇恨累加不对: %+v", info.Hate))
+	require.EqualValues(t, 35, info.Hate[0].Hate)
 
 	// 未到 5 秒：仇恨保留。
 	TickAll(s, 1000)
-	if len(s.NPES[id].Hate) == 0 {
-		t.Fatal("未脱战就清空了仇恨")
-	}
+	require.NotEmpty(t, s.NPES[id].Hate, "未脱战就清空了仇恨")
 	// 超过 5 秒：清空（脱战）。
 	TickAll(s, 6000)
-	if got := s.NPES[id]; len(got.Hate) != 0 || got.Target.Valid() {
-		t.Fatalf("脱战应清空仇恨: %+v", got)
-	}
+	got := s.NPES[id]
+	require.False(t, len(got.Hate) != 0 || got.Target.Valid(), fmt.Sprintf("脱战应清空仇恨: %+v", got))
 }
 
 func TestGuardWanderIsDeterministicAndBounded(t *testing.T) {
@@ -300,9 +266,8 @@ func TestGuardWanderIsDeterministicAndBounded(t *testing.T) {
 	home := scenemap.GridPos{X: 10, Y: 10}
 	for i := range a {
 		require.EqualValues(t, b[i], a[i])
-		if d := grid.Chebyshev(home, a[i]); d > WanderRadius {
-			t.Fatalf("游走超出出生点 %d 格: %s", WanderRadius, a[i])
-		}
+		d := grid.Chebyshev(home, a[i])
+		require.False(t, d > WanderRadius, fmt.Sprintf("游走超出出生点 %d 格: %s", WanderRadius, a[i]))
 	}
 }
 
@@ -314,7 +279,6 @@ func TestMoveOneRejectsBlockedCell(t *testing.T) {
 
 	err := MoveOne(s, id, scenemap.GridPos{X: 3, Y: 2})
 	require.Error(t, err)
-	if pos, _ := s.Index.At(id); pos != (scenemap.GridPos{X: 2, Y: 2}) {
-		t.Fatalf("被拒绝的移动不应改变位置, got %s", pos)
-	}
+	pos, _ := s.Index.At(id)
+	require.EqualValues(t, (scenemap.GridPos{X: 2, Y: 2}), pos, fmt.Sprintf("被拒绝的移动不应改变位置, got %s", pos))
 }

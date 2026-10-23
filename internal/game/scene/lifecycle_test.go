@@ -5,10 +5,12 @@
 package scene
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"game_study/pkg/actor"
+	"github.com/stretchr/testify/require"
 )
 
 // lifeRig 空闲超时很短，便于在测试里触发兜底清理。
@@ -52,9 +54,8 @@ func TestIdleSweepRemovesGhost(t *testing.T) {
 
 	join(t, sys, scPID, pids[1], cols[1], 1, 5, 5)
 	join(t, sys, scPID, pids[2], cols[2], 2, 6, 5)
-	if n := countOf(t, sys, scPID); n != 2 {
-		t.Fatalf("count = %d, want 2", n)
-	}
+	n := countOf(t, sys, scPID)
+	require.EqualValues(t, 2, n, fmt.Sprintf("count = %d, want 2", n))
 	drainPushes(cols[2])
 
 	// 超过空闲阈值后扫描：两个都超时（都没发心跳）。
@@ -65,9 +66,8 @@ func TestIdleSweepRemovesGhost(t *testing.T) {
 	for time.Now().Before(deadline) && countOf(t, sys, scPID) != 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if n := countOf(t, sys, scPID); n != 0 {
-		t.Fatalf("count = %d, want 0（超时应被清理）", n)
-	}
+	n = countOf(t, sys, scPID)
+	require.EqualValues(t, 0, n, fmt.Sprintf("count = %d, want 0（超时应被清理）", n))
 }
 
 // TestHeartbeatKeepsAlive 持续心跳的实体不会被清掉。
@@ -87,9 +87,8 @@ func TestHeartbeatKeepsAlive(t *testing.T) {
 	for time.Now().Before(deadline) && countOf(t, sys, scPID) == 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if n := countOf(t, sys, scPID); n != 1 {
-		t.Fatalf("count = %d, want 1（有心跳不该被清）", n)
-	}
+	n := countOf(t, sys, scPID)
+	require.EqualValues(t, 1, n, fmt.Sprintf("count = %d, want 1（有心跳不该被清）", n))
 }
 
 // TestSweepBroadcastsLeaveToRemaining 幽灵被清理时，同场景其他玩家要收到 Leave。
@@ -107,7 +106,6 @@ func TestSweepBroadcastsLeaveToRemaining(t *testing.T) {
 	send(t, sys, scPID, &SweepMsg{})
 
 	types := drainPushes(cols[1])
-	if len(types) != 1 || types[0] != 3 {
-		t.Fatalf("玩家 1 应收到 1 条 Leave，got %v", types)
-	}
+	require.Len(t, types, 1, fmt.Sprintf("玩家 1 应收到 1 条 Leave，got %v", types))
+	require.EqualValues(t, 3, types[0])
 }

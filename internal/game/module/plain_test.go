@@ -4,6 +4,7 @@ package module
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"game_study/pkg/log"
@@ -52,39 +53,33 @@ func newTestPlainModule(t *testing.T) *testPlainModule {
 // TestPlainDispatch 注册的协议按 msgID 分发，处理器被调用。
 func TestPlainDispatch(t *testing.T) {
 	m := newTestPlainModule(t)
-	if err := m.OnMessage(&Context{}, testPlainMsgA, nil); err != nil {
-		t.Fatalf("OnMessage A: %v", err)
-	}
-	if err := m.OnMessage(&Context{}, testPlainMsgB, []byte("ok")); err != nil {
-		t.Fatalf("OnMessage B: %v", err)
-	}
-	if len(m.calls) != 2 || m.calls[0] != testPlainMsgA || m.calls[1] != testPlainMsgB {
-		t.Fatalf("分发顺序不符: %v", m.calls)
-	}
+	err := m.OnMessage(&Context{}, testPlainMsgA, nil)
+	require.NoError(t, err, fmt.Sprintf("OnMessage A: %v", err))
+	err = m.OnMessage(&Context{}, testPlainMsgB, []byte("ok"))
+	require.NoError(t, err, fmt.Sprintf("OnMessage B: %v", err))
+	require.Len(t, m.calls, 2, fmt.Sprintf("分发顺序不符: %v", m.calls))
+	require.EqualValues(t, testPlainMsgA, m.calls[0])
+	require.EqualValues(t, testPlainMsgB, m.calls[1])
 }
 
 // TestPlainUnknownMsg 未注册的协议号返回错误而不是静默忽略。
 func TestPlainUnknownMsg(t *testing.T) {
 	m := newTestPlainModule(t)
-	if err := m.OnMessage(&Context{}, 999999, nil); err == nil {
-		t.Fatal("未注册的 msgID 应返回错误")
-	}
+	err := m.OnMessage(&Context{}, 999999, nil)
+	require.Error(t, err, "未注册的 msgID 应返回错误")
 }
 
 // TestPlainHandlerError 处理器错误原样上抛（由玩家层决定回包策略）。
 func TestPlainHandlerError(t *testing.T) {
 	m := newTestPlainModule(t)
-	if err := m.OnMessage(&Context{}, testPlainMsgB, []byte("boom")); err == nil {
-		t.Fatal("处理器错误应上抛")
-	}
+	err := m.OnMessage(&Context{}, testPlainMsgB, []byte("boom"))
+	require.Error(t, err, "处理器错误应上抛")
 }
 
 // TestPlainDuplicateHandlePanics 重复注册同一协议号属于编码错误，构造期 panic。
 func TestPlainDuplicateHandlePanics(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Fatal("重复注册应 panic")
-		}
+		require.NotNil(t, recover(), "重复注册应 panic")
 	}()
 	_ = NewPlain("dup", func(p *Plain) {})
 	p := NewPlain("dup2")
@@ -95,18 +90,14 @@ func TestPlainDuplicateHandlePanics(t *testing.T) {
 // TestPlainLifecycleHooks 可选钩子被调用；未挂的钩子返回 nil。
 func TestPlainLifecycleHooks(t *testing.T) {
 	m := newTestPlainModule(t)
-	if err := m.Init(&Context{}); err != nil || !m.inited {
-		t.Fatalf("Init 钩子未生效: err=%v inited=%v", err, m.inited)
-	}
-	if err := m.OnLogin(&Context{}); err != nil || !m.login {
-		t.Fatalf("OnLogin 钩子未生效: err=%v login=%v", err, m.login)
-	}
-	if err := m.OnLogout(&Context{}); err != nil {
-		t.Fatalf("未挂 OnLogout 时应返回 nil: %v", err)
-	}
-	if err := m.OnSave(context.Background()); err != nil {
-		t.Fatalf("无状态模块 OnSave 应返回 nil: %v", err)
-	}
+	err := m.Init(&Context{})
+	require.False(t, err != nil || !m.inited, fmt.Sprintf("Init 钩子未生效: err=%v inited=%v", err, m.inited))
+	err = m.OnLogin(&Context{})
+	require.False(t, err != nil || !m.login, fmt.Sprintf("OnLogin 钩子未生效: err=%v login=%v", err, m.login))
+	err = m.OnLogout(&Context{})
+	require.NoError(t, err, fmt.Sprintf("未挂 OnLogout 时应返回 nil: %v", err))
+	err = m.OnSave(context.Background())
+	require.NoError(t, err, fmt.Sprintf("无状态模块 OnSave 应返回 nil: %v", err))
 }
 
 // TestPlainMsgIDsCopy MsgIDs 返回副本，调用方改动不影响内部状态。
@@ -115,17 +106,13 @@ func TestPlainMsgIDsCopy(t *testing.T) {
 	ids := m.MsgIDs()
 	require.Len(t, ids, 2)
 	ids[0] = 1
-	if m.MsgIDs()[0] == 1 {
-		t.Fatal("MsgIDs 应返回副本")
-	}
+	require.NotEqualValues(t, 1, m.MsgIDs()[0], "MsgIDs 应返回副本")
 }
 
 // TestPlainIsStateless Plain 声明所有协议无状态。
 func TestPlainIsStateless(t *testing.T) {
 	m := newTestPlainModule(t)
-	if !m.IsStateless(testPlainMsgA) || !m.IsStateless(testPlainMsgB) {
-		t.Fatal("Plain 模块应声明所有协议无状态")
-	}
+	require.False(t, !m.IsStateless(testPlainMsgA) || !m.IsStateless(testPlainMsgB), "Plain 模块应声明所有协议无状态")
 }
 
 // TestPlainReply 回包经 proto 序列化后交给 Sender。
@@ -137,12 +124,10 @@ func TestPlainReply(t *testing.T) {
 		got, gotBody = msgID, body
 		return nil
 	}}
-	if err := m.Reply(ctx, 999, wrapperspb.String("x")); err != nil {
-		t.Fatalf("Reply: %v", err)
-	}
-	if got != 999 || len(gotBody) == 0 {
-		t.Fatalf("Reply 未送达: msgID=%d len=%d", got, len(gotBody))
-	}
+	err := m.Reply(ctx, 999, wrapperspb.String("x"))
+	require.NoError(t, err, fmt.Sprintf("Reply: %v", err))
+	require.EqualValues(t, 999, got, fmt.Sprintf("Reply 未送达: msgID=%d len=%d", got, len(gotBody)))
+	require.NotEmpty(t, gotBody)
 }
 
 // TestRegistryIsStateless 注册表按 msgID 判断无状态声明；
@@ -152,19 +137,13 @@ func TestRegistryIsStateless(t *testing.T) {
 	plain := newTestPlainModule(t)
 	r.Register(plain)
 
-	if !r.IsStateless(testPlainMsgA) {
-		t.Fatal("Plain 模块的协议应判定为无状态")
-	}
-	if r.IsStateless(999999) {
-		t.Fatal("未注册的协议应返回 false")
-	}
+	require.False(t, !r.IsStateless(testPlainMsgA), "Plain 模块的协议应判定为无状态")
+	require.False(t, r.IsStateless(999999), "未注册的协议应返回 false")
 
 	// 普通模块（只实现 Module，不实现 StatelessAware）
 	legacy := &legacyModule{}
 	r.Register(legacy)
-	if r.IsStateless(legacyID) {
-		t.Fatal("未声明 StatelessAware 的模块应返回 false")
-	}
+	require.False(t, r.IsStateless(legacyID), "未声明 StatelessAware 的模块应返回 false")
 }
 
 const legacyID uint32 = 990003
@@ -191,32 +170,28 @@ func TestPlainHandleRRespondsOnCacheFailure(t *testing.T) {
 	p.HandleR(8101, 8102, &gamev1.RankListResp{}, func(*Context, uint32, []byte) error { return nil })
 
 	respID, raw, ok := p.CacheFailureReply(8101)
-	if !ok || respID != 8102 || len(raw) == 0 {
-		t.Fatalf("CacheFailureReply = %d/%v/%v", respID, raw, ok)
-	}
+	require.True(t, ok, fmt.Sprintf("CacheFailureReply = %d/%v/%v", respID, raw, ok))
+	require.EqualValues(t, 8102, respID)
+	require.NotEmpty(t, raw)
 	var resp gamev1.RankListResp
 	require.NoError(t, proto.Unmarshal(raw, &resp))
 	require.EqualValues(t, 6702, resp.Code)
 
 	// 未声明的协议 → ok=false（走网关通用错误）
-	if _, _, ok := p.CacheFailureReply(9999); ok {
-		t.Fatal("未声明响应的协议不应回包")
-	}
+	_, _, ok = p.CacheFailureReply(9999)
+	require.False(t, ok, "未声明响应的协议不应回包")
 
 	// 未设 errCode → 即使声明了响应也不回（Plain 不该凭空造业务码）
 	bare := NewPlain("bare_rank")
 	bare.HandleR(8101, 8102, &gamev1.RankListResp{}, func(*Context, uint32, []byte) error { return nil })
-	if _, _, ok := bare.CacheFailureReply(8101); ok {
-		t.Fatal("未设 errCode 时不应回包")
-	}
+	_, _, ok = bare.CacheFailureReply(8101)
+	require.False(t, ok, "未设 errCode 时不应回包")
 }
 
 // TestPlainHandleRNilPrototypePanics nil 原型是编码错误，启动期暴露。
 func TestPlainHandleRNilPrototypePanics(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Fatal("nil prototype should panic")
-		}
+		require.NotNil(t, recover(), "nil prototype should panic")
 	}()
 	p := NewPlain("x")
 	p.HandleR(1, 2, nil, func(*Context, uint32, []byte) error { return nil })

@@ -123,9 +123,8 @@ func TestP12LoginPreload(t *testing.T) {
 	gameCfg.Server.Name = "game-p12"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()
@@ -176,28 +175,23 @@ func TestP12LoginPreload(t *testing.T) {
 	raw, err := json.Marshal(offlineMsg)
 	require.NoError(t, err, "marshal offline msg")
 	pendKey := fmt.Sprintf("pend:chat:%d", roleID)
-	if err := rdb.RPush(context.Background(), pendKey, raw).Err(); err != nil {
-		t.Fatalf("push pend: %v", err)
-	}
+	err := rdb.RPush(context.Background(), pendKey, raw).Err()
+	require.NoError(t, err, fmt.Sprintf("push pend: %v", err))
 
 	// ④ 断开 → 用同一 device 重连（触发一次完整预加载）
 	client1.Close()
 	time.Sleep(500 * time.Millisecond)
 
 	client2 := robot.New(loginURL, gwAddr)
-	if err := client2.GuestLogin(deviceID); err != nil {
-		t.Fatalf("relogin: %v", err)
-	}
-	if err := client2.Connect(); err != nil {
-		t.Fatalf("reconnect: %v", err)
-	}
+	err := client2.GuestLogin(deviceID)
+	require.NoError(t, err, fmt.Sprintf("relogin: %v", err))
+	err := client2.Connect()
+	require.NoError(t, err, fmt.Sprintf("reconnect: %v", err))
 	defer client2.Close()
-	if err := client2.Handshake(); err != nil {
-		t.Fatalf("rehandshake: %v", err)
-	}
-	if _, err := client2.SendHandshakeReq("1.0.0", "pc"); err != nil {
-		t.Fatalf("rehandshake req: %v", err)
-	}
+	err := client2.Handshake()
+	require.NoError(t, err, fmt.Sprintf("rehandshake: %v", err))
+	_, err := client2.SendHandshakeReq("1.0.0", "pc")
+	require.NoError(t, err, fmt.Sprintf("rehandshake req: %v", err))
 	eg, err := client2.EnterGame()
 	require.NoError(t, err, "enter game")
 	require.EqualValues(t, roleID, eg.RoleId)
@@ -220,9 +214,7 @@ func TestP12LoginPreload(t *testing.T) {
 		`SELECT progress FROM activity_record WHERE player_id = ? AND activity_id = 1`, roleID).Scan(&progress); err != nil {
 		t.Fatalf("query activity progress: %v", err)
 	}
-	if progress < 3 {
-		t.Fatalf("login activity progress should increase, got %d", progress)
-	}
+	require.False(t, progress < 3, fmt.Sprintf("login activity progress should increase, got %d", progress))
 	t.Logf("活动进度推进到 %d", progress)
 
 	// ⑦ 校验离线暂存被 drain 并补投
@@ -233,9 +225,9 @@ func TestP12LoginPreload(t *testing.T) {
 	t.Logf("离线消息已补投：msg_id=%s from=%s", chat.MsgId, chat.SenderName)
 
 	// 队列应已清空
-	if n, err := rdb.LLen(context.Background(), pendKey).Result(); err != nil || n != 0 {
-		t.Fatalf("pend queue should be drained, len=%d err=%v", n, err)
-	}
+	n, err := rdb.LLen(context.Background(), pendKey).Result()
+	require.NoError(t, err, fmt.Sprintf("pend queue should be drained, len=%d err=%v", n, err))
+	require.EqualValues(t, 0, n)
 
 	// ⑧ 关闭
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -249,23 +241,18 @@ func TestP12LoginPreload(t *testing.T) {
 func createRoleWithDevice(t *testing.T, loginURL, gwAddr, deviceID, namePrefix string) (int64, *robot.Client) {
 	t.Helper()
 	c := robot.New(loginURL, gwAddr)
-	if err := c.GuestLogin(deviceID); err != nil {
-		t.Fatalf("%s guest login: %v", namePrefix, err)
-	}
-	if err := c.Connect(); err != nil {
-		t.Fatalf("%s connect: %v", namePrefix, err)
-	}
-	if err := c.Handshake(); err != nil {
-		t.Fatalf("%s handshake: %v", namePrefix, err)
-	}
-	if _, err := c.SendHandshakeReq("1.0.0", "pc"); err != nil {
-		t.Fatalf("%s handshake req: %v", namePrefix, err)
-	}
+	err := c.GuestLogin(deviceID)
+	require.NoError(t, err, fmt.Sprintf("%s guest login: %v", namePrefix, err))
+	err := c.Connect()
+	require.NoError(t, err, fmt.Sprintf("%s connect: %v", namePrefix, err))
+	err := c.Handshake()
+	require.NoError(t, err, fmt.Sprintf("%s handshake: %v", namePrefix, err))
+	_, err := c.SendHandshakeReq("1.0.0", "pc")
+	require.NoError(t, err, fmt.Sprintf("%s handshake req: %v", namePrefix, err))
 	roleName := fmt.Sprintf("%s%d", namePrefix, time.Now().UnixNano()%1000000)
 	cr, err := c.CreateRole(roleName, 1)
 	require.NoError(t, err)
-	if cr.Code != 0 || cr.RoleId == 0 {
-		t.Fatalf("%s create role code=%d role=%d", namePrefix, cr.Code, cr.RoleId)
-	}
+	require.EqualValues(t, 0, cr.Code, fmt.Sprintf("%s create role code=%d role=%d", namePrefix, cr.Code, cr.RoleId))
+	require.NotEqualValues(t, 0, cr.RoleId)
 	return cr.RoleId, c
 }

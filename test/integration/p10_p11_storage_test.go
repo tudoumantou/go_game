@@ -16,6 +16,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -93,12 +94,8 @@ func TestP10IDTable(t *testing.T) {
 	// ① 构建
 	n, err := it.BuildOne(ctx, meta)
 	require.NoError(t, err, "build")
-	if n < 3 {
-		t.Fatalf("built %d ids, want >= 3", n)
-	}
-	if !it.Ready(ctx, "player") {
-		t.Fatal("ready flag not set after build")
-	}
+	require.False(t, n < 3, fmt.Sprintf("built %d ids, want >= 3", n))
+	require.False(t, !it.Ready(ctx, "player"), "ready flag not set after build")
 
 	// ② 存在性：ready 后不再打库
 	var playerID int64
@@ -107,13 +104,10 @@ func TestP10IDTable(t *testing.T) {
 		t.Fatalf("query player id: %v", err)
 	}
 	exists, err := it.Exists(ctx, "player", playerID)
-	if err != nil || !exists {
-		t.Fatalf("exists(%d) = %v, %v", playerID, exists, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("exists(%d) = %v, %v", playerID, exists, err))
+	require.True(t, exists)
 	exists, err = it.Exists(ctx, "player", 99999999)
-	if err != nil || exists {
-		t.Fatalf("exists(nonexistent) = %v, %v", exists, err)
-	}
+	require.False(t, err != nil || exists, fmt.Sprintf("exists(nonexistent) = %v, %v", exists, err))
 
 	// ③ 创建同步：新 id 登记后立即可见
 	if _, err := database.ExecContext(ctx,
@@ -125,41 +119,32 @@ func TestP10IDTable(t *testing.T) {
 		`SELECT id FROM player WHERE name = 'idtab_role_new'`).Scan(&newID); err != nil {
 		t.Fatalf("query new id: %v", err)
 	}
-	if err := it.Add(ctx, "player", newID); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-	if ok, _ := it.Exists(ctx, "player", newID); !ok {
-		t.Fatal("newly added id should exist")
-	}
+	err := it.Add(ctx, "player", newID)
+	require.NoError(t, err, fmt.Sprintf("add: %v", err))
+	ok, _ := it.Exists(ctx, "player", newID)
+	require.True(t, ok, "newly added id should exist")
 
 	// ④ 删除同步
-	if _, err := database.ExecContext(ctx, `DELETE FROM player WHERE id = ?`, newID); err != nil {
-		t.Fatalf("delete player: %v", err)
-	}
-	if err := it.Remove(ctx, "player", newID); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	if ok, _ := it.Exists(ctx, "player", newID); ok {
-		t.Fatal("removed id should not exist")
-	}
+	_, err := database.ExecContext(ctx, `DELETE FROM player WHERE id = ?`, newID)
+	require.NoError(t, err, fmt.Sprintf("delete player: %v", err))
+	err := it.Remove(ctx, "player", newID)
+	require.NoError(t, err, fmt.Sprintf("remove: %v", err))
+	ok, _ := it.Exists(ctx, "player", newID)
+	require.False(t, ok, "removed id should not exist")
 
 	// ⑤ 对账：集合与表行数一致 → 不重建
 	rebuilt, err := it.Reconcile(ctx, meta)
 	require.NoError(t, err, "reconcile")
-	if rebuilt {
-		t.Fatal("should not rebuild when counts match")
-	}
+	require.False(t, rebuilt, "should not rebuild when counts match")
 
 	// ⑥ 人为制造不一致 → 对账触发重建
-	if err := rdb.SRem(ctx, cache.IDTabKey("player"), playerID).Err(); err != nil {
-		t.Fatalf("srem: %v", err)
-	}
+	err := rdb.SRem(ctx, cache.IDTabKey("player"), playerID).Err()
+	require.NoError(t, err, fmt.Sprintf("srem: %v", err))
 	rebuilt, err = it.Reconcile(ctx, meta)
 	require.NoError(t, err, "reconcile 2")
 	require.True(t, rebuilt, "expect rebuild after manual removal")
-	if ok, _ := it.Exists(ctx, "player", playerID); !ok {
-		t.Fatal("id should be back after rebuild")
-	}
+	ok, _ := it.Exists(ctx, "player", playerID)
+	require.True(t, ok, "id should be back after rebuild")
 
 	// ⑦ 回源：清掉实体 hash，LoadEntity 应从库里读并回填
 	key := cache.EntityKey("player", playerID)
@@ -167,14 +152,12 @@ func TestP10IDTable(t *testing.T) {
 	row, err := it.LoadEntity(ctx, meta, playerID)
 	require.NoError(t, err, "load entity")
 	require.EqualValues(t, "idtab_role_a", row["name"])
-	if n, _ := rdb.HLen(ctx, key).Result(); n == 0 {
-		t.Fatal("entity hash should be filled back")
-	}
+	n, _ := rdb.HLen(ctx, key).Result()
+	require.NotEqualValues(t, 0, n, "entity hash should be filled back")
 
 	// ⑧ 不存在的 id 直接返回 ErrNotFound（不打库）
-	if _, err := it.LoadEntity(ctx, meta, 99999999); err != cache.ErrNotFound {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
+	_, err := it.LoadEntity(ctx, meta, 99999999)
+	require.EqualValues(t, cache.ErrNotFound, err, fmt.Sprintf("err = %v, want ErrNotFound", err))
 }
 
 // TestP11IncrementalFlush 道具增量合批落库。
@@ -198,62 +181,47 @@ func TestP11IncrementalFlush(t *testing.T) {
 	// ① 加载：SeedItem 不标脏 → 直接保存不应产生任何道具写
 	state, err := repo.Load(ctx, playerID)
 	require.NoError(t, err, "load")
-	if state.GetItemCount(1001) != 10 || state.GetItemCount(1002) != 20 {
-		t.Fatalf("loaded items = %d/%d", state.GetItemCount(1001), state.GetItemCount(1002))
-	}
-	if dirty := state.DirtyItems(); len(dirty) != 0 {
-		t.Fatalf("fresh load should have no dirty items, got %v", dirty)
-	}
+	require.EqualValues(t, 10, state.GetItemCount(1001), fmt.Sprintf("loaded items = %d/%d", state.GetItemCount(1001), state.GetItemCount(1002)))
+	require.EqualValues(t, 20, state.GetItemCount(1002))
+	dirty := state.DirtyItems()
+	require.Empty(t, dirty, fmt.Sprintf("fresh load should have no dirty items, got %v", dirty))
 
-	if err := repo.Save(ctx, state); err != nil {
-		t.Fatalf("save unchanged: %v", err)
-	}
-	if n := countItemRows(t, database, playerID); n != 2 {
-		t.Fatalf("row count after no-op save = %d, want 2", n)
-	}
+	err := repo.Save(ctx, state)
+	require.NoError(t, err, fmt.Sprintf("save unchanged: %v", err))
+	n := countItemRows(t, database, playerID)
+	require.EqualValues(t, 2, n, fmt.Sprintf("row count after no-op save = %d, want 2", n))
 
 	// ② 只写变更项：改 1001，1002 不动
 	state.AddItem(1001, 5)
-	if dirty := state.DirtyItems(); len(dirty) != 1 || dirty[1001] != 15 {
-		t.Fatalf("dirty items = %v, want {1001:15}", dirty)
-	}
-	if err := repo.Save(ctx, state); err != nil {
-		t.Fatalf("save increment: %v", err)
-	}
-	if got := itemCount(t, database, playerID, 1001); got != 15 {
-		t.Fatalf("item 1001 = %d, want 15", got)
-	}
+	dirty := state.DirtyItems()
+	require.Len(t, dirty, 1, fmt.Sprintf("dirty items = %v, want {1001:15}", dirty))
+	require.EqualValues(t, 15, dirty[1001])
+	err := repo.Save(ctx, state)
+	require.NoError(t, err, fmt.Sprintf("save increment: %v", err))
+	got := itemCount(t, database, playerID, 1001)
+	require.EqualValues(t, 15, got, fmt.Sprintf("item 1001 = %d, want 15", got))
 	// 1002 未被重写（值不变）
-	if got := itemCount(t, database, playerID, 1002); got != 20 {
-		t.Fatalf("item 1002 = %d, want 20", got)
-	}
+	got := itemCount(t, database, playerID, 1002)
+	require.EqualValues(t, 20, got, fmt.Sprintf("item 1002 = %d, want 20", got))
 	// 保存后脏标记清空
-	if dirty := state.DirtyItems(); len(dirty) != 0 {
-		t.Fatalf("dirty should be cleared after save, got %v", dirty)
-	}
+	dirty := state.DirtyItems()
+	require.Empty(t, dirty, fmt.Sprintf("dirty should be cleared after save, got %v", dirty))
 
 	// ③ 合批 UPSERT 不产生重复行（依赖 uk_player_item 唯一键）
-	if err := repo.Save(ctx, state); err != nil {
-		t.Fatalf("save again: %v", err)
-	}
+	err := repo.Save(ctx, state)
+	require.NoError(t, err, fmt.Sprintf("save again: %v", err))
 	state.AddItem(1001, 1)
-	if err := repo.Save(ctx, state); err != nil {
-		t.Fatalf("save third: %v", err)
-	}
-	if n := countItemRows(t, database, playerID); n != 2 {
-		t.Fatalf("row count = %d, want 2 (upsert must not duplicate)", n)
-	}
+	err := repo.Save(ctx, state)
+	require.NoError(t, err, fmt.Sprintf("save third: %v", err))
+	n := countItemRows(t, database, playerID)
+	require.EqualValues(t, 2, n, fmt.Sprintf("row count = %d, want 2 (upsert must not duplicate)", n))
 
 	// ④ 数量归零走 DELETE
-	if !state.RemoveItem(1002, 20) {
-		t.Fatal("remove 1002 should succeed")
-	}
-	if err := repo.Save(ctx, state); err != nil {
-		t.Fatalf("save zero: %v", err)
-	}
-	if got := countItemRows(t, database, playerID); got != 1 {
-		t.Fatalf("row count after zeroing = %d, want 1", got)
-	}
+	require.False(t, !state.RemoveItem(1002, 20), "remove 1002 should succeed")
+	err := repo.Save(ctx, state)
+	require.NoError(t, err, fmt.Sprintf("save zero: %v", err))
+	got := countItemRows(t, database, playerID)
+	require.EqualValues(t, 1, got, fmt.Sprintf("row count after zeroing = %d, want 1", got))
 
 	// ⑤ 墓碑合批删除
 	deleter := flush.NewSQLDeleter(database.DB)
@@ -270,12 +238,10 @@ func TestP11IncrementalFlush(t *testing.T) {
 		t.Fatalf("query item row id: %v", err)
 	}
 	f.MarkDelete("player_item", itemRowID)
-	if err := f.FlushAll(ctx); err != nil {
-		t.Fatalf("flush tombstone: %v", err)
-	}
-	if got := countItemRows(t, database, playerID); got != 0 {
-		t.Fatalf("row count after tombstone = %d, want 0", got)
-	}
+	err := f.FlushAll(ctx)
+	require.NoError(t, err, fmt.Sprintf("flush tombstone: %v", err))
+	got := countItemRows(t, database, playerID)
+	require.EqualValues(t, 0, got, fmt.Sprintf("row count after tombstone = %d, want 0", got))
 	require.EqualValues(t, 0, f.PendingDeletes())
 }
 

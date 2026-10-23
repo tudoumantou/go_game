@@ -3,6 +3,7 @@ package mq
 
 import (
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -20,17 +21,15 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 
 	got, err := Unmarshal(raw)
 	require.NoError(t, err, "unmarshal")
-	if got.BizID != "O20260101" || got.Topic != TopicRechargeOrder || got.Key != "O20260101" {
-		t.Fatalf("envelope mismatch: %+v", got)
-	}
+	require.EqualValues(t, "O20260101", got.BizID, fmt.Sprintf("envelope mismatch: %+v", got))
+	require.EqualValues(t, TopicRechargeOrder, got.Topic)
+	require.EqualValues(t, "O20260101", got.Key)
 
 	var decoded RechargeOrderMsg
-	if err := got.DecodePayload(&decoded); err != nil {
-		t.Fatalf("decode payload: %v", err)
-	}
-	if decoded.PlayerID != 1001 || decoded.AmountFen != 600 {
-		t.Fatalf("payload mismatch: %+v", decoded)
-	}
+	err = got.DecodePayload(&decoded)
+	require.NoError(t, err, fmt.Sprintf("decode payload: %v", err))
+	require.EqualValues(t, 1001, decoded.PlayerID, fmt.Sprintf("payload mismatch: %+v", decoded))
+	require.EqualValues(t, 600, decoded.AmountFen)
 }
 
 // TestEnvelopeRequiresBizID biz_id 是强制项：NewEnvelope 允许构造空值
@@ -39,12 +38,10 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 func TestEnvelopeRequiresBizID(t *testing.T) {
 	env, err := NewEnvelope("", TopicMail, "1", MailMsg{MailID: 1})
 	require.NoError(t, err, "new envelope")
-	if _, err := env.Marshal(); err == nil {
-		t.Fatalf("empty biz_id should fail")
-	}
-	if _, err := Unmarshal([]byte(`{"topic":"x"}`)); err == nil {
-		t.Fatalf("unmarshal without biz_id should fail")
-	}
+	_, err = env.Marshal()
+	require.Error(t, err, "empty biz_id should fail")
+	_, err = Unmarshal([]byte(`{"topic":"x"}`))
+	require.Error(t, err, "unmarshal without biz_id should fail")
 }
 
 // TestDecodePayloadEmpty payload 为空时 DecodePayload 必须报错：
@@ -52,9 +49,8 @@ func TestEnvelopeRequiresBizID(t *testing.T) {
 func TestDecodePayloadEmpty(t *testing.T) {
 	env := &Envelope{BizID: "x"}
 	var v MailMsg
-	if err := env.DecodePayload(&v); err == nil {
-		t.Fatalf("empty payload should fail")
-	}
+	err := env.DecodePayload(&v)
+	require.Error(t, err, "empty payload should fail")
 }
 
 // TestIdemKey 锁定幂等键格式 idem:{topic}:{biz_id}：格式变化意味着
@@ -71,9 +67,8 @@ func TestNoopDeduperAlwaysFirst(t *testing.T) {
 	var d Deduper = NoopDeduper{}
 	for i := 0; i < 3; i++ {
 		ok, err := d.FirstTime(context.Background(), TopicMail, "same", time.Minute)
-		if err != nil || !ok {
-			t.Fatalf("noop deduper should always return true")
-		}
+		require.NoError(t, err, "noop deduper should always return true")
+		require.True(t, ok)
 	}
 }
 
@@ -82,17 +77,11 @@ func TestNoopDeduperAlwaysFirst(t *testing.T) {
 func TestAllTopicsUnique(t *testing.T) {
 	topics := AllTopics()
 	// 断言唯一性与最小规模，不写死条数：新增 topic 不需要改测试。
-	if len(topics) < 9 {
-		t.Fatalf("expect >= 9 topics, got %d", len(topics))
-	}
+	require.False(t, len(topics) < 9, fmt.Sprintf("expect >= 9 topics, got %d", len(topics)))
 	seen := make(map[string]bool, len(topics))
 	for _, tp := range topics {
-		if tp == "" {
-			t.Fatalf("empty topic")
-		}
-		if seen[tp] {
-			t.Fatalf("duplicate topic %s", tp)
-		}
+		require.NotEqualValues(t, "", tp, "empty topic")
+		require.False(t, seen[tp], fmt.Sprintf("duplicate topic %s", tp))
 		seen[tp] = true
 	}
 }

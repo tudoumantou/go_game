@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -52,20 +53,13 @@ func TestBuildOneKeysetPaging(t *testing.T) {
 	require.EqualValues(t, 3, n)
 
 	// ready 置位 + 集合内容正确
-	if !it.Ready(context.Background(), "player") {
-		t.Fatal("ready flag not set")
-	}
+	require.False(t, !it.Ready(context.Background(), "player"), "ready flag not set")
 	for _, id := range []string{"1", "2", "5"} {
-		if !mustMember(t, mr, IDTabKey("player"), id) {
-			t.Fatalf("id %s missing in idtab", id)
-		}
+		require.False(t, !mustMember(t, mr, IDTabKey("player"), id), fmt.Sprintf("id %s missing in idtab", id))
 	}
-	if mr.Exists(IDTabKey("player") + ":building") {
-		t.Fatal("building key should be renamed away")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, mr.Exists(IDTabKey("player")+":building"), "building key should be renamed away")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestBuildOneEmptyTable 空表也要成功置 ready。
@@ -84,17 +78,13 @@ func TestBuildOneEmptyTable(t *testing.T) {
 	n, err := it.BuildOne(context.Background(), meta)
 	require.NoError(t, err, "build empty table")
 	require.EqualValues(t, 0, n)
-	if !it.Ready(context.Background(), "friend") {
-		t.Fatal("empty table should still be marked ready")
-	}
+	require.False(t, !it.Ready(context.Background(), "friend"), "empty table should still be marked ready")
 	// 空集合：Exists 应返回 false 而不是报错
-	if ok, err := it.Exists(context.Background(), "friend", 1); err != nil || ok {
-		t.Fatalf("exists = %v, %v", ok, err)
-	}
+	ok, err := it.Exists(context.Background(), "friend", 1)
+	require.False(t, err != nil || ok, fmt.Sprintf("exists = %v, %v", ok, err))
 	_ = mr
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestBuildOneIdempotent 已 ready 的表重复构建应跳过（每次启动都会调用）。
@@ -106,17 +96,15 @@ func TestBuildOneIdempotent(t *testing.T) {
 	mock.ExpectQuery(`SELECT id FROM mail`).
 		WithArgs(int64(0), int64(5000)).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
-	if _, err := it.BuildOne(context.Background(), meta); err != nil {
-		t.Fatalf("first build: %v", err)
-	}
+	_, err := it.BuildOne(context.Background(), meta)
+	require.NoError(t, err, fmt.Sprintf("first build: %v", err))
 
 	// 第二次不再查库
 	n, err := it.BuildOne(context.Background(), meta)
 	require.NoError(t, err, "second build")
 	require.EqualValues(t, 1, n)
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 	_ = mr
 }
 
@@ -132,9 +120,8 @@ func TestExistsFallsBackWhenNotReady(t *testing.T) {
 	ok, err := it.Exists(context.Background(), "player", 42)
 	require.NoError(t, err, "exists")
 	require.True(t, ok, "expect exists via DB fallback")
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestExistsHitsRedisWhenReady ready 后不应打库。
@@ -152,13 +139,10 @@ func TestExistsHitsRedisWhenReady(t *testing.T) {
 	// 不存在的 ID 也不打库（这是 idtab 的核心价值）
 	ok, err = it.Exists(context.Background(), "player", 99)
 	require.NoError(t, err, "exists miss")
-	if ok {
-		t.Fatal("expect not exists")
-	}
+	require.False(t, ok, "expect not exists")
 
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestExistsDBError 查库报错要透传，不能当成「不存在」。
@@ -169,9 +153,8 @@ func TestExistsDBError(t *testing.T) {
 	mock.ExpectQuery(`SELECT 1 FROM player`).
 		WillReturnError(errors.New("db down"))
 
-	if _, err := it.Exists(context.Background(), "player", 1); err == nil {
-		t.Fatal("expect error")
-	}
+	_, err := it.Exists(context.Background(), "player", 1)
+	require.Error(t, err, "expect error")
 }
 
 // TestAddRemove 登记/注销只影响已 ready 的表。
@@ -182,32 +165,21 @@ func TestAddRemove(t *testing.T) {
 	ctx := context.Background()
 
 	// 未 ready：Add 静默忽略（构建时会从库里扫到）
-	if err := it.Add(ctx, "player", 1); err != nil {
-		t.Fatalf("add before ready: %v", err)
-	}
-	if mustMember(t, mr, IDTabKey("player"), "1") {
-		t.Fatal("should not add when not ready")
-	}
+	err := it.Add(ctx, "player", 1)
+	require.NoError(t, err, fmt.Sprintf("add before ready: %v", err))
+	require.False(t, mustMember(t, mr, IDTabKey("player"), "1"), "should not add when not ready")
 
 	mustSet(t, mr, IDTabReadyKey("player"), "1")
-	if err := it.Add(ctx, "player", 1); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-	if !mustMember(t, mr, IDTabKey("player"), "1") {
-		t.Fatal("id 1 should exist")
-	}
+	err = it.Add(ctx, "player", 1)
+	require.NoError(t, err, fmt.Sprintf("add: %v", err))
+	require.False(t, !mustMember(t, mr, IDTabKey("player"), "1"), "id 1 should exist")
 
 	// Remove 同时清实体 hash
 	mr.HSet(EntityKey("player", 1), "name", "alice")
-	if err := it.Remove(ctx, "player", 1); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	if mustMember(t, mr, IDTabKey("player"), "1") {
-		t.Fatal("id 1 should be removed")
-	}
-	if mr.Exists(EntityKey("player", 1)) {
-		t.Fatal("entity hash should be deleted together")
-	}
+	err = it.Remove(ctx, "player", 1)
+	require.NoError(t, err, fmt.Sprintf("remove: %v", err))
+	require.False(t, mustMember(t, mr, IDTabKey("player"), "1"), "id 1 should be removed")
+	require.False(t, mr.Exists(EntityKey("player", 1)), "entity hash should be deleted together")
 }
 
 // TestReconcileRebuild 数量对不上时重建，一致时不动。
@@ -230,21 +202,17 @@ func TestReconcileRebuild(t *testing.T) {
 	rebuilt, err := it.Reconcile(context.Background(), meta)
 	require.NoError(t, err, "reconcile")
 	require.True(t, rebuilt, "expect rebuild")
-	if n, _ := it.Count(context.Background(), "guild"); n != 2 {
-		t.Fatalf("count after rebuild = %d, want 2", n)
-	}
+	n, _ := it.Count(context.Background(), "guild")
+	require.EqualValues(t, 2, n, fmt.Sprintf("count after rebuild = %d, want 2", n))
 
 	// 再核对一次：一致 → 不重建
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM guild`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(2))
 	rebuilt, err = it.Reconcile(context.Background(), meta)
 	require.NoError(t, err, "reconcile 2")
-	if rebuilt {
-		t.Fatal("should not rebuild when counts match")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, rebuilt, "should not rebuild when counts match")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestLoadEntityCacheMissLoadsDB 三类判定矩阵的第三类：idtab 有、hash 无 → 回源 + 回填。
@@ -263,22 +231,19 @@ func TestLoadEntityCacheMissLoadsDB(t *testing.T) {
 
 	row, err := it.LoadEntity(context.Background(), meta, 42)
 	require.NoError(t, err, "load")
-	if row["name"] != "alice" || row["level"] != "7" {
-		t.Fatalf("row = %v", row)
-	}
+	require.EqualValues(t, "alice", row["name"], fmt.Sprintf("row = %v", row))
+	require.EqualValues(t, "7", row["level"])
 
 	// 已回填 Redis
-	if got := mr.HGet(EntityKey("player", 42), "name"); got != "alice" {
-		t.Fatalf("cache not filled, name = %q", got)
-	}
+	got := mr.HGet(EntityKey("player", 42), "name")
+	require.EqualValues(t, "alice", got, fmt.Sprintf("cache not filled, name = %q", got))
 
 	// 第二次读命中 Redis，不再查库
 	row2, err := it.LoadEntity(context.Background(), meta, 42)
 	require.NoError(t, err, "load 2")
 	require.EqualValues(t, "alice", row2["name"])
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestLoadEntityNotExist idtab 无该 ID → 直接返回 ErrNotFound，不打库。
@@ -289,27 +254,22 @@ func TestLoadEntityNotExist(t *testing.T) {
 	mustSet(t, mr, IDTabReadyKey("player"), "1")
 
 	_, err := it.LoadEntity(context.Background(), TableMeta{Name: "player", PK: "id"}, 999)
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("err = %v, want ErrNotFound", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	require.False(t, !errors.Is(err, ErrNotFound), fmt.Sprintf("err = %v, want ErrNotFound", err))
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestValidateIdent 动态拼 SQL 的标识符必须过白名单。
 func TestValidateIdent(t *testing.T) {
 	bad := []string{"player; DROP TABLE x", "player WHERE 1=1", "", "Player", "player-item"}
 	for _, s := range bad {
-		if err := validateIdent(s); err == nil {
-			t.Fatalf("ident %q should be rejected", s)
-		}
+		err := validateIdent(s)
+		require.Error(t, err, fmt.Sprintf("ident %q should be rejected", s))
 	}
 	good := []string{"player", "player_attr", "mail_attachment2"}
 	for _, s := range good {
-		if err := validateIdent(s); err != nil {
-			t.Fatalf("ident %q should be accepted: %v", s, err)
-		}
+		err := validateIdent(s)
+		require.NoError(t, err, fmt.Sprintf("ident %q should be accepted: %v", s, err))
 	}
 }
 
@@ -326,12 +286,8 @@ func TestCleanOrphans(t *testing.T) {
 	removed, err := it.CleanOrphans(context.Background(), "player", 1000)
 	require.NoError(t, err, "clean")
 	require.EqualValues(t, 1, removed)
-	if !mr.Exists(EntityKey("player", 1)) {
-		t.Fatal("live entity should be kept")
-	}
-	if mr.Exists(EntityKey("player", 2)) {
-		t.Fatal("orphan entity should be deleted")
-	}
+	require.False(t, !mr.Exists(EntityKey("player", 1)), "live entity should be kept")
+	require.False(t, mr.Exists(EntityKey("player", 2)), "orphan entity should be deleted")
 }
 
 // TestNoRedisDegrades 无 Redis 时所有方法降级为查库，不 panic。
@@ -343,27 +299,23 @@ func TestNoRedisDegrades(t *testing.T) {
 	it := NewIDTable(nil, sqlDB)
 	ctx := context.Background()
 
-	if it.Ready(ctx, "player") {
-		t.Fatal("no redis → never ready")
-	}
-	if err := it.Add(ctx, "player", 1); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-	if err := it.Remove(ctx, "player", 1); err != nil {
-		t.Fatalf("remove: %v", err)
-	}
-	if n, err := it.Count(ctx, "player"); n != 0 || err != nil {
-		t.Fatalf("count = %d, %v", n, err)
-	}
-	if n, err := it.BuildOne(ctx, TableMeta{Name: "player", PK: "id"}); n != 0 || err != nil {
-		t.Fatalf("build = %d, %v", n, err)
-	}
+	require.False(t, it.Ready(ctx, "player"), "no redis → never ready")
+	err = it.Add(ctx, "player", 1)
+	require.NoError(t, err, fmt.Sprintf("add: %v", err))
+	err = it.Remove(ctx, "player", 1)
+	require.NoError(t, err, fmt.Sprintf("remove: %v", err))
+	n, err := it.Count(ctx, "player")
+	require.EqualValues(t, 0, n, fmt.Sprintf("count = %d, %v", n, err))
+	require.NoError(t, err)
+	n, err = it.BuildOne(ctx, TableMeta{Name: "player", PK: "id"})
+	require.EqualValues(t, 0, n, fmt.Sprintf("build = %d, %v", n, err))
+	require.NoError(t, err)
 
 	mock.ExpectQuery(`SELECT 1 FROM player`).
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
-	if ok, err := it.Exists(ctx, "player", 1); err != nil || !ok {
-		t.Fatalf("exists = %v, %v", ok, err)
-	}
+	ok, err := it.Exists(ctx, "player", 1)
+	require.NoError(t, err, fmt.Sprintf("exists = %v, %v", ok, err))
+	require.True(t, ok)
 }
 
 // mustMember miniredis 的 SIsMember 返回 (bool, error)，测试里包一层。
@@ -383,15 +335,13 @@ func mustMember(t *testing.T, mr *miniredis.Miniredis, key, member string) bool 
 // mustSet miniredis 赋值（失败即中止测试）。
 func mustSet(t *testing.T, mr *miniredis.Miniredis, key, val string) {
 	t.Helper()
-	if err := mr.Set(key, val); err != nil {
-		t.Fatalf("set %s: %v", key, err)
-	}
+	err := mr.Set(key, val)
+	require.NoError(t, err, fmt.Sprintf("set %s: %v", key, err))
 }
 
 // mustSAdd miniredis 集合写入。
 func mustSAdd(t *testing.T, mr *miniredis.Miniredis, key string, members ...string) {
 	t.Helper()
-	if _, err := mr.SAdd(key, members...); err != nil {
-		t.Fatalf("sadd %s: %v", key, err)
-	}
+	_, err := mr.SAdd(key, members...)
+	require.NoError(t, err, fmt.Sprintf("sadd %s: %v", key, err))
 }

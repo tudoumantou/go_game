@@ -5,6 +5,7 @@ package friend
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"game_study/internal/game/module"
@@ -52,9 +53,8 @@ func decodeApply(t *testing.T, raw []byte) *gamev1.FriendApplyResp {
 	t.Helper()
 	require.NotNil(t, raw, "no reply captured")
 	var resp gamev1.FriendApplyResp
-	if err := proto.Unmarshal(raw, &resp); err != nil {
-		t.Fatal(err)
-	}
+	err := proto.Unmarshal(raw, &resp)
+	require.NoError(t, err)
 	return &resp
 }
 
@@ -64,12 +64,10 @@ func TestApplySelfRejected(t *testing.T) {
 	ctx, raw := newCtx(7)
 
 	body, _ := proto.Marshal(&gamev1.FriendApplyReq{PlayerId: 7})
-	if err := m.OnMessage(ctx, msgIDApplyReq, body); err != nil {
-		t.Fatal(err)
-	}
-	if resp := decodeApply(t, *raw); resp.Code != codeSelf {
-		t.Fatalf("code = %d, want %d", resp.Code, codeSelf)
-	}
+	err := m.OnMessage(ctx, msgIDApplyReq, body)
+	require.NoError(t, err)
+	resp := decodeApply(t, *raw)
+	require.EqualValues(t, codeSelf, resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, codeSelf))
 }
 
 // TestApplyInvalidTarget 非法目标直接拒绝，不触碰数据库。
@@ -78,20 +76,14 @@ func TestApplyInvalidTarget(t *testing.T) {
 	ctx, raw := newCtx(7)
 
 	body, _ := proto.Marshal(&gamev1.FriendApplyReq{PlayerId: 0})
-	if err := m.OnMessage(ctx, msgIDApplyReq, body); err != nil {
-		t.Fatal(err)
-	}
-	if resp := decodeApply(t, *raw); resp.Code != codeTargetNotFound {
-		t.Fatalf("code = %d, want %d", resp.Code, codeTargetNotFound)
-	}
+	err := m.OnMessage(ctx, msgIDApplyReq, body)
+	require.NoError(t, err)
+	resp := decodeApply(t, *raw)
+	require.EqualValues(t, codeTargetNotFound, resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, codeTargetNotFound))
 }
 
 // TestLimitsHaveDefaults 配置缺失时上限有兜底，不返回 0（0 会让所有人立刻「好友已满」）。
 func TestLimitsHaveDefaults(t *testing.T) {
-	if friendLimit() <= 0 {
-		t.Fatalf("friend limit = %d", friendLimit())
-	}
-	if applyLimit() <= 0 {
-		t.Fatalf("apply limit = %d", applyLimit())
-	}
+	require.False(t, friendLimit() <= 0, fmt.Sprintf("friend limit = %d", friendLimit()))
+	require.False(t, applyLimit() <= 0, fmt.Sprintf("apply limit = %d", applyLimit()))
 }

@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"fmt"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -26,19 +28,16 @@ func TestValidateTransferOK(t *testing.T) {
 		ExpectedSourceRevision: 10,
 		ExpectedDestRevision:   20,
 	}
-	if err := ValidateTransfer(testTransferTroop(), plan, topo); err != nil {
-		t.Fatalf("合法移交被拒绝: %v", err)
-	}
+	err := ValidateTransfer(testTransferTroop(), plan, topo)
+	require.NoError(t, err, fmt.Sprintf("合法移交被拒绝: %v", err))
 	// 已终态的在途记录不影响新移交（ABORTED/RELEASED 都算完结）。
 	old := &TransferRecord{TransferID: "tf-0", Object: plan.Object, Status: TransferStatusReleased}
-	if err := ValidateTransfer(testTransferTroop(), plan, topo, old); err != nil {
-		t.Fatalf("终态在途记录不应阻止新移交: %v", err)
-	}
+	err = ValidateTransfer(testTransferTroop(), plan, topo, old)
+	require.NoError(t, err, fmt.Sprintf("终态在途记录不应阻止新移交: %v", err))
 	// 其他对象的在途记录同样不影响。
 	other := &TransferRecord{TransferID: "tf-x", Object: ObjectKey{WorldID: 1, ID: 9999}, Status: TransferStatusPreparing}
-	if err := ValidateTransfer(testTransferTroop(), plan, topo, other); err != nil {
-		t.Fatalf("其他对象的在途记录不应阻止本移交: %v", err)
-	}
+	err = ValidateTransfer(testTransferTroop(), plan, topo, other)
+	require.NoError(t, err, fmt.Sprintf("其他对象的在途记录不应阻止本移交: %v", err))
 }
 
 // TestValidateTransferRejects 表驱动覆盖各类拒绝路径。
@@ -188,9 +187,7 @@ func TestValidateTransferRejects(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateTransfer(tc.troop, tc.plan, tc.topo, tc.inflight...)
-			if !isErr(err, tc.wantErr) {
-				t.Fatalf("错误类型不符: got %v, want %v", err, tc.wantErr)
-			}
+			require.False(t, !isErr(err, tc.wantErr), fmt.Sprintf("错误类型不符: got %v, want %v", err, tc.wantErr))
 		})
 	}
 }
@@ -212,15 +209,12 @@ func TestTransferStatusMachine(t *testing.T) {
 		{TransferStatus(99), false, false},
 	}
 	for _, tc := range tests {
-		if got := tc.status.Valid(); got != tc.wantValid {
-			t.Errorf("%s Valid() = %v, want %v", tc.status, got, tc.wantValid)
-		}
-		if got := tc.status.Terminal(); got != tc.wantTerm {
-			t.Errorf("%s Terminal() = %v, want %v", tc.status, got, tc.wantTerm)
-		}
+		got := tc.status.Valid()
+		require.EqualValues(t, tc.wantValid, got, fmt.Sprintf("%s Valid() = %v, want %v", tc.status, got, tc.wantValid))
+		got = tc.status.Terminal()
+		require.EqualValues(t, tc.wantTerm, got, fmt.Sprintf("%s Terminal() = %v, want %v", tc.status, got, tc.wantTerm))
 	}
 	// String 不出现 "TransferStatus(" 前缀（已知值必须可读）。
-	if s := TransferStatusPrepared.String(); s != "PREPARED" {
-		t.Fatalf("String() = %q, want PREPARED", s)
-	}
+	s := TransferStatusPrepared.String()
+	require.EqualValues(t, "PREPARED", s, fmt.Sprintf("String() = %q, want PREPARED", s))
 }

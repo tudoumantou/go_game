@@ -149,9 +149,8 @@ func TestP14RankAndLeader(t *testing.T) {
 	gameCfg.Cross.BattleTimeout = "60s"
 	gameCfg.Center.Addr = fmt.Sprintf("127.0.0.1:%d", centerGRPCPort)
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()
@@ -186,12 +185,10 @@ func TestP14RankAndLeader(t *testing.T) {
 	roleB, clientB := newRole(t, loginURL, gwAddr, "挑战乙")
 	defer clientB.Close()
 
-	if _, err := clientA.Match("arena"); err != nil {
-		t.Fatalf("match A: %v", err)
-	}
-	if _, err := clientB.Match("arena"); err != nil {
-		t.Fatalf("match B: %v", err)
-	}
+	_, err := clientA.Match("arena")
+	require.NoError(t, err, fmt.Sprintf("match A: %v", err))
+	_, err := clientB.Match("arena")
+	require.NoError(t, err, fmt.Sprintf("match B: %v", err))
 	startA, err := clientA.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start A")
 	startB, err := clientB.WaitBattleStart(20 * time.Second)
@@ -199,17 +196,14 @@ func TestP14RankAndLeader(t *testing.T) {
 	roomID := startA.RoomId
 
 	// A 胜(0)，B 负(1)
-	if _, err := clientA.BattleResult(roomID, startA.BattleToken, 0); err != nil {
-		t.Fatalf("result A: %v", err)
-	}
-	if _, err := clientB.BattleResult(roomID, startB.BattleToken, 1); err != nil {
-		t.Fatalf("result B: %v", err)
-	}
+	_, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
+	require.NoError(t, err, fmt.Sprintf("result A: %v", err))
+	_, err := clientB.BattleResult(roomID, startB.BattleToken, 1)
+	require.NoError(t, err, fmt.Sprintf("result B: %v", err))
 
 	// 等结算回推（结算后才上报排行）
-	if _, err := clientA.WaitBattleSettle(15 * time.Second); err != nil {
-		t.Fatalf("settle A: %v", err)
-	}
+	_, err := clientA.WaitBattleSettle(15 * time.Second)
+	require.NoError(t, err, fmt.Sprintf("settle A: %v", err))
 
 	// ③ 通过 GM 接口查榜：A 应在 B 之上（+30 vs -10）
 	conn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", centerGRPCPort),
@@ -250,15 +244,12 @@ func TestP14RankAndLeader(t *testing.T) {
 	require.NoError(t, err, "wait start A2")
 	startB2, err := clientB.WaitBattleStart(20 * time.Second)
 	require.NoError(t, err, "wait start B2")
-	if _, err := clientA.BattleResult(startA2.RoomId, startA2.BattleToken, 0); err != nil {
-		t.Fatalf("result A2: %v", err)
-	}
-	if _, err := clientB.BattleResult(startB2.RoomId, startB2.BattleToken, 1); err != nil {
-		t.Fatalf("result B2: %v", err)
-	}
-	if _, err := clientA.WaitBattleSettle(15 * time.Second); err != nil {
-		t.Fatalf("settle A2: %v", err)
-	}
+	_, err := clientA.BattleResult(startA2.RoomId, startA2.BattleToken, 0)
+	require.NoError(t, err, fmt.Sprintf("result A2: %v", err))
+	_, err := clientB.BattleResult(startB2.RoomId, startB2.BattleToken, 1)
+	require.NoError(t, err, fmt.Sprintf("result B2: %v", err))
+	_, err := clientA.WaitBattleSettle(15 * time.Second)
+	require.NoError(t, err, fmt.Sprintf("settle A2: %v", err))
 
 	waitUntil(t, 15*time.Second, "score accumulates to 60", func() bool {
 		entries = queryRank(t, gm, "arena_score", 10)
@@ -276,9 +267,8 @@ func TestP14RankAndLeader(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 	defer func() { _ = rdb.Close() }()
 	key := "rank:global:s1:arena_score"
-	if n, err := rdb.ZCard(context.Background(), key).Result(); err != nil || n < 2 {
-		t.Fatalf("zset %s should have >=2 members, got %d err=%v", key, n, err)
-	}
+	n, err := rdb.ZCard(context.Background(), key).Result()
+	require.False(t, err != nil || n < 2, fmt.Sprintf("zset %s should have >=2 members, got %d err=%v", key, n, err))
 
 	// ⑦ 关闭
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 45*time.Second)

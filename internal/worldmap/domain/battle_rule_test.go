@@ -8,6 +8,7 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
@@ -43,9 +44,7 @@ func TestDeterministicResolverSameInput100Times(t *testing.T) {
 
 	first, err := r.Resolve(context.Background(), in)
 	require.NoError(t, err, "首次裁决失败")
-	if first.WinnerID != in.AttackerID && first.WinnerID != in.DefenderID {
-		t.Fatalf("胜者 %d 不是攻守任何一方", first.WinnerID)
-	}
+	require.False(t, first.WinnerID != in.AttackerID && first.WinnerID != in.DefenderID, fmt.Sprintf("胜者 %d 不是攻守任何一方", first.WinnerID))
 	require.EqualValues(t, in.ResolveAtMS, first.AppliedAtMS)
 	require.EqualValues(t, (first.WinnerID == in.AttackerID), first.AttackerWon)
 	for i := 0; i < 100; i++ {
@@ -54,9 +53,7 @@ func TestDeterministicResolverSameInput100Times(t *testing.T) {
 		// reflect.DeepEqual 会把 DetailJSON 的 []byte 逐字节比较：
 		// 这正是"可对账"需要的强度，时间戳/浮点/遍历顺序任何一处
 		// 不确定都会让它失败。
-		if !reflect.DeepEqual(first, got) {
-			t.Fatalf("第 %d 次结果与首次不一致:\nfirst=%+v\ngot=%+v", i, first, got)
-		}
+		require.False(t, !reflect.DeepEqual(first, got), fmt.Sprintf("第 %d 次结果与首次不一致:\nfirst=%+v\ngot=%+v", i, first, got))
 	}
 }
 
@@ -72,9 +69,7 @@ func TestDeterministicResolverSeedVariation(t *testing.T) {
 		require.NoError(t, err)
 		seen[got.WinnerID] = true
 	}
-	if len(seen) < 2 {
-		t.Fatalf("64 个种子只产生 %d 种结果，随机性不足", len(seen))
-	}
+	require.False(t, len(seen) < 2, fmt.Sprintf("64 个种子只产生 %d 种结果，随机性不足", len(seen)))
 }
 
 // TestCombatRuleTieGoesToDefender 验证"战力相等时守方胜"。
@@ -82,15 +77,9 @@ func TestDeterministicResolverSeedVariation(t *testing.T) {
 // 平局分支本身是对的。
 func TestCombatRuleTieGoesToDefender(t *testing.T) {
 	rule := testCombatRule()
-	if rule.AttackerWins(100, 100) {
-		t.Fatal("战力相等时不应判攻击方胜（防守优势）")
-	}
-	if !rule.AttackerWins(101, 100) {
-		t.Fatal("攻击方战力更高时必须判攻击方胜")
-	}
-	if rule.AttackerWins(99, 100) {
-		t.Fatal("攻击方战力更低时必须判守方胜")
-	}
+	require.False(t, rule.AttackerWins(100, 100), "战力相等时不应判攻击方胜（防守优势）")
+	require.False(t, !rule.AttackerWins(101, 100), "攻击方战力更高时必须判攻击方胜")
+	require.False(t, rule.AttackerWins(99, 100), "攻击方战力更低时必须判守方胜")
 }
 
 // TestDeterministicResolverDefenderAdvantageNearEqual 验证"战力相近时
@@ -113,12 +102,8 @@ func TestDeterministicResolverDefenderAdvantageNearEqual(t *testing.T) {
 			defenderWins++
 		}
 	}
-	if defenderWins <= attackerWins {
-		t.Fatalf("战力相近时守方应更常获胜: attacker=%d defender=%d", attackerWins, defenderWins)
-	}
-	if defenderWins < 100 {
-		t.Fatalf("守方胜率 %d/200 明显异常（预期过半）", defenderWins)
-	}
+	require.False(t, defenderWins <= attackerWins, fmt.Sprintf("战力相近时守方应更常获胜: attacker=%d defender=%d", attackerWins, defenderWins))
+	require.False(t, defenderWins < 100, fmt.Sprintf("守方胜率 %d/200 明显异常（预期过半）", defenderWins))
 }
 
 // combatDetail 是 DetailJSON 的测试侧解码结构。
@@ -142,9 +127,8 @@ type combatDetail struct {
 func decodeDetail(t *testing.T, res BattleResult) combatDetail {
 	t.Helper()
 	var d combatDetail
-	if err := json.Unmarshal(res.DetailJSON, &d); err != nil {
-		t.Fatalf("DetailJSON 解析失败: %v (%s)", err, res.DetailJSON)
-	}
+	err := json.Unmarshal(res.DetailJSON, &d)
+	require.NoError(t, err, fmt.Sprintf("DetailJSON 解析失败: %v (%s)", err, res.DetailJSON))
 	return d
 }
 
@@ -196,9 +180,8 @@ func TestCombatRuleWinnerDamage(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.rule.WinnerDamage(tc.hp); got != tc.want {
-				t.Fatalf("WinnerDamage(%d)=%d, want %d", tc.hp, got, tc.want)
-			}
+			got := tc.rule.WinnerDamage(tc.hp)
+			require.EqualValues(t, tc.want, got, fmt.Sprintf("WinnerDamage(%d)=%d, want %d", tc.hp, got, tc.want))
 		})
 	}
 }
@@ -213,31 +196,25 @@ func TestDeterministicResolverDetailDamage(t *testing.T) {
 
 	res, err := r.Resolve(context.Background(), in)
 	require.NoError(t, err, "裁决失败")
-	if !res.AttackerWon {
-		t.Fatalf("攻击方战力 1000 对 1，应获胜: %s", res.DetailJSON)
-	}
+	require.False(t, !res.AttackerWon, fmt.Sprintf("攻击方战力 1000 对 1，应获胜: %s", res.DetailJSON))
 	d := decodeDetail(t, res)
 	require.EqualValues(t, 124, d.WinnerDamage)
-	if d.WinnerHP != 999 || d.LoserHP != 100 {
-		t.Fatalf("DetailJSON 中双方生命不符: %+v", d)
-	}
-	if d.RuleVersion != "m1" || d.Rounds != 1 || d.MaxRounds != 1 {
-		t.Fatalf("DetailJSON 缺少规则版本/回合信息: %+v", d)
-	}
-	if d.WinnerID != uint64(in.AttackerID) || d.LoserID != uint64(in.DefenderID) {
-		t.Fatalf("DetailJSON 胜负身份不符: %+v", d)
-	}
+	require.EqualValues(t, 999, d.WinnerHP, fmt.Sprintf("DetailJSON 中双方生命不符: %+v", d))
+	require.EqualValues(t, 100, d.LoserHP)
+	require.EqualValues(t, "m1", d.RuleVersion, fmt.Sprintf("DetailJSON 缺少规则版本/回合信息: %+v", d))
+	require.EqualValues(t, 1, d.Rounds)
+	require.EqualValues(t, 1, d.MaxRounds)
+	require.EqualValues(t, uint64(in.AttackerID), d.WinnerID, fmt.Sprintf("DetailJSON 胜负身份不符: %+v", d))
+	require.EqualValues(t, uint64(in.DefenderID), d.LoserID)
 }
 
 // TestCombatRuleValidate 验证规则自洽校验。
 func TestCombatRuleValidate(t *testing.T) {
 	ok := testCombatRule()
-	if err := ok.Validate(); err != nil {
-		t.Fatalf("默认测试规则应合法: %v", err)
-	}
-	if err := DefaultCombatRule().Validate(); err != nil {
-		t.Fatalf("默认规则应合法: %v", err)
-	}
+	err := ok.Validate()
+	require.NoError(t, err, fmt.Sprintf("默认测试规则应合法: %v", err))
+	err = DefaultCombatRule().Validate()
+	require.NoError(t, err, fmt.Sprintf("默认规则应合法: %v", err))
 	cases := []struct {
 		name string
 		rule CombatRule
@@ -271,27 +248,23 @@ func TestDeterministicResolverRejects(t *testing.T) {
 	t.Run("空 battle_id", func(t *testing.T) {
 		in := ruleTestInput(1, 10, 10, 100)
 		in.BattleID = ""
-		if _, err := r.Resolve(context.Background(), in); !isErr(err, ErrInvalidArgument) {
-			t.Fatalf("err=%v", err)
-		}
+		_, err := r.Resolve(context.Background(), in)
+		require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("err=%v", err))
 	})
 	t.Run("ctx 已取消", func(t *testing.T) {
-		if _, err := r.Resolve(canceled, ruleTestInput(1, 10, 10, 100)); !isErr(err, context.Canceled) {
-			t.Fatalf("err=%v", err)
-		}
+		_, err := r.Resolve(canceled, ruleTestInput(1, 10, 10, 100))
+		require.False(t, !isErr(err, context.Canceled), fmt.Sprintf("err=%v", err))
 	})
 	t.Run("规则版本不符", func(t *testing.T) {
 		in := ruleTestInput(1, 10, 10, 100)
 		in.RuleVersion = "m2"
-		if _, err := r.Resolve(context.Background(), in); !isErr(err, ErrInvalidArgument) {
-			t.Fatalf("err=%v", err)
-		}
+		_, err := r.Resolve(context.Background(), in)
+		require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("err=%v", err))
 	})
 	t.Run("规则非法", func(t *testing.T) {
 		bad := &DeterministicResolver{Rule: CombatRule{MaxRounds: 1}}
-		if _, err := bad.Resolve(context.Background(), ruleTestInput(1, 10, 10, 100)); !isErr(err, ErrInvalidArgument) {
-			t.Fatalf("err=%v", err)
-		}
+		_, err := bad.Resolve(context.Background(), ruleTestInput(1, 10, 10, 100))
+		require.False(t, !isErr(err, ErrInvalidArgument), fmt.Sprintf("err=%v", err))
 	})
 }
 
@@ -303,7 +276,5 @@ func TestDeterministicResolverOverflowSafe(t *testing.T) {
 	in := ruleTestInput(3, 1<<40, 1, 100)
 	got, err := r.Resolve(context.Background(), in)
 	require.NoError(t, err, "裁决失败")
-	if !got.AttackerWon {
-		t.Fatalf("饱和后攻击方仍应获胜: %s", got.DetailJSON)
-	}
+	require.False(t, !got.AttackerWon, fmt.Sprintf("饱和后攻击方仍应获胜: %s", got.DetailJSON))
 }

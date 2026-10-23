@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 
 	"game_study/pkg/db"
@@ -39,15 +40,11 @@ func TestBuildInitialItems(t *testing.T) {
 func TestInitialItemsFromConfig(t *testing.T) {
 	logger := log.New("role-service-test", log.WithLevel("error"))
 	items := initialItems(logger)
-	if len(items) == 0 {
-		t.Fatal("init_bag.xml 未配置任何初始道具")
-	}
+	require.NotEmpty(t, items, "init_bag.xml 未配置任何初始道具")
 	for _, it := range items {
 		cfg, ok := gamedata.GetItemCfg(int64(it.itemID))
 		require.True(t, ok)
-		if it.count <= 0 || (cfg.Col2 > 0 && it.count > cfg.Col2) {
-			t.Fatalf("初始道具 %d 数量 %d 非法（上限 %d）", it.itemID, it.count, cfg.Col2)
-		}
+		require.False(t, it.count <= 0 || (cfg.Col2 > 0 && it.count > cfg.Col2), fmt.Sprintf("初始道具 %d 数量 %d 非法（上限 %d）", it.itemID, it.count, cfg.Col2))
 	}
 }
 
@@ -80,9 +77,8 @@ func TestCreateWritesInitialBagInTx(t *testing.T) {
 	got, err := svc.Create(context.Background(), accountID, "张三", 1)
 	require.NoError(t, err, "create")
 	require.EqualValues(t, roleID, got)
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestCreateRollbackOnInitialItemFailure 初始道具写入失败时整笔事务回滚，
@@ -102,10 +98,8 @@ func TestCreateRollbackOnInitialItemFailure(t *testing.T) {
 	mock.ExpectExec("INSERT INTO player_item").WillReturnError(errors.New("disk full"))
 	mock.ExpectRollback()
 
-	if _, err := svc.Create(context.Background(), accountID, "张三", 1); err == nil {
-		t.Fatal("expect error when initial item insert fails")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	_, err = svc.Create(context.Background(), accountID, "张三", 1)
+	require.Error(t, err, "expect error when initial item insert fails")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }

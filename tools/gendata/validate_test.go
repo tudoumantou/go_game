@@ -9,6 +9,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
@@ -20,9 +21,8 @@ import (
 func parseOne(t *testing.T, name, body string) ([]rowItem, error) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	err := os.WriteFile(path, []byte(body), 0o644)
+	require.NoError(t, err)
 	return parseXML(path)
 }
 
@@ -55,9 +55,8 @@ func TestParseXMLIgnoresRootAttributes(t *testing.T) {
   <row id="2" col1="b" />
 </item>`)
 	require.Len(t, rows, 2)
-	if rows[0].ID != "1" || rows[1].Vals["col1"] != "b" {
-		t.Fatalf("unexpected rows: %+v", rows)
-	}
+	require.EqualValues(t, "1", rows[0].ID, fmt.Sprintf("unexpected rows: %+v", rows))
+	require.EqualValues(t, "b", rows[1].Vals["col1"])
 }
 
 // TestParseXMLRejectsNested 嵌套元素必须报错（配置约定是单层结构：根 → 行）。
@@ -67,9 +66,8 @@ func TestParseXMLRejectsNested(t *testing.T) {
 	_, err := parseOne(t, "item.xml", `<item>
   <row id="1"><group col1="x" /></row>
 </item>`)
-	if err == nil || !strings.Contains(err.Error(), "嵌套") {
-		t.Fatalf("nested element must be rejected, got %v", err)
-	}
+	require.Error(t, err, fmt.Sprintf("nested element must be rejected, got %v", err))
+	require.Contains(t, err.Error(), "嵌套")
 }
 
 // TestValidateEmptyTable 空表要报错：没有任何 <row>，通常是文件写错或表已废弃。
@@ -158,9 +156,8 @@ func TestValidateRefs(t *testing.T) {
 	lonely := table{File: "other.xml", Rows: mustParse(t, "other.xml", `<other>
   <row id="1" copy_id="12345" />
 </other>`)}
-	if p := validateRefs([]table{lonely}); len(p) != 0 {
-		t.Fatalf("unknown target table must not be validated: %v", p)
-	}
+	p := validateRefs([]table{lonely})
+	require.Empty(t, p, fmt.Sprintf("unknown target table must not be validated: %v", p))
 }
 
 // TestValidateRefsCommaList 组合列 "1001,1002" 逐值校验，只报缺失的那个（1003），
@@ -175,9 +172,8 @@ func TestValidateRefsCommaList(t *testing.T) {
   <row id="2" item_id="1001,1003" />
 </root>`)}
 	problems := validateRefs([]table{items, rewards})
-	if len(problems) != 1 || !strings.Contains(problems[0], "item_id=1003") {
-		t.Fatalf("comma list should check each value, got %v", problems)
-	}
+	require.Len(t, problems, 1, fmt.Sprintf("comma list should check each value, got %v", problems))
+	require.Contains(t, problems[0], "item_id=1003")
 }
 
 // TestValidatePassesRealConfig 仓库内全部 XML 必须通过校验。
@@ -204,15 +200,11 @@ func TestValidatePassesRealConfig(t *testing.T) {
 			Rows: rows,
 		})
 	}
-	if len(tables) == 0 {
-		t.Fatal("no config loaded")
-	}
+	require.NotEmpty(t, tables, "no config loaded")
 	var problems []string
 	for _, tb := range tables {
 		problems = append(problems, validateTable(tb)...)
 	}
 	problems = append(problems, validateRefs(tables)...)
-	if len(problems) > 0 {
-		t.Fatalf("existing config must pass validation:\n%s", strings.Join(problems, "\n"))
-	}
+	require.Empty(t, problems, fmt.Sprintf("existing config must pass validation:\n%s", strings.Join(problems, "\n")))
 }

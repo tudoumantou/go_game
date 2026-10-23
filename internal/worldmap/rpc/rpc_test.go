@@ -201,18 +201,16 @@ func newFixture(t *testing.T, verifier TokenVerifier) *fixture {
 	require.NoError(t, err, "加载世界失败")
 	scene, ok := world.Scene(testScene)
 	require.True(t, ok)
-	if err := scene.Seed(ctx, seedObjects(), nil, 1); err != nil {
-		t.Fatalf("注入种子失败: %v", err)
-	}
+	err = scene.Seed(ctx, seedObjects(), nil, 1)
+	require.NoError(t, err, fmt.Sprintf("注入种子失败: %v", err))
 
 	// Shutdown 必须在测试结束前完成：否则场景 goroutine 会泄漏到
 	// 下一个用例，-race 下表现为难以复现的竞态。
 	t.Cleanup(func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
-		if err := manager.Shutdown(shutdownCtx); err != nil {
-			t.Errorf("关闭世界失败: %v", err)
-		}
+		err := manager.Shutdown(shutdownCtx)
+		require.NoError(t, err, fmt.Sprintf("关闭世界失败: %v", err))
 	})
 
 	return &fixture{
@@ -289,9 +287,8 @@ func TestSubmitUnauthenticatedWithoutToken(t *testing.T) {
 	srv := NewServer(nil, nil, runtime.NopLogger{}, NopVerifier{})
 
 	_, err := srv.Submit(context.Background(), marchRequest("req-no-token", 1))
-	if got := status.Code(err); got != codes.Unauthenticated {
-		t.Fatalf("未带 token 应返回 Unauthenticated，实际 %v (%v)", got, err)
-	}
+	got := status.Code(err)
+	require.EqualValues(t, codes.Unauthenticated, got, fmt.Sprintf("未带 token 应返回 Unauthenticated，实际 %v (%v)", got, err))
 }
 
 // ---- 2. 防伪造：token 绑定的 player 与请求不一致 ----
@@ -300,9 +297,8 @@ func TestSubmitRejectsPlayerMismatch(t *testing.T) {
 	srv := NewServer(nil, nil, runtime.NopLogger{}, fixedVerifier{playerID: testPlayer + 1})
 
 	_, err := srv.Submit(inboundContext(t, testToken), marchRequest("req-forge", 1))
-	if got := status.Code(err); got != codes.PermissionDenied {
-		t.Fatalf("player_id 与 token 不一致应返回 PermissionDenied，实际 %v (%v)", got, err)
-	}
+	got := status.Code(err)
+	require.EqualValues(t, codes.PermissionDenied, got, fmt.Sprintf("player_id 与 token 不一致应返回 PermissionDenied，实际 %v (%v)", got, err))
 }
 
 // ---- 3. 正常出征 → 业务码 0，部队出现在查询结果 ----
@@ -314,33 +310,22 @@ func TestSubmitMarchThenQueryTroops(t *testing.T) {
 	reply, err := f.srv.Submit(ctx, marchRequest("req-march-1", 1))
 	require.NoError(t, err, "出征应被接受，实际 gRPC 错误")
 	require.EqualValues(t, domain.CodeOK, reply.GetCode())
-	if reply.GetReplayed() {
-		t.Fatal("首次提交不应标记为重放")
-	}
-	if reply.GetCommandId() == "" {
-		t.Fatal("成功回执应带 command_id")
-	}
-	if len(reply.GetResultJson()) == 0 {
-		t.Fatal("成功回执应带 result_json（首次结果）")
-	}
+	require.False(t, reply.GetReplayed(), "首次提交不应标记为重放")
+	require.NotEqualValues(t, "", reply.GetCommandId(), "成功回执应带 command_id")
+	require.NotEmpty(t, reply.GetResultJson(), "成功回执应带 result_json（首次结果）")
 
 	qr, err := f.srv.Query(ctx, troopsQuery(testPlayer))
 	require.NoError(t, err, "查询部队失败")
-	if qr.GetRevision() == 0 {
-		t.Fatal("查询结果应带场景 revision")
-	}
+	require.NotEqualValues(t, 0, qr.GetRevision(), "查询结果应带场景 revision")
 	troops := qr.GetTroops()
 	require.Len(t, troops, 1)
 	troop := troops[0]
 	require.EqualValues(t, testPlayer, troop.GetPlayerId())
 	require.EqualValues(t, int32(domain.TroopPhaseMarching), troop.GetPhase())
 	// 坐标是 MoveSegment 按快照 nowMS 推导的：起点即主堡位置。
-	if troop.GetX() != 5000 || troop.GetY() != 5000 {
-		t.Fatalf("出征瞬间坐标应为 (5000,5000)，实际 (%d,%d)", troop.GetX(), troop.GetY())
-	}
-	if troop.GetArriveAtMs() == 0 {
-		t.Fatal("行军中的部队应有 arrive_at_ms")
-	}
+	require.EqualValues(t, 5000, troop.GetX(), fmt.Sprintf("出征瞬间坐标应为 (5000,5000)，实际 (%d,%d)", troop.GetX(), troop.GetY()))
+	require.EqualValues(t, 5000, troop.GetY())
+	require.NotEqualValues(t, 0, troop.GetArriveAtMs(), "行军中的部队应有 arrive_at_ms")
 }
 
 // ---- 4. 幂等重放：同 request_id 第二次返回首次结果 ----
@@ -353,9 +338,7 @@ func TestSubmitReplayIsIdempotent(t *testing.T) {
 	require.NoError(t, err, "首次出征失败")
 	second, err := f.srv.Submit(ctx, marchRequest("req-replay", 1))
 	require.NoError(t, err, "重放应成功返回首次结果，实际错误")
-	if !second.GetReplayed() {
-		t.Fatal("第二次同 request_id 提交应标记 Replayed=true")
-	}
+	require.False(t, !second.GetReplayed(), "第二次同 request_id 提交应标记 Replayed=true")
 	require.EqualValues(t, domain.CodeOK, second.GetCode())
 	if second.GetCommandId() != first.GetCommandId() {
 		t.Fatalf("重放应复用首次 command_id：first=%q second=%q",
@@ -374,9 +357,8 @@ func TestSubmitSlotBusyReturnsBusinessCode(t *testing.T) {
 	f := newFixture(t, NopVerifier{})
 	ctx := inboundContext(t, testToken)
 
-	if _, err := f.srv.Submit(ctx, marchRequest("req-slot-1", 1)); err != nil {
-		t.Fatalf("首次出征失败: %v", err)
-	}
+	_, err := f.srv.Submit(ctx, marchRequest("req-slot-1", 1))
+	require.NoError(t, err, fmt.Sprintf("首次出征失败: %v", err))
 	reply, err := f.srv.Submit(ctx, marchRequest("req-slot-2", 1))
 	if err != nil {
 		// 业务拒绝必须是“正常回复”，不能变成 gRPC error，
@@ -387,9 +369,7 @@ func TestSubmitSlotBusyReturnsBusinessCode(t *testing.T) {
 		t.Fatalf("业务码应为 %d(SlotBusy)，实际 %d（%s）",
 			domain.CodeSlotBusy, reply.GetCode(), reply.GetMessage())
 	}
-	if reply.GetReplayed() {
-		t.Fatal("不同 request_id 不应被标记为重放")
-	}
+	require.False(t, reply.GetReplayed(), "不同 request_id 不应被标记为重放")
 }
 
 // ---- 6. 同 request_id 换参数：业务码 44009（不是 Internal） ----
@@ -408,9 +388,8 @@ func TestSubmitIdempotencyConflictReturnsBusinessCode(t *testing.T) {
 		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 	}
-	if _, err := f.srv.Submit(ctx, first); err != nil {
-		t.Fatalf("首次出征失败: %v", err)
-	}
+	_, err := f.srv.Submit(ctx, first)
+	require.NoError(t, err, fmt.Sprintf("首次出征失败: %v", err))
 
 	second := marchRequest("req-conflict", 2)
 	second.PayloadHash = []byte{
@@ -442,9 +421,8 @@ func TestSubmitUnknownIntentIsInvalidArgument(t *testing.T) {
 		},
 	}
 	_, err := f.srv.Submit(ctx, req)
-	if got := status.Code(err); got != codes.InvalidArgument {
-		t.Fatalf("未知 intent 应返回 InvalidArgument，实际 %v (%v)", got, err)
-	}
+	got := status.Code(err)
+	require.EqualValues(t, codes.InvalidArgument, got, fmt.Sprintf("未知 intent 应返回 InvalidArgument，实际 %v (%v)", got, err))
 }
 
 // ---- 8. 查询输出确定性：多物品 cargo 每次顺序一致 ----
@@ -467,17 +445,15 @@ func TestQueryCargoOrderIsStable(t *testing.T) {
 	first, err := f.srv.Query(ctx, troopsQuery(testOther))
 	require.NoError(t, err, "首次查询失败")
 	want := []int32{1001, 1002, 1003} // item_id 升序
-	if got := idsOf(first); !reflect.DeepEqual(got, want) {
-		t.Fatalf("cargo 应按 item_id 升序，实际 %v", got)
-	}
+	got := idsOf(first)
+	require.False(t, !reflect.DeepEqual(got, want), fmt.Sprintf("cargo 应按 item_id 升序，实际 %v", got))
 
 	// 连续查询多次：Go map 的 range 顺序每轮随机，未排序时这里会抖动。
 	for i := 0; i < 5; i++ {
 		next, err := f.srv.Query(ctx, troopsQuery(testOther))
 		require.NoError(t, err)
-		if got := idsOf(next); !reflect.DeepEqual(got, want) {
-			t.Fatalf("第 %d 次查询顺序漂移: %v", i+1, got)
-		}
+		got := idsOf(next)
+		require.False(t, !reflect.DeepEqual(got, want), fmt.Sprintf("第 %d 次查询顺序漂移: %v", i+1, got))
 	}
 }
 
@@ -493,12 +469,10 @@ func TestQueryResourcesFiltersByCellRect(t *testing.T) {
 	require.Len(t, inside.GetResources(), 1)
 	res := inside.GetResources()[0]
 	require.EqualValues(t, uint64(testResID), res.GetResourceId())
-	if res.GetX() != 5000 || res.GetY() != 8000 {
-		t.Fatalf("资源点坐标应为 (5000,8000)，实际 (%d,%d)", res.GetX(), res.GetY())
-	}
-	if res.GetTotal() != 1000 || res.GetRemaining() != 1000 {
-		t.Fatalf("资源点总量/余量不符: total=%d remaining=%d", res.GetTotal(), res.GetRemaining())
-	}
+	require.EqualValues(t, 5000, res.GetX(), fmt.Sprintf("资源点坐标应为 (5000,8000)，实际 (%d,%d)", res.GetX(), res.GetY()))
+	require.EqualValues(t, 8000, res.GetY())
+	require.EqualValues(t, 1000, res.GetTotal(), fmt.Sprintf("资源点总量/余量不符: total=%d remaining=%d", res.GetTotal(), res.GetRemaining()))
+	require.EqualValues(t, 1000, res.GetRemaining())
 
 	// 相邻矩形（左闭右开）不包含 (5,8)。
 	outside, err := f.srv.Query(ctx, resourcesQuery(10, 10, 20, 20))
@@ -512,9 +486,8 @@ func TestSubmitWorldNotLoaded(t *testing.T) {
 	srv := NewServer(nilRouter{}, nil, runtime.NopLogger{}, NopVerifier{})
 
 	_, err := srv.Submit(inboundContext(t, testToken), marchRequest("req-no-world", 1))
-	if got := status.Code(err); got != codes.NotFound {
-		t.Fatalf("世界未加载应返回 NotFound，实际 %v (%v)", got, err)
-	}
+	got := status.Code(err)
+	require.EqualValues(t, codes.NotFound, got, fmt.Sprintf("世界未加载应返回 NotFound，实际 %v (%v)", got, err))
 }
 
 // ---- 11. 没装配 coordinator：StreamView → Unimplemented ----
@@ -549,9 +522,8 @@ func TestStreamViewUnimplementedWithoutCoordinator(t *testing.T) {
 		MaxX:     10,
 		MaxY:     10,
 	}, stream)
-	if got := status.Code(err); got != codes.Unimplemented {
-		t.Fatalf("coordinator 为 nil 时应返回 Unimplemented，实际 %v (%v)", got, err)
-	}
+	got := status.Code(err)
+	require.EqualValues(t, codes.Unimplemented, got, fmt.Sprintf("coordinator 为 nil 时应返回 Unimplemented，实际 %v (%v)", got, err))
 	require.Len(t, stream.sent, 0)
 }
 
@@ -571,10 +543,8 @@ func TestMarchIntentRoundTrip(t *testing.T) {
 	}
 
 	// 未知值必须报错，不能被默认成 COLLECT。
-	if _, err := toDomainIntent(internalv2.MarchIntent(42)); err == nil {
-		t.Fatal("未知 proto intent 应返回错误")
-	}
-	if _, err := toProtoIntent(domain.MarchIntent(42)); err == nil {
-		t.Fatal("未知 domain intent 应返回错误")
-	}
+	_, err := toDomainIntent(internalv2.MarchIntent(42))
+	require.Error(t, err, "未知 proto intent 应返回错误")
+	_, err = toProtoIntent(domain.MarchIntent(42))
+	require.Error(t, err, "未知 domain intent 应返回错误")
 }

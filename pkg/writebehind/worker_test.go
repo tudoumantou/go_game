@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -21,12 +22,10 @@ func TestSQLFenceSkipsOlderSnapshot(t *testing.T) {
 	mock.ExpectQuery("SELECT player_id, version FROM player_writebehind.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"player_id", "version"}).AddRow(7, 2))
 	mock.ExpectCommit()
 	worker := NewWorker(nil, database, 100)
-	if err := worker.Persist(context.Background(), []Record{{Version: 1, State: Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 100}}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = worker.Persist(context.Background(), []Record{{Version: 1, State: Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 100}}}})
+	require.NoError(t, err)
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 func TestSQLFailureRollsBackFenceAndState(t *testing.T) {
@@ -38,12 +37,10 @@ func TestSQLFailureRollsBackFenceAndState(t *testing.T) {
 	mock.ExpectQuery("SELECT player_id, version FROM player_writebehind.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"player_id", "version"}).AddRow(7, 0))
 	mock.ExpectExec("UPDATE player SET").WillReturnError(errors.New("database unavailable"))
 	mock.ExpectRollback()
-	if err := NewWorker(nil, database, 100).Persist(context.Background(), []Record{{Version: 1, State: Snapshot{PlayerID: 7}}}); err == nil {
-		t.Fatal("failure lost")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = NewWorker(nil, database, 100).Persist(context.Background(), []Record{{Version: 1, State: Snapshot{PlayerID: 7}}})
+	require.Error(t, err, "failure lost")
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }
 
 // TestRunStaggersPartitionsAndDrains 验证错峰调度的两个不变量：
@@ -57,15 +54,13 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 	defer rdb.Close()
 	store := NewStore(rdb)
 	// 播种 version 0 再提交一次：版本 CAS 成功后玩家进入分区 3 的脏队列
-	if _, err := store.Seed(ctx, Snapshot{PlayerID: 3, Items: map[int32]int64{}}, 0); err != nil {
-		t.Fatal(err)
-	}
+	_, err := store.Seed(ctx, Snapshot{PlayerID: 3, Items: map[int32]int64{}}, 0)
+	require.NoError(t, err)
 	lease, err := store.AcquireLease(ctx, 3)
 	require.NoError(t, err)
 	snap := Snapshot{PlayerID: 3, Items: map[int32]int64{}}
-	if _, err := store.Commit(ctx, snap.PlayerID, snap, snap.FieldNames(), nil, lease); err != nil {
-		t.Fatal(err)
-	}
+	_, err = store.Commit(ctx, snap.PlayerID, snap, snap.FieldNames(), nil, lease)
+	require.NoError(t, err)
 
 	database, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -100,17 +95,13 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 		if len(ids) == 0 {
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("partition 3 not drained under stagger")
-		}
+		require.False(t, time.Now().After(deadline), "partition 3 not drained under stagger")
 		time.Sleep(5 * time.Millisecond)
 	}
 	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("run should stop cleanly on cancel: %v", err)
-	}
+	err = <-done
+	require.NoError(t, err, fmt.Sprintf("run should stop cleanly on cancel: %v", err))
 	// 全部期望恰好满足一次：证明排空后空转 tick 没有额外写库
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
 }

@@ -3,6 +3,7 @@ package rank
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"game_study/pkg/log"
@@ -66,9 +67,8 @@ func TestRankOfNotFound(t *testing.T) {
 	write(s, "game-01", 1001, 100)
 
 	r, score := s.RankOf("arena_score", "", 9999)
-	if r != 0 || score != 0 {
-		t.Fatalf("missing player should be rank 0 score 0, got %d/%d", r, score)
-	}
+	require.EqualValues(t, 0, r, fmt.Sprintf("missing player should be rank 0 score 0, got %d/%d", r, score))
+	require.EqualValues(t, 0, score)
 }
 
 func TestAround(t *testing.T) {
@@ -79,9 +79,7 @@ func TestAround(t *testing.T) {
 
 	// 取 1005 周边（应含自己和相邻名次）
 	list := s.Around("arena_score", "", 1005, 5)
-	if len(list) == 0 {
-		t.Fatal("around should return entries")
-	}
+	require.NotEmpty(t, list, "around should return entries")
 
 	found := false
 	for _, e := range list {
@@ -106,14 +104,12 @@ func TestSeasonIsolation(t *testing.T) {
 
 	// s1（默认赛季）只有 1001
 	s1Top := s.TopN("arena_score", "s1", 10)
-	if len(s1Top) != 1 || s1Top[0].PlayerId != 1001 {
-		t.Fatalf("s1 should only contain player 1001, got %+v", s1Top)
-	}
+	require.Len(t, s1Top, 1, fmt.Sprintf("s1 should only contain player 1001, got %+v", s1Top))
+	require.EqualValues(t, 1001, s1Top[0].PlayerId)
 	// s2 只有 1002
 	s2Top := s.TopN("arena_score", "s2", 10)
-	if len(s2Top) != 1 || s2Top[0].PlayerId != 1002 {
-		t.Fatalf("s2 should only contain player 1002, got %+v", s2Top)
-	}
+	require.Len(t, s2Top, 1, fmt.Sprintf("s2 should only contain player 1002, got %+v", s2Top))
+	require.EqualValues(t, 1002, s2Top[0].PlayerId)
 }
 
 func TestArchiveAndReset(t *testing.T) {
@@ -127,41 +123,31 @@ func TestArchiveAndReset(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err, "archive")
-	if len(archived) != 2 || archived[0].PlayerId != 1002 {
-		t.Fatalf("archive should be rank-ordered, got %+v", archived)
-	}
+	require.Len(t, archived, 2, fmt.Sprintf("archive should be rank-ordered, got %+v", archived))
+	require.EqualValues(t, 1002, archived[0].PlayerId)
 
 	// 归档后清空
-	if err := s.Reset(context.Background(), "arena_score", "s1"); err != nil {
-		t.Fatalf("reset: %v", err)
-	}
-	if top := s.TopN("arena_score", "s1", 10); len(top) != 0 {
-		t.Fatalf("after reset, top should be empty, got %d", len(top))
-	}
+	err = s.Reset(context.Background(), "arena_score", "s1")
+	require.NoError(t, err, fmt.Sprintf("reset: %v", err))
+	top := s.TopN("arena_score", "s1", 10)
+	require.Empty(t, top, fmt.Sprintf("after reset, top should be empty, got %d", len(top)))
 	// key 应被删除
-	if mr.Exists(Key(ScopeGlobal, "s1", "arena_score")) {
-		t.Fatal("zset key should be deleted after reset")
-	}
+	require.False(t, mr.Exists(Key(ScopeGlobal, "s1", "arena_score")), "zset key should be deleted after reset")
 }
 
 func TestKeyAndMember(t *testing.T) {
-	if got := Key(ScopeGlobal, "s1", "arena"); got != "rank:global:s1:arena" {
-		t.Fatalf("global key mismatch: %s", got)
-	}
-	if got := Key("group:7", "s1", "arena"); got != "rank:group:7:s1:arena" {
-		t.Fatalf("group key mismatch: %s", got)
-	}
-	if got := Member(123, "game-01"); got != "123:game-01" {
-		t.Fatalf("member mismatch: %s", got)
-	}
-	if got := Member(123, ""); got != "123:unknown" {
-		t.Fatalf("member with empty server mismatch: %s", got)
-	}
+	got := Key(ScopeGlobal, "s1", "arena")
+	require.EqualValues(t, "rank:global:s1:arena", got, fmt.Sprintf("global key mismatch: %s", got))
+	got = Key("group:7", "s1", "arena")
+	require.EqualValues(t, "rank:group:7:s1:arena", got, fmt.Sprintf("group key mismatch: %s", got))
+	got = Member(123, "game-01")
+	require.EqualValues(t, "123:game-01", got, fmt.Sprintf("member mismatch: %s", got))
+	got = Member(123, "")
+	require.EqualValues(t, "123:unknown", got, fmt.Sprintf("member with empty server mismatch: %s", got))
 
 	pid, srv := parseMember("456:game-02")
-	if pid != 456 || srv != "game-02" {
-		t.Fatalf("parseMember mismatch: %d %s", pid, srv)
-	}
+	require.EqualValues(t, 456, pid, fmt.Sprintf("parseMember mismatch: %d %s", pid, srv))
+	require.EqualValues(t, "game-02", srv)
 }
 
 // TestWriteDedupByBizID 同一业务键重投只加一次分（R8.2）。
@@ -178,16 +164,14 @@ func TestWriteDedupByBizID(t *testing.T) {
 	s.Write(rep) // 重投
 	s.Write(rep) // 再重投
 
-	if _, score := s.RankOf("arena_score", "s1", 5001); score != 30 {
-		t.Fatalf("score = %d, want 30（重投不能重复加分）", score)
-	}
+	_, score := s.RankOf("arena_score", "s1", 5001)
+	require.EqualValues(t, 30, score, fmt.Sprintf("score = %d, want 30（重投不能重复加分）", score))
 
 	// 换一个业务键（新的一场结算）应当继续累加。
 	rep.BizId = "battle:9002:5001"
 	s.Write(rep)
-	if _, score := s.RankOf("arena_score", "s1", 5001); score != 60 {
-		t.Fatalf("score = %d, want 60", score)
-	}
+	_, score = s.RankOf("arena_score", "s1", 5001)
+	require.EqualValues(t, 60, score, fmt.Sprintf("score = %d, want 60", score))
 }
 
 // TestWriteWithoutBizIDAccumulates 无业务键的上报保持「每次都累加」的旧语义。
@@ -195,9 +179,8 @@ func TestWriteWithoutBizIDAccumulates(t *testing.T) {
 	s, _ := newTestService(t)
 	write(s, "game-1", 5002, 10)
 	write(s, "game-1", 5002, 10)
-	if _, score := s.RankOf("arena_score", "s1", 5002); score != 20 {
-		t.Fatalf("score = %d, want 20", score)
-	}
+	_, score := s.RankOf("arena_score", "s1", 5002)
+	require.EqualValues(t, 20, score, fmt.Sprintf("score = %d, want 20", score))
 }
 
 // TestQueryTopMineAround 一次查询同时给出 Top-N、我的名次与周边。
@@ -209,18 +192,12 @@ func TestQueryTopMineAround(t *testing.T) {
 
 	resp := s.Query("arena_score", "", 2, 10, 0)
 	require.EqualValues(t, "s1", resp.Season)
-	if len(resp.Top) != 3 || resp.Top[0].PlayerId != 3 || resp.Top[0].Rank != 1 {
-		t.Fatalf("top = %+v", resp.Top)
-	}
-	if !resp.OnBoard || resp.MyRank != 2 || resp.MyScore != 200 {
-		t.Fatalf("mine = on_board:%v rank:%d score:%d", resp.OnBoard, resp.MyRank, resp.MyScore)
-	}
-	if len(resp.Around) == 0 {
-		t.Fatal("around must contain the player and neighbours")
-	}
-	if resp.UpdatedAt == 0 {
-		t.Fatal("updated_at should be set after a write")
-	}
+	require.Len(t, resp.Top, 3, fmt.Sprintf("top = %+v", resp.Top))
+	require.EqualValues(t, 3, resp.Top[0].PlayerId)
+	require.EqualValues(t, 1, resp.Top[0].Rank)
+	require.False(t, !resp.OnBoard || resp.MyRank != 2 || resp.MyScore != 200, fmt.Sprintf("mine = on_board:%v rank:%d score:%d", resp.OnBoard, resp.MyRank, resp.MyScore))
+	require.NotEmpty(t, resp.Around, "around must contain the player and neighbours")
+	require.NotEqualValues(t, 0, resp.UpdatedAt, "updated_at should be set after a write")
 }
 
 // TestQueryNotOnBoard 未上榜时 on_board=false、不给周边（没有「周边」可言）。
@@ -229,9 +206,7 @@ func TestQueryNotOnBoard(t *testing.T) {
 	write(s, "game-1", 1, 100)
 
 	resp := s.Query("arena_score", "", 999, 10, 0)
-	if resp.OnBoard || resp.MyRank != 0 || resp.MyScore != 0 {
-		t.Fatalf("unexpected mine: %+v", resp)
-	}
+	require.False(t, resp.OnBoard || resp.MyRank != 0 || resp.MyScore != 0, fmt.Sprintf("unexpected mine: %+v", resp))
 	require.Len(t, resp.Around, 0)
 	require.Len(t, resp.Top, 1)
 }
@@ -242,7 +217,6 @@ func TestQueryTopNCapped(t *testing.T) {
 	for i := int64(1); i <= 5; i++ {
 		write(s, "game-1", i, i*10)
 	}
-	if got := len(s.Query("arena_score", "", 1, 1000, 0).Top); got != 5 {
-		t.Fatalf("top = %d, want 5（只有 5 条数据）", got)
-	}
+	got := len(s.Query("arena_score", "", 1, 1000, 0).Top)
+	require.EqualValues(t, 5, got, fmt.Sprintf("top = %d, want 5（只有 5 条数据）", got))
 }

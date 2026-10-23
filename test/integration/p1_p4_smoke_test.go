@@ -131,9 +131,8 @@ func TestP1toP4Smoke(t *testing.T) {
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
 	// 切到项目根目录（gateway 加载 keys/ 相对路径）
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	// ⑤ 启动三服务
 	svcCtx, svcCancel := context.WithCancel(ctx)
@@ -153,17 +152,14 @@ func TestP1toP4Smoke(t *testing.T) {
 
 	// ⑥ 机器人全链路
 	r := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	if err := r.GuestLogin("robot-device-1"); err != nil {
-		t.Fatalf("guest login: %v", err)
-	}
-	if err := r.Connect(); err != nil {
-		t.Fatalf("connect gateway: %v", err)
-	}
+	err := r.GuestLogin("robot-device-1")
+	require.NoError(t, err, fmt.Sprintf("guest login: %v", err))
+	err := r.Connect()
+	require.NoError(t, err, fmt.Sprintf("connect gateway: %v", err))
 	defer r.Close()
 
-	if err := r.Handshake(); err != nil {
-		t.Fatalf("handshake: %v", err)
-	}
+	err := r.Handshake()
+	require.NoError(t, err, fmt.Sprintf("handshake: %v", err))
 	resp, err := r.SendHandshakeReq("1.0.0", "pc")
 	require.NoError(t, err, "handshake req")
 	require.EqualValues(t, 0, resp.Code)
@@ -171,9 +167,7 @@ func TestP1toP4Smoke(t *testing.T) {
 	// 心跳
 	hb, err := r.Heartbeat()
 	require.NoError(t, err, "heartbeat")
-	if hb.ServerTime == 0 {
-		t.Fatalf("heartbeat server_time is 0")
-	}
+	require.NotEqualValues(t, 0, hb.ServerTime, "heartbeat server_time is 0")
 
 	// ⑦ 优雅关闭
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -190,9 +184,7 @@ func startAndWait(t *testing.T, name string, start func() error) {
 	go func() { errCh <- start() }()
 	select {
 	case err := <-errCh:
-		if err != nil && err != context.Canceled {
-			t.Fatalf("%s start failed: %v", name, err)
-		}
+		require.False(t, err != nil && err != context.Canceled, fmt.Sprintf("%s start failed: %v", name, err))
 	case <-time.After(3 * time.Second):
 		// 正常情况：Start 阻塞
 	}
@@ -218,15 +210,12 @@ func initSchema(t *testing.T, dsn string) {
 	root := projectRoot(t)
 	files, err := filepath.Glob(filepath.Join(root, "sql/schema/*.sql"))
 	require.NoError(t, err, "glob schema")
-	if len(files) == 0 {
-		t.Fatalf("no schema files found under %s", root)
-	}
+	require.NotEmpty(t, files, fmt.Sprintf("no schema files found under %s", root))
 	for _, f := range files {
 		content, err := os.ReadFile(f)
 		require.NoError(t, err)
-		if _, err := database.Exec(string(content)); err != nil {
-			t.Fatalf("exec %s: %v", f, err)
-		}
+		_, err := database.Exec(string(content))
+		require.NoError(t, err, fmt.Sprintf("exec %s: %v", f, err))
 	}
 	// 种子
 	seed, err := os.ReadFile(filepath.Join(root, "sql/seed/seed_dev.sql"))
@@ -245,9 +234,7 @@ func projectRoot(t *testing.T) string {
 			return dir
 		}
 		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatalf("project root not found")
-		}
+		require.NotEqualValues(t, dir, parent, "project root not found")
 		dir = parent
 	}
 }

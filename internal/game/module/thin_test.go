@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -60,16 +61,14 @@ func TestThinDispatchesRegisteredHandlers(t *testing.T) {
 		return nil
 	})
 	ctx, _ := newThinFixture(th)
-	if err := th.OnMessage(ctx, 1001, nil); err != nil {
-		t.Fatal(err)
-	}
+	err := th.OnMessage(ctx, 1001, nil)
+	require.NoError(t, err)
 	require.EqualValues(t, 1001, got)
-	if err := th.OnMessage(ctx, 9999, nil); err == nil {
-		t.Fatal("unexpected message should error")
-	}
-	if ids := th.MsgIDs(); len(ids) != 1 || ids[0] != 1001 {
-		t.Fatalf("MsgIDs = %v", ids)
-	}
+	err = th.OnMessage(ctx, 9999, nil)
+	require.Error(t, err, "unexpected message should error")
+	ids := th.MsgIDs()
+	require.Len(t, ids, 1, fmt.Sprintf("MsgIDs = %v", ids))
+	require.EqualValues(t, 1001, ids[0])
 }
 
 // TestThinGuardRejectsWithoutCache 验证 guard 拒绝时按 errCode 回失败响应。
@@ -80,18 +79,14 @@ func TestThinGuardRejectsWithoutCache(t *testing.T) {
 
 	ctx, replies := newThinFixture(th)
 	ctx.CacheEnabled = false
-	if err := th.OnMessage(ctx, 1001, nil); err != nil {
-		t.Fatal(err)
-	}
-	if called {
-		t.Fatal("handler must not run when guard rejects")
-	}
+	err := th.OnMessage(ctx, 1001, nil)
+	require.NoError(t, err)
+	require.False(t, called, "handler must not run when guard rejects")
 	raw, ok := (*replies)[1002]
 	require.True(t, ok, "expected failure reply 1002")
 	var resp gamev1.SigninInfoResp
-	if err := proto.Unmarshal(raw, &resp); err != nil {
-		t.Fatal(err)
-	}
+	err = proto.Unmarshal(raw, &resp)
+	require.NoError(t, err)
 	require.EqualValues(t, 7, resp.Code)
 }
 
@@ -100,29 +95,23 @@ func TestThinCacheFailureReply(t *testing.T) {
 	th := NewThin("demo", ThinErrCode(7))
 	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return nil })
 	respID, raw, ok := th.CacheFailureReply(1001)
-	if !ok || respID != 1002 || len(raw) == 0 {
-		t.Fatalf("CacheFailureReply = %d, %v, %v", respID, raw, ok)
-	}
-	if _, _, ok := th.CacheFailureReply(9999); ok {
-		t.Fatal("unknown msg should not produce reply")
-	}
+	require.True(t, ok, fmt.Sprintf("CacheFailureReply = %d, %v, %v", respID, raw, ok))
+	require.EqualValues(t, 1002, respID)
+	require.NotEmpty(t, raw)
+	_, _, ok = th.CacheFailureReply(9999)
+	require.False(t, ok, "unknown msg should not produce reply")
 	// 未设置 respOf 的 Thin 不实现缓存失败响应（走网关通用错误）。
 	bare := NewThin("bare")
-	if _, _, ok := bare.CacheFailureReply(1001); ok {
-		t.Fatal("bare thin should not implement CacheFailureAware")
-	}
+	_, _, ok = bare.CacheFailureReply(1001)
+	require.False(t, ok, "bare thin should not implement CacheFailureAware")
 }
 
 // TestThinDiscardableOnlyForRegistered 验证只有注册过的协议声明可回滚。
 func TestThinDiscardableOnlyForRegistered(t *testing.T) {
 	th := NewThin("demo")
 	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return nil })
-	if !th.Discardable(1001) {
-		t.Fatal("registered msg should be rollbackable")
-	}
-	if th.Discardable(9999) {
-		t.Fatal("unregistered msg must not be rollbackable")
-	}
+	require.False(t, !th.Discardable(1001), "registered msg should be rollbackable")
+	require.False(t, th.Discardable(9999), "unregistered msg must not be rollbackable")
 }
 
 // TestThinFailLogsAndReplies 验证 Fail 回业务错误码且处理器错误可上传。
@@ -131,17 +120,14 @@ func TestThinFailLogsAndReplies(t *testing.T) {
 	boom := errors.New("boom")
 	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return boom })
 	ctx, replies := newThinFixture(th)
-	if err := th.OnMessage(ctx, 1001, nil); !errors.Is(err, boom) {
-		t.Fatalf("handler error should propagate, got %v", err)
-	}
+	err := th.OnMessage(ctx, 1001, nil)
+	require.False(t, !errors.Is(err, boom), fmt.Sprintf("handler error should propagate, got %v", err))
 	require.Len(t, (*replies)[1002], 0, "plain handler error should not auto-reply (module decides)")
-	if err := th.Fail(ctx, 1001, 6602, boom); err != nil {
-		t.Fatal(err)
-	}
+	err = th.Fail(ctx, 1001, 6602, boom)
+	require.NoError(t, err)
 	var resp gamev1.SigninInfoResp
-	if err := proto.Unmarshal((*replies)[1002], &resp); err != nil {
-		t.Fatal(err)
-	}
+	err = proto.Unmarshal((*replies)[1002], &resp)
+	require.NoError(t, err)
 	require.EqualValues(t, 6602, resp.Code)
 }
 
@@ -154,40 +140,31 @@ func TestThinLifecycleHooks(t *testing.T) {
 		ThinLogout(func(*Context) error { logoutN++; return nil }),
 	)
 	ctx, _ := newThinFixture(th)
-	if err := th.Init(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := th.OnLogin(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := th.OnLogout(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := th.OnSave(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if initN != 1 || loginN != 1 || logoutN != 1 {
-		t.Fatalf("hooks = %d/%d/%d", initN, loginN, logoutN)
-	}
+	err := th.Init(ctx)
+	require.NoError(t, err)
+	err = th.OnLogin(ctx)
+	require.NoError(t, err)
+	err = th.OnLogout(ctx)
+	require.NoError(t, err)
+	err = th.OnSave(context.Background())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, initN, fmt.Sprintf("hooks = %d/%d/%d", initN, loginN, logoutN))
+	require.EqualValues(t, 1, loginN)
+	require.EqualValues(t, 1, logoutN)
 	// 未挂钩子的 Thin：全部无操作。
 	bare := NewThin("bare")
-	if err := bare.Init(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := bare.OnLogin(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := bare.OnLogout(ctx); err != nil {
-		t.Fatal(err)
-	}
+	err = bare.Init(ctx)
+	require.NoError(t, err)
+	err = bare.OnLogin(ctx)
+	require.NoError(t, err)
+	err = bare.OnLogout(ctx)
+	require.NoError(t, err)
 }
 
 // TestThinDuplicateHandlePanics 验证重复注册协议启动期 panic。
 func TestThinDuplicateHandlePanics(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Fatal("duplicate Handle should panic")
-		}
+		require.NotNil(t, recover(), "duplicate Handle should panic")
 	}()
 	th := NewThin("demo")
 	th.Handle(1001, func(*Context, uint32, []byte) error { return nil })
@@ -200,9 +177,9 @@ func TestThinOnEvent(t *testing.T) {
 	th := NewThin("evt", ThinOnEvent(func(_ *Context, evt Event) { got = append(got, evt) }))
 	th.OnEvent(&Context{}, Event{Type: "kill", Key: "1001", Delta: 1})
 	th.OnEvent(&Context{}, Event{Type: "use_item", Key: "2001", Delta: 3})
-	if len(got) != 2 || got[0].Type != "kill" || got[1].Delta != 3 {
-		t.Fatalf("事件未按序转发: %#v", got)
-	}
+	require.Len(t, got, 2, fmt.Sprintf("事件未按序转发: %#v", got))
+	require.EqualValues(t, "kill", got[0].Type)
+	require.EqualValues(t, 3, got[1].Delta)
 
 	// 未挂 ThinOnEvent：不 panic、无副作用。
 	bare := NewThin("bare_evt")
@@ -220,24 +197,22 @@ func TestHandleRBuildsErrorReply(t *testing.T) {
 	th.HandleR(2001, 2002, &gamev1.SigninClaimResp{}, func(*Context, uint32, []byte) error { return nil })
 	ctx, replies := newThinFixture(th)
 
-	if err := th.Fail(ctx, 2001, 6603, errors.New("bag full")); err != nil {
-		t.Fatal(err)
-	}
+	err := th.Fail(ctx, 2001, 6603, errors.New("bag full"))
+	require.NoError(t, err)
 	var resp gamev1.SigninClaimResp
-	if err := proto.Unmarshal((*replies)[2002], &resp); err != nil {
-		t.Fatalf("错误包解析失败: %v", err)
-	}
+	err = proto.Unmarshal((*replies)[2002], &resp)
+	require.NoError(t, err, fmt.Sprintf("错误包解析失败: %v", err))
 	require.EqualValues(t, 6603, resp.Code)
 
 	// CacheFailureReply 用模块级 errCode，不是 Fail 的入参。
 	respID, raw, ok := th.CacheFailureReply(2001)
-	if !ok || respID != 2002 || len(raw) == 0 {
-		t.Fatalf("CacheFailureReply = %d/%v/%v", respID, raw, ok)
-	}
+	require.True(t, ok, fmt.Sprintf("CacheFailureReply = %d/%v/%v", respID, raw, ok))
+	require.EqualValues(t, 2002, respID)
+	require.NotEmpty(t, raw)
 	var cached gamev1.SigninClaimResp
-	if err := proto.Unmarshal(raw, &cached); err != nil || cached.Code != 9 {
-		t.Fatalf("缓存失败包 code=%d err=%v, want 9", cached.Code, err)
-	}
+	err = proto.Unmarshal(raw, &cached)
+	require.NoError(t, err, fmt.Sprintf("缓存失败包 code=%d err=%v, want 9", cached.Code, err))
+	require.EqualValues(t, 9, cached.Code)
 }
 
 // TestHandleRWithoutCodeField 响应没有 code 字段时仍回包（客户端至少知道失败）。
@@ -246,17 +221,15 @@ func TestHandleRWithoutCodeField(t *testing.T) {
 	// SigninReward 没有 code 字段，用它验证降级路径。
 	th.HandleR(3001, 3002, &gamev1.SigninReward{}, func(*Context, uint32, []byte) error { return nil })
 	respID, raw, ok := th.CacheFailureReply(3001)
-	if !ok || respID != 3002 || len(raw) != 0 {
-		t.Fatalf("无 code 字段响应应为空包: %d/%v/%v", respID, raw, ok)
-	}
+	require.True(t, ok, fmt.Sprintf("无 code 字段响应应为空包: %d/%v/%v", respID, raw, ok))
+	require.EqualValues(t, 3002, respID)
+	require.Empty(t, raw)
 }
 
 // TestHandleRNilPrototypePanics 原型为 nil 是编码错误，启动期暴露。
 func TestHandleRNilPrototypePanics(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Fatal("nil prototype should panic")
-		}
+		require.NotNil(t, recover(), "nil prototype should panic")
 	}()
 	th := NewThin("demo")
 	th.HandleR(4001, 4002, nil, func(*Context, uint32, []byte) error { return nil })
@@ -268,13 +241,10 @@ func TestRespOfOverridesHandleR(t *testing.T) {
 	th := NewThin("demo", ThinRespOf(respOf))
 	th.HandleR(1001, 9999, &gamev1.SigninClaimResp{}, func(*Context, uint32, []byte) error { return nil })
 	ctx, replies := newThinFixture(th)
-	if err := th.Fail(ctx, 1001, 5, errors.New("x")); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := (*replies)[9999]; ok {
-		t.Fatal("HandleR 的响应号不应生效（ThinRespOf 优先）")
-	}
-	if _, ok := (*replies)[1002]; !ok {
-		t.Fatal("应以 respOf 声明的 1002 回包")
-	}
+	err := th.Fail(ctx, 1001, 5, errors.New("x"))
+	require.NoError(t, err)
+	_, ok := (*replies)[9999]
+	require.False(t, ok, "HandleR 的响应号不应生效（ThinRespOf 优先）")
+	_, ok = (*replies)[1002]
+	require.True(t, ok, "应以 respOf 声明的 1002 回包")
 }

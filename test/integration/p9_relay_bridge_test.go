@@ -73,9 +73,8 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 
 	// 每次测试用独立 topic：消费组首次订阅从 last 开始，但复用 topic 会读到上次残留
 	topic := fmt.Sprintf("center.relay.test.%d", time.Now().UnixNano())
-	if err := ensureTopics(brokers, topic); err != nil {
-		t.Fatalf("create topic: %v", err)
-	}
+	err := ensureTopics(brokers, topic)
+	require.NoError(t, err, fmt.Sprintf("create topic: %v", err))
 
 	logger := log.New("relay-test")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -92,9 +91,8 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 	brB := relay.NewBridge(relay.BridgeConfig{
 		Brokers: brokers, Topic: topic, InstanceID: "center-02@pod-b", StartOffset: "first",
 	}, recB.deliver, logger)
-	if brA == nil || brB == nil {
-		t.Fatal("bridge should be created with valid brokers")
-	}
+	require.NotNil(t, brA, "bridge should be created with valid brokers")
+	require.NotNil(t, brB)
 	defer brA.Close()
 	defer brB.Close()
 
@@ -148,18 +146,13 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 
 	fwdA, recvA, delivA, skipA := brA.Stats()
 	require.EqualValues(t, 1, fwdA)
-	if recvA == 0 {
-		t.Fatal("A should have consumed the broadcast copy")
-	}
+	require.NotEqualValues(t, 0, recvA, "A should have consumed the broadcast copy")
 	require.EqualValues(t, 0, delivA)
-	if skipA == 0 {
-		t.Fatal("A should record a skip for its own message")
-	}
+	require.NotEqualValues(t, 0, skipA, "A should record a skip for its own message")
 
 	_, recvB, delivB, _ := brB.Stats()
-	if recvB != 1 || delivB != 1 {
-		t.Fatalf("B stats received=%d delivered=%d, want 1/1", recvB, delivB)
-	}
+	require.EqualValues(t, 1, recvB, fmt.Sprintf("B stats received=%d delivered=%d, want 1/1", recvB, delivB))
+	require.EqualValues(t, 1, delivB)
 
 	// 关闭消费循环，确认 Run 正常退出（不能卡住 —— 优雅关闭要求）
 	cancel()
@@ -179,11 +172,9 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 func TestP9BridgeSkipsForeignNode(t *testing.T) {
 	rec := &relayRecorder{ownNode: "game-b"}
 
-	if n := rec.deliver(relay.Payload{ToNode: "game-c"}); n != 0 {
-		t.Fatalf("deliver foreign node = %d, want 0", n)
-	}
-	if n := rec.deliver(relay.Payload{ToNode: "game-b"}); n != 1 {
-		t.Fatalf("deliver own node = %d, want 1", n)
-	}
+	n := rec.deliver(relay.Payload{ToNode: "game-c"})
+	require.EqualValues(t, 0, n, fmt.Sprintf("deliver foreign node = %d, want 0", n))
+	n := rec.deliver(relay.Payload{ToNode: "game-b"})
+	require.EqualValues(t, 1, n, fmt.Sprintf("deliver own node = %d, want 1", n))
 	require.EqualValues(t, 1, rec.count())
 }

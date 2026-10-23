@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"fmt"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
@@ -18,9 +19,8 @@ func TestDeliveryKey(t *testing.T) {
 		{"", DeliveryKeyPrefix},
 	}
 	for _, tc := range tests {
-		if got := DeliveryKey(tc.deliveryID); got != tc.want {
-			t.Errorf("DeliveryKey(%q) = %q, want %q", tc.deliveryID, got, tc.want)
-		}
+		got := DeliveryKey(tc.deliveryID)
+		require.EqualValues(t, tc.want, got, fmt.Sprintf("DeliveryKey(%q) = %q, want %q", tc.deliveryID, got, tc.want))
 	}
 }
 
@@ -45,21 +45,16 @@ func TestRetryBackoff(t *testing.T) {
 		{1 << 30, 60 * time.Second},
 	}
 	for _, tc := range tests {
-		if got := RetryBackoff(tc.attempt); got != tc.want {
-			t.Errorf("RetryBackoff(%d) = %v, want %v", tc.attempt, got, tc.want)
-		}
+		got := RetryBackoff(tc.attempt)
+		require.EqualValues(t, tc.want, got, fmt.Sprintf("RetryBackoff(%d) = %v, want %v", tc.attempt, got, tc.want))
 	}
 	// 序列在封顶前必须严格递增（指数退避的定义），
 	// 封顶后恒定。
 	prev := time.Duration(0)
 	for attempt := int32(1); attempt <= 10; attempt++ {
 		got := RetryBackoff(attempt)
-		if got < prev {
-			t.Fatalf("attempt=%d 退避 %v 小于前值 %v，不是递增序列", attempt, got, prev)
-		}
-		if got > time.Duration(DeliveryRetryMaxMS)*time.Millisecond {
-			t.Fatalf("attempt=%d 退避 %v 超过上限", attempt, got)
-		}
+		require.False(t, got < prev, fmt.Sprintf("attempt=%d 退避 %v 小于前值 %v，不是递增序列", attempt, got, prev))
+		require.False(t, got > time.Duration(DeliveryRetryMaxMS)*time.Millisecond, fmt.Sprintf("attempt=%d 退避 %v 超过上限", attempt, got))
 		prev = got
 	}
 }
@@ -77,9 +72,8 @@ func TestNextRetryAtMS(t *testing.T) {
 		{1_700_000_000_000, 7, 1_700_000_060_000}, // 封顶 60s
 	}
 	for _, tc := range tests {
-		if got := NextRetryAtMS(tc.nowMS, tc.attempt); got != tc.want {
-			t.Errorf("NextRetryAtMS(%d, %d) = %d, want %d", tc.nowMS, tc.attempt, got, tc.want)
-		}
+		got := NextRetryAtMS(tc.nowMS, tc.attempt)
+		require.EqualValues(t, tc.want, got, fmt.Sprintf("NextRetryAtMS(%d, %d) = %d, want %d", tc.nowMS, tc.attempt, got, tc.want))
 	}
 }
 
@@ -98,18 +92,10 @@ func TestDeliveryAckMatches(t *testing.T) {
 	diffHash := DeliveryAck{DeliveryID: d.DeliveryID, PayloadHash: PayloadHashOf([]byte("other")), PlayerVersion: 42}
 	diffID := DeliveryAck{DeliveryID: "d-2", PayloadHash: d.PayloadHash, PlayerVersion: 42}
 
-	if !same.Matches(d) {
-		t.Error("同 id 同 hash 的 Ack 应匹配")
-	}
-	if diffHash.Matches(d) {
-		t.Error("同 id 不同 hash 的 Ack 不应匹配（payload 冲突，隔离）")
-	}
-	if diffID.Matches(d) {
-		t.Error("不同 id 的 Ack 不应匹配")
-	}
-	if same.Matches(nil) {
-		t.Error("nil 交接单不应匹配")
-	}
+	require.False(t, !same.Matches(d), "同 id 同 hash 的 Ack 应匹配")
+	require.False(t, diffHash.Matches(d), "同 id 不同 hash 的 Ack 不应匹配（payload 冲突，隔离）")
+	require.False(t, diffID.Matches(d), "不同 id 的 Ack 不应匹配")
+	require.False(t, same.Matches(nil), "nil 交接单不应匹配")
 }
 
 // TestDeliveryCursorAdvance 验证 keyset 游标推进。
@@ -117,9 +103,8 @@ func TestDeliveryCursorAdvance(t *testing.T) {
 	c := DeliveryCursor{WorldID: 1, Limit: 100}
 	last := &Delivery{DeliveryID: "d-7", CreatedAtMS: 1_700_000_005_000}
 	c.Advance(last)
-	if c.AfterCreatedAtMS != last.CreatedAtMS || c.AfterDeliveryID != last.DeliveryID {
-		t.Fatalf("游标推进错误: %+v", c)
-	}
+	require.EqualValues(t, last.CreatedAtMS, c.AfterCreatedAtMS, fmt.Sprintf("游标推进错误: %+v", c))
+	require.EqualValues(t, last.DeliveryID, c.AfterDeliveryID)
 	// nil 不前移（空批次不应打乱扫描位置）。
 	before := c
 	c.Advance(nil)
@@ -227,18 +212,15 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		got, err := app.Apply(ctx, testDelivery())
 		require.NoError(t, err, "Apply 失败")
 		require.EqualValues(t, DeliveryApplyRetryableBlocked, got.Status)
-		if got.Reason == "" {
-			t.Fatal("阻塞必须带原因")
-		}
+		require.NotEqualValues(t, "", got.Reason, "阻塞必须带原因")
 		require.Len(t, app.receipts, 0, "阻塞时不应写回执")
 	})
 
 	t.Run("payload 冲突隔离", func(t *testing.T) {
 		app := newFakeDeliveryApplier()
 		d := testDelivery()
-		if _, err := app.Apply(ctx, d); err != nil {
-			t.Fatalf("Apply 失败: %v", err)
-		}
+		_, err := app.Apply(ctx, d)
+		require.NoError(t, err, fmt.Sprintf("Apply 失败: %v", err))
 		tampered := d
 		tampered.Cargo = map[int32]int64{9001: 999}
 		tampered.PayloadHash = PayloadHashOf([]byte("d-1|4001|100|9001:999"))
@@ -262,7 +244,5 @@ func TestDeliveryApplyStatusValid(t *testing.T) {
 		!DeliveryApplyRetryableBlocked.Valid() || !DeliveryApplyQuarantined.Valid() {
 		t.Fatal("已知状态必须合法")
 	}
-	if DeliveryApplyUnspecified.Valid() || DeliveryApplyStatus(99).Valid() {
-		t.Fatal("未知状态必须非法")
-	}
+	require.False(t, DeliveryApplyUnspecified.Valid() || DeliveryApplyStatus(99).Valid(), "未知状态必须非法")
 }

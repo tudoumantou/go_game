@@ -14,6 +14,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -63,17 +64,15 @@ func TestFriendFlow(t *testing.T) {
 		insertFriendPlayers(t, database, a, b)
 
 		code, err := repo.Apply(ctx, a, b)
-		if err != nil || code != 0 {
-			t.Fatalf("apply: code=%d err=%v", code, err)
-		}
+		require.NoError(t, err, fmt.Sprintf("apply: code=%d err=%v", code, err))
+		require.EqualValues(t, 0, code)
 		// 申请方自己还看不到好友，接收方有一条待处理。
-		if n := friendRows(t, database, a); n != 0 {
-			t.Fatalf("apply must not create friendship, got %d rows", n)
-		}
+		n := friendRows(t, database, a)
+		require.EqualValues(t, 0, n, fmt.Sprintf("apply must not create friendship, got %d rows", n))
 		_, applies, err := repo.List(ctx, b)
-		if err != nil || len(applies) != 1 || applies[0].FromID != a {
-			t.Fatalf("apply list = %+v err=%v", applies, err)
-		}
+		require.NoError(t, err, fmt.Sprintf("apply list = %+v err=%v", applies, err))
+		require.Len(t, applies, 1)
+		require.EqualValues(t, a, applies[0].FromID)
 
 		// 重复申请：幂等，不产生第二条。
 		if code, err = repo.Apply(ctx, a, b); err != nil || code != 6805 {
@@ -84,17 +83,15 @@ func TestFriendFlow(t *testing.T) {
 			t.Fatalf("accept: code=%d err=%v", code, err)
 		}
 		// 双边两行，且双方列表互见。
-		if friendRows(t, database, a) != 1 || friendRows(t, database, b) != 1 {
-			t.Fatalf("expect one row each: a=%d b=%d", friendRows(t, database, a), friendRows(t, database, b))
-		}
+		require.EqualValues(t, 1, friendRows(t, database, a), fmt.Sprintf("expect one row each: a=%d b=%d", friendRows(t, database, a), friendRows(t, database, b)))
+		require.EqualValues(t, 1, friendRows(t, database, b))
 		fa, _, _ := repo.List(ctx, a)
 		fb, _, _ := repo.List(ctx, b)
-		if len(fa) != 1 || fa[0].PlayerID != b || len(fb) != 1 || fb[0].PlayerID != a {
-			t.Fatalf("mutual list broken: a=%+v b=%+v", fa, fb)
-		}
-		if fa[0].Name == "" {
-			t.Fatal("friend name must be filled from player table")
-		}
+		require.Len(t, fa, 1, fmt.Sprintf("mutual list broken: a=%+v b=%+v", fa, fb))
+		require.EqualValues(t, b, fa[0].PlayerID)
+		require.Len(t, fb, 1)
+		require.EqualValues(t, a, fb[0].PlayerID)
+		require.NotEqualValues(t, "", fa[0].Name, "friend name must be filled from player table")
 
 		// 已是好友再申请 / 再同意都幂等。
 		if code, _ = repo.Apply(ctx, a, b); code != 6803 {
@@ -105,31 +102,27 @@ func TestFriendFlow(t *testing.T) {
 		}
 
 		// 删除后双方都空；重复删除仍成功。
-		if err := repo.Delete(ctx, a, b); err != nil {
-			t.Fatalf("delete: %v", err)
-		}
-		if friendRows(t, database, a) != 0 || friendRows(t, database, b) != 0 {
-			t.Fatal("delete must remove both directions")
-		}
-		if err := repo.Delete(ctx, a, b); err != nil {
-			t.Fatalf("delete must be idempotent: %v", err)
-		}
+		err := repo.Delete(ctx, a, b)
+		require.NoError(t, err, fmt.Sprintf("delete: %v", err))
+		require.EqualValues(t, 0, friendRows(t, database, a), "delete must remove both directions")
+		require.EqualValues(t, 0, friendRows(t, database, b))
+		err := repo.Delete(ctx, a, b)
+		require.NoError(t, err, fmt.Sprintf("delete must be idempotent: %v", err))
 	})
 
 	t.Run("互相申请直接成为好友", func(t *testing.T) {
 		const a, b = int64(930011), int64(930012)
 		insertFriendPlayers(t, database, a, b)
 
-		if code, err := repo.Apply(ctx, a, b); err != nil || code != 0 {
-			t.Fatalf("a→b: code=%d err=%v", code, err)
-		}
+		code, err := repo.Apply(ctx, a, b)
+		require.NoError(t, err, fmt.Sprintf("a→b: code=%d err=%v", code, err))
+		require.EqualValues(t, 0, code)
 		// b 反向申请：应直接建立关系，而不是再插一条待处理。
-		if code, err := repo.Apply(ctx, b, a); err != nil || code != 0 {
-			t.Fatalf("b→a: code=%d err=%v", code, err)
-		}
-		if friendRows(t, database, a) != 1 || friendRows(t, database, b) != 1 {
-			t.Fatal("mutual apply must create friendship directly")
-		}
+		code, err := repo.Apply(ctx, b, a)
+		require.NoError(t, err, fmt.Sprintf("b→a: code=%d err=%v", code, err))
+		require.EqualValues(t, 0, code)
+		require.EqualValues(t, 1, friendRows(t, database, a), "mutual apply must create friendship directly")
+		require.EqualValues(t, 1, friendRows(t, database, b))
 		_, applies, _ := repo.List(ctx, b)
 		require.Len(t, applies, 0)
 	})
@@ -146,12 +139,10 @@ func TestFriendFlow(t *testing.T) {
 			}
 		}
 		code, err := repo.Apply(ctx, a, b)
-		if err != nil || code != 6804 {
-			t.Fatalf("apply when full: code=%d err=%v", code, err)
-		}
-		if n := friendRows(t, database, b); n != 0 {
-			t.Fatalf("must not create one-sided friendship: %d", n)
-		}
+		require.NoError(t, err, fmt.Sprintf("apply when full: code=%d err=%v", code, err))
+		require.EqualValues(t, 6804, code)
+		n := friendRows(t, database, b)
+		require.EqualValues(t, 0, n, fmt.Sprintf("must not create one-sided friendship: %d", n))
 	})
 
 	t.Run("过期申请不能同意", func(t *testing.T) {
@@ -165,9 +156,8 @@ func TestFriendFlow(t *testing.T) {
 			t.Fatalf("seed expired apply: %v", err)
 		}
 		code, err := repo.Handle(ctx, b, a, true, 7*24*time.Hour)
-		if err != nil || code != 6808 {
-			t.Fatalf("expired accept: code=%d err=%v", code, err)
-		}
+		require.NoError(t, err, fmt.Sprintf("expired accept: code=%d err=%v", code, err))
+		require.EqualValues(t, 6808, code)
 		require.EqualValues(t, 0, friendRows(t, database, a), "expired apply must not create friendship")
 		var status int32
 		if err := database.QueryRow(
@@ -181,21 +171,18 @@ func TestFriendFlow(t *testing.T) {
 		const a, b = int64(930041), int64(930042)
 		insertFriendPlayers(t, database, a, b)
 
-		if code, _ := repo.Apply(ctx, a, b); code != 0 {
-			t.Fatalf("apply: %d", code)
-		}
-		if code, _ := repo.Handle(ctx, b, a, false, 7*24*time.Hour); code != 0 {
-			t.Fatalf("reject: %d", code)
-		}
+		code, _ := repo.Apply(ctx, a, b)
+		require.EqualValues(t, 0, code, fmt.Sprintf("apply: %d", code))
+		code, _ := repo.Handle(ctx, b, a, false, 7*24*time.Hour)
+		require.EqualValues(t, 0, code, fmt.Sprintf("reject: %d", code))
 		require.EqualValues(t, 0, friendRows(t, database, a), "reject must not create friendship")
 		// 再次同意旧申请：申请已拒绝，应返回「不存在/已处理」。
-		if code, _ := repo.Handle(ctx, b, a, true, 7*24*time.Hour); code != 6806 {
-			t.Fatalf("accept rejected apply: code=%d", code)
-		}
+		code, _ := repo.Handle(ctx, b, a, true, 7*24*time.Hour)
+		require.EqualValues(t, 6806, code, fmt.Sprintf("accept rejected apply: code=%d", code))
 		// 重新申请复用同一行（唯一键），状态回到待处理。
-		if code, err := repo.Apply(ctx, a, b); err != nil || code != 0 {
-			t.Fatalf("re-apply: code=%d err=%v", code, err)
-		}
+		code, err := repo.Apply(ctx, a, b)
+		require.NoError(t, err, fmt.Sprintf("re-apply: code=%d err=%v", code, err))
+		require.EqualValues(t, 0, code)
 		var status int32
 		if err := database.QueryRow(
 			`SELECT status FROM friend_apply WHERE from_id = ? AND to_id = ?`, a, b).Scan(&status); err != nil {

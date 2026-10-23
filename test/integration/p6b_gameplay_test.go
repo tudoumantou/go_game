@@ -131,9 +131,8 @@ func TestP6BGameplayFlow(t *testing.T) {
 	gameCfg.Server.Name = "game-p6b"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	if err := os.Chdir(projectRoot(t)); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
+	err := os.Chdir(projectRoot(t))
+	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()
@@ -172,9 +171,8 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// ============ B1：任务 ============
 	ql, err := clientA.QuestList()
 	require.NoError(t, err, "quest list")
-	if ql.Code != 0 || len(ql.Quests) != 2 {
-		t.Fatalf("quest list unexpected: code=%d n=%d", ql.Code, len(ql.Quests))
-	}
+	require.EqualValues(t, 0, ql.Code, fmt.Sprintf("quest list unexpected: code=%d n=%d", ql.Code, len(ql.Quests)))
+	require.Len(t, ql.Quests, 2)
 	// 接取任务 2（use_item 类型，目标 1 次）
 	if resp, err := clientA.QuestAccept(2); err != nil {
 		t.Fatalf("quest accept: %v", err)
@@ -202,9 +200,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// 领奖 → 发经验 + 钻石
 	claim, err := clientA.QuestClaim(2)
 	require.NoError(t, err, "quest claim")
-	if claim.Code != 0 || claim.ExpGain <= 0 {
-		t.Fatalf("quest claim code=%d exp=%d", claim.Code, claim.ExpGain)
-	}
+	require.False(t, claim.Code != 0 || claim.ExpGain <= 0, fmt.Sprintf("quest claim code=%d exp=%d", claim.Code, claim.ExpGain))
 	// 重复领奖 → 7104
 	if resp, err := clientA.QuestClaim(2); err != nil {
 		t.Fatalf("quest claim again: %v", err)
@@ -214,21 +210,18 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// 经验已入账（等级/经验由 LevelInfoNotify 推送，这里用 PlayerInfo 校验）
 	pinfo, err := clientA.PlayerInfo()
 	require.NoError(t, err, "player info")
-	if pinfo.Exp <= 0 {
-		t.Fatalf("expect exp > 0 after quest claim, got %d", pinfo.Exp)
-	}
+	require.False(t, pinfo.Exp <= 0, fmt.Sprintf("expect exp > 0 after quest claim, got %d", pinfo.Exp))
 
 	// ============ B2：装备 ============
 	el, err := clientA.EquipList()
 	require.NoError(t, err, "equip list")
-	if el.Code != 0 || len(el.Equips) != 1 || el.Equips[0].Uid != equipUID {
-		t.Fatalf("equip list unexpected: code=%d %+v", el.Code, el.Equips)
-	}
+	require.EqualValues(t, 0, el.Code, fmt.Sprintf("equip list unexpected: code=%d %+v", el.Code, el.Equips))
+	require.Len(t, el.Equips, 1)
+	require.EqualValues(t, equipUID, el.Equips[0].Uid)
 	wear, err := clientA.EquipWear(equipUID)
 	require.NoError(t, err, "equip wear")
-	if wear.Code != 0 || len(wear.Attrs) == 0 {
-		t.Fatalf("equip wear code=%d attrs=%d", wear.Code, len(wear.Attrs))
-	}
+	require.EqualValues(t, 0, wear.Code, fmt.Sprintf("equip wear code=%d attrs=%d", wear.Code, len(wear.Attrs)))
+	require.NotEmpty(t, wear.Attrs)
 	// 脱下
 	off, err := clientA.EquipTakeOff(equipUID)
 	require.NoError(t, err, "equip take off")
@@ -249,9 +242,8 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	up, err := clientA.SkillUpgrade(skillFire)
 	require.NoError(t, err, "skill upgrade")
-	if up.Code != 0 || up.Level != 2 {
-		t.Fatalf("skill upgrade code=%d level=%d", up.Code, up.Level)
-	}
+	require.EqualValues(t, 0, up.Code, fmt.Sprintf("skill upgrade code=%d level=%d", up.Code, up.Level))
+	require.EqualValues(t, 2, up.Level)
 	// 未学习技能升级 → 3204
 	if resp, err := clientA.SkillUpgrade(4001); err != nil {
 		t.Fatalf("skill upgrade unlearned: %v", err)
@@ -262,20 +254,17 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// ============ B3：私聊（同服在线直投） ============
 	sent, err := clientA.ChatSend(2, roleB, "你好，乙士")
 	require.NoError(t, err, "chat send")
-	if sent.Code != 0 || sent.MsgId == "" {
-		t.Fatalf("chat send code=%d msg_id=%q", sent.Code, sent.MsgId)
-	}
+	require.EqualValues(t, 0, sent.Code, fmt.Sprintf("chat send code=%d msg_id=%q", sent.Code, sent.MsgId))
+	require.NotEqualValues(t, "", sent.MsgId)
 	notify, err := clientB.WaitChatNotify(10 * time.Second)
 	require.NoError(t, err, "wait chat notify")
-	if notify.SenderId != roleA || notify.Content != "你好，乙士" {
-		t.Fatalf("chat notify mismatch: %+v", notify)
-	}
+	require.EqualValues(t, roleA, notify.SenderId, fmt.Sprintf("chat notify mismatch: %+v", notify))
+	require.EqualValues(t, "你好，乙士", notify.Content)
 	// 历史（B 视角拉与 A 的会话）
 	hist, err := clientB.ChatHistory(roleA, 20)
 	require.NoError(t, err, "chat history")
-	if hist.Code != 0 || len(hist.Messages) == 0 {
-		t.Fatalf("chat history code=%d n=%d", hist.Code, len(hist.Messages))
-	}
+	require.EqualValues(t, 0, hist.Code, fmt.Sprintf("chat history code=%d n=%d", hist.Code, len(hist.Messages)))
+	require.NotEmpty(t, hist.Messages)
 
 	// ============ B4：公会 ============
 	gi, err := clientA.GuildInfo()
@@ -286,9 +275,8 @@ func TestP6BGameplayFlow(t *testing.T) {
 	gname := fmt.Sprintf("远征军%d", time.Now().UnixNano()%100000)
 	gc, err := clientA.GuildCreate(gname)
 	require.NoError(t, err, "guild create")
-	if gc.Code != 0 || gc.GuildId == 0 {
-		t.Fatalf("guild create code=%d id=%d", gc.Code, gc.GuildId)
-	}
+	require.EqualValues(t, 0, gc.Code, fmt.Sprintf("guild create code=%d id=%d", gc.Code, gc.GuildId))
+	require.NotEqualValues(t, 0, gc.GuildId)
 	// 重名 → 6103（由 B 建同名）
 	if resp, err := clientB.GuildCreate(gname); err != nil {
 		t.Fatalf("guild create dup: %v", err)
@@ -301,9 +289,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	require.EqualValues(t, 0, gj.Code)
 	gi2, err := clientA.GuildInfo()
 	require.NoError(t, err, "guild info after join")
-	if gi2.Code != 0 || gi2.MemberCount != 2 || !gi2.IsLeader {
-		t.Fatalf("guild info after join unexpected: %+v", gi2)
-	}
+	require.False(t, gi2.Code != 0 || gi2.MemberCount != 2 || !gi2.IsLeader, fmt.Sprintf("guild info after join unexpected: %+v", gi2))
 	// B 退出
 	if resp, err := clientB.GuildQuit(); err != nil {
 		t.Fatalf("guild quit: %v", err)
@@ -319,20 +305,16 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	tc, err := clientA.TeamCreate(1)
 	require.NoError(t, err, "team create")
-	if tc.Code != 0 || tc.TeamId == 0 {
-		t.Fatalf("team create code=%d id=%d", tc.Code, tc.TeamId)
-	}
+	require.EqualValues(t, 0, tc.Code, fmt.Sprintf("team create code=%d id=%d", tc.Code, tc.TeamId))
+	require.NotEqualValues(t, 0, tc.TeamId)
 	tj, err := clientB.TeamJoin(tc.TeamId)
 	require.NoError(t, err, "team join")
 	require.EqualValues(t, 0, tj.Code)
 	ti2, err := clientA.TeamInfo()
 	require.NoError(t, err, "team info after join")
-	if ti2.Code != 0 || len(ti2.Members) != 2 {
-		t.Fatalf("team info after join unexpected: %+v", ti2)
-	}
-	if !ti2.Members[0].IsLeader {
-		t.Fatalf("expect first member is leader: %+v", ti2.Members)
-	}
+	require.EqualValues(t, 0, ti2.Code, fmt.Sprintf("team info after join unexpected: %+v", ti2))
+	require.Len(t, ti2.Members, 2)
+	require.False(t, !ti2.Members[0].IsLeader, fmt.Sprintf("expect first member is leader: %+v", ti2.Members))
 	// B 退出 → 队伍剩 1 人
 	if resp, err := clientB.TeamLeave(); err != nil {
 		t.Fatalf("team leave: %v", err)
@@ -346,9 +328,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// ============ B4：副本 ============
 	cl, err := clientA.CopyList()
 	require.NoError(t, err, "copy list")
-	if cl.Code != 0 || len(cl.Copies) < 2 {
-		t.Fatalf("copy list unexpected: code=%d n=%d", cl.Code, len(cl.Copies))
-	}
+	require.False(t, cl.Code != 0 || len(cl.Copies) < 2, fmt.Sprintf("copy list unexpected: code=%d n=%d", cl.Code, len(cl.Copies)))
 	// 副本 2 需要 10 级 → 6302
 	if resp, err := clientA.CopySettle(2, 3); err != nil {
 		t.Fatalf("copy settle lv-low: %v", err)
@@ -365,23 +345,19 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// 二次通关 → first_pass=false
 	s2, err := clientA.CopySettle(1, 2)
 	require.NoError(t, err, "copy settle again")
-	if s2.Code != 0 || s2.FirstPass {
-		t.Fatalf("expect first_pass=false on second run, code=%d first=%v", s2.Code, s2.FirstPass)
-	}
+	require.False(t, s2.Code != 0 || s2.FirstPass, fmt.Sprintf("expect first_pass=false on second run, code=%d first=%v", s2.Code, s2.FirstPass))
 
 	// ============ B4：商店 ============
 	sgl, err := clientA.ShopList()
 	require.NoError(t, err, "shop list")
-	if sgl.Code != 0 || len(sgl.Goods) == 0 {
-		t.Fatalf("shop list unexpected: code=%d n=%d", sgl.Code, len(sgl.Goods))
-	}
+	require.EqualValues(t, 0, sgl.Code, fmt.Sprintf("shop list unexpected: code=%d n=%d", sgl.Code, len(sgl.Goods)))
+	require.NotEmpty(t, sgl.Goods)
 	goods := sgl.Goods[0]
 	before := bagItem(clientA, t, goods.ItemId)
 	buy, err := clientA.ShopBuy(goods.GoodsId, 2)
 	require.NoError(t, err, "shop buy")
-	if buy.Code != 0 || buy.Bought != 2 {
-		t.Fatalf("shop buy code=%d bought=%d", buy.Code, buy.Bought)
-	}
+	require.EqualValues(t, 0, buy.Code, fmt.Sprintf("shop buy code=%d bought=%d", buy.Code, buy.Bought))
+	require.EqualValues(t, 2, buy.Bought)
 	after := bagItem(clientA, t, goods.ItemId)
 	expectGain := int64(goods.Count) * 2
 	require.EqualValues(t, expectGain, after-before)
@@ -397,9 +373,8 @@ func TestP6BGameplayFlow(t *testing.T) {
 	// ============ B4：活动 ============
 	al, err := clientA.ActivityList()
 	require.NoError(t, err, "activity list")
-	if al.Code != 0 || len(al.Activities) == 0 {
-		t.Fatalf("activity list unexpected: code=%d n=%d", al.Code, len(al.Activities))
-	}
+	require.EqualValues(t, 0, al.Code, fmt.Sprintf("activity list unexpected: code=%d n=%d", al.Code, len(al.Activities)))
+	require.NotEmpty(t, al.Activities)
 	// 活动 2（server_progress，target 14）未完成 → 6502
 	if resp, err := clientA.ActivityClaim(2); err != nil {
 		t.Fatalf("activity claim unfinished: %v", err)
@@ -425,24 +400,19 @@ func TestP6BGameplayFlow(t *testing.T) {
 func newRole(t *testing.T, loginURL, gwAddr, namePrefix string) (int64, *robot.Client) {
 	t.Helper()
 	c := robot.New(loginURL, gwAddr)
-	if err := c.GuestLogin(fmt.Sprintf("%s-%d", namePrefix, time.Now().UnixNano())); err != nil {
-		t.Fatalf("%s guest login: %v", namePrefix, err)
-	}
-	if err := c.Connect(); err != nil {
-		t.Fatalf("%s connect: %v", namePrefix, err)
-	}
-	if err := c.Handshake(); err != nil {
-		t.Fatalf("%s handshake: %v", namePrefix, err)
-	}
-	if _, err := c.SendHandshakeReq("1.0.0", "pc"); err != nil {
-		t.Fatalf("%s handshake req: %v", namePrefix, err)
-	}
+	err := c.GuestLogin(fmt.Sprintf("%s-%d", namePrefix, time.Now().UnixNano()))
+	require.NoError(t, err, fmt.Sprintf("%s guest login: %v", namePrefix, err))
+	err := c.Connect()
+	require.NoError(t, err, fmt.Sprintf("%s connect: %v", namePrefix, err))
+	err := c.Handshake()
+	require.NoError(t, err, fmt.Sprintf("%s handshake: %v", namePrefix, err))
+	_, err := c.SendHandshakeReq("1.0.0", "pc")
+	require.NoError(t, err, fmt.Sprintf("%s handshake req: %v", namePrefix, err))
 	roleName := fmt.Sprintf("%s%d", namePrefix, time.Now().UnixNano()%1000000)
 	cr, err := c.CreateRole(roleName, 1)
 	require.NoError(t, err)
-	if cr.Code != 0 || cr.RoleId == 0 {
-		t.Fatalf("%s create role code=%d role=%d", namePrefix, cr.Code, cr.RoleId)
-	}
+	require.EqualValues(t, 0, cr.Code, fmt.Sprintf("%s create role code=%d role=%d", namePrefix, cr.Code, cr.RoleId))
+	require.NotEqualValues(t, 0, cr.RoleId)
 	return cr.RoleId, c
 }
 

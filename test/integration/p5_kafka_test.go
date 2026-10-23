@@ -106,9 +106,8 @@ func TestKafkaRechargeFlow(t *testing.T) {
 
 	// 每次测试用独立 topic，避免历史消息干扰（group 唯一 + FirstOffset 会重放旧数据）
 	topic := fmt.Sprintf("%s.it.%d", pkgmq.TopicRechargeOrder, time.Now().UnixNano())
-	if err := ensureTopics(brokers, topic); err != nil {
-		t.Fatalf("ensure topics: %v", err)
-	}
+	err := ensureTopics(brokers, topic)
+	require.NoError(t, err, fmt.Sprintf("ensure topics: %v", err))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -165,9 +164,8 @@ func TestKafkaRechargeFlow(t *testing.T) {
 	}
 	env, err := pkgmq.NewEnvelope(orderID, topic, orderID, msg)
 	require.NoError(t, err, "envelope")
-	if err := producer.ProduceEnvelope(ctx, env); err != nil {
-		t.Fatalf("produce: %v", err)
-	}
+	err := producer.ProduceEnvelope(ctx, env)
+	require.NoError(t, err, fmt.Sprintf("produce: %v", err))
 
 	// 等待消费 + 发奖
 	deadline := time.Now().Add(30 * time.Second)
@@ -177,9 +175,8 @@ func TestKafkaRechargeFlow(t *testing.T) {
 	require.EqualValues(t, 1, act.count())
 
 	// 重复投递：验证幂等
-	if err := producer.ProduceEnvelope(ctx, env); err != nil {
-		t.Fatalf("produce duplicate: %v", err)
-	}
+	err := producer.ProduceEnvelope(ctx, env)
+	require.NoError(t, err, fmt.Sprintf("produce duplicate: %v", err))
 	time.Sleep(3 * time.Second)
 	require.EqualValues(t, 1, act.count())
 }

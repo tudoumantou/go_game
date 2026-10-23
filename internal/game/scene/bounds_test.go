@@ -2,6 +2,7 @@
 package scene
 
 import (
+	"fmt"
 	"testing"
 
 	"game_study/pkg/gamedata"
@@ -21,20 +22,15 @@ func TestClamp(t *testing.T) {
 		{5, 0, 0}, // 非法地图宽度退化为 0，避免返回负数
 	}
 	for _, c := range cases {
-		if got := Clamp(c.v, c.max); got != c.want {
-			t.Fatalf("Clamp(%d,%d) = %d, want %d", c.v, c.max, got, c.want)
-		}
+		got := Clamp(c.v, c.max)
+		require.EqualValues(t, c.want, got, fmt.Sprintf("Clamp(%d,%d) = %d, want %d", c.v, c.max, got, c.want))
 	}
 }
 
 // TestInBounds 开区间语义 [0,width)：四角在内，贴界与负值在外。
 func TestInBounds(t *testing.T) {
-	if !InBounds(0, 0, 100, 100) || !InBounds(99, 99, 100, 100) {
-		t.Fatal("corners must be inside")
-	}
-	if InBounds(100, 99, 100, 100) || InBounds(-1, 0, 100, 100) {
-		t.Fatal("out of range must be rejected")
-	}
+	require.False(t, !InBounds(0, 0, 100, 100) || !InBounds(99, 99, 100, 100), "corners must be inside")
+	require.False(t, InBounds(100, 99, 100, 100) || InBounds(-1, 0, 100, 100), "out of range must be rejected")
 }
 
 // TestFromConfigRejects 配置非法必须启动失败：
@@ -48,9 +44,8 @@ func TestFromConfigRejects(t *testing.T) {
 		{Id: 1, Col1: "x", Col2: 100, Col3: 100, Col4: 10, Col5: 0},
 	}
 	for _, cfg := range bad {
-		if _, err := fromConfig(cfg); err == nil {
-			t.Fatalf("config %+v must be rejected", cfg)
-		}
+		_, err := fromConfig(cfg)
+		require.Error(t, err, fmt.Sprintf("config %+v must be rejected", cfg))
 	}
 }
 
@@ -59,8 +54,6 @@ func TestFromConfigLoadsRealConfig(t *testing.T) {
 	for _, cfg := range gamedata.SceneCfgList() {
 		sc, err := fromConfig(cfg)
 		require.NoError(t, err)
-		if sc.Width <= 0 || sc.Height <= 0 || sc.MaxPlayers <= 0 {
-			t.Fatalf("scene %d not normalized: %+v", cfg.Id, sc)
-		}
+		require.False(t, sc.Width <= 0 || sc.Height <= 0 || sc.MaxPlayers <= 0, fmt.Sprintf("scene %d not normalized: %+v", cfg.Id, sc))
 	}
 }

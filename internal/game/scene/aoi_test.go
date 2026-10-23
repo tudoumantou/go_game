@@ -5,6 +5,7 @@
 package scene
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -48,9 +49,8 @@ func itoa(v int64) string {
 func join(t *testing.T, sys *actor.System, scPID *actor.PID, pid *actor.PID, c *collector, id int64, x, y int32) {
 	t.Helper()
 	send(t, sys, scPID, &EnterMsg{PlayerID: id, PID: pid, Name: "p", X: x, Y: y})
-	if r := waitResult(t, c); r == nil {
-		t.Fatal("no enter result")
-	}
+	r := waitResult(t, c)
+	require.NotNil(t, r, "no enter result")
 }
 
 // drainPushes 取走收集器里所有推送，返回它们的类型序列。
@@ -90,9 +90,8 @@ func TestAdjacentCellNoFlicker(t *testing.T) {
 
 	require.Len(t, aPushes, 0)
 	// B 只应收到一条「移动」通知。
-	if len(bPushes) != 1 || bPushes[0] != 2 {
-		t.Fatalf("B 应只收到 1 条移动通知，got types=%v", bPushes)
-	}
+	require.Len(t, bPushes, 1, fmt.Sprintf("B 应只收到 1 条移动通知，got types=%v", bPushes))
+	require.EqualValues(t, 2, bPushes[0])
 }
 
 // TestEnterView 移入新格后，新出现在视野里的实体要双向 Appear。
@@ -110,12 +109,10 @@ func TestEnterView(t *testing.T) {
 	aPushes := drainPushes(cols[1])
 	cPushes := drainPushes(cols[3])
 
-	if len(aPushes) != 1 || aPushes[0] != 1 {
-		t.Fatalf("A 应收到 1 条 Appear，got types=%v", aPushes)
-	}
-	if len(cPushes) != 1 || cPushes[0] != 1 {
-		t.Fatalf("C 应收到 1 条 Appear，got types=%v", cPushes)
-	}
+	require.Len(t, aPushes, 1, fmt.Sprintf("A 应收到 1 条 Appear，got types=%v", aPushes))
+	require.EqualValues(t, 1, aPushes[0])
+	require.Len(t, cPushes, 1, fmt.Sprintf("C 应收到 1 条 Appear，got types=%v", cPushes))
+	require.EqualValues(t, 1, cPushes[0])
 }
 
 // TestLeaveView 移出视野要双向 Leave。
@@ -133,12 +130,10 @@ func TestLeaveView(t *testing.T) {
 	aPushes := drainPushes(cols[1])
 	cPushes := drainPushes(cols[3])
 
-	if len(aPushes) != 1 || aPushes[0] != 3 {
-		t.Fatalf("A 应收到 1 条 Leave，got types=%v", aPushes)
-	}
-	if len(cPushes) != 1 || cPushes[0] != 3 {
-		t.Fatalf("C 应收到 1 条 Leave，got types=%v", cPushes)
-	}
+	require.Len(t, aPushes, 1, fmt.Sprintf("A 应收到 1 条 Leave，got types=%v", aPushes))
+	require.EqualValues(t, 3, aPushes[0])
+	require.Len(t, cPushes, 1, fmt.Sprintf("C 应收到 1 条 Leave，got types=%v", cPushes))
+	require.EqualValues(t, 3, cPushes[0])
 }
 
 // TestEnterLeaveBalanced 来回移动多次：Appear 与 Leave 必须成对，
@@ -169,9 +164,8 @@ func TestEnterLeaveBalanced(t *testing.T) {
 			leave++
 		}
 	}
-	if appear != 5 || leave != 5 {
-		t.Fatalf("C 应收到 5 次 Appear / 5 次 Leave，got appear=%d leave=%d (types=%v)", appear, leave, types)
-	}
+	require.EqualValues(t, 5, appear, fmt.Sprintf("C 应收到 5 次 Appear / 5 次 Leave，got appear=%d leave=%d (types=%v)", appear, leave, types))
+	require.EqualValues(t, 5, leave)
 }
 
 // TestThrottleRejectsBurst 同秒内超过配额被拒（原地高频小步不能绕过速度校验）。
@@ -186,9 +180,8 @@ func TestThrottleRejectsBurst(t *testing.T) {
 		send(t, sys, scPID, &MoveMsg{PlayerID: 1, X: 5, Y: 5, Seq: int32(i + 1)})
 		r := waitResult(t, cols[1])
 		var resp gamev1.SceneMoveResp
-		if err := proto.Unmarshal(r.Body, &resp); err != nil {
-			t.Fatal(err)
-		}
+		err := proto.Unmarshal(r.Body, &resp)
+		require.NoError(t, err)
 		if resp.Code == codeThrottle {
 			throttled = true
 			break
@@ -215,9 +208,8 @@ func TestBroadcastCoversViewOnly(t *testing.T) {
 		cols[i] = c
 		join(t, sys, scPID, pid, c, id, p[0], p[1])
 	}
-	if n := sc.Count(); n != len(positions) {
-		t.Fatalf("count = %d, want %d", n, len(positions))
-	}
+	n := sc.Count()
+	require.EqualValues(t, len(positions), n, fmt.Sprintf("count = %d, want %d", n, len(positions)))
 	for _, c := range cols {
 		drainPushes(c)
 	}

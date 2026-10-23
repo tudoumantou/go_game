@@ -2,6 +2,7 @@
 package player
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -58,9 +59,8 @@ func TestBindTriggersResyncAndHeartbeat(t *testing.T) {
 	rig.actor.heartbeatEvery = 100 * time.Millisecond
 	rig.actor.state.SetSceneID(3)
 
-	if err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7}); err != nil {
-		t.Fatalf("send bind: %v", err)
-	}
+	err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7})
+	require.NoError(t, err, fmt.Sprintf("send bind: %v", err))
 
 	// 等 Resync（绑定路径是同步执行的，这里给一点余量）。
 	deadline := time.Now().Add(2 * time.Second)
@@ -70,18 +70,15 @@ func TestBindTriggersResyncAndHeartbeat(t *testing.T) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	if n, _ := link.counts(); n != 1 {
-		t.Fatalf("resync 次数 = %d, want 1", n)
-	}
-	if got := link.lastResync(); got != 3 {
-		t.Fatalf("resync sceneID = %d, want 3", got)
-	}
+	n, _ := link.counts()
+	require.EqualValues(t, 1, n, fmt.Sprintf("resync 次数 = %d, want 1", n))
+	got := link.lastResync()
+	require.EqualValues(t, 3, got, fmt.Sprintf("resync sceneID = %d, want 3", got))
 
 	// 100ms 一次，350ms 内至少应有 2 次心跳。
 	time.Sleep(350 * time.Millisecond)
-	if _, hb := link.counts(); hb < 2 {
-		t.Fatalf("心跳次数 = %d, want >= 2", hb)
-	}
+	_, hb := link.counts()
+	require.False(t, hb < 2, fmt.Sprintf("心跳次数 = %d, want >= 2", hb))
 }
 
 // TestNoHeartbeatWithoutScene 未进场景时不发心跳、不做同步。
@@ -91,15 +88,13 @@ func TestNoHeartbeatWithoutScene(t *testing.T) {
 	rig.actor.WithSceneLink(link)
 	rig.actor.heartbeatEvery = 100 * time.Millisecond
 
-	if err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7}); err != nil {
-		t.Fatalf("send bind: %v", err)
-	}
+	err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7})
+	require.NoError(t, err, fmt.Sprintf("send bind: %v", err))
 	time.Sleep(250 * time.Millisecond)
 
 	resyncs, hb := link.counts()
-	if resyncs != 0 || hb != 0 {
-		t.Fatalf("未进场景不应触发同步/心跳，got resync=%d heartbeat=%d", resyncs, hb)
-	}
+	require.EqualValues(t, 0, resyncs, fmt.Sprintf("未进场景不应触发同步/心跳，got resync=%d heartbeat=%d", resyncs, hb))
+	require.EqualValues(t, 0, hb)
 }
 
 // TestHeartbeatStopsWhenOffline 下线后不再心跳（避免给已离场的场景发无用消息）。
@@ -110,19 +105,15 @@ func TestHeartbeatStopsWhenOffline(t *testing.T) {
 	rig.actor.heartbeatEvery = 100 * time.Millisecond
 	rig.actor.state.SetSceneID(1)
 
-	if err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7}); err != nil {
-		t.Fatalf("send bind: %v", err)
-	}
+	err := rig.sys.Send(rig.pid, &BindMsg{SessionID: 1, PlayerID: 7})
+	require.NoError(t, err, fmt.Sprintf("send bind: %v", err))
 	time.Sleep(250 * time.Millisecond)
 	before, _ := link.counts()
-	if before == 0 {
-		t.Fatal("绑定后应有心跳")
-	}
+	require.NotEqualValues(t, 0, before, "绑定后应有心跳")
 
 	// 解绑：之后即使定时器还在跑，也不应再发心跳。
-	if err := rig.sys.Send(rig.pid, &UnbindMsg{SessionID: 1}); err != nil {
-		t.Fatalf("send unbind: %v", err)
-	}
+	err = rig.sys.Send(rig.pid, &UnbindMsg{SessionID: 1})
+	require.NoError(t, err, fmt.Sprintf("send unbind: %v", err))
 	// 等一条可能在途的心跳落地，再取基线。
 	time.Sleep(150 * time.Millisecond)
 	_, hbAfter := link.counts()

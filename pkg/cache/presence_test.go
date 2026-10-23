@@ -3,6 +3,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -23,30 +24,27 @@ func newTestPresence(t *testing.T) (*Presence, *miniredis.Miniredis) {
 func TestTrySetOnlineFirstClaim(t *testing.T) {
 	p, _ := newTestPresence(t)
 	ok, owner, err := p.TrySetOnline(context.Background(), 1, "game-1", time.Minute)
-	if err != nil || !ok || owner != "game-1" {
-		t.Fatalf("first claim: ok=%v owner=%q err=%v", ok, owner, err)
-	}
-	if node, online := p.IsOnline(context.Background(), 1); !online || node != "game-1" {
-		t.Fatalf("presence not set: %q %v", node, online)
-	}
+	require.NoError(t, err, fmt.Sprintf("first claim: ok=%v owner=%q err=%v", ok, owner, err))
+	require.True(t, ok)
+	require.EqualValues(t, "game-1", owner)
+	node, online := p.IsOnline(context.Background(), 1)
+	require.True(t, online, fmt.Sprintf("presence not set: %q %v", node, online))
+	require.EqualValues(t, "game-1", node)
 }
 
 // TestTrySetOnlineBlocksOtherNode 别的节点持有时拒绝，并返回真实持有者。
 func TestTrySetOnlineBlocksOtherNode(t *testing.T) {
 	p, _ := newTestPresence(t)
 	ctx := context.Background()
-	if ok, _, err := p.TrySetOnline(ctx, 1, "game-1", time.Minute); err != nil || !ok {
-		t.Fatal("setup claim failed")
-	}
+	ok, _, err := p.TrySetOnline(ctx, 1, "game-1", time.Minute)
+	require.NoError(t, err, "setup claim failed")
+	require.True(t, ok)
 	ok, owner, err := p.TrySetOnline(ctx, 1, "game-2", time.Minute)
 	require.NoError(t, err)
-	if ok || owner != "game-1" {
-		t.Fatalf("other node must be rejected: ok=%v owner=%q", ok, owner)
-	}
+	require.False(t, ok || owner != "game-1", fmt.Sprintf("other node must be rejected: ok=%v owner=%q", ok, owner))
 	// 归属没有被改写
-	if node, _ := p.IsOnline(ctx, 1); node != "game-1" {
-		t.Fatalf("ownership overwritten: %q", node)
-	}
+	node, _ := p.IsOnline(ctx, 1)
+	require.EqualValues(t, "game-1", node, fmt.Sprintf("ownership overwritten: %q", node))
 }
 
 // TestTrySetOnlineAllowsSameNodeReconnect 同节点重连（旧会话未过期）必须放行，
@@ -54,24 +52,24 @@ func TestTrySetOnlineBlocksOtherNode(t *testing.T) {
 func TestTrySetOnlineAllowsSameNodeReconnect(t *testing.T) {
 	p, _ := newTestPresence(t)
 	ctx := context.Background()
-	if ok, _, err := p.TrySetOnline(ctx, 1, "game-1", time.Minute); err != nil || !ok {
-		t.Fatal("setup claim failed")
-	}
+	ok, _, err := p.TrySetOnline(ctx, 1, "game-1", time.Minute)
+	require.NoError(t, err, "setup claim failed")
+	require.True(t, ok)
 	ok, owner, err := p.TrySetOnline(ctx, 1, "game-1", time.Minute)
-	if err != nil || !ok || owner != "game-1" {
-		t.Fatalf("same node reclaim: ok=%v owner=%q err=%v", ok, owner, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("same node reclaim: ok=%v owner=%q err=%v", ok, owner, err))
+	require.True(t, ok)
+	require.EqualValues(t, "game-1", owner)
 }
 
 // TestTrySetOnlineAfterExpiry 持有者过期后可以被其它节点接手。
 func TestTrySetOnlineAfterExpiry(t *testing.T) {
 	p, mr := newTestPresence(t)
 	ctx := context.Background()
-	if ok, _, err := p.TrySetOnline(ctx, 1, "game-1", time.Second); err != nil || !ok {
-		t.Fatal("setup claim failed")
-	}
+	ok, _, err := p.TrySetOnline(ctx, 1, "game-1", time.Second)
+	require.NoError(t, err, "setup claim failed")
+	require.True(t, ok)
 	mr.FastForward(2 * time.Second)
-	if ok, _, err := p.TrySetOnline(ctx, 1, "game-2", time.Minute); err != nil || !ok {
-		t.Fatalf("expired ownership should be claimable: ok=%v err=%v", ok, err)
-	}
+	ok, _, err = p.TrySetOnline(ctx, 1, "game-2", time.Minute)
+	require.NoError(t, err, fmt.Sprintf("expired ownership should be claimable: ok=%v err=%v", ok, err))
+	require.True(t, ok)
 }

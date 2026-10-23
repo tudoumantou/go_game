@@ -1,6 +1,7 @@
 package grid
 
 import (
+	"fmt"
 	"testing"
 
 	"game_study/internal/scenemap"
@@ -65,12 +66,8 @@ func TestDistances(t *testing.T) {
 	}
 	// (1,1)→(4,3) 的 dx=3, dy=2，距离 √13≈3.6：
 	// 半径 4 包含，半径 3 不包含。
-	if !WithinRadius(a, b, 4) {
-		t.Fatal("半径 4 应包含 (4,3)（√13≈3.6）")
-	}
-	if WithinRadius(a, b, 3) {
-		t.Fatal("半径 3 不应包含 (4,3)")
-	}
+	require.False(t, !WithinRadius(a, b, 4), "半径 4 应包含 (4,3)（√13≈3.6）")
+	require.False(t, WithinRadius(a, b, 3), "半径 3 不应包含 (4,3)")
 }
 
 func TestInSector(t *testing.T) {
@@ -103,12 +100,8 @@ func TestRectClipAndContains(t *testing.T) {
 	r := Rect{MinX: -5, MinY: -5, MaxX: 15, MaxY: 15}.Clip(Size{Width: 10, Height: 8})
 	require.EqualValues(t, (Rect{MinX: 0, MinY: 0, MaxX: 10, MaxY: 8}), r)
 	// 左闭右开：MaxX 本身不在矩形内
-	if r.Contains(scenemap.GridPos{X: 10, Y: 0}) {
-		t.Fatal("右边界应开区间")
-	}
-	if !r.Contains(scenemap.GridPos{X: 9, Y: 7}) {
-		t.Fatal("(9,7) 应在矩形内")
-	}
+	require.False(t, r.Contains(scenemap.GridPos{X: 10, Y: 0}), "右边界应开区间")
+	require.False(t, !r.Contains(scenemap.GridPos{X: 9, Y: 7}), "(9,7) 应在矩形内")
 }
 
 func TestBlockerStaticDynamicAndFootprint(t *testing.T) {
@@ -118,28 +111,18 @@ func TestBlockerStaticDynamicAndFootprint(t *testing.T) {
 		"....",
 	})
 	require.NoError(t, err, "构造失败")
-	if b.Walkable(scenemap.GridPos{X: 1, Y: 1}) {
-		t.Fatal("墙格应不可走")
-	}
-	if !b.Walkable(scenemap.GridPos{X: 0, Y: 0}) {
-		t.Fatal("空地应可走")
-	}
+	require.False(t, b.Walkable(scenemap.GridPos{X: 1, Y: 1}), "墙格应不可走")
+	require.False(t, !b.Walkable(scenemap.GridPos{X: 0, Y: 0}), "空地应可走")
 	// 越界视为阻挡
-	if b.Walkable(scenemap.GridPos{X: -1, Y: 0}) || b.Walkable(scenemap.GridPos{X: 4, Y: 0}) {
-		t.Fatal("越界应不可走")
-	}
+	require.False(t, b.Walkable(scenemap.GridPos{X: -1, Y: 0}) || b.Walkable(scenemap.GridPos{X: 4, Y: 0}), "越界应不可走")
 	// 动态阻挡是计数：加两次，删一次仍阻挡
 	p := scenemap.GridPos{X: 2, Y: 0}
 	b.AddDynamic(p)
 	b.AddDynamic(p)
 	b.RemoveDynamic(p)
-	if b.Walkable(p) {
-		t.Fatal("两次加、一次删后仍应阻挡")
-	}
+	require.False(t, b.Walkable(p), "两次加、一次删后仍应阻挡")
 	b.RemoveDynamic(p)
-	if !b.Walkable(p) {
-		t.Fatal("计数归零后应恢复可走")
-	}
+	require.False(t, !b.Walkable(p), "计数归零后应恢复可走")
 	// 体积：4×3 的地图上，中心 (1,1) 半径 2 的 5×5 会被裁剪到 12 格
 	fp := b.Footprint(scenemap.GridPos{X: 1, Y: 1}, 2)
 	require.Len(t, fp, 12)
@@ -167,16 +150,13 @@ func TestAStarStraightAndAroundWall(t *testing.T) {
 	// 同行直达
 	path, err := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 0}, 1000)
 	require.NoError(t, err, "直线寻路失败")
-	if len(path) != 3 || path[len(path)-1] != (scenemap.GridPos{X: 3, Y: 0}) {
-		t.Fatalf("直线路径异常: %v", path)
-	}
+	require.Len(t, path, 3, fmt.Sprintf("直线路径异常: %v", path))
+	require.EqualValues(t, (scenemap.GridPos{X: 3, Y: 0}), path[len(path)-1])
 	// 绕墙：必须从第 0 行或第 2 行绕过去，且不穿墙
 	path, err = AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 4, Y: 2}, 1000)
 	require.NoError(t, err, "绕墙寻路失败")
 	for _, p := range path {
-		if !b.Walkable(p) {
-			t.Fatalf("路径穿墙: %s", p)
-		}
+		require.False(t, !b.Walkable(p), fmt.Sprintf("路径穿墙: %s", p))
 	}
 	require.EqualValues(t, (scenemap.GridPos{X: 4, Y: 2}), path[len(path)-1])
 }
@@ -196,9 +176,8 @@ func TestAStarRejectsBlockedTargetAndBudget(t *testing.T) {
 	}
 	// 起点即终点
 	path, err := AStar(b, scenemap.GridPos{X: 1, Y: 1}, scenemap.GridPos{X: 1, Y: 1}, 10)
-	if err != nil || len(path) != 0 {
-		t.Fatalf("原地应返回空路径, got %v err=%v", path, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("原地应返回空路径, got %v err=%v", path, err))
+	require.Empty(t, path)
 }
 
 func TestAStarNoDiagonalCornerCutting(t *testing.T) {
@@ -230,9 +209,9 @@ func TestRingAndRandomCell(t *testing.T) {
 	p, err := RandomCellInRing(scenemap.GridPos{X: 5, Y: 5}, 1, 3, size,
 		walkable, func(int) int { return 0 })
 	require.NoError(t, err, "应能找到落点")
-	if p == (scenemap.GridPos{X: 6, Y: 4}) || p == (scenemap.GridPos{X: 6, Y: 5}) || p == (scenemap.GridPos{X: 6, Y: 6}) {
-		t.Fatalf("落点撞上了不可走格: %s", p)
-	}
+	require.NotEqualValues(t, (scenemap.GridPos{X: 6, Y: 4}), p, fmt.Sprintf("落点撞上了不可走格: %s", p))
+	require.NotEqualValues(t, (scenemap.GridPos{X: 6, Y: 5}), p)
+	require.NotEqualValues(t, (scenemap.GridPos{X: 6, Y: 6}), p)
 	// 整张图都不可走
 	if _, err := RandomCellInRing(scenemap.GridPos{X: 5, Y: 5}, 1, 2, size,
 		func(scenemap.GridPos) bool { return false }, nil); err == nil {
@@ -253,7 +232,5 @@ func TestStraightStepAndReachable(t *testing.T) {
 	next = StraightStep(b, scenemap.GridPos{X: 1, Y: 1}, scenemap.GridPos{X: 3, Y: 1})
 	require.EqualValues(t, (scenemap.GridPos{X: 1, Y: 1}), next)
 	// 绕行可达
-	if !Reachable(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 2}, 100) {
-		t.Fatal("应可达")
-	}
+	require.False(t, !Reachable(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 2}, 100), "应可达")
 }

@@ -2,6 +2,7 @@ package examples
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -28,9 +29,7 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 		if cond() {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("等待超时(%s): %s", timeout, what)
-		}
+		require.False(t, time.Now().After(deadline), fmt.Sprintf("等待超时(%s): %s", timeout, what))
 		time.Sleep(2 * time.Millisecond)
 	}
 }
@@ -43,9 +42,7 @@ func neverFor(t *testing.T, window time.Duration, what string, cond func() bool)
 	t.Helper()
 	deadline := time.Now().Add(window)
 	for time.Now().Before(deadline) {
-		if cond() {
-			t.Fatalf("不应发生: %s", what)
-		}
+		require.False(t, cond(), fmt.Sprintf("不应发生: %s", what))
 		time.Sleep(2 * time.Millisecond)
 	}
 }
@@ -74,13 +71,11 @@ func TestAOIAppearMoveBlockedLeave(t *testing.T) {
 	sink := h.Sink
 
 	t.Run("九宫格外互不可见", func(t *testing.T) {
-		if err := h.EnterPlayer(playerA, scenemap.GridPos{X: 0, Y: 0}); err != nil {
-			t.Fatalf("A 进图: %v", err)
-		}
+		err := h.EnterPlayer(playerA, scenemap.GridPos{X: 0, Y: 0})
+		require.NoError(t, err, fmt.Sprintf("A 进图: %v", err))
 		// 视野格 = 行走格 / 6：A 在视野格 0，B 在视野格 2，中间隔了一格。
-		if err := h.EnterPlayer(playerB, scenemap.GridPos{X: 12, Y: 0}); err != nil {
-			t.Fatalf("B 进图: %v", err)
-		}
+		err = h.EnterPlayer(playerB, scenemap.GridPos{X: 12, Y: 0})
+		require.NoError(t, err, fmt.Sprintf("B 进图: %v", err))
 
 		// 等两边的"进图全量包"都到齐，说明两次 enter 都已被 AOI 处理完
 		// （AOI 单 goroutine 串行，处理完 enter 才会处理后面的命令）。
@@ -94,9 +89,8 @@ func TestAOIAppearMoveBlockedLeave(t *testing.T) {
 
 	t.Run("走进九宫格双向出现", func(t *testing.T) {
 		// B 从行走格 12 走到 10：视野格 2 → 1，与 A 的视野格 0 相邻。
-		if err := h.MovePlayer(playerB, cellPX(h, 10), cellPY(h, 0), scenemap.DirLeft); err != nil {
-			t.Fatalf("B 移动: %v", err)
-		}
+		err := h.MovePlayer(playerB, cellPX(h, 10), cellPY(h, 0), scenemap.DirLeft)
+		require.NoError(t, err, fmt.Sprintf("B 移动: %v", err))
 		waitFor(t, 2*time.Second, "双向收到出现包", func() bool {
 			return sink.AppearCount(playerA, playerB) > 0 && sink.AppearCount(playerB, playerA) > 0
 		})
@@ -106,9 +100,8 @@ func TestAOIAppearMoveBlockedLeave(t *testing.T) {
 		// A 从 0 走到 6（跨视野格 0 → 1）。分三步走，每步 2 格，
 		// 不超过 MGR 的 MaxStep=3；同格/同视野格的中间步不会产生移动包。
 		for _, x := range []int32{2, 4, 6} {
-			if err := h.MovePlayer(playerA, cellPX(h, x), cellPY(h, 0), scenemap.DirRight); err != nil {
-				t.Fatalf("A 移动到 %d: %v", x, err)
-			}
+			err := h.MovePlayer(playerA, cellPX(h, x), cellPY(h, 0), scenemap.DirRight)
+			require.NoError(t, err, fmt.Sprintf("A 移动到 %d: %v", x, err))
 		}
 		waitFor(t, 2*time.Second, "B 收到 A 的移动包", func() bool {
 			return sink.MovesFrom(playerB, playerA) > 0
@@ -124,9 +117,7 @@ func TestAOIAppearMoveBlockedLeave(t *testing.T) {
 		// A 在 (6,0)，目标是墙 (7,1)：切比雪夫距离 1，不会先被 MaxStep 拦下，
 		// 因此命中的一定是 Walkable 校验 → ErrBlocked。
 		err := h.MovePlayer(playerA, cellPX(h, 7), cellPY(h, 1), scenemap.DirDownRight)
-		if !errors.Is(err, scenemap.ErrBlocked) {
-			t.Fatalf("期望 ErrBlocked, got %v", err)
-		}
+		require.False(t, !errors.Is(err, scenemap.ErrBlocked), fmt.Sprintf("期望 ErrBlocked, got %v", err))
 		// 顺序要求：先校验、后广播。校验失败时一个包都不能发。
 		neverFor(t, 100*time.Millisecond, "校验失败的移动仍然被广播", func() bool {
 			return sink.MovesFrom(playerB, playerA) != before
@@ -134,9 +125,8 @@ func TestAOIAppearMoveBlockedLeave(t *testing.T) {
 	})
 
 	t.Run("离图广播消失包", func(t *testing.T) {
-		if err := h.Leave(playerA, scenemap.LeaveReasonQuit); err != nil {
-			t.Fatalf("A 离图: %v", err)
-		}
+		err := h.Leave(playerA, scenemap.LeaveReasonQuit)
+		require.NoError(t, err, fmt.Sprintf("A 离图: %v", err))
 		waitFor(t, 2*time.Second, "B 收到 A 的消失包", func() bool {
 			return sink.LeaveCount(playerB, playerA) > 0
 		})
@@ -154,17 +144,13 @@ func TestEmptyRoomClosesAfterEnterProtect(t *testing.T) {
 		WithTickInterval(20*time.Millisecond),
 	)
 
-	if err := h.EnterPlayer(playerA, scenemap.GridPos{X: 1, Y: 1}); err != nil {
-		t.Fatalf("进图: %v", err)
-	}
-	if err := h.Leave(playerA, scenemap.LeaveReasonQuit); err != nil {
-		t.Fatalf("离图: %v", err)
-	}
+	err := h.EnterPlayer(playerA, scenemap.GridPos{X: 1, Y: 1})
+	require.NoError(t, err, fmt.Sprintf("进图: %v", err))
+	err = h.Leave(playerA, scenemap.LeaveReasonQuit)
+	require.NoError(t, err, fmt.Sprintf("离图: %v", err))
 
 	// 关图通知由 MGR 发出，再由装配层转给 RoomManager 收口。
-	if !h.WaitRoomClosed(3 * time.Second) {
-		t.Fatal("空房没有在 EnterProtect 后关闭")
-	}
+	require.False(t, !h.WaitRoomClosed(3*time.Second), "空房没有在 EnterProtect 后关闭")
 	// 收口完成之后，登记表里必须查不到这个房间（不能留下"已关但还登记着"）。
 	waitFor(t, 3*time.Second, "RoomManager 摘除房间", func() bool {
 		_, ok := h.Room.Get(h.Key)
@@ -223,9 +209,8 @@ func killAllNPE(t *testing.T, h *Harness, d *gameplay.Dungeon, notify bool) {
 	})
 	// 空图时这条命令什么都不改，允许无效果。
 	cmd.AllowNoop = true
-	if _, err := h.Call(cmd); err != nil {
-		t.Fatalf("清怪: %v", err)
-	}
+	_, err := h.Call(cmd)
+	require.NoError(t, err, fmt.Sprintf("清怪: %v", err))
 }
 
 func TestDungeonWavesAndClearOnce(t *testing.T) {
@@ -246,26 +231,20 @@ func TestDungeonWavesAndClearOnce(t *testing.T) {
 
 	// MgrInit 里已经刷出第一波（不等第一拍 loop）。
 	snap := readDungeon(t, h, d)
-	if snap.wave != 1 || snap.npes != 2 {
-		t.Fatalf("第一波未刷出: %+v", snap)
-	}
+	require.EqualValues(t, 1, snap.wave, fmt.Sprintf("第一波未刷出: %+v", snap))
+	require.EqualValues(t, 2, snap.npes)
 
 	// 第一波用"非死亡路径"清掉：没有 HandleNpcDead，只能靠 Loop 发现空波。
 	killAllNPE(t, h, d, false)
-	if snap := readDungeon(t, h, d); snap.npes != 0 {
-		t.Fatalf("第一波未清空: %+v", snap)
-	}
-	// 手动跑一拍 loop：波次检查发现空波，推进到第二波并立刻刷怪。
-	if err := h.Tick(); err != nil {
-		t.Fatalf("Tick: %v", err)
-	}
 	snap = readDungeon(t, h, d)
-	if snap.wave != 2 || snap.npes != 2 {
-		t.Fatalf("Loop 未推进到第二波: %+v", snap)
-	}
-	if snap.cleared || len(clear) != 0 {
-		t.Fatalf("未打完却已通关: %+v", snap)
-	}
+	require.EqualValues(t, 0, snap.npes, fmt.Sprintf("第一波未清空: %+v", snap))
+	// 手动跑一拍 loop：波次检查发现空波，推进到第二波并立刻刷怪。
+	err := h.Tick()
+	require.NoError(t, err, fmt.Sprintf("Tick: %v", err))
+	snap = readDungeon(t, h, d)
+	require.EqualValues(t, 2, snap.wave, fmt.Sprintf("Loop 未推进到第二波: %+v", snap))
+	require.EqualValues(t, 2, snap.npes)
+	require.False(t, snap.cleared || len(clear) != 0, fmt.Sprintf("未打完却已通关: %+v", snap))
 
 	killAllNPE(t, h, d, true)
 	waitFor(t, 2*time.Second, "副本通关", func() bool {
@@ -278,15 +257,13 @@ func TestDungeonWavesAndClearOnce(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("OnClear 未被调用")
 	}
-	if n := len(clear); n != 0 {
-		t.Fatalf("OnClear 应只调用 1 次, 剩余 %d 次", n)
-	}
+	n := len(clear)
+	require.EqualValues(t, 0, n, fmt.Sprintf("OnClear 应只调用 1 次, 剩余 %d 次", n))
 
 	// 再推几拍：Loop/死亡回调都不许重复结算。
 	for i := 0; i < 3; i++ {
-		if err := h.Tick(); err != nil {
-			t.Fatalf("Tick: %v", err)
-		}
+		err := h.Tick()
+		require.NoError(t, err, fmt.Sprintf("Tick: %v", err))
 	}
 	select {
 	case <-clear:
@@ -294,9 +271,8 @@ func TestDungeonWavesAndClearOnce(t *testing.T) {
 	default:
 	}
 	// 只有第二波走了死亡回调，所以击杀数是 2（第一波是"非死亡路径"清的）。
-	if snap := readDungeon(t, h, d); snap.killed != 2 {
-		t.Fatalf("累计击杀应为 2, got %d", snap.killed)
-	}
+	snap = readDungeon(t, h, d)
+	require.EqualValues(t, 2, snap.killed, fmt.Sprintf("累计击杀应为 2, got %d", snap.killed))
 }
 
 // ============================================================================
@@ -313,13 +289,11 @@ func TestCityRoomStaysOpenWhenEmpty(t *testing.T) {
 		WithTickInterval(20*time.Millisecond),
 	)
 
-	if err := h.EnterPlayer(playerA, scenemap.GridPos{X: 1, Y: 1}); err != nil {
-		t.Fatalf("进图: %v", err)
-	}
+	err := h.EnterPlayer(playerA, scenemap.GridPos{X: 1, Y: 1})
+	require.NoError(t, err, fmt.Sprintf("进图: %v", err))
 	require.EqualValues(t, 1, city.Players())
-	if err := h.Leave(playerA, scenemap.LeaveReasonQuit); err != nil {
-		t.Fatalf("离图: %v", err)
-	}
+	err = h.Leave(playerA, scenemap.LeaveReasonQuit)
+	require.NoError(t, err, fmt.Sprintf("离图: %v", err))
 
 	// 玩法说"不能关"，MGR 必须把 CloseTime 归零：空图也长期存在。
 	neverFor(t, 500*time.Millisecond, "主城空房被关闭", func() bool {
@@ -331,9 +305,7 @@ func TestCityRoomStaysOpenWhenEmpty(t *testing.T) {
 	} else if v.(bool) {
 		t.Fatal("主城 CanCheckStopMap 应为 false")
 	}
-	if city.AllowSkill(1301) {
-		t.Fatal("主城不应结算技能")
-	}
+	require.False(t, city.AllowSkill(1301), "主城不应结算技能")
 }
 
 // ============================================================================
@@ -343,8 +315,7 @@ func TestCityRoomStaysOpenWhenEmpty(t *testing.T) {
 func TestHarnessGeometryDefaults(t *testing.T) {
 	h := NewHarness(t, 1401, 1, WithSize(8, 8), WithEnterProtect(time.Minute))
 	require.EqualValues(t, grid.DefaultGeometry(), h.Geo)
-	if h.AOI == nil || h.Mgr == nil {
-		t.Fatal("装配不完整：AOI/MGR 不能为 nil")
-	}
+	require.NotNil(t, h.AOI, "装配不完整：AOI/MGR 不能为 nil")
+	require.NotNil(t, h.Mgr)
 	require.EqualValues(t, 1*48+24, cellPX(h, 1))
 }

@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,9 +44,8 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	defer rdb.Close()
 	store := writebehind.NewStore(rdb)
-	if _, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 10}}, 0); err != nil {
-		t.Fatal(err)
-	}
+	_, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 10}}, 0)
+	require.NoError(t, err)
 	database, _, err := sqlmock.New()
 	require.NoError(t, err)
 	defer database.Close()
@@ -73,9 +73,8 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	require.NoError(t, err)
 	send := func() uint32 {
 		t.Helper()
-		if err := sys.Send(pid, &PacketMsg{MsgID: 9001}); err != nil {
-			t.Fatal(err)
-		}
+		err := sys.Send(pid, &PacketMsg{MsgID: 9001})
+		require.NoError(t, err)
 		select {
 		case id := <-responses:
 			return id
@@ -85,18 +84,15 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 		}
 	}
 	mr.SetError("cache unavailable")
-	if id := send(); id != 20 {
-		t.Fatalf("unexpected success %d", id)
-	}
+	id := send()
+	require.EqualValues(t, 20, id, fmt.Sprintf("unexpected success %d", id))
 	require.EqualValues(t, 60, a.state.GetItemCount(1001), "SQL-confirmed reward discarded")
 	mr.SetError("")
-	if id := send(); id != 9002 {
-		t.Fatal(id)
-	}
+	id = send()
+	require.EqualValues(t, 9002, id)
 	record, err := store.Load(ctx, 7)
-	if err != nil || record.State.Items[1001] != 60 {
-		t.Fatal(record, err)
-	}
+	require.NoError(t, err)
+	require.EqualValues(t, 60, record.State.Items[1001])
 }
 
 func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
@@ -125,12 +121,10 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	defer sys.Stop()
 	pid, err := sys.Spawn("bind-failure", a)
 	require.NoError(t, err)
-	if err := sys.Send(pid, &BindMsg{SessionID: 9, PlayerID: 7}); err != nil {
-		t.Fatal(err)
-	}
-	if err := sys.Send(pid, &PacketMsg{MsgID: 6603}); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(pid, &BindMsg{SessionID: 9, PlayerID: 7})
+	require.NoError(t, err)
+	err = sys.Send(pid, &PacketMsg{MsgID: 6603})
+	require.NoError(t, err)
 	select {
 	case session := <-replies:
 		require.EqualValues(t, 9, session)
@@ -167,9 +161,8 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			hook := &loseCommitReply{}
 			rdb.AddHook(hook)
 			store := writebehind.NewStore(rdb)
-			if _, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Profile: writebehind.Profile{Level: 1}, Items: map[int32]int64{1001: 10}}, 0); err != nil {
-				t.Fatal(err)
-			}
+			_, err := store.Seed(ctx, writebehind.Snapshot{PlayerID: 7, Profile: writebehind.Profile{Level: 1}, Items: map[int32]int64{1001: 10}}, 0)
+			require.NoError(t, err)
 			sqlDB, mock, err := sqlmock.New()
 			require.NoError(t, err)
 			defer sqlDB.Close()
@@ -212,9 +205,8 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			}
 			call := func() *gamev1.SigninClaimResp {
 				t.Helper()
-				if err := sys.Send(pid, &PacketMsg{MsgID: 6603}); err != nil {
-					t.Fatal(err)
-				}
+				err := sys.Send(pid, &PacketMsg{MsgID: 6603})
+				require.NoError(t, err)
 				select {
 				case out := <-replies:
 					return out
@@ -225,16 +217,12 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			}
 			first := call()
 			if failure == "none" {
-				if first.Code != 0 || first.Already {
-					t.Fatal(first)
-				}
+				require.False(t, first.Code != 0 || first.Already)
 			} else {
 				require.EqualValues(t, 1, first.Code)
 				// R2.5：失败后不回滚内存，而是标记「下一条消息前整份重载」。
 				// 下一轮 retry 会走重载路径，其断言覆盖了「状态最终回到权威」。
-				if !a.cacheReload {
-					t.Fatal("failed cache write must schedule reload")
-				}
+				require.False(t, !a.cacheReload, "failed cache write must schedule reload")
 			}
 			mr.SetError("")
 			retry := call()
@@ -250,9 +238,8 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 				}
 			}
 			record, err := store.Load(ctx, 7)
-			if err != nil || record.State.Items[1001] != want {
-				t.Fatalf("items[1001] = %d, want %d (%v)", record.State.Items[1001], want, err)
-			}
+			require.NoError(t, err, fmt.Sprintf("items[1001] = %d, want %d (%v)", record.State.Items[1001], want, err))
+			require.EqualValues(t, want, record.State.Items[1001])
 			// 发奖消息超时/提交结果未知后重投，由缓存中的业务键保护。
 			hook.armed.Store(true)
 			grant := func() error {
@@ -267,20 +254,15 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 					return errors.New("grant timeout")
 				}
 			}
-			if err := grant(); err == nil {
-				t.Fatal("expected unknown grant result")
-			}
-			if err := grant(); err != nil {
-				t.Fatal(err)
-			}
+			err = grant()
+			require.Error(t, err, "expected unknown grant result")
+			err = grant()
+			require.NoError(t, err)
 			record, err = store.Load(ctx, 7)
-			if err != nil || record.State.Items[1001] != want+50 || !record.State.AppliedGrants["recharge:order-1"] {
-				t.Fatalf("grant repeated: %+v %v", record, err)
-			}
+			require.False(t, err != nil || record.State.Items[1001] != want+50 || !record.State.AppliedGrants["recharge:order-1"], fmt.Sprintf("grant repeated: %+v %v", record, err))
 			sys.Stop()
-			if err := mock.ExpectationsWereMet(); err != nil {
-				t.Fatal(err)
-			}
+			err = mock.ExpectationsWereMet()
+			require.NoError(t, err)
 		})
 	}
 }

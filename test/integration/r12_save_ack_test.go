@@ -56,12 +56,10 @@ func TestR12FlushAllDrainsAllBatches(t *testing.T) {
 	for _, id := range ids {
 		f.MarkDirty(id)
 	}
-	if err := f.FlushAll(ctx); err != nil {
-		t.Fatalf("flush all: %v", err)
-	}
-	if got := f.DirtyCount(); got != 0 {
-		t.Fatalf("dirty left after FlushAll: %d", got)
-	}
+	err := f.FlushAll(ctx)
+	require.NoError(t, err, fmt.Sprintf("flush all: %v", err))
+	got := f.DirtyCount()
+	require.EqualValues(t, 0, got, fmt.Sprintf("dirty left after FlushAll: %d", got))
 	for _, id := range ids {
 		var count int64
 		if err := database.QueryRowContext(ctx,
@@ -97,15 +95,12 @@ func TestR12SaveFailureKeepsDirtyThenRecovers(t *testing.T) {
 	f.MarkDirty(id)
 
 	// 制造真实故障：连接池关闭后任何查询都返回 "sql: database is closed"。
-	if err := database.Close(); err != nil {
-		t.Fatalf("close db: %v", err)
-	}
-	if err := f.FlushAll(ctx); err == nil {
-		t.Fatal("FlushAll must fail when MySQL is unavailable")
-	}
-	if got := f.DirtyCount(); got != 1 {
-		t.Fatalf("failed save must keep dirty flag, got %d", got)
-	}
+	err := database.Close()
+	require.NoError(t, err, fmt.Sprintf("close db: %v", err))
+	err := f.FlushAll(ctx)
+	require.Error(t, err, "FlushAll must fail when MySQL is unavailable")
+	got := f.DirtyCount()
+	require.EqualValues(t, 1, got, fmt.Sprintf("failed save must keep dirty flag, got %d", got))
 
 	// 恢复：同一 DSN 新建连接池，重新落库成功。
 	db2, err := db.New(db.Config{DSN: dsn, MaxOpen: 5, MaxIdle: 2})
@@ -114,9 +109,8 @@ func TestR12SaveFailureKeepsDirtyThenRecovers(t *testing.T) {
 	f2 := flush.New(flush.Config{ShardCount: 1, Interval: time.Minute, BatchRows: 10},
 		persist(player.NewRepository(db2)), log.New("test"))
 	f2.MarkDirty(id)
-	if err := f2.FlushAll(ctx); err != nil {
-		t.Fatalf("recovery flush: %v", err)
-	}
+	err := f2.FlushAll(ctx)
+	require.NoError(t, err, fmt.Sprintf("recovery flush: %v", err))
 
 	var count int64
 	if err := db2.QueryRowContext(ctx,

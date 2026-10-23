@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"strings"
+	"fmt"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -82,15 +82,13 @@ func TestRegisteredPersisterReceivesItsRows(t *testing.T) {
 		{Version: 1, State: Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"demo": json.RawMessage(`{"counter":1}`)}}},
 		{Version: 2, State: Snapshot{PlayerID: 8, Ext: map[string]json.RawMessage{"demo": json.RawMessage(`{"counter":2}`)}}},
 	}
-	if err := NewWorker(nil, database, 100).Persist(context.Background(), records); err != nil {
-		t.Fatal(err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 || got[0].PlayerID != 7 || got[1].PlayerID != 8 {
-		t.Fatalf("persister rows = %+v", got)
-	}
+	err = NewWorker(nil, database, 100).Persist(context.Background(), records)
+	require.NoError(t, err)
+	err = mock.ExpectationsWereMet()
+	require.NoError(t, err)
+	require.Len(t, got, 2, fmt.Sprintf("persister rows = %+v", got))
+	require.EqualValues(t, 7, got[0].PlayerID)
+	require.EqualValues(t, 8, got[1].PlayerID)
 	require.EqualValues(t, `{"counter":1}`, string(got[0].Data))
 }
 
@@ -100,9 +98,8 @@ func TestUnregisteredModuleStateRejected(t *testing.T) {
 	t.Cleanup(resetPersisters)
 
 	err := Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"ghost": json.RawMessage(`{}`)}}.Validate()
-	if err == nil || !strings.Contains(err.Error(), "ghost") {
-		t.Fatalf("unregistered module accepted: %v", err)
-	}
+	require.Error(t, err, fmt.Sprintf("unregistered module accepted: %v", err))
+	require.Contains(t, err.Error(), "ghost")
 
 	database, mock, dbErr := sqlmock.New()
 	require.Nil(t, dbErr)
@@ -112,7 +109,6 @@ func TestUnregisteredModuleStateRejected(t *testing.T) {
 	mock.ExpectQuery("SELECT player_id, version FROM player_writebehind").WillReturnRows(sqlmock.NewRows([]string{"player_id", "version"}).AddRow(7, 0))
 	mock.ExpectRollback()
 	r := Record{Version: 1, State: Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"ghost": json.RawMessage(`{}`)}}}
-	if err := NewWorker(nil, database, 100).Persist(context.Background(), []Record{r}); err == nil {
-		t.Fatal("unregistered module persisted")
-	}
+	err = NewWorker(nil, database, 100).Persist(context.Background(), []Record{r})
+	require.Error(t, err, "unregistered module persisted")
 }

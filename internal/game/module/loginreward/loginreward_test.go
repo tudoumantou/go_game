@@ -5,6 +5,7 @@ package loginreward
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -75,14 +76,12 @@ func day(n int) time.Time {
 func TestFirstLoginGrants(t *testing.T) {
 	st := newFakeState(1)
 	m := New(nil, func() time.Time { return day(0) })
-	if err := m.OnLogin(newCtx(st)); err != nil {
-		t.Fatal(err)
-	}
+	err := m.OnLogin(newCtx(st))
+	require.NoError(t, err)
 	require.EqualValues(t, 100, st.GetItemCount(1001))
 	d, _ := load(st)
-	if d.Streak != 1 || d.LastDay != businessDay(day(0)) {
-		t.Fatalf("state: %+v", d)
-	}
+	require.EqualValues(t, 1, d.Streak, fmt.Sprintf("state: %+v", d))
+	require.EqualValues(t, businessDay(day(0)), d.LastDay)
 }
 
 // TestConsecutiveStreak 连续第二天发第 2 档。
@@ -90,13 +89,11 @@ func TestConsecutiveStreak(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
 	// 第一天
-	if err := New(nil, func() time.Time { return day(0) }).OnLogin(ctx); err != nil {
-		t.Fatal(err)
-	}
+	err := New(nil, func() time.Time { return day(0) }).OnLogin(ctx)
+	require.NoError(t, err)
 	// 第二天
-	if err := New(nil, func() time.Time { return day(1) }).OnLogin(ctx); err != nil {
-		t.Fatal(err)
-	}
+	err = New(nil, func() time.Time { return day(1) }).OnLogin(ctx)
+	require.NoError(t, err)
 	require.EqualValues(t, 5, st.GetItemCount(1002))
 	d, _ := load(st)
 	require.EqualValues(t, 2, d.Streak)
@@ -108,9 +105,8 @@ func TestSameDayReconnectNoDoubleGrant(t *testing.T) {
 	ctx := newCtx(st)
 	m := New(nil, func() time.Time { return day(0) })
 	for i := 0; i < 3; i++ {
-		if err := m.OnLogin(ctx); err != nil {
-			t.Fatal(err)
-		}
+		err := m.OnLogin(ctx)
+		require.NoError(t, err)
 	}
 	require.EqualValues(t, 100, st.GetItemCount(1001))
 	require.Len(t, st.biz, 0)
@@ -120,13 +116,11 @@ func TestSameDayReconnectNoDoubleGrant(t *testing.T) {
 func TestBreakResetsStreak(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	if err := New(nil, func() time.Time { return day(0) }).OnLogin(ctx); err != nil {
-		t.Fatal(err)
-	}
+	err := New(nil, func() time.Time { return day(0) }).OnLogin(ctx)
+	require.NoError(t, err)
 	// 跳过一天
-	if err := New(nil, func() time.Time { return day(2) }).OnLogin(ctx); err != nil {
-		t.Fatal(err)
-	}
+	err = New(nil, func() time.Time { return day(2) }).OnLogin(ctx)
+	require.NoError(t, err)
 	d, _ := load(st)
 	require.EqualValues(t, 1, d.Streak)
 	require.EqualValues(t, 200, st.GetItemCount(1001))
@@ -135,20 +129,17 @@ func TestBreakResetsStreak(t *testing.T) {
 // TestBeyondMaxTier 超过最大档按最后一档发。
 func TestBeyondMaxTier(t *testing.T) {
 	st := newFakeState(1)
-	if err := save(st, st.PlayerID(), &Data{LastDay: businessDay(day(0)), Streak: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := New(nil, func() time.Time { return day(1) }).OnLogin(newCtx(st)); err != nil {
-		t.Fatal(err)
-	}
+	err := save(st, st.PlayerID(), &Data{LastDay: businessDay(day(0)), Streak: 2})
+	require.NoError(t, err)
+	err = New(nil, func() time.Time { return day(1) }).OnLogin(newCtx(st))
+	require.NoError(t, err)
 	require.EqualValues(t, 5, st.GetItemCount(1002))
 }
 
 // TestParseRewardRejectsBadConfig 配置格式错误在 Init 期暴露。
 func TestParseRewardRejectsBadConfig(t *testing.T) {
 	for _, s := range []string{"", "1001", "1001,", ",5", "abc,1", "1001,0", "99999999,1"} {
-		if _, err := parseReward(s); err == nil {
-			t.Fatalf("bad config accepted: %q", s)
-		}
+		_, err := parseReward(s)
+		require.Error(t, err, fmt.Sprintf("bad config accepted: %q", s))
 	}
 }

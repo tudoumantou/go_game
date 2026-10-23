@@ -3,6 +3,7 @@ package scenemod
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -144,13 +145,10 @@ func newRig(t *testing.T) *rig {
 		sys.Stop()
 	})
 
-	if len(gamedata.SceneCfgList()) == 0 {
-		t.Fatal("scene config is empty")
-	}
+	require.NotEmpty(t, gamedata.SceneCfgList(), "scene config is empty")
 	mgr := scn.NewManager(sys, logger)
-	if err := mgr.Boot(); err != nil {
-		t.Fatalf("boot scenes: %v", err)
-	}
+	err := mgr.Boot()
+	require.NoError(t, err, fmt.Sprintf("boot scenes: %v", err))
 	return &rig{t: t, sys: sys, mgr: mgr, mod: New(mgr, logger)}
 }
 
@@ -174,9 +172,8 @@ func (r *rig) call(pid *actor.PID, msgID uint32, msg proto.Message) {
 	if err != nil {
 		r.t.Fatalf("marshal: %v", err)
 	}
-	if err := r.sys.Send(pid, &player.PacketMsg{MsgID: msgID, Body: body}); err != nil {
-		r.t.Fatalf("send packet: %v", err)
-	}
+	err = r.sys.Send(pid, &player.PacketMsg{MsgID: msgID, Body: body})
+	require.NoError(r.t, err, fmt.Sprintf("send packet: %v", err))
 }
 
 // result 阻塞等待一条场景回执。
@@ -212,9 +209,8 @@ func (r *rig) count(sceneID int32) int {
 		r.t.Fatalf("scene %d not booted", sceneID)
 	}
 	reply := make(chan int, 1)
-	if err := r.sys.Send(pid, &scn.CountMsg{Reply: reply}); err != nil {
-		r.t.Fatalf("send count: %v", err)
-	}
+	err := r.sys.Send(pid, &scn.CountMsg{Reply: reply})
+	require.NoError(r.t, err, fmt.Sprintf("send count: %v", err))
 	select {
 	case n := <-reply:
 		return n
@@ -240,9 +236,8 @@ func (r *rig) waitCount(sceneID int32, want int) {
 func enterResp(t *testing.T, res *player.SceneResult) *gamev1.SceneEnterResp {
 	t.Helper()
 	var resp gamev1.SceneEnterResp
-	if err := proto.Unmarshal(res.Body, &resp); err != nil {
-		t.Fatalf("decode enter resp: %v", err)
-	}
+	err := proto.Unmarshal(res.Body, &resp)
+	require.NoError(t, err, fmt.Sprintf("decode enter resp: %v", err))
 	return &resp
 }
 
@@ -266,9 +261,8 @@ func TestEnterUnknownScene(t *testing.T) {
 	case pkt := <-p.out:
 		require.EqualValues(t, codec.MsgSceneEnterResp, pkt.id)
 		var resp gamev1.SceneEnterResp
-		if err := proto.Unmarshal(pkt.body, &resp); err != nil {
-			t.Fatal(err)
-		}
+		err := proto.Unmarshal(pkt.body, &resp)
+		require.NoError(t, err)
 		require.EqualValues(t, codeNoScene, resp.Code)
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timeout waiting for reply (errs=%v)", p.errors())
@@ -284,24 +278,20 @@ func TestTwoPlayersSeeEachOther(t *testing.T) {
 	b, bPID := r.player(2)
 
 	r.call(aPID, codec.MsgSceneEnterReq, &gamev1.SceneEnterReq{SceneId: sceneID, X: 10, Y: 10})
-	if resp := enterResp(t, r.result(a)); resp.Code != 0 {
-		t.Fatalf("a enter code = %d", resp.Code)
-	}
+	resp := enterResp(t, r.result(a))
+	require.EqualValues(t, 0, resp.Code, fmt.Sprintf("a enter code = %d", resp.Code))
 
 	r.call(bPID, codec.MsgSceneEnterReq, &gamev1.SceneEnterReq{SceneId: sceneID, X: 20, Y: 20})
-	if resp := enterResp(t, r.result(b)); resp.Code != 0 {
-		t.Fatalf("b enter code = %d", resp.Code)
-	}
+	resp = enterResp(t, r.result(b))
+	require.EqualValues(t, 0, resp.Code, fmt.Sprintf("b enter code = %d", resp.Code))
 
 	// a 收到 b 的出现通知。
 	r.waitPushes(a, 1)
 	var notify gamev1.SceneEntityNotify
-	if err := proto.Unmarshal(a.push(0).Body, &notify); err != nil {
-		t.Fatal(err)
-	}
-	if notify.Type != 1 || notify.Entity.PlayerId != 2 {
-		t.Fatalf("appear notify = %s", notify.String())
-	}
+	err := proto.Unmarshal(a.push(0).Body, &notify)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, notify.Type, fmt.Sprintf("appear notify = %s", notify.String()))
+	require.EqualValues(t, 2, notify.Entity.PlayerId)
 }
 
 // TestSceneFullReturns4002 满员拒绝，上限来自配置。
@@ -313,16 +303,14 @@ func TestSceneFullReturns4002(t *testing.T) {
 	for i := 0; i < limit; i++ {
 		p, pid := r.player(int64(1000 + i))
 		r.call(pid, codec.MsgSceneEnterReq, &gamev1.SceneEnterReq{SceneId: sceneID, X: 1, Y: 1})
-		if resp := enterResp(t, r.result(p)); resp.Code != 0 {
-			t.Fatalf("player %d enter code = %d", i, resp.Code)
-		}
+		resp := enterResp(t, r.result(p))
+		require.EqualValues(t, 0, resp.Code, fmt.Sprintf("player %d enter code = %d", i, resp.Code))
 	}
 
 	p, pid := r.player(9999)
 	r.call(pid, codec.MsgSceneEnterReq, &gamev1.SceneEnterReq{SceneId: sceneID, X: 1, Y: 1})
-	if resp := enterResp(t, r.result(p)); resp.Code != 4002 {
-		t.Fatalf("code = %d, want 4002（上限 %d）", resp.Code, limit)
-	}
+	resp := enterResp(t, r.result(p))
+	require.EqualValues(t, 4002, resp.Code, fmt.Sprintf("code = %d, want 4002（上限 %d）", resp.Code, limit))
 }
 
 // TestSwitchSceneLeavesOld 切场景后旧场景不再有该实体。
@@ -344,9 +332,8 @@ func TestSwitchSceneLeavesOld(t *testing.T) {
 	r.waitCount(oldID, 0)
 	r.waitCount(newID, 1)
 
-	if got := p.state.profile.SceneID; got != newID {
-		t.Fatalf("profile scene = %d, want %d", got, newID)
-	}
+	got := p.state.profile.SceneID
+	require.EqualValues(t, newID, got, fmt.Sprintf("profile scene = %d, want %d", got, newID))
 }
 
 // TestLogoutNotifiesScene 下线后场景里不再有该实体。
@@ -358,9 +345,8 @@ func TestLogoutNotifiesScene(t *testing.T) {
 	r.call(pid, codec.MsgSceneEnterReq, &gamev1.SceneEnterReq{SceneId: sceneID, X: 5, Y: 5})
 	r.waitCount(sceneID, 1)
 
-	if err := r.sys.Send(pid, &logoutCmd{}); err != nil {
-		t.Fatalf("send logout: %v", err)
-	}
+	err := r.sys.Send(pid, &logoutCmd{})
+	require.NoError(t, err, fmt.Sprintf("send logout: %v", err))
 	r.waitCount(sceneID, 0)
 }
 
@@ -379,20 +365,18 @@ func TestMoveWithinScene(t *testing.T) {
 
 	r.call(aPID, codec.MsgSceneMoveReq, &gamev1.SceneMoveReq{X: 13, Y: 10, Seq: 7})
 	var mv gamev1.SceneMoveResp
-	if err := proto.Unmarshal(r.result(a).Body, &mv); err != nil {
-		t.Fatal(err)
-	}
-	if mv.Code != 0 || mv.X != 13 || mv.Seq != 7 {
-		t.Fatalf("move resp = %s", mv.String())
-	}
+	err := proto.Unmarshal(r.result(a).Body, &mv)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, mv.Code, fmt.Sprintf("move resp = %s", mv.String()))
+	require.EqualValues(t, 13, mv.X)
+	require.EqualValues(t, 7, mv.Seq)
 
 	// b 收到 a 的移动通知。
 	r.waitPushes(b, 1)
 	var notify gamev1.SceneEntityNotify
-	if err := proto.Unmarshal(b.push(0).Body, &notify); err != nil {
-		t.Fatal(err)
-	}
-	if notify.Type != 2 || notify.Entity.PlayerId != 1 || notify.Entity.X != 13 {
-		t.Fatalf("move notify = %s", notify.String())
-	}
+	err = proto.Unmarshal(b.push(0).Body, &notify)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, notify.Type, fmt.Sprintf("move notify = %s", notify.String()))
+	require.EqualValues(t, 1, notify.Entity.PlayerId)
+	require.EqualValues(t, 13, notify.Entity.X)
 }

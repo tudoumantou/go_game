@@ -57,9 +57,8 @@ func TestSigninActorFlow(t *testing.T) {
 		}
 	}()
 	for _, id := range ids {
-		if _, err := database.Exec(`INSERT INTO player (id,account_id,name) VALUES (?,?,?)`, id, 99, fmt.Sprintf("signin_%d", id)); err != nil {
-			t.Fatal(err)
-		}
+		_, err := database.Exec(`INSERT INTO player (id,account_id,name) VALUES (?,?,?)`, id, 99, fmt.Sprintf("signin_%d", id))
+		require.NoError(t, err)
 	}
 	store := writebehind.NewStore(rdb)
 	worker := writebehind.NewWorker(store, database.DB, 100)
@@ -84,24 +83,21 @@ func TestSigninActorFlow(t *testing.T) {
 		a := player.NewActor(id, registry, logger, repo, nil, func(_ uint64, id uint32, body []byte) error { responses <- response{id, body}; return nil })
 		pid, err := sys.Spawn(fmt.Sprintf("signin:%d", id), a)
 		require.NoError(t, err)
-		if err := sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)}); err != nil {
-			t.Fatal(err)
-		}
+		err := sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)})
+		require.NoError(t, err)
 		return pid
 	}
 	p1, p2 := spawn(ids[0]), spawn(ids[1])
 	call := func(pid *actor.PID, id uint32, out proto.Message) {
 		t.Helper()
-		if err := sys.Send(pid, &player.PacketMsg{MsgID: id}); err != nil {
-			t.Fatal(err)
-		}
+		err := sys.Send(pid, &player.PacketMsg{MsgID: id})
+		require.NoError(t, err)
 		for {
 			select {
 			case response := <-responses:
 				if response.id == id+1 {
-					if err := proto.Unmarshal(response.body, out); err != nil {
-						t.Fatal(err)
-					}
+					err := proto.Unmarshal(response.body, out)
+					require.NoError(t, err)
 					return
 				}
 			case <-time.After(10 * time.Second):
@@ -126,44 +122,35 @@ func TestSigninActorFlow(t *testing.T) {
 	}
 	info := &gamev1.SigninInfoResp{}
 	call(p1, signin.MsgInfoReq, info)
-	if info.Code != 0 || info.Today != 3 || info.ClaimedToday {
-		t.Fatal(info)
-	}
-	if first := claim(p1); first.Already || first.Day != 3 || first.ClaimedRewards[1001] != 300 {
-		t.Fatal("claim must grant day 3", first)
-	}
-	if _, rewards := sqlRow(ids[0]); rewards != "" {
-		t.Fatal("claim wrote SQL synchronously", rewards)
-	}
-	if got := claim(p1); !got.Already || got.ClaimedRewards[1001] != 300 {
-		t.Fatal("duplicate claim", got)
-	}
-	if got := claim(p2); got.Already || got.ClaimedRewards[1001] != 300 {
-		t.Fatal("role isolation", got)
-	}
-	if n, err := worker.FlushBatch(ctx, writebehind.Partition(ids[0])); err != nil || n != 2 {
-		t.Fatalf("batch flush: %d %v", n, err)
-	}
+	require.False(t, info.Code != 0 || info.Today != 3 || info.ClaimedToday)
+	first := claim(p1)
+	require.False(t, first.Already || first.Day != 3 || first.ClaimedRewards[1001] != 300, "claim must grant day 3")
+	_, rewards := sqlRow(ids[0])
+	require.EqualValues(t, "", rewards, "claim wrote SQL synchronously")
+	got := claim(p1)
+	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "duplicate claim")
+	got := claim(p2)
+	require.False(t, got.Already || got.ClaimedRewards[1001] != 300, "role isolation")
+	n, err := worker.FlushBatch(ctx, writebehind.Partition(ids[0]))
+	require.NoError(t, err, fmt.Sprintf("batch flush: %d %v", n, err))
+	require.EqualValues(t, 2, n)
 	for _, id := range ids {
-		if days, rewards := sqlRow(id); days != "[3]" || rewards != `{"1001":300}` {
-			t.Fatalf("row %d: days=%q rewards=%q", id, days, rewards)
-		}
+		days, rewards := sqlRow(id)
+		require.EqualValues(t, "[3]", days, fmt.Sprintf("row %d: days=%q rewards=%q", id, days, rewards))
+		require.EqualValues(t, `{"1001":300}`, rewards)
 	}
 	// Actor 重启：Redis 仍在，从缓存恢复已领状态。
 	sys.Stop()
 	start()
 	p1 = spawn(ids[0])
-	if got := claim(p1); !got.Already || got.ClaimedRewards[1001] != 300 {
-		t.Fatal("restart from cache", got)
-	}
+	got := claim(p1)
+	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "restart from cache")
 	// Redis 丢失：FlatPersister 走生成代码从 SQL 冷启动恢复。
 	sys.Stop()
-	if err := rdb.Del(ctx, fmt.Sprintf("wb:{player-%d}:state:%d", writebehind.Partition(ids[0]), ids[0])).Err(); err != nil {
-		t.Fatal(err)
-	}
+	err := rdb.Del(ctx, fmt.Sprintf("wb:{player-%d}:state:%d", writebehind.Partition(ids[0]), ids[0])).Err()
+	require.NoError(t, err)
 	start()
 	p1 = spawn(ids[0])
-	if got := claim(p1); !got.Already || got.ClaimedRewards[1001] != 300 {
-		t.Fatal("cold recovery", got)
-	}
+	got := claim(p1)
+	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "cold recovery")
 }

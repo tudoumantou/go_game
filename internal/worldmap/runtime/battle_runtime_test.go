@@ -132,9 +132,8 @@ func newBattleFixture(t *testing.T) *battleFixture {
 		{Key: attacker.Header.Key(), Kind: domain.ObjectKindTroop, OwnerScene: 1, Version: 2, PlayerID: 1, Troop: attacker},
 		{Key: queued.Header.Key(), Kind: domain.ObjectKindTroop, OwnerScene: 1, Version: 1, PlayerID: 3, Troop: queued},
 	}
-	if err := scene.LoadState(objects, nil, 3); err != nil {
-		t.Fatalf("注入对象失败: %v", err)
-	}
+	err := scene.LoadState(objects, nil, 3)
+	require.NoError(t, err, fmt.Sprintf("注入对象失败: %v", err))
 
 	battle := &domain.BattleRecord{
 		BattleID:      "b1",
@@ -173,9 +172,8 @@ func (f *battleFixture) run(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	if err := f.scene.Start(ctx); err != nil {
-		t.Fatalf("启动场景失败: %v", err)
-	}
+	err := f.scene.Start(ctx)
+	require.NoError(t, err, fmt.Sprintf("启动场景失败: %v", err))
 	t.Cleanup(func() { _ = f.scene.Shutdown(context.Background()) })
 	t.Cleanup(func() { _ = f.pool.Shutdown(context.Background()) })
 }
@@ -225,9 +223,9 @@ func TestBattleTimeoutEventResolvesAndAdvancesQueue(t *testing.T) {
 	f.clock.Advance(10 * time.Second)
 	f.scene.Wakeup()
 	time.Sleep(20 * time.Millisecond)
-	if b, ok := battleOn(f.scene, testTargetID); !ok || b.BattleID != "b1" {
-		t.Fatalf("未到期就换了战斗: %+v", b)
-	}
+	b, ok := battleOn(f.scene, testTargetID)
+	require.True(t, ok, fmt.Sprintf("未到期就换了战斗: %+v", b))
+	require.EqualValues(t, "b1", b.BattleID)
 
 	// 推进到超时点：PENDING→TIMED_OUT，攻方回城，队首开战。
 	f.clock.Advance(21 * time.Second)
@@ -241,20 +239,17 @@ func TestBattleTimeoutEventResolvesAndAdvancesQueue(t *testing.T) {
 	require.NotNil(t, attacker, "攻方部队丢失")
 	require.EqualValues(t, domain.TroopPhaseReturning, attacker.Phase)
 	require.NotNil(t, attacker.Move, "超时后攻方必须生成回城路线（否则没有到达事件）")
-	if attacker.BattleID != "" || attacker.Busy.Reason != domain.BusyReasonNone {
-		t.Fatalf("超时后战斗锁未解除: battle_id=%q busy=%+v", attacker.BattleID, attacker.Busy)
-	}
+	require.EqualValues(t, "", attacker.BattleID, fmt.Sprintf("超时后战斗锁未解除: battle_id=%q busy=%+v", attacker.BattleID, attacker.Busy))
+	require.EqualValues(t, domain.BusyReasonNone, attacker.Busy.Reason)
 
 	queued := findTroop(t, f.scene, 3, testQueuedID)
 	require.NotNil(t, queued, "队列成员丢失")
 	next, _ := battleOn(f.scene, testTargetID)
-	if queued.Phase != domain.TroopPhaseFighting || queued.BattleID != next.BattleID {
-		t.Fatalf("队首未开战: phase=%v battle_id=%q, want FIGHTING %q", queued.Phase, queued.BattleID, next.BattleID)
-	}
+	require.EqualValues(t, domain.TroopPhaseFighting, queued.Phase, fmt.Sprintf("队首未开战: phase=%v battle_id=%q, want FIGHTING %q", queued.Phase, queued.BattleID, next.BattleID))
+	require.EqualValues(t, next.BattleID, queued.BattleID)
 	require.EqualValues(t, domain.BusyReasonBattle, queued.Busy.Reason)
-	if q := f.scene.Snapshot().QueuedOn(testTargetID); len(q) != 0 {
-		t.Fatalf("队首出队后队列应为空: %+v", q)
-	}
+	q := f.scene.Snapshot().QueuedOn(testTargetID)
+	require.Empty(t, q, fmt.Sprintf("队首出队后队列应为空: %+v", q))
 
 	// 超时裁决的事实在回执里：TIMED_OUT 且无 Resolver 结果。
 	rc, ok := f.store.Receipt(domain.CommandKey{
@@ -264,9 +259,8 @@ func TestBattleTimeoutEventResolvesAndAdvancesQueue(t *testing.T) {
 	})
 	require.True(t, ok, "超时命令必须落回执")
 	var payload map[string]any
-	if err := json.Unmarshal(rc.ResultJSON, &payload); err != nil {
-		t.Fatalf("回执解析失败: %v (%s)", err, rc.ResultJSON)
-	}
+	err := json.Unmarshal(rc.ResultJSON, &payload)
+	require.NoError(t, err, fmt.Sprintf("回执解析失败: %v (%s)", err, rc.ResultJSON))
 	require.EqualValues(t, "TIMED_OUT", payload["status"])
 	require.EqualValues(t, true, payload["timed_out"])
 }
@@ -287,20 +281,17 @@ func TestBattleResultCommandAdvancesQueue(t *testing.T) {
 	require.NoError(t, err, "提交裁决失败")
 
 	attacker := findTroop(t, f.scene, 1, testAttackerID)
-	if attacker == nil || attacker.Phase != domain.TroopPhaseReturning {
-		t.Fatalf("败方攻方应回城: %+v", attacker)
-	}
+	require.NotNil(t, attacker, fmt.Sprintf("败方攻方应回城: %+v", attacker))
+	require.EqualValues(t, domain.TroopPhaseReturning, attacker.Phase)
 	queued := findTroop(t, f.scene, 3, testQueuedID)
-	if queued == nil || queued.Phase != domain.TroopPhaseFighting {
-		t.Fatalf("队首应立即开战: %+v", queued)
-	}
+	require.NotNil(t, queued, fmt.Sprintf("队首应立即开战: %+v", queued))
+	require.EqualValues(t, domain.TroopPhaseFighting, queued.Phase)
 	next, ok := battleOn(f.scene, testTargetID)
-	if !ok || next.BattleID == "b1" || next.AttackerID != testQueuedID {
-		t.Fatalf("目标上应是新战斗: %+v", next)
-	}
-	if q := f.scene.Snapshot().QueuedOn(testTargetID); len(q) != 0 {
-		t.Fatalf("队列应已清空: %+v", q)
-	}
+	require.True(t, ok, fmt.Sprintf("目标上应是新战斗: %+v", next))
+	require.NotEqualValues(t, "b1", next.BattleID)
+	require.EqualValues(t, testQueuedID, next.AttackerID)
+	q := f.scene.Snapshot().QueuedOn(testTargetID)
+	require.Empty(t, q, fmt.Sprintf("队列应已清空: %+v", q))
 
 	// 同一请求重放（客户端超时重试）：命中 map_command 回执，
 	// 不得再次推进队列或推进部队版本。
@@ -314,9 +305,9 @@ func TestBattleResultCommandAdvancesQueue(t *testing.T) {
 	}
 	after, _ := battleOn(f.scene, testTargetID)
 	require.EqualValues(t, beforeBattle, after.BattleID)
-	if got := findTroop(t, f.scene, 3, testQueuedID); got == nil || got.Header.Version != beforeVersion {
-		t.Fatalf("重复结果推进了队首版本: %+v", got)
-	}
+	got := findTroop(t, f.scene, 3, testQueuedID)
+	require.NotNil(t, got, fmt.Sprintf("重复结果推进了队首版本: %+v", got))
+	require.EqualValues(t, beforeVersion, got.Header.Version)
 }
 
 // TestApplyQueueChangesKeepsFIFO 直接验证内存队列的排序与去重：
@@ -333,28 +324,28 @@ func TestApplyQueueChangesKeepsFIFO(t *testing.T) {
 			{TargetID: 1000, TroopID: 20, Seq: 200},
 		},
 	})
-	if !scene.queueExplicit {
-		t.Fatal("出现显式队列变更后必须置 queueExplicit")
-	}
-	if got := scene.queues[1000]; len(got) != 3 || got[0].TroopID != 10 || got[1].TroopID != 20 || got[2].TroopID != 30 {
-		t.Fatalf("队列未按 Seq 排序: %+v", got)
-	}
+	require.False(t, !scene.queueExplicit, "出现显式队列变更后必须置 queueExplicit")
+	got := scene.queues[1000]
+	require.Len(t, got, 3, fmt.Sprintf("队列未按 Seq 排序: %+v", got))
+	require.EqualValues(t, 10, got[0].TroopID)
+	require.EqualValues(t, 20, got[1].TroopID)
+	require.EqualValues(t, 30, got[2].TroopID)
 
 	// 重复入队：UNIQUE(world,target,troop) 的内存预检，直接忽略。
 	scene.applyPlan(&domain.MutationPlan{
 		QueueEnqueue: []domain.QueueEntry{{TargetID: 1000, TroopID: 20, Seq: 999}},
 	})
-	if got := scene.queues[1000]; len(got) != 3 {
-		t.Fatalf("重复入队应被忽略: %+v", got)
-	}
+	got = scene.queues[1000]
+	require.Len(t, got, 3, fmt.Sprintf("重复入队应被忽略: %+v", got))
 
 	// 出队中间成员：其余顺序不变。
 	scene.applyPlan(&domain.MutationPlan{
 		QueueDequeue: []domain.QueueEntry{{TargetID: 1000, TroopID: 20}},
 	})
-	if got := scene.queues[1000]; len(got) != 2 || got[0].TroopID != 10 || got[1].TroopID != 30 {
-		t.Fatalf("出队后顺序错误: %+v", got)
-	}
+	got = scene.queues[1000]
+	require.Len(t, got, 2, fmt.Sprintf("出队后顺序错误: %+v", got))
+	require.EqualValues(t, 10, got[0].TroopID)
+	require.EqualValues(t, 30, got[1].TroopID)
 
 	// 全部出队后删除空队列，避免快照里出现空切片。
 	scene.applyPlan(&domain.MutationPlan{
@@ -363,9 +354,8 @@ func TestApplyQueueChangesKeepsFIFO(t *testing.T) {
 			{TargetID: 1000, TroopID: 30},
 		},
 	})
-	if _, ok := scene.queues[1000]; ok {
-		t.Fatalf("空队列应被删除: %+v", scene.queues[1000])
-	}
+	_, ok := scene.queues[1000]
+	require.False(t, ok, fmt.Sprintf("空队列应被删除: %+v", scene.queues[1000]))
 }
 
 // TestRebuildQueuesLegacyMarkers 验证 M1 历史数据（战斗记录 + 标记）
@@ -389,10 +379,9 @@ func TestRebuildQueuesLegacyMarkers(t *testing.T) {
 		Status: domain.BattleStatusPending, DeadlineMS: 50,
 	}
 	scene.applyPlan(&domain.MutationPlan{})
-	if got := scene.queues[1000]; len(got) != 1 || got[0].TroopID != 20 {
-		t.Fatalf("旧格式队列重建失败: %+v", got)
-	}
-	if got := scene.queues[1002]; len(got) != 0 {
-		t.Fatalf("无标记的队首不应进队列: %+v", got)
-	}
+	got := scene.queues[1000]
+	require.Len(t, got, 1, fmt.Sprintf("旧格式队列重建失败: %+v", got))
+	require.EqualValues(t, 20, got[0].TroopID)
+	got = scene.queues[1002]
+	require.Empty(t, got, fmt.Sprintf("无标记的队首不应进队列: %+v", got))
 }

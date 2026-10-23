@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -98,19 +99,16 @@ func TestSceneAppliesCommittedPlan(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := scene.Start(ctx); err != nil {
-		t.Fatalf("启动场景失败: %v", err)
-	}
+	err := scene.Start(ctx)
+	require.NoError(t, err, fmt.Sprintf("启动场景失败: %v", err))
 	defer func() { _ = scene.Shutdown(context.Background()) }()
 
-	if err := scene.SubmitSync(envOf("r1"), application.Command{Kind: application.CmdMarchStart}); err != nil {
-		t.Fatalf("提交失败: %v", err)
-	}
+	err = scene.SubmitSync(envOf("r1"), application.Command{Kind: application.CmdMarchStart})
+	require.NoError(t, err, fmt.Sprintf("提交失败: %v", err))
 	troops := scene.QueryTroops(1001)
 	require.Len(t, troops, 1)
-	if got := scene.Snapshot().Revision(); got != 1 {
-		t.Fatalf("revision 应推进到 1，实际 %d", got)
-	}
+	got := scene.Snapshot().Revision()
+	require.EqualValues(t, 1, got, fmt.Sprintf("revision 应推进到 1，实际 %d", got))
 	require.EqualValues(t, 1, store.Commits())
 }
 
@@ -125,27 +123,19 @@ func TestSceneFreezesOnUnknownCommit(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := scene.Start(ctx); err != nil {
-		t.Fatalf("启动失败: %v", err)
-	}
+	err := scene.Start(ctx)
+	require.NoError(t, err, fmt.Sprintf("启动失败: %v", err))
 	defer func() { _ = scene.Shutdown(context.Background()) }()
 
-	err := scene.SubmitSync(envOf("r1"), application.Command{Kind: application.CmdMarchStart})
-	if !errors.Is(err, ErrPendingUnknown) {
-		t.Fatalf("应返回 ErrPendingUnknown，实际 %v", err)
-	}
-	if !scene.Frozen() {
-		t.Fatal("结果未知后场景应冻结")
-	}
+	err = scene.SubmitSync(envOf("r1"), application.Command{Kind: application.CmdMarchStart})
+	require.False(t, !errors.Is(err, ErrPendingUnknown), fmt.Sprintf("应返回 ErrPendingUnknown，实际 %v", err))
+	require.False(t, !scene.Frozen(), "结果未知后场景应冻结")
 	// 冻结后新写被拒。
 	err = scene.SubmitSync(envOf("r2"), application.Command{Kind: application.CmdMarchStart})
-	if !errors.Is(err, ErrPendingUnknown) {
-		t.Fatalf("冻结后应拒绝新写，实际 %v", err)
-	}
+	require.False(t, !errors.Is(err, ErrPendingUnknown), fmt.Sprintf("冻结后应拒绝新写，实际 %v", err))
 	// 查询仍可用。
-	if got := len(scene.QueryTroops(1001)); got != 0 {
-		t.Fatalf("冻结期间查询应可用（0 支部队），实际 %d", got)
-	}
+	got := len(scene.QueryTroops(1001))
+	require.EqualValues(t, 0, got, fmt.Sprintf("冻结期间查询应可用（0 支部队），实际 %d", got))
 }
 
 // TestScenePlannerRejectionStillWritesReceipt 验证「业务失败也落回执」。
@@ -157,19 +147,16 @@ func TestScenePlannerRejectionStillWritesReceipt(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := scene.Start(ctx); err != nil {
-		t.Fatalf("启动失败: %v", err)
-	}
+	err := scene.Start(ctx)
+	require.NoError(t, err, fmt.Sprintf("启动失败: %v", err))
 	defer func() { _ = scene.Shutdown(context.Background()) }()
 
 	// 规划拒绝时 SubmitSync 返回 nil（命令已被处理，业务码在回执里），
 	// 因为错误已经持久化为回执——重复请求会读到同一个失败。
-	if err := scene.SubmitSync(envOf("r1"), application.Command{Kind: application.CmdMarchStart}); err != nil {
-		t.Fatalf("规划拒绝应落回执而不是返回错误: %v", err)
-	}
-	if _, ok := store.Receipt(envOf("r1").Envelope()); !ok {
-		t.Fatal("规划拒绝也必须写回执")
-	}
+	err = scene.SubmitSync(envOf("r1"), application.Command{Kind: application.CmdMarchStart})
+	require.NoError(t, err, fmt.Sprintf("规划拒绝应落回执而不是返回错误: %v", err))
+	_, ok := store.Receipt(envOf("r1").Envelope())
+	require.True(t, ok, "规划拒绝也必须写回执")
 }
 
 // TestScenePanicTriggersFailStop 验证 panic → onPanic 回调 → 循环退出。
@@ -183,9 +170,8 @@ func TestScenePanicTriggersFailStop(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := scene.Start(ctx); err != nil {
-		t.Fatalf("启动失败: %v", err)
-	}
+	err := scene.Start(ctx)
+	require.NoError(t, err, fmt.Sprintf("启动失败: %v", err))
 
 	_ = scene.Submit(envOf("r1"), application.Command{Kind: application.CmdMarchStart})
 	select {
@@ -245,12 +231,10 @@ func TestTxPoolReservation(t *testing.T) {
 
 	tok1, err := pool.TryReserveCompletion()
 	require.NoError(t, err, "首个名额应成功")
-	if _, err := pool.TryReserveCompletion(); err != nil {
-		t.Fatalf("第二个名额应成功: %v", err)
-	}
-	if _, err := pool.TryReserveCompletion(); !errors.Is(err, ErrOverloaded) {
-		t.Fatalf("名额耗尽应返回 ErrOverloaded，实际 %v", err)
-	}
+	_, err = pool.TryReserveCompletion()
+	require.NoError(t, err, fmt.Sprintf("第二个名额应成功: %v", err))
+	_, err = pool.TryReserveCompletion()
+	require.False(t, !errors.Is(err, ErrOverloaded), fmt.Sprintf("名额耗尽应返回 ErrOverloaded，实际 %v", err))
 
 	var got atomic.Int64
 	done := make(chan struct{})
@@ -285,13 +269,11 @@ func TestMemoryCommitterIdempotency(t *testing.T) {
 		},
 		AffectedSceneRevisions: []domain.SceneRevision{{SceneID: 1, Revision: 0}},
 	}
-	if r := store.Commit(context.Background(), plan); !r.Committed {
-		t.Fatalf("首次提交应成功: %v", r.Err)
-	}
+	r := store.Commit(context.Background(), plan)
+	require.False(t, !r.Committed, fmt.Sprintf("首次提交应成功: %v", r.Err))
 	// 同键同参：幂等成功，不重复应用。
-	if r := store.Commit(context.Background(), plan); !r.Committed {
-		t.Fatalf("重放应幂等成功: %v", r.Err)
-	}
+	r = store.Commit(context.Background(), plan)
+	require.False(t, !r.Committed, fmt.Sprintf("重放应幂等成功: %v", r.Err))
 	require.EqualValues(t, 1, store.Commits())
 	// 同键不同参：冲突。
 	other := *plan
@@ -299,17 +281,15 @@ func TestMemoryCommitterIdempotency(t *testing.T) {
 	other.CommandReceipt = &domain.CommandReceipt{
 		CommandID: "c2", Key: env.Envelope(), PayloadHash: other.PayloadHash,
 	}
-	if r := store.Commit(context.Background(), &other); !errors.Is(r.Err, domain.ErrIdempotencyConflict) {
-		t.Fatalf("同键不同参应冲突，实际 %v", r.Err)
-	}
+	r = store.Commit(context.Background(), &other)
+	require.False(t, !errors.Is(r.Err, domain.ErrIdempotencyConflict), fmt.Sprintf("同键不同参应冲突，实际 %v", r.Err))
 }
 
 // TestMailboxCloseSemantics 验证关闭后拒收、Recv 返回 false、Close 幂等。
 func TestMailboxCloseSemantics(t *testing.T) {
 	box := NewMailbox[int](2)
-	if err := box.TrySend(1); err != nil {
-		t.Fatalf("发送失败: %v", err)
-	}
+	err := box.TrySend(1)
+	require.NoError(t, err, fmt.Sprintf("发送失败: %v", err))
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -318,14 +298,12 @@ func TestMailboxCloseSemantics(t *testing.T) {
 		box.Close() // 幂等，不应 panic
 	}()
 	wg.Wait()
-	if err := box.TrySend(2); !errors.Is(err, ErrMailboxClosed) {
-		t.Fatalf("关闭后发送应返回 ErrMailboxClosed，实际 %v", err)
-	}
+	err = box.TrySend(2)
+	require.False(t, !errors.Is(err, ErrMailboxClosed), fmt.Sprintf("关闭后发送应返回 ErrMailboxClosed，实际 %v", err))
 	// 已入队的仍可取出，取空后返回 false。
-	if v, ok := box.Recv(); !ok || v != 1 {
-		t.Fatalf("应取出已入队的 1，实际 %v %v", v, ok)
-	}
-	if _, ok := box.Recv(); ok {
-		t.Fatal("取空后应返回 false")
-	}
+	v, ok := box.Recv()
+	require.True(t, ok, fmt.Sprintf("应取出已入队的 1，实际 %v %v", v, ok))
+	require.EqualValues(t, 1, v)
+	_, ok = box.Recv()
+	require.False(t, ok, "取空后应返回 false")
 }

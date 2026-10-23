@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/grid"
 	"github.com/stretchr/testify/require"
@@ -336,12 +337,10 @@ func TestEnterPlayerUpdatesIndexAndUsers(t *testing.T) {
 	require.EqualValues(t, pos, s.pos)
 	require.EqualValues(t, cellCenter(geo, pos), s.pixel)
 	require.EqualValues(t, 0, s.closeTime)
-	if got := env.gp.enters.Load(); got != 1 {
-		t.Fatalf("PlayerEnter 调用 %d 次, 期望 1", got)
-	}
-	if enters, _, _, _ := env.aoi.counts(); enters != 1 {
-		t.Fatalf("AOI Enter 调用 %d 次, 期望 1", enters)
-	}
+	got := env.gp.enters.Load()
+	require.EqualValues(t, 1, got, fmt.Sprintf("PlayerEnter 调用 %d 次, 期望 1", got))
+	enters, _, _, _ := env.aoi.counts()
+	require.EqualValues(t, 1, enters, fmt.Sprintf("AOI Enter 调用 %d 次, 期望 1", enters))
 
 	// 重复进图必须被拒。
 	_, err := env.call(t, CommandEnterPlayer{UUID: 1001, GridPos: pos})
@@ -362,16 +361,14 @@ func TestPlayerLeaveOfflineSetsGrace(t *testing.T) {
 	require.EqualValues(t, 0, s.users)
 	want := env.clock.Now() + cfg.OfflineGrace.Milliseconds()
 	require.EqualValues(t, want, s.closeTime)
-	if got := env.gp.leaves.Load(); got != 1 {
-		t.Fatalf("PlayerLeave 调用 %d 次", got)
-	}
+	got := env.gp.leaves.Load()
+	require.EqualValues(t, 1, got, fmt.Sprintf("PlayerLeave 调用 %d 次", got))
 
 	// grace 未到：不应该关图。
 	env.clock.Advance(9 * time.Second)
 	time.Sleep(40 * time.Millisecond) // 跑若干拍 loop
-	if n := env.closed.count(); n != 0 {
-		t.Fatalf("grace 未到就关图了, OnClose=%d", n)
-	}
+	n := env.closed.count()
+	require.EqualValues(t, 0, n, fmt.Sprintf("grace 未到就关图了, OnClose=%d", n))
 
 	// 过了 grace：关图一次，且幂等。
 	env.clock.Advance(2 * time.Second)
@@ -379,9 +376,8 @@ func TestPlayerLeaveOfflineSetsGrace(t *testing.T) {
 		t.Fatalf("grace 到期未触发 OnClose")
 	}
 	time.Sleep(50 * time.Millisecond)
-	if n := env.closed.count(); n != 1 {
-		t.Fatalf("OnClose 被调用 %d 次, 期望 1（幂等）", n)
-	}
+	n = env.closed.count()
+	require.EqualValues(t, 1, n, fmt.Sprintf("OnClose 被调用 %d 次, 期望 1（幂等）", n))
 }
 
 func TestQuitLeaveBranches(t *testing.T) {
@@ -407,9 +403,8 @@ func TestQuitLeaveBranches(t *testing.T) {
 		want := env.clock.Now() + cfg.EnterProtect.Milliseconds()
 		require.EqualValues(t, want, s.closeTime)
 		time.Sleep(30 * time.Millisecond)
-		if n := env.closed.count(); n != 0 {
-			t.Fatalf("enter_time 未到就关图了")
-		}
+		n := env.closed.count()
+		require.EqualValues(t, 0, n, "enter_time 未到就关图了")
 	})
 }
 
@@ -434,9 +429,8 @@ func TestEmptyMapEnterProtectClosesOnce(t *testing.T) {
 		t.Fatalf("空房 EnterProtect 到期未关图")
 	}
 	time.Sleep(80 * time.Millisecond)
-	if n := watch.count(); n != 1 {
-		t.Fatalf("OnClose 被调用 %d 次, 期望 1", n)
-	}
+	n := watch.count()
+	require.EqualValues(t, 1, n, fmt.Sprintf("OnClose 被调用 %d 次, 期望 1", n))
 }
 
 func TestCanCheckStopMapFalseKeepsRoom(t *testing.T) {
@@ -454,9 +448,8 @@ func TestCanCheckStopMapFalseKeepsRoom(t *testing.T) {
 	s := env.snapshot(t, 4001)
 	require.EqualValues(t, 0, s.closeTime)
 	time.Sleep(60 * time.Millisecond)
-	if n := env.closed.count(); n != 0 {
-		t.Fatalf("不该关图, OnClose=%d", n)
-	}
+	n := env.closed.count()
+	require.EqualValues(t, 0, n, fmt.Sprintf("不该关图, OnClose=%d", n))
 }
 
 func TestCloseCommandIsIdempotent(t *testing.T) {
@@ -468,12 +461,10 @@ func TestCloseCommandIsIdempotent(t *testing.T) {
 	if !waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }) {
 		t.Fatalf("OnClose 次数 = %d, 期望 1", env.closed.count())
 	}
-	if got := env.gp.terminates.Load(); got != 1 {
-		t.Fatalf("OnTerminate 调用 %d 次, 期望 1", got)
-	}
-	if r := env.closed.lastReason(); r != "gm" {
-		t.Fatalf("关图原因 = %q, 期望 gm", r)
-	}
+	got := env.gp.terminates.Load()
+	require.EqualValues(t, 1, got, fmt.Sprintf("OnTerminate 调用 %d 次, 期望 1", got))
+	r := env.closed.lastReason()
+	require.EqualValues(t, "gm", r, fmt.Sprintf("关图原因 = %q, 期望 gm", r))
 }
 
 // ============================================================================
@@ -498,9 +489,8 @@ func TestSyncSameCellDoesNotTriggerEntitySync(t *testing.T) {
 	if mr.Moved {
 		t.Fatalf("同格微调不应报告 Moved")
 	}
-	if got := len(env.gp.syncEvents()); got != 0 {
-		t.Fatalf("同格微调触发了 %d 次 EntitySync", got)
-	}
+	got := len(env.gp.syncEvents())
+	require.EqualValues(t, 0, got, fmt.Sprintf("同格微调触发了 %d 次 EntitySync", got))
 
 	after := env.snapshot(t, 5001)
 	require.EqualValues(t, start, after.pos)
@@ -510,9 +500,8 @@ func TestSyncSameCellDoesNotTriggerEntitySync(t *testing.T) {
 	if after.revision <= before.revision {
 		t.Fatalf("同格微调也必须 Touch（像素/朝向变了），revision %d → %d", before.revision, after.revision)
 	}
-	if _, syncs, _, _ := env.aoi.counts(); syncs != 1 {
-		t.Fatalf("AOI Sync 次数 = %d, 期望 1（同格也要同步像素）", syncs)
-	}
+	_, syncs, _, _ := env.aoi.counts()
+	require.EqualValues(t, 1, syncs, fmt.Sprintf("AOI Sync 次数 = %d, 期望 1（同格也要同步像素）", syncs))
 }
 
 func TestSyncCrossCellTriggersEntitySync(t *testing.T) {
@@ -533,9 +522,8 @@ func TestSyncCrossCellTriggersEntitySync(t *testing.T) {
 	if events[0].uuid != 5002 || events[0].oldPos != start || events[0].newPos != next {
 		t.Fatalf("EntitySync 参数 = %+v", events[0])
 	}
-	if s := env.snapshot(t, 5002); s.pos != next {
-		t.Fatalf("索引位置 = %s, 期望 %s", s.pos, next)
-	}
+	s := env.snapshot(t, 5002)
+	require.EqualValues(t, next, s.pos, fmt.Sprintf("索引位置 = %s, 期望 %s", s.pos, next))
 }
 
 func TestSyncRejectsIllegalMoves(t *testing.T) {
@@ -624,12 +612,10 @@ func TestPlayersMayOverlapMonstersMayNot(t *testing.T) {
 	if er.GridPos == pos {
 		t.Fatalf("怪物与玩家重叠了: %s", er.GridPos)
 	}
-	if d := grid.Chebyshev(er.GridPos, pos); d != 1 {
-		t.Fatalf("怪物落点距玩家 %d 格, 期望 1（就近找空位）", d)
-	}
-	if s := env.snapshot(t, 9101); s.pos != er.GridPos {
-		t.Fatalf("Index 与 NPES 位置不一致: %s vs %s", s.pos, er.GridPos)
-	}
+	d := grid.Chebyshev(er.GridPos, pos)
+	require.EqualValues(t, 1, d, fmt.Sprintf("怪物落点距玩家 %d 格, 期望 1（就近找空位）", d))
+	s = env.snapshot(t, 9101)
+	require.EqualValues(t, er.GridPos, s.pos, fmt.Sprintf("Index 与 NPES 位置不一致: %s vs %s", s.pos, er.GridPos))
 
 	// 玩家也不能走进怪物格（移动路径上拦住）。
 	geo := grid.DefaultGeometry()
@@ -644,14 +630,12 @@ func TestMonsterFootprintBlocksNeighbors(t *testing.T) {
 	ix := NewIndex(size)
 	center := scenemap.GridPos{X: 8, Y: 8}
 
-	if _, err := ix.Enter(1, center, EnterOption{Kind: scenemap.EntityKindNPE, Radius: 1}); err != nil {
-		t.Fatalf("Enter: %v", err)
-	}
+	_, err := ix.Enter(1, center, EnterOption{Kind: scenemap.EntityKindNPE, Radius: 1})
+	require.NoError(t, err, fmt.Sprintf("Enter: %v", err))
 	for y := int32(7); y <= 9; y++ {
 		for x := int32(7); x <= 9; x++ {
-			if n := ix.BlockCount(scenemap.GridPos{X: x, Y: y}); n != 1 {
-				t.Fatalf("(%d,%d) blockCount = %d, 期望 1", x, y, n)
-			}
+			n := ix.BlockCount(scenemap.GridPos{X: x, Y: y})
+			require.EqualValues(t, 1, n, fmt.Sprintf("(%d,%d) blockCount = %d, 期望 1", x, y, n))
 		}
 	}
 	if !ix.BlockedFor(2, scenemap.GridPos{X: 7, Y: 7}) {
@@ -665,9 +649,8 @@ func TestMonsterFootprintBlocksNeighbors(t *testing.T) {
 	ix.Leave(1)
 	for y := int32(7); y <= 9; y++ {
 		for x := int32(7); x <= 9; x++ {
-			if n := ix.BlockCount(scenemap.GridPos{X: x, Y: y}); n != 0 {
-				t.Fatalf("离开后 (%d,%d) blockCount = %d, 期望 0", x, y, n)
-			}
+			n := ix.BlockCount(scenemap.GridPos{X: x, Y: y})
+			require.EqualValues(t, 0, n, fmt.Sprintf("离开后 (%d,%d) blockCount = %d, 期望 0", x, y, n))
 		}
 	}
 	require.EqualValues(t, 0, ix.Len())
@@ -676,21 +659,18 @@ func TestMonsterFootprintBlocksNeighbors(t *testing.T) {
 func TestIndexSameCellMoveDoesNotMigrate(t *testing.T) {
 	ix := NewIndex(grid.Size{Width: 8, Height: 8})
 	p := scenemap.GridPos{X: 2, Y: 2}
-	if _, err := ix.Enter(42, p, EnterOption{Kind: scenemap.EntityKindPlayer}); err != nil {
-		t.Fatalf("Enter: %v", err)
-	}
+	_, err := ix.Enter(42, p, EnterOption{Kind: scenemap.EntityKindPlayer})
+	require.NoError(t, err, fmt.Sprintf("Enter: %v", err))
 
 	moved, err := ix.Move(42, p)
 	require.NoError(t, err, "Move")
 	if moved {
 		t.Fatalf("同格 Move 不应报告迁移")
 	}
-	if got := ix.PlayersAt(p); got != 1 {
-		t.Fatalf("PlayersAt = %d, 期望 1（不能因为同格移动被重复计数）", got)
-	}
-	if got := ix.BlockCount(p); got != 1 {
-		t.Fatalf("BlockCount = %d, 期望 1", got)
-	}
+	got := ix.PlayersAt(p)
+	require.EqualValues(t, 1, got, fmt.Sprintf("PlayersAt = %d, 期望 1（不能因为同格移动被重复计数）", got))
+	got = ix.BlockCount(p)
+	require.EqualValues(t, 1, got, fmt.Sprintf("BlockCount = %d, 期望 1", got))
 
 	moved, err = ix.Move(42, scenemap.GridPos{X: 3, Y: 2})
 	if err != nil || !moved {
@@ -723,9 +703,8 @@ func TestLenientNoEffectOnlyLogs(t *testing.T) {
 	cfg := baseConfig()
 	cfg.LenientNoEffect = true
 	env := newEnv(t, cfg, nil)
-	if _, err := env.call(t, NewFunc("noop", func(*State) (any, error) { return nil, nil })); err != nil {
-		t.Fatalf("宽松模式下不应报错: %v", err)
-	}
+	_, err := env.call(t, NewFunc("noop", func(*State) (any, error) { return nil, nil }))
+	require.NoError(t, err, fmt.Sprintf("宽松模式下不应报错: %v", err))
 }
 
 // ============================================================================
@@ -781,12 +760,10 @@ func TestSetSpeedRearmsWithoutStopping(t *testing.T) {
 	if base == 0 {
 		t.Fatalf("定时器没有跑起来")
 	}
-	if err := env.m.SetSpeed(3000); err != nil {
-		t.Fatalf("SetSpeed: %v", err)
-	}
-	if got := env.m.Speed(); got != 3000 {
-		t.Fatalf("Speed = %d", got)
-	}
+	err := env.m.SetSpeed(3000)
+	require.NoError(t, err, fmt.Sprintf("SetSpeed: %v", err))
+	got := env.m.Speed()
+	require.EqualValues(t, 3000, got, fmt.Sprintf("Speed = %d", got))
 	time.Sleep(60 * time.Millisecond)
 	if env.gp.loops.Load() <= base {
 		t.Fatalf("提速后 loop 没有继续推进")
@@ -863,21 +840,18 @@ func TestStopBeforeStartAndPostAfterStop(t *testing.T) {
 	m := New(baseConfig(), Deps{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := m.Stop(ctx); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if err := m.Post(CommandTick{}); !errors.Is(err, scenemap.ErrClosed) {
-		t.Fatalf("Post after stop = %v, 期望 ErrClosed", err)
-	}
+	err := m.Stop(ctx)
+	require.NoError(t, err, fmt.Sprintf("Stop: %v", err))
+	err = m.Post(CommandTick{})
+	require.False(t, !errors.Is(err, scenemap.ErrClosed), fmt.Sprintf("Post after stop = %v, 期望 ErrClosed", err))
 }
 
 func TestBcastAndTickCommands(t *testing.T) {
 	env := newEnv(t, baseConfig(), nil)
 	env.mustCall(t, CommandBcast{Msg: "hello", Scope: BroadcastAround(scenemap.GridPos{X: 1, Y: 1}, 5)})
 
-	if _, _, _, n := env.aoi.counts(); n != 1 {
-		t.Fatalf("Broadcast 次数 = %d, 期望 1", n)
-	}
+	_, _, _, n := env.aoi.counts()
+	require.EqualValues(t, 1, n, fmt.Sprintf("Broadcast 次数 = %d, 期望 1", n))
 	env.aoi.mu.Lock()
 	scope := env.aoi.lastScope
 	env.aoi.mu.Unlock()
@@ -886,9 +860,8 @@ func TestBcastAndTickCommands(t *testing.T) {
 	}
 
 	// Tick 允许无效果。
-	if _, err := env.call(t, CommandTick{}); err != nil {
-		t.Fatalf("CommandTick 失败: %v", err)
-	}
+	_, err := env.call(t, CommandTick{})
+	require.NoError(t, err, fmt.Sprintf("CommandTick 失败: %v", err))
 }
 
 func TestPetsFollowMaster(t *testing.T) {
@@ -901,12 +874,11 @@ func TestPetsFollowMaster(t *testing.T) {
 		MasterUUID: master,
 		GridPos:    scenemap.GridPos{X: 6, Y: 6},
 	})
-	if s := env.snapshot(t, 8002); s.pets != 1 {
-		t.Fatalf("宠物未登记")
-	}
+	s := env.snapshot(t, 8002)
+	require.EqualValues(t, 1, s.pets, "宠物未登记")
 	// 主人离开 → 宠物一起走，且不阻塞关图。
 	env.mustCall(t, CommandLeave{UUID: master, Reason: scenemap.LeaveReasonQuit})
-	s := env.snapshot(t, 8002)
+	s = env.snapshot(t, 8002)
 	require.EqualValues(t, 0, s.pets)
 	require.EqualValues(t, 0, s.users)
 }

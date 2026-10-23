@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"game_study/pkg/log"
@@ -21,9 +22,8 @@ func TestRelayKey(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := relayKey(c.p); got != c.want {
-				t.Fatalf("relayKey = %q, want %q", got, c.want)
-			}
+			got := relayKey(c.p)
+			require.EqualValues(t, c.want, got, fmt.Sprintf("relayKey = %q, want %q", got, c.want))
 		})
 	}
 }
@@ -41,9 +41,8 @@ func TestNewBridgeDisabled(t *testing.T) {
 	logger := log.New("test")
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if b := NewBridge(c.cfg, func(Payload) int { return 0 }, logger); b != nil {
-				t.Fatalf("expect nil bridge, got %+v", b)
-			}
+			b := NewBridge(c.cfg, func(Payload) int { return 0 }, logger)
+			require.Nil(t, b, fmt.Sprintf("expect nil bridge, got %+v", b))
 		})
 	}
 }
@@ -55,15 +54,11 @@ func TestNewBridgeDisabled(t *testing.T) {
 func TestBridgeNilSafe(t *testing.T) {
 	var b *Bridge
 
-	if b.Enabled() {
-		t.Fatal("nil bridge should report disabled")
-	}
-	if err := b.Forward(context.Background(), Payload{ToNode: "x"}); err == nil {
-		t.Fatal("nil bridge Forward should return error")
-	}
-	if err := b.Run(context.Background()); err != nil {
-		t.Fatalf("nil bridge Run should be no-op, got %v", err)
-	}
+	require.False(t, b.Enabled(), "nil bridge should report disabled")
+	err := b.Forward(context.Background(), Payload{ToNode: "x"})
+	require.Error(t, err, "nil bridge Forward should return error")
+	err = b.Run(context.Background())
+	require.NoError(t, err, fmt.Sprintf("nil bridge Run should be no-op, got %v", err))
 	b.Close() // 不应 panic
 
 	fwd, recv, deliv, skip := b.Stats()
@@ -80,9 +75,8 @@ func TestBridgeConfigDefaults(t *testing.T) {
 	defer b.Close()
 
 	require.EqualValues(t, "center.relay", b.cfg.Topic)
-	if got := b.cfg.Topic + "." + b.cfg.InstanceID; got != "center.relay.center-01@pod-a" {
-		t.Fatalf("consumer group = %q", got)
-	}
+	got := b.cfg.Topic + "." + b.cfg.InstanceID
+	require.EqualValues(t, "center.relay.center-01@pod-a", got, fmt.Sprintf("consumer group = %q", got))
 }
 
 // TestBridgeStatsAccumulate 统计只增不减（便于确认转发/消费计数对得上）。
@@ -94,7 +88,8 @@ func TestBridgeStatsAccumulate(t *testing.T) {
 	b.skipped.Add(4)
 
 	fwd, recv, deliv, skip := b.Stats()
-	if fwd != 3 || recv != 5 || deliv != 2 || skip != 4 {
-		t.Fatalf("stats = %d/%d/%d/%d", fwd, recv, deliv, skip)
-	}
+	require.EqualValues(t, 3, fwd, fmt.Sprintf("stats = %d/%d/%d/%d", fwd, recv, deliv, skip))
+	require.EqualValues(t, 5, recv)
+	require.EqualValues(t, 2, deliv)
+	require.EqualValues(t, 4, skip)
 }

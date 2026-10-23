@@ -111,14 +111,12 @@ func TestSendRoutesRemoteWhenNodeDiffers(t *testing.T) {
 
 	target := &PID{ID: "player:123", Shard: 7, Node: "game-02"}
 	msg := &remoteTestMsg{Text: "hello"}
-	if err := sys.Send(target, msg); err != nil {
-		t.Fatal(err)
-	}
+	err := sys.Send(target, msg)
+	require.NoError(t, err)
 	call, ok := rs.last()
 	require.True(t, ok, "remote sender not called")
-	if call.to.Node != "game-02" || call.to.ID != "player:123" {
-		t.Fatalf("wrong target: %+v", call.to)
-	}
+	require.EqualValues(t, "game-02", call.to.Node, fmt.Sprintf("wrong target: %+v", call.to))
+	require.EqualValues(t, "player:123", call.to.ID)
 	require.EqualValues(t, msg, call.msg, "message not passed through")
 }
 
@@ -131,24 +129,19 @@ func TestSendStaysLocalForOwnNodeOrEmptyNode(t *testing.T) {
 	defer sys.Stop()
 
 	rec := newRecordActor()
-	if _, err := sys.Spawn("player:1", rec); err != nil {
-		t.Fatal(err)
-	}
+	_, err := sys.Spawn("player:1", rec)
+	require.NoError(t, err)
 	// Node 为空：本地 PID
-	if err := sys.Send(&PID{ID: "player:1"}, &remoteTestMsg{Text: "a"}); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(&PID{ID: "player:1"}, &remoteTestMsg{Text: "a"})
+	require.NoError(t, err)
 	// Node = 本节点：远端视图也按本地投递
-	if err := sys.Send(&PID{ID: "player:1", Node: "game-01"}, &remoteTestMsg{Text: "b"}); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(&PID{ID: "player:1", Node: "game-01"}, &remoteTestMsg{Text: "b"})
+	require.NoError(t, err)
 	rec.waitFor(t, 2)
-	if _, ok := rs.last(); ok {
-		t.Fatal("local sends must not hit remote sender")
-	}
-	if got := rec.messages(); len(got) != 2 {
-		t.Fatalf("local actor got %d messages", len(got))
-	}
+	_, ok := rs.last()
+	require.False(t, ok, "local sends must not hit remote sender")
+	got := rec.messages()
+	require.Len(t, got, 2, fmt.Sprintf("local actor got %d messages", len(got)))
 }
 
 // TestSingleNodeModeStillWorks 验证单机模式（无 NodeID/Remote）行为不变。
@@ -158,17 +151,14 @@ func TestSingleNodeModeStillWorks(t *testing.T) {
 	defer sys.Stop()
 
 	rec := newRecordActor()
-	if _, err := sys.Spawn("player:1", rec); err != nil {
-		t.Fatal(err)
-	}
+	_, err := sys.Spawn("player:1", rec)
+	require.NoError(t, err)
 	// 远程 PID 在单机模式下按本地找：存在就投递，不存在报错
-	if err := sys.Send(&PID{ID: "player:1", Node: "ghost"}, "x"); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.Send(&PID{ID: "player:1", Node: "ghost"}, "x")
+	require.NoError(t, err)
 	rec.waitFor(t, 1)
-	if err := sys.Send(&PID{ID: "player:404", Node: "ghost"}, "x"); err == nil {
-		t.Fatal("missing actor should error even in single-node mode")
-	}
+	err = sys.Send(&PID{ID: "player:404", Node: "ghost"}, "x")
+	require.Error(t, err, "missing actor should error even in single-node mode")
 }
 
 // TestDeliverRemoteDeliversToLocalActor 验证中转入口把消息投入本地 Actor。
@@ -179,18 +169,16 @@ func TestDeliverRemoteDeliversToLocalActor(t *testing.T) {
 	defer sys.Stop()
 
 	rec := newRecordActor()
-	if _, err := sys.Spawn("player:9", rec); err != nil {
-		t.Fatal(err)
-	}
+	_, err := sys.Spawn("player:9", rec)
+	require.NoError(t, err)
 	msg, err := DecodeRemote("test.RemoteMsg", []byte("from-other-node"))
 	require.NoError(t, err)
-	if err := sys.DeliverRemote("player:9", msg); err != nil {
-		t.Fatal(err)
-	}
+	err = sys.DeliverRemote("player:9", msg)
+	require.NoError(t, err)
 	rec.waitFor(t, 1)
-	if got, ok := rec.messages()[0].(*remoteTestMsg); !ok || got.Text != "from-other-node" {
-		t.Fatalf("wrong message: %+v", rec.messages()[0])
-	}
+	got, ok := rec.messages()[0].(*remoteTestMsg)
+	require.True(t, ok, fmt.Sprintf("wrong message: %+v", rec.messages()[0]))
+	require.EqualValues(t, "from-other-node", got.Text)
 	// Actor 不存在：返回可判定的错误
 	if err := sys.DeliverRemote("player:missing", msg); err == nil {
 		t.Fatal("missing actor should error")
@@ -207,17 +195,15 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 	actorID, msg, err := DecodeRemoteEnvelope(env)
 	require.NoError(t, err)
 	require.EqualValues(t, "player:5", actorID)
-	if got, ok := msg.(*remoteTestMsg); !ok || got.Text != "payload" {
-		t.Fatalf("wrong message: %+v", msg)
-	}
+	got, ok := msg.(*remoteTestMsg)
+	require.True(t, ok, fmt.Sprintf("wrong message: %+v", msg))
+	require.EqualValues(t, "payload", got.Text)
 	// 未注册的 type_url：显式报错（启动期漏注册在运行期暴露）
-	if _, _, err := DecodeRemoteEnvelope([]byte(`{"actor_id":"x","type_url":"nope","payload":"eA=="}`)); err == nil {
-		t.Fatal("unregistered type should error")
-	}
+	_, _, err = DecodeRemoteEnvelope([]byte(`{"actor_id":"x","type_url":"nope","payload":"eA=="}`))
+	require.Error(t, err, "unregistered type should error")
 	// 缺 actor_id 的信封：拒绝
-	if _, _, err := DecodeRemoteEnvelope([]byte(`{"type_url":"test.RemoteMsg","payload":"eA=="}`)); err == nil {
-		t.Fatal("envelope without actor_id should error")
-	}
+	_, _, err = DecodeRemoteEnvelope([]byte(`{"type_url":"test.RemoteMsg","payload":"eA=="}`))
+	require.Error(t, err, "envelope without actor_id should error")
 }
 
 // TestRemoteAcrossSystems 端到端：两个 System 模拟两个节点，
@@ -230,9 +216,8 @@ func TestRemoteAcrossSystems(t *testing.T) {
 	defer nodeB.Stop()
 
 	rec := newRecordActor()
-	if _, err := nodeB.Spawn("player:123", rec); err != nil {
-		t.Fatal(err)
-	}
+	_, err := nodeB.Spawn("player:123", rec)
+	require.NoError(t, err)
 
 	// A 的远程发送器 = 「经中心服中转」的最小模拟：信封投递给 B。
 	relay := &fakeSender{err: nil}
@@ -250,13 +235,12 @@ func TestRemoteAcrossSystems(t *testing.T) {
 	nodeA.Start(context.Background())
 	defer nodeA.Stop()
 
-	if err := nodeA.Send(&PID{ID: "player:123", Node: "game-02"}, &remoteTestMsg{Text: "cross-node"}); err != nil {
-		t.Fatal(err)
-	}
+	err = nodeA.Send(&PID{ID: "player:123", Node: "game-02"}, &remoteTestMsg{Text: "cross-node"})
+	require.NoError(t, err)
 	rec.waitFor(t, 1)
-	if got, ok := rec.messages()[0].(*remoteTestMsg); !ok || got.Text != "cross-node" {
-		t.Fatalf("node B actor got wrong message: %+v", rec.messages()[0])
-	}
+	got, ok := rec.messages()[0].(*remoteTestMsg)
+	require.True(t, ok, fmt.Sprintf("node B actor got wrong message: %+v", rec.messages()[0]))
+	require.EqualValues(t, "cross-node", got.Text)
 	_ = relay // relay 未用于本链路（A 的发送器直接模拟了中转两端）
 }
 
@@ -268,9 +252,7 @@ func (f senderFunc) Deliver(to *PID, msg any) error { return f(to, msg) }
 // TestRegisterRemoteDuplicatePanics 验证重复注册启动期 panic。
 func TestRegisterRemoteDuplicatePanics(t *testing.T) {
 	defer func() {
-		if recover() == nil {
-			t.Fatal("duplicate RegisterRemote should panic")
-		}
+		require.NotNil(t, recover(), "duplicate RegisterRemote should panic")
 	}()
 	RegisterRemote("test.Dup", func(b []byte) (any, error) { return string(b), nil })
 	RegisterRemote("test.Dup", func(b []byte) (any, error) { return string(b), nil })

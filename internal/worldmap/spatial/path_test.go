@@ -2,6 +2,7 @@ package spatial
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -34,9 +35,7 @@ func TestSegmentLengthUnits(t *testing.T) {
 			got, err := SegmentLengthUnits(tt.from, tt.to)
 			if tt.wantErr {
 				require.Error(t, err)
-				if !errors.Is(err, domain.ErrOverflow) {
-					t.Fatalf("错误应包装 ErrOverflow, got %v", err)
-				}
+				require.False(t, !errors.Is(err, domain.ErrOverflow), fmt.Sprintf("错误应包装 ErrOverflow, got %v", err))
 				return
 			}
 			require.NoError(t, err, "意外错误")
@@ -102,9 +101,7 @@ func TestBuildMove(t *testing.T) {
 			m, err := BuildMove(tt.from, tt.to, tt.speed, tt.startAt, "move-1", tt.inBounds)
 			if tt.wantErr {
 				require.Error(t, err)
-				if !errors.Is(err, domain.ErrInvalidArgument) {
-					t.Fatalf("错误应包装 ErrInvalidArgument, got %v", err)
-				}
+				require.False(t, !errors.Is(err, domain.ErrInvalidArgument), fmt.Sprintf("错误应包装 ErrInvalidArgument, got %v", err))
 				return
 			}
 			require.NoError(t, err, "意外错误")
@@ -112,18 +109,15 @@ func TestBuildMove(t *testing.T) {
 				m.StartAtMS != tt.startAt || m.SpeedUnitsPerSec != tt.speed {
 				t.Fatalf("字段回填错误: %+v", m)
 			}
-			if got := m.EndAtMS - m.StartAtMS; got != tt.wantDur {
-				t.Fatalf("duration = %d, want %d (EndAtMS=%d)", got, tt.wantDur, m.EndAtMS)
-			}
-			if m.Path != nil || m.SegmentIndex != 0 {
-				t.Fatalf("第一版直线路径 Path 应为空、SegmentIndex 为 0: %+v", m)
-			}
+			got := m.EndAtMS - m.StartAtMS
+			require.EqualValues(t, tt.wantDur, got, fmt.Sprintf("duration = %d, want %d (EndAtMS=%d)", got, tt.wantDur, m.EndAtMS))
+			require.Nil(t, m.Path, fmt.Sprintf("第一版直线路径 Path 应为空、SegmentIndex 为 0: %+v", m))
+			require.EqualValues(t, 0, m.SegmentIndex)
 			// 零长度段：PositionAt 直接给终点。
 			if tt.wantDur == 0 {
 				pos, err := m.PositionAt(tt.startAt)
-				if err != nil || pos != tt.to {
-					t.Fatalf("零长度段 PositionAt = %v,%v want %v,nil", pos, err, tt.to)
-				}
+				require.NoError(t, err, fmt.Sprintf("零长度段 PositionAt = %v,%v want %v,nil", pos, err, tt.to))
+				require.EqualValues(t, tt.to, pos)
 			}
 		})
 	}
@@ -159,9 +153,8 @@ func TestAdvanceAlongTrajectory(t *testing.T) {
 	p2, _ := AdvanceAlong(m, 12_345)
 	require.EqualValues(t, p2, p1)
 	// nil 段：报错而不是 panic。
-	if _, err := AdvanceAlong(nil, 100); err == nil || !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("nil 段应返回 ErrInvalidArgument, got %v", err)
-	}
+	_, err = AdvanceAlong(nil, 100)
+	require.False(t, err == nil || !errors.Is(err, domain.ErrInvalidArgument), fmt.Sprintf("nil 段应返回 ErrInvalidArgument, got %v", err))
 }
 
 // TestRaycastBlocked 覆盖 Bresenham 不漏格：45 度、近水平、近垂直、
@@ -237,12 +230,8 @@ func TestRaycastBlocked(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			at, ok := RaycastBlocked(tt.from, tt.to, tt.blocked)
 			require.EqualValues(t, tt.wantOK, ok)
-			if ok && at != tt.wantAt {
-				t.Fatalf("blockedAt = %v, want %v", at, tt.wantAt)
-			}
-			if !ok && at != (domain.Pos{}) {
-				t.Fatalf("未命中时应返回零值, got %v", at)
-			}
+			require.False(t, ok && at != tt.wantAt, fmt.Sprintf("blockedAt = %v, want %v", at, tt.wantAt))
+			require.False(t, !ok && at != (domain.Pos{}), fmt.Sprintf("未命中时应返回零值, got %v", at))
 		})
 	}
 }
@@ -264,16 +253,13 @@ func recordWalker(visited *[]walkCell) func(x, y int64) bool {
 func TestBresenhamWalksEveryCell(t *testing.T) {
 	t.Run("45度对角线", func(t *testing.T) {
 		var got []walkCell
-		if _, ok := RaycastBlocked(domain.Pos{}, domain.Pos{X: 10_000, Y: 10_000}, recordWalker(&got)); ok {
-			t.Fatalf("永假回调不应命中")
-		}
+		_, ok := RaycastBlocked(domain.Pos{}, domain.Pos{X: 10_000, Y: 10_000}, recordWalker(&got))
+		require.False(t, ok, "永假回调不应命中")
 		want := make([]walkCell, 0, 11)
 		for i := int64(0); i <= 10; i++ {
 			want = append(want, walkCell{i, i})
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("遍历序列 = %v, want %v", got, want)
-		}
+		require.False(t, !reflect.DeepEqual(got, want), fmt.Sprintf("遍历序列 = %v, want %v", got, want))
 	})
 
 	t.Run("近水平(0,0)→(20,2):每格都在", func(t *testing.T) {
@@ -293,9 +279,7 @@ func TestBresenhamWalksEveryCell(t *testing.T) {
 		for x := int64(16); x <= 20; x++ {
 			want = append(want, walkCell{x, 2})
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("遍历序列 = %v, want %v", got, want)
-		}
+		require.False(t, !reflect.DeepEqual(got, want), fmt.Sprintf("遍历序列 = %v, want %v", got, want))
 	})
 
 	t.Run("近垂直(0,0)→(2,20):每格都在", func(t *testing.T) {
@@ -313,18 +297,14 @@ func TestBresenhamWalksEveryCell(t *testing.T) {
 		for y := int64(16); y <= 20; y++ {
 			want = append(want, walkCell{2, y})
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("遍历序列 = %v, want %v", got, want)
-		}
+		require.False(t, !reflect.DeepEqual(got, want), fmt.Sprintf("遍历序列 = %v, want %v", got, want))
 	})
 
 	t.Run("单格只走一格", func(t *testing.T) {
 		var got []walkCell
 		RaycastBlocked(domain.Pos{X: 100, Y: 100}, domain.Pos{X: 900, Y: 900}, recordWalker(&got))
 		want := []walkCell{{0, 0}}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("遍历序列 = %v, want %v", got, want)
-		}
+		require.False(t, !reflect.DeepEqual(got, want), fmt.Sprintf("遍历序列 = %v, want %v", got, want))
 	})
 }
 
@@ -332,7 +312,5 @@ func TestBresenhamWalksEveryCell(t *testing.T) {
 // 不 panic（调用方可能还没加载静态地形数据）。
 func TestRaycastBlockedNilCallback(t *testing.T) {
 	at, ok := RaycastBlocked(domain.Pos{}, domain.Pos{X: 10_000, Y: 10_000}, nil)
-	if ok || at != (domain.Pos{}) {
-		t.Fatalf("nil blocked 应返回 (零值,false), got %v,%v", at, ok)
-	}
+	require.False(t, ok || at != (domain.Pos{}), fmt.Sprintf("nil blocked 应返回 (零值,false), got %v,%v", at, ok))
 }

@@ -6,6 +6,7 @@ package signin
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -80,9 +81,8 @@ func call(t *testing.T, m *Module, ctx *module.Context, rec *recorder, msgID uin
 	t.Helper()
 	body, err := proto.Marshal(req)
 	require.NoError(t, err)
-	if err := m.OnMessage(ctx, msgID, body); err != nil {
-		t.Fatal(err)
-	}
+	err = m.OnMessage(ctx, msgID, body)
+	require.NoError(t, err)
 	raw, ok := rec.last[msgID+1]
 	require.True(t, ok)
 	return raw
@@ -93,15 +93,13 @@ func TestWeekdayOf(t *testing.T) {
 	// 2026-10-19 是周一，2026-10-25 是周日。
 	monday := time.Date(2026, 10, 19, 10, 0, 0, 0, businessZone)
 	for i := 0; i < 7; i++ {
-		if got, want := weekdayOf(monday.Add(time.Duration(i)*24*time.Hour)), int32(i+1); got != want {
-			t.Fatalf("day +%d: got %d want %d", i, got, want)
-		}
+		got, want := weekdayOf(monday.Add(time.Duration(i)*24*time.Hour)), int32(i+1)
+		require.EqualValues(t, want, got, fmt.Sprintf("day +%d: got %d want %d", i, got, want))
 	}
 	// 北京周一 00:30 在 UTC 仍是周日 16:30，必须按北京时间算周一。
 	utc := time.Date(2026, 10, 18, 16, 30, 0, 0, time.UTC)
-	if got := weekdayOf(utc); got != 1 {
-		t.Fatalf("utc boundary: got %d want 1", got)
-	}
+	got := weekdayOf(utc)
+	require.EqualValues(t, 1, got, fmt.Sprintf("utc boundary: got %d want 1", got))
 }
 
 // TestDataAdd 验证天数升序、奖励累加、同一天不重复登记。
@@ -109,15 +107,14 @@ func TestDataAdd(t *testing.T) {
 	d := &Data{}
 	d.add(3, []module.ItemGrant{{ItemID: 1001, Count: 30}})
 	d.add(1, []module.ItemGrant{{ItemID: 1001, Count: 10}})
-	if len(d.Days) != 2 || d.Days[0] != 1 || d.Days[1] != 3 {
-		t.Fatalf("days not sorted: %v", d.Days)
-	}
+	require.Len(t, d.Days, 2, fmt.Sprintf("days not sorted: %v", d.Days))
+	require.EqualValues(t, 1, d.Days[0])
+	require.EqualValues(t, 3, d.Days[1])
 	require.EqualValues(t, 40, d.Rewards[1001])
 	// 同一天再次登记不重复天数（重领由 claim 的 has 拦截，这里兜底）。
 	d.add(3, nil)
-	if len(d.Days) != 2 || d.Rewards[1001] != 40 {
-		t.Fatalf("duplicate day registered: %v %v", d.Days, d.Rewards)
-	}
+	require.Len(t, d.Days, 2, fmt.Sprintf("duplicate day registered: %v %v", d.Days, d.Rewards))
+	require.EqualValues(t, 40, d.Rewards[1001])
 }
 
 // TestStateRoundTrip 验证两段编解码：
@@ -138,23 +135,22 @@ func TestStateRoundTrip(t *testing.T) {
 	// Ext 里存的是业务结构（而不是表行），业务不必知道表长什么样。
 	raw := st.Ext(stateKey)
 	var decoded Data
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatalf("Ext 不是 Data 结构: %v (%s)", err, raw)
-	}
-	if len(decoded.Days) != 1 || decoded.Days[0] != 2 || decoded.Rewards[1001] != 20 {
-		t.Fatalf("Ext 内容不符: %+v", decoded)
-	}
+	err := json.Unmarshal(raw, &decoded)
+	require.NoError(t, err, fmt.Sprintf("Ext 不是 Data 结构: %v (%s)", err, raw))
+	require.Len(t, decoded.Days, 1, fmt.Sprintf("Ext 内容不符: %+v", decoded))
+	require.EqualValues(t, 2, decoded.Days[0])
+	require.EqualValues(t, 20, decoded.Rewards[1001])
 
 	// 落库：业务结构 → 表行 → 业务结构。
 	row, err := toRow(7, &decoded)
 	require.NoError(t, err)
-	if row.PlayerId != 7 || row.ClaimedDays != "[2]" || row.ClaimedRewards != `{"1001":20}` {
-		t.Fatalf("行结构与表不符: %+v", row)
-	}
+	require.EqualValues(t, 7, row.PlayerId, fmt.Sprintf("行结构与表不符: %+v", row))
+	require.EqualValues(t, "[2]", row.ClaimedDays)
+	require.EqualValues(t, `{"1001":20}`, row.ClaimedRewards)
 	back, err := fromRow(row)
-	if err != nil || len(back.Days) != 1 || back.Rewards[1001] != 20 {
-		t.Fatalf("行回读失败: %+v %v", back, err)
-	}
+	require.NoError(t, err, fmt.Sprintf("行回读失败: %+v %v", back, err))
+	require.Len(t, back.Days, 1)
+	require.EqualValues(t, 20, back.Rewards[1001])
 }
 
 // TestClaimFlow 验证领取发奖、重复领取幂等、状态汇总与回包内容。
@@ -165,34 +161,25 @@ func TestClaimFlow(t *testing.T) {
 
 	// 信息：未领取，今天=3。
 	info := &gamev1.SigninInfoResp{}
-	if err := proto.Unmarshal(call(t, m, ctx, rec, MsgInfoReq, &gamev1.SigninInfoReq{}), info); err != nil {
-		t.Fatal(err)
-	}
-	if info.Code != 0 || info.Today != 3 || info.ClaimedToday || len(info.ClaimedDays) != 0 {
-		t.Fatalf("info: %+v", info)
-	}
+	err := proto.Unmarshal(call(t, m, ctx, rec, MsgInfoReq, &gamev1.SigninInfoReq{}), info)
+	require.NoError(t, err)
+	require.False(t, info.Code != 0 || info.Today != 3 || info.ClaimedToday || len(info.ClaimedDays) != 0, fmt.Sprintf("info: %+v", info))
 
 	// 首次领取：拿到第 3 天奖励，状态与背包同步更新。
 	resp := &gamev1.SigninClaimResp{}
-	if err := proto.Unmarshal(call(t, m, ctx, rec, MsgClaimReq, &gamev1.SigninClaimReq{}), resp); err != nil {
-		t.Fatal(err)
-	}
-	if resp.Code != 0 || resp.Already || resp.Day != 3 || len(resp.Rewards) == 0 {
-		t.Fatalf("claim: %+v", resp)
-	}
-	if len(resp.ClaimedDays) != 1 || resp.ClaimedDays[0] != 3 || resp.ClaimedRewards[1001] != 300 {
-		t.Fatalf("claim state: days=%v rewards=%v", resp.ClaimedDays, resp.ClaimedRewards)
-	}
+	err = proto.Unmarshal(call(t, m, ctx, rec, MsgClaimReq, &gamev1.SigninClaimReq{}), resp)
+	require.NoError(t, err)
+	require.False(t, resp.Code != 0 || resp.Already || resp.Day != 3 || len(resp.Rewards) == 0, fmt.Sprintf("claim: %+v", resp))
+	require.Len(t, resp.ClaimedDays, 1, fmt.Sprintf("claim state: days=%v rewards=%v", resp.ClaimedDays, resp.ClaimedRewards))
+	require.EqualValues(t, 3, resp.ClaimedDays[0])
+	require.EqualValues(t, 300, resp.ClaimedRewards[1001])
 	require.EqualValues(t, 300, st.GetItemCount(1001))
 
 	// 重复领取：幂等，不叠加奖励。
 	dup := &gamev1.SigninClaimResp{}
-	if err := proto.Unmarshal(call(t, m, ctx, rec, MsgClaimReq, &gamev1.SigninClaimReq{}), dup); err != nil {
-		t.Fatal(err)
-	}
-	if !dup.Already || dup.ClaimedRewards[1001] != 300 {
-		t.Fatalf("duplicate claim: %+v", dup)
-	}
+	err = proto.Unmarshal(call(t, m, ctx, rec, MsgClaimReq, &gamev1.SigninClaimReq{}), dup)
+	require.NoError(t, err)
+	require.False(t, !dup.Already || dup.ClaimedRewards[1001] != 300, fmt.Sprintf("duplicate claim: %+v", dup))
 	require.EqualValues(t, 300, st.GetItemCount(1001))
 }
 
@@ -200,11 +187,9 @@ func TestClaimFlow(t *testing.T) {
 func TestRewardConfiguration(t *testing.T) {
 	for day := int32(1); day <= 7; day++ {
 		items, err := rewardsForDay(day)
-		if err != nil || len(items) == 0 {
-			t.Fatalf("day %d: %v", day, err)
-		}
+		require.NoError(t, err, fmt.Sprintf("day %d: %v", day, err))
+		require.NotEmpty(t, items)
 	}
-	if _, err := rewardsForDay(8); err == nil {
-		t.Fatal("day 8 must not have rewards")
-	}
+	_, err := rewardsForDay(8)
+	require.Error(t, err, "day 8 must not have rewards")
 }

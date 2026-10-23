@@ -152,9 +152,8 @@ func TestSchemaApplied(t *testing.T) {
 	got := map[string]bool{}
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatal(err)
-		}
+		err := rows.Scan(&name)
+		require.NoError(t, err)
 		got[name] = true
 	}
 	want := []string{
@@ -165,9 +164,7 @@ func TestSchemaApplied(t *testing.T) {
 		"recharge_order", "recharge_record", "login_log", "rank_history", "feature_stats",
 	}
 	for _, w := range want {
-		if !got[w] {
-			t.Errorf("表 %s 未建成", w)
-		}
+		require.False(t, !got[w], fmt.Sprintf("表 %s 未建成", w))
 	}
 }
 
@@ -185,67 +182,53 @@ func TestCRUDAndIdempotent(t *testing.T) {
 
 	// 插入一个测试角色（player 表，来自 seed 之外的独立数据）
 	p := &model.Player{Id: 1001, AccountId: 1, Name: "集成测试", Level: 1, Coin: 100}
-	if _, err := model.UpsertPlayerByPK(ctx, testDB, p); err != nil {
-		t.Fatalf("UpsertPlayerByPK: %v", err)
-	}
+	_, err := model.UpsertPlayerByPK(ctx, testDB, p)
+	require.NoError(t, err, fmt.Sprintf("UpsertPlayerByPK: %v", err))
 	// 重复 Upsert（幂等）
-	if _, err := model.UpsertPlayerByPK(ctx, testDB, p); err != nil {
-		t.Fatalf("重复 UpsertPlayerByPK: %v", err)
-	}
+	_, err := model.UpsertPlayerByPK(ctx, testDB, p)
+	require.NoError(t, err, fmt.Sprintf("重复 UpsertPlayerByPK: %v", err))
 	// 更新走 Update
 	p.Coin = 200
-	if _, err := model.UpdatePlayerByPK(ctx, testDB, p); err != nil {
-		t.Fatalf("UpdatePlayerByPK: %v", err)
-	}
+	_, err := model.UpdatePlayerByPK(ctx, testDB, p)
+	require.NoError(t, err, fmt.Sprintf("UpdatePlayerByPK: %v", err))
 	// 终态断言
 	got, err := model.FindPlayerByPK(ctx, testDB, 1001)
 	require.NoError(t, err, "FindPlayerByPK")
-	if got.Coin != 200 || got.Name != "集成测试" {
-		t.Errorf("终态异常: coin=%d name=%q", got.Coin, got.Name)
-	}
+	require.EqualValues(t, 200, got.Coin, fmt.Sprintf("终态异常: coin=%d name=%q", got.Coin, got.Name))
+	require.EqualValues(t, "集成测试", got.Name)
 	// 唯一性：同 account_id 下重复 name 不拦，但 player.id 唯一键冲突应报错
 	dup := &model.Player{Id: 1001, AccountId: 1, Name: "重复"}
-	if _, err := model.InsertPlayer(ctx, testDB, dup); err == nil {
-		t.Error("重复 InsertPlayer 应触发唯一键冲突")
-	}
+	_, err := model.InsertPlayer(ctx, testDB, dup)
+	require.Error(t, err, "重复 InsertPlayer 应触发唯一键冲突")
 
 	// 聊天记录幂等（uk_owner_msg，17.3 双端落库不重复）
 	msg := &model.ChatRecord{OwnerId: 1001, PeerId: 1002, MsgId: 500001, Direction: 0, Channel: 1, Content: "hello"}
-	if _, err := model.InsertChatRecord(ctx, testDB, msg); err != nil {
-		t.Fatalf("InsertChatRecord: %v", err)
-	}
-	if _, err := model.InsertChatRecord(ctx, testDB, msg); err == nil {
-		t.Error("重复 chat_record 应触发 uk_owner_msg 冲突")
-	}
+	_, err := model.InsertChatRecord(ctx, testDB, msg)
+	require.NoError(t, err, fmt.Sprintf("InsertChatRecord: %v", err))
+	_, err := model.InsertChatRecord(ctx, testDB, msg)
+	require.Error(t, err, "重复 chat_record 应触发 uk_owner_msg 冲突")
 
 	// 可空时间列（player_item.expire_at，DATETIME NULL）：
 	// ① 零值 sql.NullTime 写入应为 NULL（曾因 Go 零值 time.Time 越界报 1292）；
 	// ② 读出 NULL 不应报 converting 错误
 	item := &model.PlayerItem{Id: 9001, PlayerId: 1001, ItemId: 10001, Count: 5}
-	if _, err := model.InsertPlayerItem(ctx, testDB, item); err != nil {
-		t.Fatalf("InsertPlayerItem: %v", err)
-	}
+	_, err := model.InsertPlayerItem(ctx, testDB, item)
+	require.NoError(t, err, fmt.Sprintf("InsertPlayerItem: %v", err))
 	gotItem, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
 	require.NoError(t, err, "FindPlayerItemByPK")
-	if gotItem.ExpireAt.Valid {
-		t.Error("未设过期时间的道具 expire_at 应为 NULL")
-	}
+	require.False(t, gotItem.ExpireAt.Valid, "未设过期时间的道具 expire_at 应为 NULL")
 	// 显式设置过期时间后应可往返
 	expire := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 	item.ExpireAt = sql.NullTime{Time: expire, Valid: true}
-	if _, err := model.UpdatePlayerItemByPK(ctx, testDB, item); err != nil {
-		t.Fatalf("UpdatePlayerItemByPK: %v", err)
-	}
+	_, err := model.UpdatePlayerItemByPK(ctx, testDB, item)
+	require.NoError(t, err, fmt.Sprintf("UpdatePlayerItemByPK: %v", err))
 	gotItem2, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
 	require.NoError(t, err, "FindPlayerItemByPK(2)")
-	if !gotItem2.ExpireAt.Valid || !gotItem2.ExpireAt.Time.Equal(expire) {
-		t.Errorf("expire_at 往返异常: %+v", gotItem2.ExpireAt)
-	}
+	require.False(t, !gotItem2.ExpireAt.Valid || !gotItem2.ExpireAt.Time.Equal(expire), fmt.Sprintf("expire_at 往返异常: %+v", gotItem2.ExpireAt))
 
 	// 清理
-	if _, err := model.DeletePlayerByPK(ctx, testDB, 1001); err != nil {
-		t.Fatalf("DeletePlayerByPK: %v", err)
-	}
+	_, err := model.DeletePlayerByPK(ctx, testDB, 1001)
+	require.NoError(t, err, fmt.Sprintf("DeletePlayerByPK: %v", err))
 }
 
 // TestModuleLevelFlow 模块级主链路（23.3 第 2-6 步）：待 P2 模块落地启用

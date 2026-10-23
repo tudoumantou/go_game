@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"fmt"
 	"game_study/internal/worldmap/application"
 	"game_study/internal/worldmap/domain"
 	"game_study/internal/worldmap/runtime"
@@ -141,9 +142,8 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 
 	scene, ok := world.Scene(testScene)
 	require.True(t, ok)
-	if err := scene.Seed(ctx, seedObject(), nil, 1); err != nil {
-		t.Fatalf("注入种子失败: %v", err)
-	}
+	err = scene.Seed(ctx, seedObject(), nil, 1)
+	require.NoError(t, err, fmt.Sprintf("注入种子失败: %v", err))
 
 	// ---- 1. 出征 ----
 	marchEnv := domain.CommandEnvelope{
@@ -159,9 +159,8 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 			Target:     domain.TargetRef{TargetID: testResID, Intent: domain.MarchIntentCollect},
 		},
 	}
-	if err := world.SubmitSync(ctx, runtime.RoutedCommand{SceneID: testScene, Env: marchEnv, Cmd: marchCmd}); err != nil {
-		t.Fatalf("出征失败: %v", err)
-	}
+	err = world.SubmitSync(ctx, runtime.RoutedCommand{SceneID: testScene, Env: marchEnv, Cmd: marchCmd})
+	require.NoError(t, err, fmt.Sprintf("出征失败: %v", err))
 	troops := scene.QueryTroops(testPlayer)
 	require.Len(t, troops, 1)
 	troop := troops[0]
@@ -169,9 +168,8 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 	require.NotNil(t, troop.Move, "出征后应存在 MoveSegment")
 	// 距离 3000 units / 2000 units/s = 1.5s，按整秒向上取整为 2000ms
 	// （文档 9.1：end_at_ms = start + ceil(len/speed)*1000，不足一秒按一秒计）。
-	if got := troop.Move.EndAtMS - troop.Move.StartAtMS; got != 2000 {
-		t.Fatalf("到达时长应为 2000ms（整秒向上取整），实际 %d", got)
-	}
+	got := troop.Move.EndAtMS - troop.Move.StartAtMS
+	require.EqualValues(t, 2000, got, fmt.Sprintf("到达时长应为 2000ms（整秒向上取整），实际 %d", got))
 
 	// ---- 2. 到达 → 建立采集 ----
 	clock.Advance(2100 * time.Millisecond)
@@ -182,9 +180,7 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 
 	res, ok := scene.Snapshot().Resource(testResID)
 	require.True(t, ok, "资源点应存在")
-	if res.ActiveCollectID == "" {
-		t.Fatal("采集开始后资源点应有 active_collect_id")
-	}
+	require.NotEqualValues(t, "", res.ActiveCollectID, "采集开始后资源点应有 active_collect_id")
 
 	// ---- 3. 采集 10 秒后召回：floor(10 × 2.5) = 25 ----
 	clock.Advance(10 * time.Second)
@@ -197,16 +193,14 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 		TargetScene: testScene,
 		Recall:      application.RecallParams{TroopID: troop.Header.ID},
 	}
-	if err := world.SubmitSync(ctx, runtime.RoutedCommand{SceneID: testScene, Env: recallEnv, Cmd: recallCmd}); err != nil {
-		t.Fatalf("召回失败: %v", err)
-	}
+	err = world.SubmitSync(ctx, runtime.RoutedCommand{SceneID: testScene, Env: recallEnv, Cmd: recallCmd})
+	require.NoError(t, err, fmt.Sprintf("召回失败: %v", err))
 	troops = scene.QueryTroops(testPlayer)
 	require.Len(t, troops, 1)
 	troop = troops[0]
 	require.EqualValues(t, domain.TroopPhaseReturning, troop.Phase)
-	if got := troop.Cargo[1001]; got != 25 {
-		t.Fatalf("10 秒采集应得 25 个（floor），实际 %d", got)
-	}
+	got = troop.Cargo[1001]
+	require.EqualValues(t, 25, got, fmt.Sprintf("10 秒采集应得 25 个（floor），实际 %d", got))
 
 	// 资源余量应同步减少（INV-04：同事务扣减）。
 	res, _ = scene.Snapshot().Resource(testResID)
@@ -219,21 +213,15 @@ func TestServerMarchCollectRecallLoop(t *testing.T) {
 		return len(ts) == 1 && ts[0].Phase == domain.TroopPhaseSettling
 	})
 	troop = scene.QueryTroops(testPlayer)[0]
-	if troop.SettlementID == "" {
-		t.Fatal("SETTLING 阶段应有 settlement_id（交接单先落再清货）")
-	}
+	require.NotEqualValues(t, "", troop.SettlementID, "SETTLING 阶段应有 settlement_id（交接单先落再清货）")
 	require.EqualValues(t, 25, troop.Cargo[1001])
 
 	// ---- 5. 事务确实落到了存储层 ----
-	if _, ok := srv.Store().Object(testResKey); !ok {
-		t.Fatal("资源点应已提交到存储")
-	}
-	if srv.Store().Commits() == 0 {
-		t.Fatal("应至少有一次成功提交")
-	}
-	if rev := srv.Store().Revision(testScene); rev == 0 {
-		t.Fatal("场景 revision 应已推进")
-	}
+	_, ok = srv.Store().Object(testResKey)
+	require.True(t, ok, "资源点应已提交到存储")
+	require.NotEqualValues(t, 0, srv.Store().Commits(), "应至少有一次成功提交")
+	rev := srv.Store().Revision(testScene)
+	require.NotEqualValues(t, 0, rev, "场景 revision 应已推进")
 }
 
 // TestServerRejectsInvalidConfig 验证配置校验在构造期失败，
@@ -256,9 +244,8 @@ func TestServerRejectsInvalidConfig(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig()
 			tc.mod(&cfg)
-			if _, err := New(cfg, runtime.NopLogger{}); err == nil {
-				t.Fatal("非法配置应在构造期被拒绝")
-			}
+			_, err := New(cfg, runtime.NopLogger{})
+			require.Error(t, err, "非法配置应在构造期被拒绝")
 		})
 	}
 }
@@ -288,10 +275,8 @@ func TestServerLifecycle(t *testing.T) {
 	// Shutdown 幂等。
 	shutdownCtx, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel2()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("首次关闭失败: %v", err)
-	}
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("重复关闭应幂等，实际报错: %v", err)
-	}
+	err = srv.Shutdown(shutdownCtx)
+	require.NoError(t, err, fmt.Sprintf("首次关闭失败: %v", err))
+	err = srv.Shutdown(shutdownCtx)
+	require.NoError(t, err, fmt.Sprintf("重复关闭应幂等，实际报错: %v", err))
 }
