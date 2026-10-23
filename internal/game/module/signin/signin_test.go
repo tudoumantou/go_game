@@ -124,34 +124,42 @@ func TestDataAdd(t *testing.T) {
 	}
 }
 
-// TestLoadSaveRoundTrip 验证表行与业务视图的编解码，空状态落库为合法 JSON。
-func TestLoadSaveRoundTrip(t *testing.T) {
+// TestStateRoundTrip 验证两段编解码：
+//   - 业务结构 ↔ Ext（基座负责，存的是 Data 的 JSON）；
+//   - 业务结构 ↔ 表行（persist.go 的 toRow/fromRow）。
+func TestStateRoundTrip(t *testing.T) {
 	st := newFakeState(7)
-	d, err := load(st)
-	if err != nil || d == nil || len(d.Days) != 0 {
-		t.Fatalf("empty load: %v %v", d, err)
-	}
-	d.add(2, []module.ItemGrant{{ItemID: 1001, Count: 20}})
-	if err := save(st, st.PlayerID(), d); err != nil {
+	ctx, _ := newCtx(st)
+	m := New(nil)
+
+	if err := m.Mutate(ctx, func(d *Data) bool {
+		d.add(2, []module.ItemGrant{{ItemID: 1001, Count: 20}})
+		return true
+	}); err != nil {
 		t.Fatal(err)
 	}
-	row := st.Ext(stateKey)
-	if len(row) == 0 {
-		t.Fatal("state not written")
+
+	// Ext 里存的是业务结构（而不是表行），业务不必知道表长什么样。
+	raw := st.Ext(stateKey)
+	var decoded Data
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Ext 不是 Data 结构: %v (%s)", err, raw)
 	}
-	var decoded struct {
-		ClaimedDays    string
-		ClaimedRewards string
+	if len(decoded.Days) != 1 || decoded.Days[0] != 2 || decoded.Rewards[1001] != 20 {
+		t.Fatalf("Ext 内容不符: %+v", decoded)
 	}
-	if err := json.Unmarshal(row, &decoded); err != nil {
+
+	// 落库：业务结构 → 表行 → 业务结构。
+	row, err := toRow(7, &decoded)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.ClaimedDays != "[2]" || decoded.ClaimedRewards != `{"1001":20}` {
-		t.Fatalf("unexpected row shape: %+v", decoded)
+	if row.PlayerId != 7 || row.ClaimedDays != "[2]" || row.ClaimedRewards != `{"1001":20}` {
+		t.Fatalf("行结构与表不符: %+v", row)
 	}
-	back, err := load(st)
-	if err != nil || len(back.Days) != 1 || back.Days[0] != 2 || back.Rewards[1001] != 20 {
-		t.Fatalf("round trip: %+v %v", back, err)
+	back, err := fromRow(row)
+	if err != nil || len(back.Days) != 1 || back.Rewards[1001] != 20 {
+		t.Fatalf("行回读失败: %+v %v", back, err)
 	}
 }
 

@@ -18,7 +18,6 @@
 package signin
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -28,7 +27,6 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"game_study/pkg/writebehind"
 	"github.com/samber/lo"
@@ -75,32 +73,6 @@ type Data struct {
 	Rewards map[int32]int64
 }
 
-// init 注册持久化：表主键恰为 (player_id)，生成的 FlatOps 直接复用。
-func init() {
-	writebehind.RegisterFlat[model.PlayerSignin](stateKey, model.PlayerSigninFlat, validate)
-}
-
-// validate 落库前校验：天数在 1-7，奖励数量为正，坏数据整批回滚。
-//
-// 天数上界 weekDays 同时约束「周序号」语义——8 号不存在于任何一周。
-func validate(row *model.PlayerSignin) error {
-	d, err := decode(row)
-	if err != nil {
-		return err
-	}
-	for _, day := range d.Days {
-		if day < 1 || day > weekDays {
-			return fmt.Errorf("invalid signin day %d", day)
-		}
-	}
-	for id, count := range d.Rewards {
-		if id <= 0 || count <= 0 {
-			return fmt.Errorf("invalid signin reward %d x %d", id, count)
-		}
-	}
-	return nil
-}
-
 // Reset 清空签到状态，供周期回调模块在周切换时调用；本模块自身不触发重置。
 //
 // SetExt(key, nil) 是「删除槽位」语义：下次 load 会走 row == nil 分支
@@ -134,7 +106,7 @@ func respOf(msgID uint32) (uint32, module.RespFactory, bool) {
 // 事实幂等（已领过直接回状态，不第二次发奖），所以注册进 Thin 即承诺
 // 可回滚——缓存提交失败时丢弃内存改动重放是安全的。
 type Module struct {
-	*module.Thin
+	*module.Stateful[Data]
 	now func() time.Time
 }
 
@@ -144,7 +116,7 @@ func New(logger *log.Logger, clock ...func() time.Time) *Module {
 	if len(clock) > 0 && clock[0] != nil {
 		m.now = clock[0]
 	}
-	m.Thin = module.NewThin(stateKey,
+	m.Stateful = module.NewStateful(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinErrCode(codeSystem),
 		module.ThinRespOf(respOf),
@@ -172,63 +144,84 @@ func (m *Module) onInfo(ctx *module.Context, _ uint32, _ []byte) error {
 	// 若在 has() 判断后重新取时间，跨过周日 24 点的请求会出现
 	// 「按旧周几判定已领、按新周几发奖」的错位。
 	today := weekdayOf(m.now())
-	d, err := load(ctx.State)
-	if err != nil {
+	var resp *gamev1.SigninInfoResp
+	if err := m.Read(ctx, func(d *Data) {
+		resp = &gamev1.SigninInfoResp{
+			Today:          today,
+			ClaimedToday:   d.has(today),
+			ClaimedDays:    d.Days,
+			ClaimedRewards: d.Rewards,
+		}
+	}); err != nil {
 		return m.Fail(ctx, MsgInfoReq, codeSystem, err)
 	}
-	return m.Reply(ctx, MsgInfoResp, &gamev1.SigninInfoResp{
-		Today:          today,
-		ClaimedToday:   d.has(today),
-		ClaimedDays:    d.Days,
-		ClaimedRewards: d.Rewards,
-	})
+	return m.Reply(ctx, MsgInfoResp, resp)
 }
 
 // onClaim 领取今天对应的奖励；已领过只回状态，不重复发奖。
+//
+// 一次 Mutate 走完「读状态 → 校验 → 登记领取事实」：闭包返回 false 表示
+// 没有改动，基座不会写回 Ext，也就不会产生一次无意义的提交。
 func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 	today := weekdayOf(m.now())
-	d, err := load(ctx.State)
-	if err != nil {
-		return m.Fail(ctx, MsgClaimReq, codeSystem, err)
-	}
-	grants, err := rewardsForDay(today)
-	if err != nil {
-		return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeConfig, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
-	}
-	if d.has(today) {
-		// 幂等：重复领取回「已领」状态 + 奖励预览，不再发奖
-		return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
-			Already: true, Day: today, Rewards: protoRewards(grants),
-			ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
-		})
-	}
-	for _, g := range grants {
-		current := ctx.State.GetItemCount(g.ItemID)
-		// 持有量已达 int32 上限时不能再发：协议里的 Count 是 int32，
-		// 溢出会变成负数，必须在发奖前拦住。
-		// 这是「协议宽度 < 存储宽度」的经典溢出点：内存是 int64，
-		// 序列化进 proto 会静默截断，所以发奖前显式校验。
-		if current < 0 || g.Count > math.MaxInt32-current {
-			return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagLimit, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
+
+	var (
+		code    int32
+		grants  []module.ItemGrant
+		already bool
+		snap    Data
+	)
+	err := m.Mutate(ctx, func(d *Data) bool {
+		// 无论走哪个分支，回包都要带当前状态，统一在这里取样。
+		defer func() { snap = *d }()
+
+		g, cfgErr := rewardsForDay(today)
+		if cfgErr != nil {
+			code = codeConfig
+			return false
 		}
-	}
-	if !ctx.State.CanHold(grants) {
-		return m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{Code: codeBagFull, Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards})
-	}
-	d.add(today, grants)
-	// 先写领取事实再发道具：两者同属一份快照，CAS 失败整体回滚，
-	// 不会出现「奖发了、状态没记」的重复可领。
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
+		grants = g
+		if d.has(today) {
+			already = true // 幂等：重复领取回「已领」状态，不再发奖
+			return false
+		}
+		for _, it := range g {
+			current := ctx.State.GetItemCount(it.ItemID)
+			// 持有量已达 int32 上限时不能再发：协议里的 Count 是 int32，
+			// 溢出会变成负数，必须在发奖前拦住（协议宽度 < 存储宽度）。
+			if current < 0 || it.Count > math.MaxInt32-current {
+				code = codeBagLimit
+				return false
+			}
+		}
+		if !ctx.State.CanHold(g) {
+			code = codeBagFull
+			return false
+		}
+		d.add(today, g)
+		return true
+	})
+	if err != nil {
 		return m.Fail(ctx, MsgClaimReq, codeSystem, err)
 	}
+
+	resp := &gamev1.SigninClaimResp{
+		Code: code, Day: today, Already: already,
+		Rewards:        protoRewards(grants),
+		ClaimedDays:    snap.Days,
+		ClaimedRewards: snap.Rewards,
+	}
+	if code != 0 || already {
+		return m.Reply(ctx, MsgClaimResp, resp)
+	}
+
+	// 领取事实已在 Mutate 里写回快照，这里再发道具——两者同属一份快照，
+	// 提交失败整体丢弃重载，不会出现「奖发了、状态没记」的重复可领。
 	for _, g := range grants {
 		ctx.State.AddItem(g.ItemID, g.Count)
 	}
 	ctx.State.MarkDirty("bag")
-	if err := m.Reply(ctx, MsgClaimResp, &gamev1.SigninClaimResp{
-		Day: today, Rewards: protoRewards(grants),
-		ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
-	}); err != nil {
+	if err := m.Reply(ctx, MsgClaimResp, resp); err != nil {
 		return err
 	}
 	changes := lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.ItemChange {
@@ -236,6 +229,9 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 	})
 	return m.Reply(ctx, 3010, &gamev1.BagChangeNotify{Changes: changes})
 }
+
+// newData 新玩家的空状态（空切片而非 nil，业务闭包里不必判空）。
+func newData() *Data { return &Data{Days: []int32{}, Rewards: map[int32]int64{}} }
 
 // has 今天是否已领取。
 func (d *Data) has(day int32) bool {
@@ -275,51 +271,6 @@ func weekdayOf(now time.Time) int32 {
 		return 7
 	}
 	return int32(wd)
-}
-
-// load 读取状态；从未签到过返回空结构，天数初始化为空切片以便落库成 "[]"。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.PlayerSignin](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{Days: []int32{}, Rewards: map[int32]int64{}}, nil
-	}
-	return decode(row)
-}
-
-// decode 把表行的两个 JSON 列解成业务视图。
-func decode(row *model.PlayerSignin) (*Data, error) {
-	d := &Data{Days: []int32{}, Rewards: map[int32]int64{}}
-	if row.ClaimedDays != "" {
-		if err := json.Unmarshal([]byte(row.ClaimedDays), &d.Days); err != nil {
-			return nil, fmt.Errorf("decode signin days: %w", err)
-		}
-	}
-	if row.ClaimedRewards != "" {
-		if err := json.Unmarshal([]byte(row.ClaimedRewards), &d.Rewards); err != nil {
-			return nil, fmt.Errorf("decode signin rewards: %w", err)
-		}
-	}
-	return d, nil
-}
-
-// save 把业务视图编码成表行写回 Ext 槽位，落库调度由框架负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	days, err := json.Marshal(d.Days)
-	if err != nil {
-		return fmt.Errorf("encode signin days: %w", err)
-	}
-	rewards, err := json.Marshal(d.Rewards)
-	if err != nil {
-		return fmt.Errorf("encode signin rewards: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.PlayerSignin{
-		PlayerId:       playerID,
-		ClaimedDays:    string(days),
-		ClaimedRewards: string(rewards),
-	})
 }
 
 // protoRewards 把内部发奖结构转成协议结构（按 ItemID 排序由调用方保证）。

@@ -132,3 +132,14 @@ func BenchmarkMessageOverhead_Changed(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkSnapshotConstruct 只构造 Snapshot 不序列化——量化「为只写一个字段
+// 却要复制整份状态」的成本。这是分字段存储之后剩下的那部分开销。
+func BenchmarkSnapshotConstruct(b *testing.B) {
+	s := benchState()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = s.snapshot()
+	}
+}
