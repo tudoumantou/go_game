@@ -299,6 +299,20 @@ func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title,
 	return created, nil
 }
 
+// mailRepo 是模块对仓储的全部依赖（接口隔离）。
+//
+// 抽成接口只为一件事：让「领取幂等」「满包不发奖」这类纯业务规则能在内存里
+// 测，不必为一条断言拉起 MySQL。*Repo 隐式实现它，装配层代码不变。
+type mailRepo interface {
+	UnreadCount(ctx context.Context, playerID int64) (int64, error)
+	Insert(ctx context.Context, m *model.Mail) (int64, error)
+	InsertAttachment(ctx context.Context, mailID int64, itemID, count int32) error
+	ListByPlayer(ctx context.Context, playerID int64, limit int) ([]MailRow, error)
+	FindAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error)
+	MarkTaken(ctx context.Context, mailID int64) error
+	DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (bool, error)
+}
+
 // Module 邮件模块。
 //
 // 无内存态、无锁：邮件数据全在 MySQL，OnMessage 在玩家 Actor 内串行执行，
@@ -307,12 +321,12 @@ type Module struct {
 	*module.Thin
 
 	// repo 仓储；nil 表示无 DB 环境（列表/领取降级，离线发放报错，见各方法）
-	repo   *Repo
+	repo   mailRepo
 	logger *log.Logger
 }
 
 // New 创建邮件模块。
-func New(repo *Repo, logger *log.Logger) *Module {
+func New(repo mailRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
 	m.Thin = module.NewThin("mail",
 		module.ThinLogger(logger),
