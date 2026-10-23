@@ -53,8 +53,8 @@ func newThinFixture(t *Thin) (*Context, *map[uint32][]byte) {
 // TestThinDispatchesRegisteredHandlers 验证注册的协议被分发、未注册的报错。
 func TestThinDispatchesRegisteredHandlers(t *testing.T) {
 	var got uint32
-	th := NewThin("demo", ThinRespOf(respOf))
-	th.Handle(1001, func(_ *Context, msgID uint32, _ []byte) error {
+	th := NewThin("demo")
+	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(_ *Context, msgID uint32, _ []byte) error {
 		got = msgID
 		return nil
 	})
@@ -75,9 +75,9 @@ func TestThinDispatchesRegisteredHandlers(t *testing.T) {
 
 // TestThinGuardRejectsWithoutCache 验证 guard 拒绝时按 errCode 回失败响应。
 func TestThinGuardRejectsWithoutCache(t *testing.T) {
-	th := NewThin("demo", ThinErrCode(7), ThinRespOf(respOf), ThinGuard(RequireCache))
+	th := NewThin("demo", ThinErrCode(7), ThinGuard(RequireCache))
 	called := false
-	th.Handle(1001, func(*Context, uint32, []byte) error { called = true; return nil })
+	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { called = true; return nil })
 
 	ctx, replies := newThinFixture(th)
 	ctx.CacheEnabled = false
@@ -102,8 +102,8 @@ func TestThinGuardRejectsWithoutCache(t *testing.T) {
 
 // TestThinCacheFailureReply 验证缓存不可用响应的协议号与错误码。
 func TestThinCacheFailureReply(t *testing.T) {
-	th := NewThin("demo", ThinErrCode(7), ThinRespOf(respOf))
-	th.Handle(1001, func(*Context, uint32, []byte) error { return nil })
+	th := NewThin("demo", ThinErrCode(7))
+	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return nil })
 	respID, raw, ok := th.CacheFailureReply(1001)
 	if !ok || respID != 1002 || len(raw) == 0 {
 		t.Fatalf("CacheFailureReply = %d, %v, %v", respID, raw, ok)
@@ -120,8 +120,8 @@ func TestThinCacheFailureReply(t *testing.T) {
 
 // TestThinRollbackableOnlyForRegistered 验证只有注册过的协议声明可回滚。
 func TestThinRollbackableOnlyForRegistered(t *testing.T) {
-	th := NewThin("demo", ThinRespOf(respOf))
-	th.Handle(1001, func(*Context, uint32, []byte) error { return nil })
+	th := NewThin("demo")
+	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return nil })
 	if !th.Rollbackable(1001) {
 		t.Fatal("registered msg should be rollbackable")
 	}
@@ -132,9 +132,9 @@ func TestThinRollbackableOnlyForRegistered(t *testing.T) {
 
 // TestThinFailLogsAndReplies 验证 Fail 回业务错误码且处理器错误可上传。
 func TestThinFailLogsAndReplies(t *testing.T) {
-	th := NewThin("demo", ThinRespOf(respOf))
+	th := NewThin("demo")
 	boom := errors.New("boom")
-	th.Handle(1001, func(*Context, uint32, []byte) error { return boom })
+	th.HandleR(1001, 1002, &gamev1.SigninInfoResp{}, func(*Context, uint32, []byte) error { return boom })
 	ctx, replies := newThinFixture(th)
 	if err := th.OnMessage(ctx, 1001, nil); !errors.Is(err, boom) {
 		t.Fatalf("handler error should propagate, got %v", err)
@@ -218,4 +218,74 @@ func TestThinOnEvent(t *testing.T) {
 	bare.OnEvent(&Context{}, Event{Type: "kill"})
 
 	var _ EventAware = th
+}
+
+// TestHandleRBuildsErrorReply 验证 HandleR 声明的原型能自动构造错误包。
+//
+// 这是「respOf 收进基座」的核心：模块只写「请求号 + 响应号 + 空原型」，
+// 不再写按 msgID 分支的工厂函数。
+func TestHandleRBuildsErrorReply(t *testing.T) {
+	th := NewThin("demo", ThinErrCode(9))
+	th.HandleR(2001, 2002, &gamev1.SigninClaimResp{}, func(*Context, uint32, []byte) error { return nil })
+	ctx, replies := newThinFixture(th)
+
+	if err := th.Fail(ctx, 2001, 6603, errors.New("bag full")); err != nil {
+		t.Fatal(err)
+	}
+	var resp gamev1.SigninClaimResp
+	if err := proto.Unmarshal((*replies)[2002], &resp); err != nil {
+		t.Fatalf("错误包解析失败: %v", err)
+	}
+	if resp.Code != 6603 {
+		t.Fatalf("code = %d, want 6603", resp.Code)
+	}
+
+	// CacheFailureReply 用模块级 errCode，不是 Fail 的入参。
+	respID, raw, ok := th.CacheFailureReply(2001)
+	if !ok || respID != 2002 || len(raw) == 0 {
+		t.Fatalf("CacheFailureReply = %d/%v/%v", respID, raw, ok)
+	}
+	var cached gamev1.SigninClaimResp
+	if err := proto.Unmarshal(raw, &cached); err != nil || cached.Code != 9 {
+		t.Fatalf("缓存失败包 code=%d err=%v, want 9", cached.Code, err)
+	}
+}
+
+// TestHandleRWithoutCodeField 响应没有 code 字段时仍回包（客户端至少知道失败）。
+func TestHandleRWithoutCodeField(t *testing.T) {
+	th := NewThin("demo")
+	// SigninReward 没有 code 字段，用它验证降级路径。
+	th.HandleR(3001, 3002, &gamev1.SigninReward{}, func(*Context, uint32, []byte) error { return nil })
+	respID, raw, ok := th.CacheFailureReply(3001)
+	if !ok || respID != 3002 || len(raw) != 0 {
+		t.Fatalf("无 code 字段响应应为空包: %d/%v/%v", respID, raw, ok)
+	}
+}
+
+// TestHandleRNilPrototypePanics 原型为 nil 是编码错误，启动期暴露。
+func TestHandleRNilPrototypePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil prototype should panic")
+		}
+	}()
+	th := NewThin("demo")
+	th.HandleR(4001, 4002, nil, func(*Context, uint32, []byte) error { return nil })
+}
+
+// TestRespOfOverridesHandleR ThinRespOf 优先于 HandleR 的自动推导
+// （留给「一个请求回多种响应」的少数场景）。
+func TestRespOfOverridesHandleR(t *testing.T) {
+	th := NewThin("demo", ThinRespOf(respOf))
+	th.HandleR(1001, 9999, &gamev1.SigninClaimResp{}, func(*Context, uint32, []byte) error { return nil })
+	ctx, replies := newThinFixture(th)
+	if err := th.Fail(ctx, 1001, 5, errors.New("x")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := (*replies)[9999]; ok {
+		t.Fatal("HandleR 的响应号不应生效（ThinRespOf 优先）")
+	}
+	if _, ok := (*replies)[1002]; !ok {
+		t.Fatal("应以 respOf 声明的 1002 回包")
+	}
 }

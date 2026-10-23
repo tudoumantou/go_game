@@ -26,6 +26,7 @@ import (
 
 	"game_study/pkg/log"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // ThinHandler 单协议的业务处理函数（模块只写这一层）。
@@ -39,7 +40,17 @@ type ThinHandler func(ctx *Context, msgID uint32, body []byte) error
 // 用工厂而不是反射置 Code 字段：proto.Message 没有公共的 Code setter，
 // 每个模块的响应类型又是不同的具体类型，工厂函数让模块自己决定
 // 「哪个协议号、哪个错误码字段」的映射，框架保持零反射。
+//
+// 多数模块不必写它——用 HandleR 声明「请求号 + 响应号 + 空原型」即可，
+// 基座会按原型克隆并置 code 字段。ThinRespOf 只留给「一个请求回多种响应」
+// 这类超出「一问一答」形态的场景。
 type RespFactory func(code int32) proto.Message
+
+// respSpec 一次协议注册的响应声明（HandleR 填入）。
+type respSpec struct {
+	respID    uint32
+	prototype proto.Message
+}
 
 // Thin 「薄模块」基座：Module + RollbackAware + CacheFailureAware 的预装配实现。
 //
@@ -49,12 +60,11 @@ type RespFactory func(code int32) proto.Message
 //	m.Thin = module.NewThin("signin",
 //		module.ThinLogger(logger),
 //		module.ThinErrCode(codeSystem),
-//		module.ThinRespOf(respOf),
 //		module.ThinGuard(RequireCache),
 //		module.ThinInit(m.initConfig),
 //	)
-//	m.Handle(MsgInfoReq, m.onInfo)   // 注册协议（Handle 由嵌入提升）
-//	m.Handle(MsgClaimReq, m.onClaim)
+//	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
+//	m.HandleR(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, m.onClaim)
 //
 // 生命周期钩子都是可选的：不挂 Login/Logout 就是空实现，
 // 与手写 Module 时「用不到就 return nil」完全一致。
@@ -62,8 +72,14 @@ type Thin struct {
 	name    string
 	logger  *log.Logger
 	errCode int32
-	// respOf 请求协议 → （响应协议, 错误响应工厂）；nil 表示不实现
-	// CacheFailureAware（走网关通用错误通知）。
+	// resp 请求协议 → 响应声明（HandleR 注册时自动填入）。
+	//
+	// 绝大多数模块用它就够了：错误回包由基座按响应号 + 空原型自动构造，
+	// 模块不必再写一个「按 msgID 分支的工厂函数」。
+	resp map[uint32]respSpec
+	// respOf 自定义映射（ThinRespOf）；设置后优先于 resp。
+	//
+	// 只留给「同一个请求可能回多种响应」这类少数情况；nil 表示不用。
 	respOf func(msgID uint32) (uint32, RespFactory, bool)
 	// guard 处理器前置校验（如「缓存权威路径必须就绪」）；
 	// 返回 error 时按 errCode 回失败响应，不进入处理器。
@@ -91,8 +107,13 @@ func ThinErrCode(code int32) ThinOption { return func(t *Thin) { t.errCode = cod
 
 // ThinRespOf 设置「请求协议 → 响应协议 + 错误响应工厂」映射。
 //
-// 不设置时 Thin 不实现 CacheFailureAware：Registry 探测不到该接口，
-// 缓存不可用走网关通用错误通知——与不写该方法的模块行为一致。
+// 优先于 HandleR 的自动推导，只用于「一个请求可能回多种响应」这类
+// 一对多形态。普通一问一答用 HandleR 更省事：
+//
+//	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
+//
+// 不设置时 Thin 仍按 HandleR 的声明实现 CacheFailureAware；
+// 两者都没有时 Registry 探测不到该接口，缓存不可用走网关通用错误通知。
 func ThinRespOf(fn func(msgID uint32) (uint32, RespFactory, bool)) ThinOption {
 	return func(t *Thin) { t.respOf = fn }
 }
@@ -137,7 +158,11 @@ func ThinHandle(msgID uint32, fn ThinHandler) ThinOption {
 
 // NewThin 创建薄模块基座。
 func NewThin(name string, opts ...ThinOption) *Thin {
-	t := &Thin{name: name, handlers: make(map[uint32]ThinHandler)}
+	t := &Thin{
+		name:     name,
+		handlers: make(map[uint32]ThinHandler),
+		resp:     make(map[uint32]respSpec),
+	}
 	for _, opt := range opts {
 		opt(t)
 	}
@@ -154,6 +179,59 @@ func (t *Thin) Handle(msgID uint32, fn ThinHandler) {
 	}
 	t.handlers[msgID] = fn
 	t.ids = append(t.ids, msgID)
+}
+
+// HandleR 注册处理器，并声明它的响应协议。
+//
+// 相比 Handle 只多一条信息，省掉的是模块里那段「请求号 → 响应号 + 错误包
+// 工厂」的 switch（signin 曾为此写 14 行）：
+//
+//	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
+//
+// prototype 必须是**零值原型**（&XxxResp{}）：基座用 proto.Clone 造新实例，
+// 再按字段名设置 code。原型带默认值的话错误包会带上那些默认值。
+//
+// 响应没有 code 字段时仍会回包（只是不带错误码）——这比不回包好：
+// 客户端至少知道请求失败了，而不是等到超时。
+func (t *Thin) HandleR(reqID, respID uint32, prototype proto.Message, fn ThinHandler) {
+	if prototype == nil {
+		panic(fmt.Sprintf("module %s: HandleR(%d) nil prototype", t.name, reqID))
+	}
+	t.Handle(reqID, fn)
+	t.resp[reqID] = respSpec{respID: respID, prototype: prototype}
+}
+
+// errorResp 按请求号构造错误回包（ThinRespOf 优先，其次 HandleR 声明）。
+//
+// ok=false 表示模块没声明响应：调用方只记日志、把 error 向上返回。
+func (t *Thin) errorResp(msgID uint32, code int32) (uint32, proto.Message, bool) {
+	if t.respOf != nil {
+		respID, factory, ok := t.respOf(msgID)
+		if !ok {
+			return 0, nil, false
+		}
+		return respID, factory(code), true
+	}
+	spec, ok := t.resp[msgID]
+	if !ok {
+		return 0, nil, false
+	}
+	return spec.respID, withCode(spec.prototype, code), true
+}
+
+// withCode 克隆零值原型并设置 code 字段（字段缺失时原样返回）。
+//
+// 这里用一次反射换掉每个模块的工厂函数：错误路径不在热路径上
+// （一条消息最多一次），而工厂函数是每个模块都要写的样板。
+func withCode(prototype proto.Message, code int32) proto.Message {
+	out := proto.Clone(prototype)
+	m := out.ProtoReflect()
+	fd := m.Descriptor().Fields().ByName("code")
+	if fd == nil || fd.Kind() != protoreflect.Int32Kind {
+		return out
+	}
+	m.Set(fd, protoreflect.ValueOfInt32(code))
+	return out
 }
 
 // Name 实现 module.Module。
@@ -228,17 +306,14 @@ func (t *Thin) Rollbackable(msgID uint32) bool {
 	return ok
 }
 
-// CacheFailureReply 实现 module.CacheFailureAware（respOf 未设置时 ok=false，
+// CacheFailureReply 实现 module.CacheFailureAware（未声明响应时 ok=false，
 // Registry 探测不到，走网关通用错误通知）。
 func (t *Thin) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
-	if t.respOf == nil {
-		return 0, nil, false
-	}
-	respID, factory, ok := t.respOf(msgID)
+	respID, msg, ok := t.errorResp(msgID, t.errCode)
 	if !ok {
 		return 0, nil, false
 	}
-	raw, err := proto.Marshal(factory(t.errCode))
+	raw, err := proto.Marshal(msg)
 	if err != nil {
 		return 0, nil, false
 	}
@@ -254,7 +329,7 @@ func (t *Thin) Reply(ctx *Context, respID uint32, msg proto.Message) error {
 	return ctx.Reply(respID, raw)
 }
 
-// Fail 记录告警并按 errCode 回失败响应（respOf 缺失时只记日志、向上返回错误）。
+// Fail 记录告警并按 code 回失败响应（未声明响应时只记日志、向上返回错误）。
 //
 // 日志带 player_id/msg_id：失败响应对客户端只是一个错误码，
 // 服务端必须能从日志反查是哪次请求、什么原因。
@@ -263,14 +338,11 @@ func (t *Thin) Fail(ctx *Context, msgID uint32, code int32, err error) error {
 		t.logger.Warn("module request failed",
 			"module", t.name, "player_id", ctx.State.PlayerID(), "msg_id", msgID, "err", err)
 	}
-	if t.respOf == nil {
-		return err
-	}
-	respID, factory, ok := t.respOf(msgID)
+	respID, msg, ok := t.errorResp(msgID, code)
 	if !ok {
 		return err
 	}
-	return t.Reply(ctx, respID, factory(code))
+	return t.Reply(ctx, respID, msg)
 }
 
 // RequireCache 缓存权威前置校验：State 就绪且 Redis 权威路径已接入。

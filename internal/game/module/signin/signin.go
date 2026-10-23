@@ -30,7 +30,6 @@ import (
 	gamev1 "game_study/pkg/pb/game/v1"
 	"game_study/pkg/writebehind"
 	"github.com/samber/lo"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -79,25 +78,6 @@ type Data struct {
 // 返回空 Data，等价于重新初始化，但不需要写一行空记录。
 func Reset(state writebehind.ExtState) { state.SetExt(stateKey, nil) }
 
-// respOf 请求协议 → （响应协议, 错误响应工厂）。
-//
-// Thin 的 CacheFailureReply/Fail 靠它把「系统维护中」翻译成客户端看得懂的
-// 回包；两个请求都是空消息体，错误响应只需置 Code。
-func respOf(msgID uint32) (uint32, module.RespFactory, bool) {
-	switch msgID {
-	case MsgInfoReq:
-		return MsgInfoResp, func(code int32) proto.Message {
-			return &gamev1.SigninInfoResp{Code: code}
-		}, true
-	case MsgClaimReq:
-		return MsgClaimResp, func(code int32) proto.Message {
-			return &gamev1.SigninClaimResp{Code: code}
-		}, true
-	default:
-		return 0, nil, false
-	}
-}
-
 // Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
 //
 // 嵌入 *module.Thin：Name/MsgIDs/OnMessage 分发/OnSave/OnLogin/OnLogout/
@@ -119,7 +99,6 @@ func New(logger *log.Logger, clock ...func() time.Time) *Module {
 	m.Stateful = module.NewStateful(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinErrCode(codeSystem),
-		module.ThinRespOf(respOf),
 		// 缓存权威路径未就绪一律拒绝：签到发奖必须走快照 CAS，
 		// 直写路径已移除，没有降级方案——宁可不可用，不可双写。
 		module.ThinGuard(module.RequireCache),
@@ -133,8 +112,10 @@ func New(logger *log.Logger, clock ...func() time.Time) *Module {
 			return nil
 		}),
 	)
-	m.Handle(MsgInfoReq, m.onInfo)
-	m.Handle(MsgClaimReq, m.onClaim)
+	// HandleR 顺带声明响应协议：错误回包由基座克隆零值原型并置 code，
+	// 模块不必再写「请求号 → 响应号 + 工厂」的 switch。
+	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
+	m.HandleR(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, m.onClaim)
 	return m
 }
 

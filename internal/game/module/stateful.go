@@ -24,8 +24,6 @@ package module
 import (
 	"encoding/json"
 	"fmt"
-
-	"game_study/pkg/log"
 )
 
 // Stateful 单结构体模块基座。
@@ -38,7 +36,7 @@ import (
 //		module.ThinLogger(logger),
 //		module.ThinErrCode(codeSystem),
 //	)
-//	m.Handle(MsgClaimReq, m.onClaim)
+//	m.HandleR(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, m.onClaim)
 //
 //	func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
 //		return m.Mutate(ctx, func(d *Data) bool {
@@ -123,8 +121,6 @@ func (s *Stateful[T]) encode(ctx *Context, d *T) error {
 	return nil
 }
 
-// WithLogger 便于在构造后补日志器（少数模块需要）。
-func (s *Stateful[T]) WithLogger(l *log.Logger) *Stateful[T] {
-	s.Thin = NewThin(s.Name(), ThinLogger(l))
-	return s
-}
+// 注：曾有 WithLogger 便于构造后补日志器，已删除——它重建一个全新 Thin，
+// 会把已注册的 handler 与响应声明一起丢掉。需要日志器请在 NewStateful 时
+// 用 ThinLogger 选项传入。
