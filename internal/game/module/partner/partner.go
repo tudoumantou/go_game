@@ -148,10 +148,10 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogin(m.onLogin),
 	)
-	m.Handle(msgIDListReq, m.onList)
-	m.Handle(msgIDActivateReq, m.onActivate)
-	m.Handle(msgIDStarUpReq, m.onStarUp)
-	m.Handle(msgIDFieldReq, m.onField)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.PartnerListResp{}, m.onList)
+	m.HandleR(msgIDActivateReq, msgIDActivateResp, &gamev1.PartnerActivateResp{}, m.onActivate)
+	m.HandleR(msgIDStarUpReq, msgIDStarUpResp, &gamev1.PartnerStarUpResp{}, m.onStarUp)
+	m.HandleR(msgIDFieldReq, msgIDFieldResp, &gamev1.PartnerFieldResp{}, m.onField)
 	return m
 }
 

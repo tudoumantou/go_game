@@ -319,8 +319,8 @@ func New(repo *Repo, logger *log.Logger) *Module {
 		module.ThinLogin(m.onLogin),
 		module.ThinLogout(m.onLogout),
 	)
-	m.Handle(msgIDMailListReq, m.onList)
-	m.Handle(msgIDMailTakeReq, m.onTake)
+	m.HandleR(msgIDMailListReq, msgIDMailListResp, &gamev1.MailListResp{}, m.onList)
+	m.HandleR(msgIDMailTakeReq, msgIDMailTakeResp, &gamev1.MailTakeAttachmentResp{}, m.onTake)
 	return m
 }
 

@@ -125,8 +125,8 @@ func New(logger *log.Logger, producer ProgressProducer) *Module {
 		module.ThinLogin(m.onLogin),
 		module.ThinOnEvent(m.onEvent),
 	)
-	m.Handle(msgIDListReq, m.onList)
-	m.Handle(msgIDClaimReq, m.onClaim)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.ActivityListResp{}, m.onList)
+	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.ActivityClaimResp{}, m.onClaim)
 	return m
 }
 

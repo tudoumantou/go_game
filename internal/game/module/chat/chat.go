@@ -178,8 +178,8 @@ func New(repo *Repo, messenger Messenger, logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
-	m.Handle(msgIDSendReq, m.onSend)
-	m.Handle(msgIDHistoryReq, m.onHistory)
+	m.HandleR(msgIDSendReq, msgIDSendResp, &gamev1.ChatSendResp{}, m.onSend)
+	m.HandleR(msgIDHistoryReq, msgIDHistoryResp, &gamev1.ChatHistoryResp{}, m.onHistory)
 	return m
 }
 

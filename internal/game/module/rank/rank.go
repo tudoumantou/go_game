@@ -103,8 +103,12 @@ type Module struct {
 // New 创建模块；q 为 nil 时所有查询回「暂不可用」（未配置中心服的单机环境）。
 func New(q Querier, logger *log.Logger) *Module {
 	m := &Module{q: q, logger: logger}
-	m.Plain = module.NewPlain("rank", module.PlainLogger(logger))
-	m.Handle(msgIDListReq, m.onList)
+	m.Plain = module.NewPlain("rank",
+		module.PlainLogger(logger),
+		// 缓存不可用时回业务码（榜单本来就依赖中心服，客户端照常提示重试）
+		module.PlainErrCode(codeUnavailable),
+	)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.RankListResp{}, m.onList)
 	return m
 }
 

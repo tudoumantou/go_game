@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"game_study/pkg/log"
+	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -182,3 +185,41 @@ func (*legacyModule) OnMessage(*Context, uint32, []byte) error { return nil }
 var _ Module = (*legacyModule)(nil)
 var _ Module = (*testPlainModule)(nil)
 var _ StatelessAware = (*testPlainModule)(nil)
+
+// TestPlainHandleRRespondsOnCacheFailure Plain 的 HandleR + PlainErrCode
+// 让零状态模块也能给出业务错误包（否则只能收网关通用错误）。
+func TestPlainHandleRRespondsOnCacheFailure(t *testing.T) {
+	p := NewPlain("rank", PlainErrCode(6702))
+	p.HandleR(8101, 8102, &gamev1.RankListResp{}, func(*Context, uint32, []byte) error { return nil })
+
+	respID, raw, ok := p.CacheFailureReply(8101)
+	if !ok || respID != 8102 || len(raw) == 0 {
+		t.Fatalf("CacheFailureReply = %d/%v/%v", respID, raw, ok)
+	}
+	var resp gamev1.RankListResp
+	require.NoError(t, proto.Unmarshal(raw, &resp))
+	require.EqualValues(t, 6702, resp.Code)
+
+	// 未声明的协议 → ok=false（走网关通用错误）
+	if _, _, ok := p.CacheFailureReply(9999); ok {
+		t.Fatal("未声明响应的协议不应回包")
+	}
+
+	// 未设 errCode → 即使声明了响应也不回（Plain 不该凭空造业务码）
+	bare := NewPlain("bare_rank")
+	bare.HandleR(8101, 8102, &gamev1.RankListResp{}, func(*Context, uint32, []byte) error { return nil })
+	if _, _, ok := bare.CacheFailureReply(8101); ok {
+		t.Fatal("未设 errCode 时不应回包")
+	}
+}
+
+// TestPlainHandleRNilPrototypePanics nil 原型是编码错误，启动期暴露。
+func TestPlainHandleRNilPrototypePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("nil prototype should panic")
+		}
+	}()
+	p := NewPlain("x")
+	p.HandleR(1, 2, nil, func(*Context, uint32, []byte) error { return nil })
+}

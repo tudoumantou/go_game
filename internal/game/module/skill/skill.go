@@ -99,9 +99,9 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
-	m.Handle(msgIDListReq, m.onList)
-	m.Handle(msgIDLearnReq, m.onLearn)
-	m.Handle(msgIDUpgradeReq, m.onUpgrade)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.SkillListResp{}, m.onList)
+	m.HandleR(msgIDLearnReq, msgIDLearnResp, &gamev1.SkillLearnResp{}, m.onLearn)
+	m.HandleR(msgIDUpgradeReq, msgIDUpgradeResp, &gamev1.SkillUpgradeResp{}, m.onUpgrade)
 	return m
 }
 

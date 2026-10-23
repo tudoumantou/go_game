@@ -64,10 +64,13 @@ func New(mgr *scn.Manager, logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
+	// 进入/移动不在这里回包：请求转给场景 Actor，结果由场景广播异步送达
+	// （MsgSceneEntityNotify / MsgSceneEnterResp）。没有请求-响应配对，
+	// 所以用 Handle；回包的两个协议用 HandleR。
 	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
 	m.Handle(codec.MsgSceneMoveReq, m.onMove)
-	m.Handle(codec.MsgSceneLeaveReq, m.onLeave)
-	m.Handle(codec.MsgSceneSyncReq, m.onSync)
+	m.HandleR(codec.MsgSceneLeaveReq, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{}, m.onLeave)
+	m.HandleR(codec.MsgSceneSyncReq, codec.MsgSceneSyncResp, &gamev1.SceneSyncResp{}, m.onSync)
 	return m
 }
 

@@ -103,8 +103,8 @@ type Module struct {
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
 	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
-	m.Handle(msgIDListReq, m.onList)
-	m.Handle(msgIDSettleReq, m.onSettle)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.CopyListResp{}, m.onList)
+	m.HandleR(msgIDSettleReq, msgIDSettleResp, &gamev1.CopySettleResp{}, m.onSettle)
 	return m
 }
 

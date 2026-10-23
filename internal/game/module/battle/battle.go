@@ -172,9 +172,11 @@ func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Log
 		queued:   make(map[int64]bool),
 	}
 	m.Thin = module.NewThin("battle", module.ThinLogger(logger))
-	m.Handle(msgIDMatchReq, m.onMatch)
+	m.HandleR(msgIDMatchReq, msgIDMatchResp, &gamev1.MatchResp{}, m.onMatch)
+	// 战报是单向上报：客户端不等回包，服务端也没有响应协议可回。
+	// 用 Handle 而不是 HandleR（后者要求声明响应）。
 	m.Handle(msgIDOpReport, m.onOpReport)
-	m.Handle(msgIDResultReport, m.onResultReport)
+	m.HandleR(msgIDResultReport, msgIDSettleNotify, &gamev1.BattleSettleNotify{}, m.onResultReport)
 	return m
 }
 

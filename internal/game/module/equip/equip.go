@@ -122,9 +122,9 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogin(m.onLogin),
 	)
-	m.Handle(msgIDListReq, m.onList)
-	m.Handle(msgIDWearReq, m.onWear)
-	m.Handle(msgIDTakeOffReq, m.onTakeOff)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.EquipListResp{}, m.onList)
+	m.HandleR(msgIDWearReq, msgIDWearResp, &gamev1.EquipWearResp{}, m.onWear)
+	m.HandleR(msgIDTakeOffReq, msgIDTakeOffResp, &gamev1.EquipTakeOffResp{}, m.onTakeOff)
 	return m
 }
 

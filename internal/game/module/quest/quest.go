@@ -122,9 +122,9 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogout(m.onLogout),
 		module.ThinOnEvent(m.onEvent),
 	)
-	m.Handle(msgIDListReq, m.onList)
-	m.Handle(msgIDAcceptReq, m.onAccept)
-	m.Handle(msgIDClaimReq, m.onClaim)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.QuestListResp{}, m.onList)
+	m.HandleR(msgIDAcceptReq, msgIDAcceptResp, &gamev1.QuestAcceptResp{}, m.onAccept)
+	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.QuestClaimResp{}, m.onClaim)
 	return m
 }
 

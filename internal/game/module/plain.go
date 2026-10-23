@@ -43,12 +43,16 @@ type PlainHandler func(ctx *Context, msgID uint32, body []byte) error
 //	m.Plain = module.NewPlain("rank",
 //		module.PlainLogger(logger),
 //	)
-//	m.Handle(codec.MsgRankListReq, m.onList)
+//	m.HandleR(codec.MsgRankListReq, codec.MsgRankListResp, &gamev1.RankListResp{}, m.onList)
 type Plain struct {
 	name     string
 	logger   *log.Logger
 	handlers map[uint32]PlainHandler
 	ids      []uint32
+	// resp 请求协议 → 响应声明（HandleR 注册时填入）。
+	resp map[uint32]respSpec
+	// errCode 缓存不可用时的默认错误码；0 表示不自定义（走网关通用错误）。
+	errCode int32
 
 	initFn   func(ctx *Context) error
 	loginFn  func(ctx *Context) error
@@ -78,11 +82,19 @@ func PlainLogout(fn func(ctx *Context) error) PlainOption {
 	return func(p *Plain) { p.logoutFn = fn }
 }
 
+// PlainErrCode 设置缓存不可用时的默认错误码。
+//
+// 不设置时 Plain 不实现 CacheFailureAware（Registry 探测不到，走网关通用错误）。
+func PlainErrCode(code int32) PlainOption {
+	return func(p *Plain) { p.errCode = code }
+}
+
 // NewPlain 创建无状态模块基座。
 func NewPlain(name string, opts ...PlainOption) *Plain {
 	p := &Plain{
 		name:     name,
 		handlers: make(map[uint32]PlainHandler),
+		resp:     make(map[uint32]respSpec),
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -97,6 +109,33 @@ func (p *Plain) Handle(msgID uint32, h PlainHandler) {
 	}
 	p.handlers[msgID] = h
 	p.ids = append(p.ids, msgID)
+}
+
+// HandleR 注册处理器并声明响应协议（与 Thin.HandleR 同语义）。
+//
+//	m.HandleR(codec.MsgRankListReq, codec.MsgRankListResp, &gamev1.RankListResp{}, m.onList)
+func (p *Plain) HandleR(reqID, respID uint32, prototype proto.Message, h PlainHandler) {
+	if prototype == nil {
+		panic(fmt.Sprintf("plain module %s: HandleR(%d) nil prototype", p.name, reqID))
+	}
+	p.Handle(reqID, h)
+	p.resp[reqID] = respSpec{respID: respID, prototype: prototype}
+}
+
+// CacheFailureReply 实现 module.CacheFailureAware。
+//
+// 未声明响应或未设 errCode 时 ok=false，由网关回通用错误通知——
+// 零状态模块本来就不该在缓存不可用时给出业务语义的回包。
+func (p *Plain) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
+	spec, ok := p.resp[msgID]
+	if !ok || p.errCode == 0 {
+		return 0, nil, false
+	}
+	raw, err := proto.Marshal(withCode(spec.prototype, p.errCode))
+	if err != nil {
+		return 0, nil, false
+	}
+	return spec.respID, raw, true
 }
 
 // Reply 序列化并回包（marshal 失败原样返回，调用方通常直接 return）。
