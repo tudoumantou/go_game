@@ -185,16 +185,22 @@ type Actor struct {
 	// 用空状态处理业务会写坏数据。
 	loaded      bool
 	needsReload bool // 发奖提交结果未知时，禁止旧内存再次落库。
-	// cacheVersion 本地已知的 Redis 快照版本，Commit 时作为 CAS 期望值；
+	// token 会话所有权令牌（R2.5）。preload 时从 Redis 取得（AcquireLease），
+	// 之后每次 Commit 都带上它；被新会话接管后令牌失效，提交会被拒。
+	// 与 cacheVersion 的分工：token 决定「我还能不能写」，version 只用于
+	// writebehind 的落库确认。
+	token int64
+
+	// cacheVersion 本地已知的 Redis 快照版本（仅用于落库确认与日志）；
 	// 提交成功则前进为新版本，失败保持旧值（下轮按同一版本重试）。
 	cacheVersion int64
 	// cacheReload 下一条消息前必须重新 LoadCached：上一次提交已回滚或
 	// 结果未知，内存相对 Redis 已过期，先恢复权威状态再进业务。
 	cacheReload bool
-	// bufferReplies 提交窗口内置位：业务产生的下行先入 queuedReplies，
-	// CAS 成功后才真正发出——客户端不会先看到「成功回包」再被告知失败。
-	bufferReplies bool
-	queuedReplies []cachedReply
+	// gate 提交通道：缓存提交窗口内的下行先暂存，提交成功才刷出（R2.5）。
+	// 提交策略集中在这里，业务与流程都不再感知「延迟发送」的存在。
+	gate commitGate
+
 	// cachePending 结果未知的旧快照（来自不可回滚消息）：保留版本与状态，
 	// 后续消息先在 finishPending 里核对 Redis 实际版本，再放行新业务。
 	cachePending *writebehind.Record
@@ -473,10 +479,17 @@ func (a *Actor) preload(ctx *actor.Context) error {
 	if a.repo.CacheEnabled() {
 		loadCtx, cancel := context.WithTimeout(context.Background(), DefaultPreloadTimeout)
 		defer cancel()
+		// 先取会话令牌再读快照：令牌是「我有权写」的凭据，读失败也要先失败，
+		// 不能出现「读到了状态但没有令牌」的半就绪态。
+		token, err := a.repo.cache.AcquireLease(loadCtx, a.playerID)
+		if err != nil {
+			return fmt.Errorf("acquire lease: %w", err)
+		}
 		state, version, err := a.repo.LoadCached(loadCtx, a.playerID)
 		if err != nil {
 			return err
 		}
+		a.token = token
 		a.setState(state)
 		a.cacheVersion = version
 		a.loaded = true
@@ -570,8 +583,9 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 		// 重投不会导致二次发奖。B 类（主动领取）禁止塞这里，会持续膨胀。
 		key := msg.Source + ":" + msg.BizID
 		if a.state.appliedGrants[key] {
-			if msg.Done != nil && !a.bufferReplies {
-				msg.Done <- nil
+			if msg.Done != nil {
+				// 幂等命中：结果要等本次提交落定后再回执（与正常路径一致）。
+				_ = a.gate.Send(func() error { msg.Done <- nil; return nil })
 			}
 			return
 		}
@@ -593,10 +607,10 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 		a.onDirty(a.playerID)
 	}
 	a.logger.Info("grant items", "source", msg.Source, "count", len(msg.Items))
-	if msg.Done != nil && !a.bufferReplies {
-		// bufferReplies 置位时（缓存提交窗口）不回执：结果要等 CAS 落定，
-		// 由 receiveCached 在提交成功后统一回，失败则回 err。
-		msg.Done <- nil
+	if msg.Done != nil {
+		// 结果等本次提交落定后再回执：提交成功走 gate 刷出，
+		// 失败由 cacheFailure 直接回 err。
+		_ = a.gate.Send(func() error { msg.Done <- nil; return nil })
 	}
 }
 
@@ -712,12 +726,17 @@ func (a *Actor) addExp(n int64) (bool, int32) {
 // bufferReplies 置位时（缓存提交窗口）消息不直发，先入 queuedReplies——
 // 顺序即产生顺序，CAS 成功后再按序补发（cache_actor.go）。
 func (a *Actor) send(msgID uint32, body []byte) error {
-	if a.bufferReplies {
-		// append([]byte(nil), body...) 是拷贝而非别名：业务层的 body 多来自
-		// 可复用的解码缓冲，不拷贝的话提交窗口内的内容可能被后续消息改写。
-		a.queuedReplies = append(a.queuedReplies, cachedReply{id: msgID, body: append([]byte(nil), body...)})
-		return nil
+	if !a.gate.Active() {
+		return a.directSend(msgID, body)
 	}
+	// 入队必须拷贝：业务层的 body 多来自可复用的解码缓冲，
+	// 不拷贝的话窗口内后续消息会把内容改写。
+	cp := append([]byte(nil), body...)
+	return a.gate.Send(func() error { return a.directSend(msgID, cp) })
+}
+
+// directSend 立即写回网关（sessionID 为 0 时静默丢弃）。
+func (a *Actor) directSend(msgID uint32, body []byte) error {
 	if a.sendFunc == nil || a.sessionID == 0 {
 		return nil
 	}

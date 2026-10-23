@@ -61,6 +61,9 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version
+	// 测试绕过 preload 直接注入状态，需补一个会话令牌（真实路径由 preload 获取）。
+	a.token, err = repo.cache.AcquireLease(ctx, 7)
+	require.NoError(t, err)
 	a.loaded = true
 	a.sessionID = 1
 	sys := actor.NewSystem(actor.Config{ShardCount: 1, MailboxSize: 8})
@@ -146,7 +149,9 @@ func (*loseCommitReply) DialHook(next redis.DialHook) redis.DialHook { return ne
 func (h *loseCommitReply) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 	return func(ctx context.Context, cmd redis.Cmder) error {
 		err := next(ctx, cmd)
-		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && len(cmd.Args()) == 9 && h.armed.CompareAndSwap(true, false) {
+		// commit 脚本有 3 个 key + 4 个参数（共 10 个 argv），AcquireLease 只有
+		// 3 个——用 >=8 区分「提交」与「取令牌」，避免脚本参数一变测试就失效。
+		if err == nil && (cmd.Name() == "eval" || cmd.Name() == "evalsha") && len(cmd.Args()) >= 8 && h.armed.CompareAndSwap(true, false) {
 			return errors.New("injected lost Redis reply")
 		}
 		return err
@@ -200,6 +205,9 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			require.NoError(t, err)
 			a.setState(state)
 			a.cacheVersion = version
+			// 测试绕过 preload：补一个有效令牌。
+			a.token, err = repo.cache.AcquireLease(ctx, 7)
+			require.NoError(t, err)
 			if failure == "before" {
 				mr.SetError("injected cache unavailable")
 			}
@@ -228,8 +236,10 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 				if first.Code != 1 {
 					t.Fatalf("failed cache write replied success: %v", first)
 				}
-				if a.state.GetItemCount(1001) != 10 || len(a.state.Ext("signin")) != 0 {
-					t.Fatal("failed cache update leaked memory")
+				// R2.5：失败后不回滚内存，而是标记「下一条消息前整份重载」。
+				// 下一轮 retry 会走重载路径，其断言覆盖了「状态最终回到权威」。
+				if !a.cacheReload {
+					t.Fatal("failed cache write must schedule reload")
 				}
 			}
 			mr.SetError("")

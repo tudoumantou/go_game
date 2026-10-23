@@ -60,7 +60,11 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 	if _, err := store.Seed(ctx, Snapshot{PlayerID: 3, Items: map[int32]int64{}}, 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Commit(ctx, Snapshot{PlayerID: 3, Items: map[int32]int64{}}, 0); err != nil {
+	lease, err := store.AcquireLease(ctx, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(ctx, Snapshot{PlayerID: 3, Items: map[int32]int64{}}, lease); err != nil {
 		t.Fatal(err)
 	}
 

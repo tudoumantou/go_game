@@ -27,9 +27,10 @@ import (
 var (
 	// ErrMiss 玩家缓存不存在（冷启动需从 MySQL 装载后 Seed）。
 	ErrMiss = errors.New("player cache missing")
-	// ErrConflict 版本冲突：expected 与 Redis 中的 version 不一致，
-	// 提交作废（持旧版本的 worker/重投路径应重新 Load 再试）。
-	ErrConflict = errors.New("player cache version conflict")
+	// ErrConflict 提交被拒：调用方的会话令牌已不是当前 epoch——
+	// 意味着这个 Actor 已被更新的会话接管（跨节点转移或同节点顶号）。
+	// 调用方应停止写入并重载权威状态，而不是重试提交。
+	ErrConflict = errors.New("player session lease superseded")
 )
 
 // Store 玩家快照的 Redis 存储。
@@ -57,6 +58,13 @@ func (s *Store) stateKey(id int64) string {
 	return fmt.Sprintf("wb:{player-%d}:state:%d", Partition(id), id)
 }
 
+// epochKey 会话所有权代号（R2.5 围栏令牌）。
+//
+// 与 state/dirty 同一个 hash tag：三者要在 commitScript 里原子读写。
+func (s *Store) epochKey(id int64) string {
+	return fmt.Sprintf("wb:{player-%d}:epoch:%d", Partition(id), id)
+}
+
 // dirtyKey 分区脏队列 ZSET 的 key（score = 入队时间戳毫秒）。
 //
 // 按 partition 聚合而非按玩家：落库 worker 一次取一个分区的批量玩家，
@@ -77,8 +85,16 @@ func (s *Store) dirtyKey(part int) string { return fmt.Sprintf("wb:{player-%d}:d
 // 命令在失败/并发下会出现「版本新了但没入队」或「旧快照入队」。
 // redis.NewScript 负责 EVALSHA 加载与 NOSCRIPT 自动重试，调用方只管 Run。
 var commitScript = redis.NewScript(`
-local version=redis.call('HGET',KEYS[1],'version')
-if not version or version~=ARGV[1] then return -1 end
+local token = tonumber(ARGV[1])
+if not token or token <= 0 then
+  return redis.error_reply('invalid lease token')
+end
+local epoch = tonumber(redis.call('GET', KEYS[3]) or '0')
+if epoch == 0 then
+  redis.call('SET', KEYS[3], token)
+elseif token ~= epoch then
+  return -1
+end
 local queueType=redis.call('TYPE',KEYS[2]).ok
 if queueType~='none' and queueType~='zset' then return redis.error_reply('invalid dirty queue type') end
 local next=redis.call('HINCRBY',KEYS[1],'version',1)
@@ -97,7 +113,7 @@ return next
 // 取舍：每次提交序列化**整份**快照而非 diff——快照量级在 KB 内，
 // 全量的实现与正确性论证（幂等、无合并冲突）远比增量简单；
 // 真正的写压力在数据库侧，那里有合批 UPSERT 兜底。
-func (s *Store) Commit(ctx context.Context, state Snapshot, expected int64) (int64, error) {
+func (s *Store) Commit(ctx context.Context, state Snapshot, token int64) (int64, error) {
 	if err := state.Validate(); err != nil {
 		return 0, err
 	}
@@ -105,7 +121,11 @@ func (s *Store) Commit(ctx context.Context, state Snapshot, expected int64) (int
 	if err != nil {
 		return 0, err
 	}
-	version, err := commitScript.Run(ctx, s.rdb, []string{s.stateKey(state.PlayerID), s.dirtyKey(Partition(state.PlayerID))}, expected, string(raw), state.PlayerID, time.Now().UnixMilli()).Int64()
+	version, err := commitScript.Run(ctx, s.rdb, []string{
+		s.stateKey(state.PlayerID),
+		s.dirtyKey(Partition(state.PlayerID)),
+		s.epochKey(state.PlayerID),
+	}, token, string(raw), state.PlayerID, time.Now().UnixMilli()).Int64()
 	if err != nil {
 		return 0, err
 	}
@@ -113,6 +133,42 @@ func (s *Store) Commit(ctx context.Context, state Snapshot, expected int64) (int
 		return 0, ErrConflict
 	}
 	return version, nil
+}
+
+// leaseTTL 会话令牌有效期。
+//
+// 7 天：远大于 Tier-2 的 Actor 保留期（90s），不会出现「Actor 还活着但令牌
+// 已过期」；同时保证长期不登录的玩家不会在 Redis 里留下永久 key。
+const leaseTTL = 7 * 24 * time.Hour
+
+// acquireLeaseScript 自增并续期会话令牌。
+//
+// 只操作 epoch 一个 key，天然在单 slot 内；与 commitScript 的 epoch 校验
+// 共同构成围栏：新会话 +1 后，旧 Actor 手里的令牌立即失效。
+var acquireLeaseScript = redis.NewScript(`
+local epoch = redis.call('INCR', KEYS[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return epoch
+`)
+
+// AcquireLease 取得本会话的所有权令牌（R2.5）。
+//
+// 调用时机：玩家 Actor 首次加载状态时（Bind 路径）。每次调用都分配新令牌，
+// 因此「同节点顶号」也会让旧 Actor 失效——这是原先靠 sessionID 比较 +
+// kick 做、且存在窗口的那件事。
+//
+// 与 presence.TrySetOnline 的分工：presence 决定「谁在线」（跨节点拒绝绑定），
+// AcquireLease 决定「谁的写有效」（同一会话内每次提交校验）。
+func (s *Store) AcquireLease(ctx context.Context, playerID int64) (int64, error) {
+	token, err := acquireLeaseScript.Run(ctx, s.rdb,
+		[]string{s.epochKey(playerID)}, leaseTTL.Milliseconds()).Int64()
+	if err != nil {
+		return 0, err
+	}
+	if token <= 0 {
+		return 0, fmt.Errorf("writebehind: invalid lease token %d", token)
+	}
+	return token, nil
 }
 
 // seedScript 冷启动把 MySQL 读出的旧快照 seed 回 Redis（幂等）。

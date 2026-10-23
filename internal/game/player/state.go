@@ -61,6 +61,13 @@ type State struct {
 	dirty      map[string]bool // module -> dirty 标记
 	dirtyItems map[int32]bool  // 变更过的道具（落库只写这些，见 persist.Save）
 
+	// changed 自上一条消息以来是否有任何持久化字段被修改（R2.5）。
+	//
+	// 与 dirty 的区别：dirty 是「哪些模块脏」的明细，给落库用，生命周期跨消息；
+	// changed 只是「本次消息改没改」的布尔，提交窗口开始即清零。框架用它在
+	// 提交前判断「要不要写 Redis」，替代原先的整份 JSON 序列化比对。
+	changed bool
+
 	// dirtyHook 任何数据变更后回调（由 Actor 注入 → flusher.MarkDirty）。
 	//
 	// 没有这个回调时，只有玩家下线（onUnbind）才会标脏 —— 意味着**在线玩家的
@@ -108,11 +115,10 @@ func (s *State) SetExt(name string, raw json.RawMessage) {
 	} else {
 		s.ext[name] = append(json.RawMessage(nil), raw...)
 	}
-	s.dirty[name] = true
 	s.mu.Unlock()
-	// notifyDirty 在锁外调用：持锁执行外部回调有死锁风险
+	// touch 在锁外调用：持锁执行外部回调有死锁风险
 	// （回调方若回头读 State 会与 Lock 自锁）
-	s.notifyDirty()
+	s.touch(name)
 }
 
 // PlayerID 返回玩家 ID。
@@ -170,8 +176,10 @@ func (s *State) AddExp(n int64) (levelUp bool, level int32) {
 	}
 	level = s.profile.Level
 	s.mu.Unlock()
+	// 标脏必须在解锁后：touch 内部会取锁并回调 flusher。
+	s.touch("profile")
 	if levelUp {
-		s.RecalcAttrs()
+		s.RecalcAttrs() // 内部再 touch("attr")
 	}
 	return levelUp, level
 }
@@ -186,8 +194,10 @@ func (s *State) AddExp(n int64) (levelUp bool, level int32) {
 // 每次都从 baseAttr 重算，天然幂等；不碰 bonus，在线升级不会清掉已生效的装备加成。
 func (s *State) RecalcAttrs() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.recalcLocked()
+	s.mu.Unlock()
+	// 标脏在解锁后：touch 内部会取锁并回调 flusher，持锁调用会自锁。
+	s.touch("attr")
 }
 
 // recalcLocked 重算主体（调用方已持锁）。
@@ -232,11 +242,12 @@ func (s *State) ExpMax() int64 {
 	return cfg.Col1
 }
 
-// SetProfile 设置角色基础信息。
+// SetProfile 设置角色基础信息（标脏：等级/货币都随快照落库）。
 func (s *State) SetProfile(p module.Profile) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.profile = p
+	s.mu.Unlock()
+	s.touch("profile")
 }
 
 // SetSceneID 更新所在场景并标脏（0 = 不在场景中）。
@@ -244,7 +255,7 @@ func (s *State) SetSceneID(sceneID int32) {
 	s.mu.Lock()
 	s.profile.SceneID = sceneID
 	s.mu.Unlock()
-	s.notifyDirty()
+	s.touch("profile")
 }
 
 // GetAttr 读取属性（基础值 + 装备加成）。
@@ -304,10 +315,13 @@ func attrValue(a Attr, key string) int64 {
 	return 0
 }
 
-// SetAttr 设置属性。
+// SetAttr 设置属性（标脏：属性是快照的一部分）。
 func (s *State) SetAttr(key string, val int64) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer func() {
+		s.mu.Unlock()
+		s.touch("attr")
+	}()
 	switch key {
 	case "hp":
 		s.attr.Hp = int32(val)
@@ -346,6 +360,42 @@ func (s *State) notifyDirty() {
 	if hook != nil {
 		hook()
 	}
+}
+
+// touch 标记状态已变更：改动判定（changed）+ 模块脏（dirty）+ 落库调度（hook）。
+//
+// 契约（R2.5）：所有修改持久化字段的写方法都必须经过这里。框架据此用
+// HasChanged 判断「本次消息是否需要提交」，替代原先的整份 JSON 比对——
+// 漏调 touch 会让改动不被提交，所以每个写方法都有对应的置脏单测。
+//
+// 为什么 hook 在锁外调：回调方（flusher）可能回头读 State，持锁回调会自锁。
+func (s *State) touch(module string) {
+	s.mu.Lock()
+	s.changed = true
+	if module != "" {
+		s.dirty[module] = true
+	}
+	s.mu.Unlock()
+	s.notifyDirty()
+}
+
+// HasChanged 自上一条消息以来是否有任何持久化字段被修改。
+//
+// O(1)：只看一个布尔，不再需要序列化整份状态做字节比较。
+func (s *State) HasChanged() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.changed
+}
+
+// ClearChanged 清空改动标记（提交窗口开始时调用）。
+//
+// 只清 changed，不动 dirty/dirtyItems——后者是落库的增量依据，
+// 由 ClearDirty/ClearItemsDirty 在真正落库完成后清理。
+func (s *State) ClearChanged() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.changed = false
 }
 
 // Capacity 背包容量（可容纳的道具**种类**数）：初始值 + 等级 * 每级扩容。
@@ -403,7 +453,7 @@ func (s *State) AddItem(itemID int32, count int64) {
 	s.items[itemID] += count
 	s.dirtyItems[itemID] = true
 	s.mu.Unlock()
-	s.notifyDirty()
+	s.touch("bag")
 }
 
 // SeedItem 初始化道具（从库里加载时用，**不标脏**）。
@@ -429,7 +479,7 @@ func (s *State) RemoveItem(itemID int32, count int64) bool {
 		delete(s.items, itemID)
 	}
 	s.mu.Unlock()
-	s.notifyDirty()
+	s.touch("bag")
 	return true
 }
 
@@ -455,12 +505,7 @@ func (s *State) ClearItemsDirty() {
 }
 
 // MarkDirty 标记模块数据脏，并通知 flusher 纳入本轮落库。
-func (s *State) MarkDirty(module string) {
-	s.mu.Lock()
-	s.dirty[module] = true
-	s.mu.Unlock()
-	s.notifyDirty()
-}
+func (s *State) MarkDirty(module string) { s.touch(module) }
 
 // IsDirty 查询模块是否脏。
 func (s *State) IsDirty(module string) bool {
@@ -483,11 +528,12 @@ func (s *State) Attr() Attr {
 	return s.attr
 }
 
-// SetAttrStruct 设置完整属性。
+// SetAttrStruct 设置完整属性（标脏：属性是快照的一部分）。
 func (s *State) SetAttrStruct(a Attr) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.attr = a
+	s.mu.Unlock()
+	s.touch("attr")
 }
 
 // Items 返回道具副本。

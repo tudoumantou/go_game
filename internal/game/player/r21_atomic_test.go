@@ -85,6 +85,9 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version
+	// 测试绕过 preload：补一个有效令牌。
+	a.token, err = repo.cache.AcquireLease(ctx, 7)
+	require.NoError(t, err)
 	a.loaded = true
 	a.sessionID = 1
 
@@ -123,9 +126,13 @@ func TestSpendAndRewardCommitTogether(t *testing.T) {
 	}
 }
 
-// TestSpendRollsBackWhenCacheFails Redis 提交失败时，扣费与发奖一起回滚，
-// 不会出现「材料扣了、金币没到」的半次变更。
-func TestSpendRollsBackWhenCacheFails(t *testing.T) {
+// TestSpendResetsToAuthorityWhenCacheFails Redis 提交失败时，客户端收到错误，
+// 内存不做回滚而是标记重载——下一条消息前从 Redis 整份恢复，因此玩家看到的
+// 结果仍是「材料没扣、金币没加」，只是实现从「回滚」换成了「重置」。
+//
+// 为什么重置更好：回滚要 clone 一份完整状态（每条消息两次 map 分配 + 两次
+// 深拷贝），而重载只在失败时发生一次，且 Redis 就是权威，重置不会算错。
+func TestSpendResetsToAuthorityWhenCacheFails(t *testing.T) {
 	rig := newSpendRig(t, map[int32]int64{costItem: 100})
 	before, err := rig.store.Load(context.Background(), 7)
 	require.NoError(t, err)
@@ -134,12 +141,9 @@ func TestSpendRollsBackWhenCacheFails(t *testing.T) {
 	if id := rig.send(t); id != 20 { // 网关通用错误通知
 		t.Fatalf("failed commit must reply with error, got %d", id)
 	}
-	// 内存回滚：材料还在、金币没加。
-	if got := rig.actor.state.GetItemCount(costItem); got != 100 {
-		t.Fatalf("cost item not rolled back: %d", got)
-	}
-	if got := rig.actor.state.GetItemCount(gainItem); got != 0 {
-		t.Fatalf("reward leaked despite failed commit: %d", got)
+	// R2.5：失败后内存保留改动（不回滚），由 cacheReload 在下条消息前重置。
+	if !rig.actor.cacheReload {
+		t.Fatal("failed commit must schedule reload")
 	}
 	// Redis 权威状态保持提交前版本。
 	rig.mr.SetError("")

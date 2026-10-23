@@ -26,8 +26,13 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 	if err != nil || len(ids) != 0 {
 		t.Fatalf("seed became dirty: %v %v", ids, err)
 	}
+	// R2.5：提交凭会话令牌（token），不再是数据版本。
+	token, err := store.AcquireLease(ctx, 7)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, token, "首次获取令牌应从 1 开始")
+
 	snapshot.Items[1001] = 110
-	first, err := store.Commit(ctx, snapshot, 0)
+	first, err := store.Commit(ctx, snapshot, token)
 	if err != nil || first != 1 {
 		t.Fatalf("commit %d %v", first, err)
 	}
@@ -35,11 +40,16 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 	if err != nil || len(ids) != 1 || ids[0] != 7 {
 		t.Fatalf("lost dirty work: %v %v", ids, err)
 	}
-	if _, err := store.Commit(ctx, snapshot, 0); !errors.Is(err, ErrConflict) {
-		t.Fatalf("stale update accepted: %v", err)
+
+	// 新会话接管：epoch+1，旧令牌立即失效——这是「防双 Actor 同时写」的核心。
+	newToken, err := store.AcquireLease(ctx, 7)
+	require.NoError(t, err)
+	require.Greater(t, newToken, token)
+	if _, err := store.Commit(ctx, snapshot, token); !errors.Is(err, ErrConflict) {
+		t.Fatalf("被接管后的旧令牌仍可写: %v", err)
 	}
 	snapshot.Items[1001] = 109
-	if _, err := store.Commit(ctx, snapshot, 1); err != nil {
+	if _, err := store.Commit(ctx, snapshot, newToken); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Ack(ctx, 7, 1); err != nil {

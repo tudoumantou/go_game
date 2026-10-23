@@ -1,19 +1,27 @@
-// internal/game/player/cache_actor.go —— 缓存权威模式的消息提交流程（R2.1）
+// internal/game/player/cache_actor.go —— 缓存权威模式的消息提交流程（R2.1 / R2.5）
 //
-// 架构职责：缓存权威（Redis 快照 + CAS）下，每条业务消息走同一条流水线：
+// 架构职责：缓存权威（Redis 快照）下，每条业务消息走同一条流水线：
 //
-//	clone 旧状态 → 执行业务 → diff 新旧快照 → 有变化则 CAS → 成功提交/失败回滚
+//	清改动标记 → 执行业务 → 有改动则凭会话令牌提交 → 成功刷回包 / 失败标记重载
 //
-// 协作关系：由 actor.go 的 Receive 分流进入（纯下行消息不进这里）；
-// 提交/回滚/pending 收尾全部在本文件，业务 handler（各模块）对此无感。
+// 协作关系：由 actor.go 的 Receive 分流进入（纯下行消息与无状态模块不进这里）；
+// 提交、重载、pending 收尾全部在本文件，业务 handler（各模块）对此无感。
 //
-// 设计取舍：
-//   - 为什么先 clone 再业务：业务可能改一半才失败，没有旧快照就无法整体
-//     回退，只能逐字段逆操作——那正是脏数据与「发奖扣一半」的来源；
-//   - 为什么 diff 只提交变化字段：AOI/推送类消息也走同一条信箱，若无脑
-//     每消息一次 CAS，同屏广播会把 Redis 写打满；diff 为空的帧零写入；
-//   - 为什么回包要缓冲到 CAS 之后：否则客户端先看到「成功回包」再收到
-//     「提交失败」，业务状态与客户端认知长期分叉。
+// 设计取舍（R2.5 简化，逐条对应旧实现）：
+//   - 不 clone 备份：Actor 独占数据（同一玩家只有一个执行者），进程内不存在
+//     「改到一半发现别人也改了」。跨会话的陈旧写由会话令牌（token）拦截。
+//     原先 clone 出的备份在失败路径上先回滚、下一条消息立刻被 LoadCached 覆盖
+//     ——只活了一瞬间。
+//   - 不逐消息 diff：脏标记（State.changed）已经是「改没改」的答案，序列化
+//     两份快照做字节比较是重复劳动，还占掉一条消息 60% 的开销。
+//   - 失败不回滚而重载：Redis 是权威，重置比修补可靠；重载只在失败时发生一次，
+//     而 clone 是每条消息都付。
+//   - 回包缓冲到提交之后：否则客户端先看到「成功回包」再收到「提交失败」，
+//     业务状态与客户端认知长期分叉。缓冲由 commitGate 统一管理。
+//
+// 例外：不可重放的消息（充值发货已在 MySQL 提交事实）失败时保留 cachePending，
+// 下次消息先 finishPending 补提——这条路径不适用「丢弃重载」，因为钱的事实
+// 已经在 MySQL 落定，丢掉 Redis 快照会与事实分叉（见 R2.3）。
 package player
 
 import (
@@ -29,14 +37,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type cachedReply struct {
-	id   uint32
-	body []byte
-}
-
 // receiveCached 缓存权威模式的一条消息的完整生命周期。
 //
-// 顺序即正确性：pending 收尾 → 冷/热加载 → 过期重载 → 执行业务 → diff → CAS。
+// 顺序即正确性：pending 收尾 → 冷/热加载 → 过期重载 → 执行业务 → 脏标记判定 → 令牌提交。
 // 任何一步失败都走 cacheFailure，由它按消息类型给出下行错误。
 func (a *Actor) receiveCached(ctx *actor.Context) {
 	if msg, ok := ctx.Message().(*BindMsg); ok {
@@ -74,57 +77,55 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 		a.cacheVersion = version
 		a.cacheReload = false
 	}
-	previous := a.state.clone()
-	before, _ := json.Marshal(previous.snapshot())
-	a.bufferReplies = true
-	a.queuedReplies = nil
-	completed := false
-	// defer 是这段流程的「无论成败都执行」收尾：正常路径在函数体里提前
-	// 置 completed=true 跳过回滚；panic 或漏判时保证状态回到 previous。
+	// 提交窗口：清改动标记 → 业务 → 按 HasChanged 决定是否写 Redis。
+	//
+	// R2.5：不再 clone 状态、不再序列化两份做字节比较。依据是 Actor 独占数据
+	// （同一玩家只有一个执行者），跨会话的陈旧写由会话令牌（token）拦截——
+	// 令牌失效时提交直接被拒，不需要「先备份、失败回滚」这套保险。
+	a.state.ClearChanged()
+	a.gate.Begin()
+	// panic 时内存可能处于半改状态：不回滚（重载必然覆盖），标记重载即可。
 	defer func() {
-		a.bufferReplies = false
-		a.queuedReplies = nil
-		if !completed {
-			a.setState(previous)
+		a.gate.Discard()
+		if r := recover(); r != nil {
 			a.cacheReload = true
+			panic(r)
 		}
 	}()
 	a.receive(ctx)
-	after, err := json.Marshal(a.state.snapshot())
-	if err == nil && !bytes.Equal(before, after) {
+
+	var commitErr error
+	if a.state.HasChanged() {
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		var version int64
-		version, err = a.repo.cache.Commit(saveCtx, a.state.snapshot(), a.cacheVersion)
+		version, commitErr = a.repo.cache.Commit(saveCtx, a.state.snapshot(), a.token)
 		cancel()
-		if err == nil {
+		if commitErr == nil {
 			a.cacheVersion = version
 			a.state.ClearItemsDirty()
 		}
 	}
-	a.bufferReplies = false
-	if err != nil {
+	if commitErr != nil {
+		// 先退出窗口：cacheFailure 要发的错误回包必须直发，
+		// 否则会入队随后被 defer 的 Discard 一起丢掉，客户端只能等到超时。
+		a.gate.Discard()
 		if a.canRollbackMessage(ctx.Message()) {
-			a.setState(previous)
+			// 不回滚内存：Redis 是权威，下一条消息开头整份 LoadCached 会覆盖它。
+			// （原先的 setState(previous) 正是这样被立刻覆盖，clone 纯属白做。）
 			a.cacheReload = true
 		} else {
-			// 旧模块可能已经提交 SQL 领取事实，不能再撤销其资产。
-			// 保留内存中的待提交快照，后续消息先恢复提交再进入业务。
+			// 不可重放的消息（充值发货已在 MySQL 提交事实）：保留待提交快照，
+			// 后续消息先 finishPending 补提，不能丢。
 			a.cachePending = &writebehind.Record{Version: a.cacheVersion, State: a.state.snapshot()}
 			a.cacheReload = false
 		}
-		completed = true
-		a.queuedReplies = nil
-		a.cacheFailure(ctx, err)
+		a.cacheFailure(ctx, commitErr)
 		return
 	}
-	completed = true
-	for _, reply := range a.queuedReplies {
-		if err := a.send(reply.id, reply.body); err != nil {
-			a.logger.Warn("cached reply failed", "err", err)
-		}
-	}
-	if msg, ok := ctx.Message().(*GrantItemsMsg); ok && msg.Done != nil {
-		msg.Done <- nil
+	// 提交成功才刷出暂存的下行；发送失败只记日志——数据已经落定，
+	// 因为一条推送失败去回滚一次成功提交没有意义。
+	for _, err := range a.gate.Commit() {
+		a.logger.Warn("cached reply failed", "err", err)
 	}
 }
 
@@ -165,7 +166,7 @@ func (a *Actor) finishPending() error {
 	version := current.Version
 	switch {
 	case current.Version == pending.Version:
-		version, err = a.repo.cache.Commit(ctx, pending.State, pending.Version)
+		version, err = a.repo.cache.Commit(ctx, pending.State, a.token)
 		if err != nil {
 			return err
 		}
