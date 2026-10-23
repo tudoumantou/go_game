@@ -304,6 +304,8 @@ func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title,
 // 无内存态、无锁：邮件数据全在 MySQL，OnMessage 在玩家 Actor 内串行执行，
 // 跨玩家一致性由 DB 约束（唯一键）与快照业务键分工保证。
 type Module struct {
+	*module.Thin
+
 	// repo 仓储；nil 表示无 DB 环境（列表/领取降级，离线发放报错，见各方法）
 	repo   *Repo
 	logger *log.Logger
@@ -311,7 +313,15 @@ type Module struct {
 
 // New 创建邮件模块。
 func New(repo *Repo, logger *log.Logger) *Module {
-	return &Module{repo: repo, logger: logger}
+	m := &Module{repo: repo, logger: logger}
+	m.Thin = module.NewThin("mail",
+		module.ThinLogger(logger),
+		module.ThinLogin(m.onLogin),
+		module.ThinLogout(m.onLogout),
+	)
+	m.Handle(msgIDMailListReq, m.onList)
+	m.Handle(msgIDMailTakeReq, m.onTake)
+	return m
 }
 
 // DeliverOffline 供充值等 Tier-1 发放使用：玩家离线时以 biz_id 幂等写系统邮件。
@@ -326,37 +336,13 @@ func (m *Module) DeliverOffline(ctx context.Context, playerID int64, bizID, titl
 	return m.repo.DeliverOffline(ctx, playerID, bizID, title, content, items)
 }
 
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "mail" }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDMailListReq, msgIDMailTakeReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDMailListReq:
-		return m.onList(ctx)
-	case msgIDMailTakeReq:
-		return m.onTake(ctx, body)
-	default:
-		return fmt.Errorf("mail: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
+// onLogin 登录时拉一次未读数（经 ThinLogin 挂接）。
 //
-// 登录时拉一次未读数：目前只记 Debug 日志（红点以客户端列表请求为准，
-// 这里是服务端留痕，供「玩家反馈没收到邮件」时对账）。
+// 目前只记 Debug 日志（红点以客户端列表请求为准，这里是服务端留痕，
+// 供「玩家反馈没收到邮件」时对账）。
 // 查询失败直接上抛：OnLogin 失败会中断登录流程——DB 故障时拒绝放行
 // 好过放行后玩家发现奖励全丢。
-func (m *Module) OnLogin(ctx *module.Context) error {
+func (m *Module) onLogin(ctx *module.Context) error {
 	n, err := m.repo.UnreadCount(context.Background(), ctx.State.PlayerID())
 	if err != nil {
 		return err
@@ -367,12 +353,12 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	return nil
 }
 
-// OnLogout 实现 module.Module。
+// onLogout 下线时触发一次常规 flush 周期（经 ThinLogout 挂接）。
 //
 // 邮件无 Ext 快照，MarkDirty 只是触发一次常规 flush 周期（与其他模块
 // 生命周期保持一致，无害）；真正的数据在 MySQL，发送时已直写。
-func (m *Module) OnLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
+func (m *Module) onLogout(ctx *module.Context) error {
+	ctx.State.MarkDirty("mail")
 	return nil
 }
 
@@ -418,7 +404,7 @@ func (m *Module) Deliver(ctx context.Context, msg *pkgmq.MailMsg) (int64, error)
 // Read 按 Status>=1 折算：1=已读与 2=已领对「已读红点」是同义。
 // ExpireAt.Valid 先判再取：sql.NullTime 的可空语义，Valid=false 时
 // .Time 是零值，直接 Unix() 会回一个 1970 的过期时间骗客户端。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	rows, err := m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID(), 100)
 	if err != nil {
 		return err
@@ -452,7 +438,7 @@ func (m *Module) onList(ctx *module.Context) error {
 // 5002（已领）与 5003（无附件）对客户端语义不同：前者静默、后者可能
 // 弹错误提示。MarkTaken 生效后重复请求必须稳定回 5002，所以 HasBiz
 // 必须先于 FindAttachments——顺序颠倒是可观测的行为退化。
-func (m *Module) onTake(ctx *module.Context, body []byte) error {
+func (m *Module) onTake(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.MailTakeAttachmentReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode MailTakeAttachmentReq: %w", err)

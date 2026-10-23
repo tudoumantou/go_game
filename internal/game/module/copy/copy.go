@@ -12,7 +12,6 @@
 package copy
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -93,50 +92,27 @@ func validate(row *model.CopyRecord) error {
 
 // Module 副本模块。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 }
 
 // New 创建副本模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return stateKey }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDSettleReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(*module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDSettleReq:
-		return m.onSettle(ctx, body)
-	default:
-		return fmt.Errorf("copy: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module：状态随快照提交。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
 //
-// 不做任何事：进度在 Ext 里，列表/结算时按需 load；
-// 登录不预加载是为了少一次 JSON 解码（数据量小，懒加载更划算）。
-func (m *Module) OnLogin(*module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(*module.Context) error { return nil }
+// 登录不做事：进度在 Ext 里，列表/结算时按需 load——数据量小，
+// 懒加载比登录时预解码更划算。
+func New(logger *log.Logger) *Module {
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDSettleReq, m.onSettle)
+	return m
+}
 
 // onList 副本列表（等级不足仍下发，结算时强校验）。
 //
 // 列表 = 配置全集 LEFT JOIN 玩家进度：没打过的副本也在列表里
 // （BestStar=0/PassCount=0），这样客户端不需要再拉配置表。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.CopyListResp{Code: codeOK}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -159,7 +135,7 @@ func (m *Module) onList(ctx *module.Context) error {
 
 // onSettle 通关结算：星级取历史最佳，首通发放掉落并写经验。
 // 结算事实、首通奖励与经验都在同一条消息内，随同一份快照提交。
-func (m *Module) onSettle(ctx *module.Context, body []byte) error {
+func (m *Module) onSettle(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.CopySettleReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode CopySettleReq: %w", err)

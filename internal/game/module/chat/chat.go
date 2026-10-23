@@ -163,6 +163,8 @@ func (r *Repo) ListRecent(ctx context.Context, ownerID, peerID int64, limit int)
 // 无玩家态：所有状态在 MySQL（历史）与 Redis（在线/暂存），模块只做编排，
 // 因此 OnMessage 在玩家 Actor 内执行但不读写任何共享结构，无需加锁。
 type Module struct {
+	*module.Thin
+
 	// repo 历史仓储；nil 表示无 DB 环境（降级：只校验 + 投递，不留历史）
 	repo      *Repo
 	messenger Messenger
@@ -171,43 +173,23 @@ type Module struct {
 
 // New 创建聊天模块（messenger 可为 nil：单机降级为只落库）。
 func New(repo *Repo, messenger Messenger, logger *log.Logger) *Module {
-	return &Module{repo: repo, messenger: messenger, logger: logger}
+	m := &Module{repo: repo, messenger: messenger, logger: logger}
+	m.Thin = module.NewThin("chat",
+		module.ThinLogger(logger),
+		module.ThinLogout(m.onLogout),
+	)
+	m.Handle(msgIDSendReq, m.onSend)
+	m.Handle(msgIDHistoryReq, m.onHistory)
+	return m
 }
 
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "chat" }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDSendReq, msgIDHistoryReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDSendReq:
-		return m.onSend(ctx, body)
-	case msgIDHistoryReq:
-		return m.onHistory(ctx, body)
-	default:
-		return fmt.Errorf("chat: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
+// onLogout 下线时触发一次常规 flush 周期。
 //
-// 聊天无 Ext 快照，这里 MarkDirty 只是让 Persister 走一次常规 flush 周期
+// 聊天无 Ext 快照，这里 MarkDirty 只是让 Persister 走一次常规周期
 // （保持与其他模块的生命周期行为一致，无害）；真正要落的历史在 MySQL，
 // 发送时已直写，不依赖登出触发。
-func (m *Module) OnLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
+func (m *Module) onLogout(ctx *module.Context) error {
+	ctx.State.MarkDirty("chat")
 	return nil
 }
 
@@ -224,7 +206,7 @@ func (m *Module) DeliverInbound(ctx context.Context, msg *pkgmq.ChatCrossMsg) er
 }
 
 // onSend 发送私聊（17.3：本端 out → 对方在线本服直投 / 跨服走 Kafka / 离线 pend）。
-func (m *Module) onSend(ctx *module.Context, body []byte) error {
+func (m *Module) onSend(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.ChatSendReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode ChatSendReq: %w", err)
@@ -322,7 +304,7 @@ func (m *Module) deliver(toID int64, raw []byte, crossMsg *pkgmq.ChatCrossMsg) {
 }
 
 // onHistory 拉取与某好友的聊天历史。
-func (m *Module) onHistory(ctx *module.Context, body []byte) error {
+func (m *Module) onHistory(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.ChatHistoryReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode ChatHistoryReq: %w", err)

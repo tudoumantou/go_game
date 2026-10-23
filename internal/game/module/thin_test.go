@@ -202,3 +202,20 @@ func TestThinDuplicateHandlePanics(t *testing.T) {
 	th.Handle(1001, func(*Context, uint32, []byte) error { return nil })
 	th.Handle(1001, func(*Context, uint32, []byte) error { return nil })
 }
+
+// TestThinOnEvent 事件钩子被转发；未挂时为空操作（模块无需为不订阅事件写代码）。
+func TestThinOnEvent(t *testing.T) {
+	var got []Event
+	th := NewThin("evt", ThinOnEvent(func(_ *Context, evt Event) { got = append(got, evt) }))
+	th.OnEvent(&Context{}, Event{Type: "kill", Key: "1001", Delta: 1})
+	th.OnEvent(&Context{}, Event{Type: "use_item", Key: "2001", Delta: 3})
+	if len(got) != 2 || got[0].Type != "kill" || got[1].Delta != 3 {
+		t.Fatalf("事件未按序转发: %#v", got)
+	}
+
+	// 未挂 ThinOnEvent：不 panic、无副作用。
+	bare := NewThin("bare_evt")
+	bare.OnEvent(&Context{}, Event{Type: "kill"})
+
+	var _ EventAware = th
+}

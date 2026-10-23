@@ -96,6 +96,8 @@ func validate(row *model.ActivityRecord) error {
 
 // Module 活动模块。
 type Module struct {
+	*module.Thin
+
 	logger   *log.Logger
 	producer ProgressProducer // 全服里程碑贡献上报；nil 表示不上报（单机/测试）
 }
@@ -118,40 +120,23 @@ func New(logger *log.Logger, producer ProgressProducer) *Module {
 	if producer != nil {
 		m.producer = producer
 	}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		module.ThinLogin(m.onLogin),
+		module.ThinOnEvent(m.onEvent),
+	)
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDClaimReq, m.onClaim)
 	return m
 }
 
-// Name 实现 module.Module。
-func (m *Module) Name() string { return stateKey }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDClaimReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(*module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDClaimReq:
-		return m.onClaim(ctx, body)
-	default:
-		return fmt.Errorf("activity: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module：状态随快照提交。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 登录类活动进度 +1，纯内存改动，随本次快照提交。
+// onLogin 登录类活动进度 +1，纯内存改动，随本次快照提交（经 ThinLogin 挂接）。
 //
 // 与 quest.OnEvent 的分工：登录是「事件」的一种，但发生在协议之外，
 // 所以单独在 OnLogin 钩子里推进，而不是伪造一条 Event。
 // 状态损坏时吞错继续登录：活动进度丢一次可以原谅，
 // 把玩家拦在登录外不能。
-func (m *Module) OnLogin(ctx *module.Context) error {
+func (m *Module) onLogin(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
 		return nil // 状态损坏不阻断登录，后续消息会再次报错
@@ -178,15 +163,12 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	return nil
 }
 
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(*module.Context) error { return nil }
-
-// OnEvent 实现 module.EventAware：把玩家行为事件累加为活动进度。
+// onEvent 把玩家行为事件累加为活动进度（经 ThinOnEvent 挂接）。
 //
 // 与 quest.OnEvent 同构，差异有两点：
 //  1. 进度到目标后仍然接受事件（只是截断），不改变任何领取态；
 //  2. server_progress 类活动要额外收集上报，攒批后统一发 Kafka。
-func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
+func (m *Module) onEvent(ctx *module.Context, evt module.Event) {
 	d, err := load(ctx.State)
 	if err != nil {
 		return
@@ -274,7 +256,7 @@ func instanceIDFor(activityID int32, now int64) string {
 //
 // 过期活动直接不下发：客户端定时刷新列表即可看到活动消失，
 // 不需要服务端推「活动结束」通知——少一种推送，少一类时序问题。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.ActivityListResp{Code: codeOK}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -301,7 +283,7 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onClaim 领奖：进度达标 + 位图防重复，领奖事实与奖励同一次快照提交。
-func (m *Module) onClaim(ctx *module.Context, body []byte) error {
+func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.ActivityClaimReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode ActivityClaimReq: %w", err)

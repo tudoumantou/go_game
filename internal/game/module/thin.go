@@ -72,6 +72,8 @@ type Thin struct {
 	initFn   func(ctx *Context) error
 	loginFn  func(ctx *Context) error
 	logoutFn func(ctx *Context) error
+	// eventFn 事件消费钩子（nil 表示本模块不订阅事件）。
+	eventFn func(ctx *Context, evt Event)
 
 	handlers map[uint32]ThinHandler
 	// ids 注册顺序的协议号（MsgIDs 返回稳定顺序，便于测试与日志）。
@@ -111,6 +113,18 @@ func ThinLogin(fn func(ctx *Context) error) ThinOption { return func(t *Thin) { 
 
 // ThinLogout 设置玩家下线钩子（默认空实现）。
 func ThinLogout(fn func(ctx *Context) error) ThinOption { return func(t *Thin) { t.logoutFn = fn } }
+
+// ThinOnEvent 设置事件消费钩子（实现 EventAware，任务/活动这类进度模块用）。
+//
+// 事件按 evt.Type 分发由模块自己做：框架不维护「事件类型 → 处理器」的注册表，
+// 因为一个模块通常只关心两三个类型，一个 switch 比再引入一层间接更直白。
+//
+// 取舍：Thin 无条件实现 OnEvent（未挂钩子时为空），因此所有 Thin 模块都会
+// 进入 Registry.DispatchEvent 的遍历。代价是每个事件多十几次空函数调用
+// （几十纳秒），换来的是「模块无需为不订阅事件写任何代码」。
+func ThinOnEvent(fn func(ctx *Context, evt Event)) ThinOption {
+	return func(t *Thin) { t.eventFn = fn }
+}
 
 // ThinHandle 注册协议处理器（构造期选项形式）。
 //
@@ -195,6 +209,14 @@ func (t *Thin) OnLogout(ctx *Context) error {
 		return nil
 	}
 	return t.logoutFn(ctx)
+}
+
+// OnEvent 实现 module.EventAware（未挂 ThinOnEvent 时为空操作）。
+func (t *Thin) OnEvent(ctx *Context, evt Event) {
+	if t.eventFn == nil {
+		return
+	}
+	t.eventFn(ctx, evt)
 }
 
 // Rollbackable 实现 module.RollbackAware：已注册的协议默认全部可回滚。

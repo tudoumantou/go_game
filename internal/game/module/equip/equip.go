@@ -12,7 +12,6 @@
 package equip
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -112,46 +111,29 @@ func validate(row *model.PlayerEquip) error {
 
 // Module 装备模块。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 }
 
 // New 创建装备模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
-
-// Name 实现 module.Module。
-//
-// 返回值就是 stateKey：Ext 槽位键、MarkDirty 标签、落库归属三处同源。
-func (m *Module) Name() string { return stateKey }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDWearReq, msgIDTakeOffReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(*module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDWearReq:
-		return m.onWear(ctx, body)
-	case msgIDTakeOffReq:
-		return m.onTakeOff(ctx, body)
-	default:
-		return fmt.Errorf("equip: unexpected msg %d", msgID)
-	}
+func New(logger *log.Logger) *Module {
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		module.ThinLogin(m.onLogin),
+	)
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDWearReq, m.onWear)
+	m.Handle(msgIDTakeOffReq, m.onTakeOff)
+	return m
 }
 
-// OnSave 实现 module.Module：装备随快照提交。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 按已穿戴装备重算属性加成。
+// onLogin 按已穿戴装备重算属性加成（经 ThinLogin 挂接）。
 //
 // 加成是派生值，不落库：每次登录从快照里的装备列表重算，避免重复累加。
 // 时序契约：玩家层在 LoginAll 之前统一 ClearBonus，本模块只叠加自己的部分；
 // 若不先清空，重连一次就会把 atk 加成翻倍。
-func (m *Module) OnLogin(ctx *module.Context) error {
+func (m *Module) onLogin(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
 		return err
@@ -168,11 +150,8 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	return nil
 }
 
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(*module.Context) error { return nil }
-
 // onList 装备列表：按快照顺序原样下发（顺序即持有顺序，不做排序）。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.EquipListResp{Code: codeOK}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -191,7 +170,7 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onWear 穿戴：同部位冲突检查、等级校验，状态与加成同一次快照提交。
-func (m *Module) onWear(ctx *module.Context, body []byte) error {
+func (m *Module) onWear(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.EquipWearReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode EquipWearReq: %w", err)
@@ -257,7 +236,7 @@ func (m *Module) onWear(ctx *module.Context, body []byte) error {
 //
 // 卸下不删除实例——「拥有」与「穿戴」是两个事实，分别由列表存在性
 // 与 Equipped 字段表达。
-func (m *Module) onTakeOff(ctx *module.Context, body []byte) error {
+func (m *Module) onTakeOff(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.EquipTakeOffReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode EquipTakeOffReq: %w", err)

@@ -13,7 +13,6 @@
 package skill
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -89,43 +88,25 @@ func validate(row *model.PlayerSkill) error {
 
 // Module 技能模块。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 }
 
 // New 创建技能模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return stateKey }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDLearnReq, msgIDUpgradeReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(*module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDLearnReq:
-		return m.onLearn(ctx, body)
-	case msgIDUpgradeReq:
-		return m.onUpgrade(ctx, body)
-	default:
-		return fmt.Errorf("skill: unexpected msg %d", msgID)
-	}
+func New(logger *log.Logger) *Module {
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		module.ThinLogout(m.onLogout),
+	)
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDLearnReq, m.onLearn)
+	m.Handle(msgIDUpgradeReq, m.onUpgrade)
+	return m
 }
 
-// OnSave 实现 module.Module：等级随快照提交。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(*module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error {
+// onLogout 下线时标脏，确保最后一次学习的技能随快照落库。
+func (m *Module) onLogout(ctx *module.Context) error {
 	ctx.State.MarkDirty(stateKey)
 	return nil
 }
@@ -136,7 +117,7 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 // Go 知识点：map 的 range 顺序随机，所以必须先把 key 收集成切片再排序；
 // 这里用手写冒泡而非 sort.Ints——N 通常 <20，省一个 import，
 // 也顺带在注释里写明了「为什么不用标准库」。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.SkillListResp{Code: codeOK}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -172,7 +153,7 @@ func (m *Module) onList(ctx *module.Context) error {
 // onLearn 学习技能：Col2 是学习等级门槛，未达到直接拒绝。
 //
 // 「已学」用键存在判定：学习即置 1 级，与升级路径共用同一张表。
-func (m *Module) onLearn(ctx *module.Context, body []byte) error {
+func (m *Module) onLearn(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.SkillLearnReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode SkillLearnReq: %w", err)
@@ -208,7 +189,7 @@ func (m *Module) onLearn(ctx *module.Context, body []byte) error {
 // 消耗 = Col3 × 当前等级（线性增长，Col3=0 表示免费）；
 // 扣费（RemoveItem）与升级（Levels+1）都在内存里，CAS 失败一起回滚，
 // 不会「扣了钻石没升级」。
-func (m *Module) onUpgrade(ctx *module.Context, body []byte) error {
+func (m *Module) onUpgrade(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.SkillUpgradeReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode SkillUpgradeReq: %w", err)

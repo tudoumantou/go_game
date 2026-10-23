@@ -14,7 +14,6 @@
 package quest
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -111,52 +110,33 @@ func validate(row *model.PlayerQuest) error {
 
 // Module 任务模块。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 }
 
 // New 创建任务模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return stateKey }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 {
-	return []uint32{msgIDListReq, msgIDAcceptReq, msgIDClaimReq}
+func New(logger *log.Logger) *Module {
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		module.ThinLogout(m.onLogout),
+		module.ThinOnEvent(m.onEvent),
+	)
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDAcceptReq, m.onAccept)
+	m.Handle(msgIDClaimReq, m.onClaim)
+	return m
 }
 
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDAcceptReq:
-		return m.onAccept(ctx, body)
-	case msgIDClaimReq:
-		return m.onClaim(ctx, body)
-	default:
-		return fmt.Errorf("quest: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module：状态随快照提交，无需额外落库。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
+// onLogout 下线时标脏，保证最后一次进度推进随快照落库。
 //
 // 不做预加载：任务数据随 Ext 懒加载，列表请求时才解码 JSON。
-func (m *Module) OnLogin(*module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error {
+func (m *Module) onLogout(ctx *module.Context) error {
 	ctx.State.MarkDirty(stateKey)
 	return nil
 }
 
-// OnEvent 实现 module.EventAware：推进匹配类型的任务进度。
+// onEvent 推进匹配类型的任务进度（经 ThinOnEvent 挂接）。
 //
 // 一次事件只解析一次状态、只写回一次；进度与状态都在内存里改，
 // 快照提交失败时随整条消息回滚。
@@ -164,7 +144,7 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 // Go 知识点：EventAware 是可选接口，Registry 用类型断言探测
 // （见 module.go DispatchEvent）——本模块实现它即「订阅全部事件」，
 // 事件过滤在函数体内按 cfg.Col2 做。
-func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
+func (m *Module) onEvent(ctx *module.Context, evt module.Event) {
 	d, err := load(ctx.State)
 	if err != nil {
 		// 状态损坏只告警不抛错：OnEvent 没有返回值，
@@ -208,7 +188,7 @@ func (m *Module) OnEvent(ctx *module.Context, evt module.Event) {
 // 注意内部 status（0/1/2）与协议 status（0-3）是两套编码：
 // 内部没有「未接」状态（用键不存在表达），协议需要显式 0，
 // 所以这里做一次映射，而不是把内部状态直接下发。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.QuestListResp{Code: codeOK}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -245,7 +225,7 @@ func (m *Module) onList(ctx *module.Context) error {
 //
 // 已领奖的任务允许重新接取（日常任务的设计前提）：Status==claimed
 // 时覆盖为 doing 并清零进度，实现「每日刷新」而不需要删键。
-func (m *Module) onAccept(ctx *module.Context, body []byte) error {
+func (m *Module) onAccept(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.QuestAcceptReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode QuestAcceptReq: %w", err)
@@ -275,7 +255,7 @@ func (m *Module) onAccept(ctx *module.Context, body []byte) error {
 //
 // 领取事实与奖励在同一次快照提交：已领状态写进 Ext，道具进 Items，经验进 Profile，
 // Redis 提交失败时三者一起回滚，不会出现「状态已领、奖励没到账」。
-func (m *Module) onClaim(ctx *module.Context, body []byte) error {
+func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.QuestClaimReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode QuestClaimReq: %w", err)

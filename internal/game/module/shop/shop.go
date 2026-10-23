@@ -14,7 +14,6 @@
 package shop
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -91,49 +90,27 @@ func validate(row *model.ShopRecord) error {
 
 // Module 商店模块。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 }
 
 // New 创建商店模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return stateKey }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDListReq, msgIDBuyReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(*module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDBuyReq:
-		return m.onBuy(ctx, body)
-	default:
-		return fmt.Errorf("shop: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module：次数随快照提交。
-func (m *Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
 //
-// 不做跨天清理：清零逻辑在 load 的读取路径上（见 load 注释），
-// 登录时无需遍历状态。
-func (m *Module) OnLogin(*module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(*module.Context) error { return nil }
+// 嵌入 Thin：解约只借模块七件套与协议注册，业务仍在 onList/onBuy。
+// 不做跨天清理——清零逻辑在 load 的读取路径上（见 load 注释），
+// 因此没有 OnLogin 钩子。
+func New(logger *log.Logger) *Module {
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDBuyReq, m.onBuy)
+	return m
+}
 
 // onList 商店列表（商品 + 本周期已购 / 限购）。
 //
 // load 传今天：跨天时在读取路径清零，列表天然展示新周期。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.ShopListResp{Code: codeOK}
 	d, err := load(ctx.State, businessDay(time.Now()))
 	if err != nil {
@@ -153,7 +130,7 @@ func (m *Module) onList(ctx *module.Context) error {
 }
 
 // onBuy 购买：扣费、发货与次数累加同一次快照提交。
-func (m *Module) onBuy(ctx *module.Context, body []byte) error {
+func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.ShopBuyReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode ShopBuyReq: %w", err)

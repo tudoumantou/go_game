@@ -23,7 +23,6 @@
 package scenemod
 
 import (
-	"context"
 	"fmt"
 
 	"game_study/internal/game/module"
@@ -49,6 +48,10 @@ const (
 // 转发型模块：无自有可变状态（mgr 是进程级共享的场景管理器，只读引用），
 // OnMessage 在玩家 Actor 内串行执行，不需要锁。
 type Module struct {
+	// Thin 提供 Module 七件套与协议注册；本模块只在 OnLogout 有实际逻辑
+	// （下线时通知场景移除实体），其余生命周期无操作。
+	*module.Thin
+
 	// mgr 场景 Actor 管理器：按 scene_id 解析场景 Actor 的 PID
 	mgr    *scn.Manager
 	logger *log.Logger
@@ -56,35 +59,19 @@ type Module struct {
 
 // New 创建场景模块。
 func New(mgr *scn.Manager, logger *log.Logger) *Module {
-	return &Module{mgr: mgr, logger: logger}
+	m := &Module{mgr: mgr, logger: logger}
+	m.Thin = module.NewThin("scene",
+		module.ThinLogger(logger),
+		module.ThinLogout(m.onLogout),
+	)
+	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
+	m.Handle(codec.MsgSceneMoveReq, m.onMove)
+	m.Handle(codec.MsgSceneLeaveReq, m.onLeave)
+	m.Handle(codec.MsgSceneSyncReq, m.onSync)
+	return m
 }
 
-// Name 模块名。
-func (*Module) Name() string { return "scene" }
-
-// MsgIDs 本模块处理的协议号。
-func (*Module) MsgIDs() []uint32 {
-	return []uint32{
-		codec.MsgSceneEnterReq,
-		codec.MsgSceneMoveReq,
-		codec.MsgSceneLeaveReq,
-		codec.MsgSceneSyncReq,
-	}
-}
-
-// Init 初始化（无模块级状态）。
-func (*Module) Init(*module.Context) error { return nil }
-
-// OnSave 场景状态由场景 Actor 持有；落库只涉及 Profile.SceneID（玩家层已处理）。
-func (*Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 登录不做任何事：进场景由客户端显式请求（SceneEnterReq）。
-//
-// 不在登录时自动进场景，是因为「上次在哪个场景」属于客户端表现决策；
-// 服务端只记住 Profile.SceneID 供查询，不代替客户端选场景。
-func (*Module) OnLogin(*module.Context) error { return nil }
-
-// OnLogout 下线时通知场景移除实体。
+// onLogout 下线时通知场景移除实体（经 ThinLogout 挂接）。
 //
 // 这是三条清理路径中的第一条（另两条：Actor 终止、心跳超时）。
 // 它可能失败——信箱满或场景 Actor 已停——所以场景侧必须有心跳兜底，
@@ -92,7 +79,7 @@ func (*Module) OnLogin(*module.Context) error { return nil }
 //
 // 恒返回 nil 是契约选择：OnLogout 的职责是「尽力通知」，不是「保证清理」；
 // 下线流程不能被一条离场通知卡住（返回 error 会中断登出链路）。
-func (m *Module) OnLogout(ctx *module.Context) error {
+func (m *Module) onLogout(ctx *module.Context) error {
 	// SceneID<=0：从未进过场景的玩家，无需通知任何 Actor
 	sceneID := ctx.State.Profile().SceneID
 	if sceneID <= 0 {
@@ -110,28 +97,12 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 	return nil
 }
 
-// OnMessage 协议分发。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case codec.MsgSceneEnterReq:
-		return m.onEnter(ctx, body)
-	case codec.MsgSceneMoveReq:
-		return m.onMove(ctx, body)
-	case codec.MsgSceneLeaveReq:
-		return m.onLeave(ctx)
-	case codec.MsgSceneSyncReq:
-		return m.onSync(ctx, body)
-	default:
-		return fmt.Errorf("scene: unsupported msg %d", msgID)
-	}
-}
-
 // onEnter 进入场景。
 //
 // EnterMsg 携带三类信息：身份（PlayerID）、回执地址（PID——场景推送
 // 视野/回包时要能找到玩家 Actor，跨 Actor 寻址的必备字段）、
 // 进场快照（Name/Level/X/Y——场景侧不再回查玩家，避免双向依赖）。
-func (m *Module) onEnter(ctx *module.Context, body []byte) error {
+func (m *Module) onEnter(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.SceneEnterReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode SceneEnterReq: %w", err)
@@ -177,7 +148,7 @@ func (m *Module) onEnter(ctx *module.Context, body []byte) error {
 // 携带的场景参数——防玩家把移动包打到别处的场景 Actor。
 // 两种失败（PID 解析不到 / 投递被拒）都回 codeNotIn：对客户端是同一种
 // 恢复动作——「你不在场景里，重新进」。
-func (m *Module) onMove(ctx *module.Context, body []byte) error {
+func (m *Module) onMove(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.SceneMoveReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode SceneMoveReq: %w", err)
@@ -204,7 +175,7 @@ func (m *Module) onMove(ctx *module.Context, body []byte) error {
 //
 // leaveScene 先执行再回包：本地归属已清、场景已通知，此时回 codeOK
 // 不会出现「客户端以为出了场景、服务端还认为在场景里」的中间态。
-func (m *Module) onLeave(ctx *module.Context) error {
+func (m *Module) onLeave(ctx *module.Context, _ uint32, _ []byte) error {
 	if err := m.leaveScene(ctx); err != nil {
 		return err
 	}
@@ -236,7 +207,7 @@ func (m *Module) leaveScene(ctx *module.Context) error {
 // SyncMsg 带 PID：场景要把视野内实体快照推回该玩家 Actor。
 // 投递失败回 codeNotReady：与 onMove 的 codeNotIn 区分——同步请求
 // 语义上更偏「场景存在但没就绪」，客户端可稍后重试。
-func (m *Module) onSync(ctx *module.Context, body []byte) error {
+func (m *Module) onSync(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.SceneSyncReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode SceneSyncReq: %w", err)
@@ -262,11 +233,7 @@ func (m *Module) replyMove(ctx *module.Context, code, x, y, seq int32) error {
 	return m.reply(ctx, codec.MsgSceneMoveResp, &gamev1.SceneMoveResp{Code: code, X: x, Y: y, Seq: seq})
 }
 
-// reply 统一序列化并经 ctx.Reply 下发（与战斗/公会同一约定）。
+// reply 统一序列化并经 ctx.Reply 下发（Thin.Reply 已提供，保留别名便于阅读）。
 func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
+	return m.Thin.Reply(ctx, msgID, msg)
 }

@@ -17,7 +17,6 @@
 package partner
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -138,32 +137,30 @@ func save(state writebehind.ExtState, playerID int64, d *Data) error {
 
 // Module 伙伴模块。
 type Module struct {
+	*module.Thin
 	logger *log.Logger
 }
 
 // New 创建模块。
-func New(logger *log.Logger) *Module { return &Module{logger: logger} }
-
-// Name 模块名（= Ext 槽位键 = 落库归属）。
-func (*Module) Name() string { return stateKey }
-
-// MsgIDs 列表 / 激活 / 升星 / 上阵下阵。
-func (*Module) MsgIDs() []uint32 {
-	return []uint32{msgIDListReq, msgIDActivateReq, msgIDStarUpReq, msgIDFieldReq}
+func New(logger *log.Logger) *Module {
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin(stateKey,
+		module.ThinLogger(logger),
+		module.ThinLogin(m.onLogin),
+	)
+	m.Handle(msgIDListReq, m.onList)
+	m.Handle(msgIDActivateReq, m.onActivate)
+	m.Handle(msgIDStarUpReq, m.onStarUp)
+	m.Handle(msgIDFieldReq, m.onField)
+	return m
 }
 
-// Init 无模块级配置要加载（上限与货币 ID 是玩法常量）。
-func (*Module) Init(*module.Context) error { return nil }
-
-// OnSave 状态随快照提交，无额外聚合数据。
-func (*Module) OnSave(context.Context) error { return nil }
-
-// OnLogin 重新叠加已上阵伙伴的加成。
+// onLogin 重新叠加已上阵伙伴的加成。
 //
 // 玩家层在 LoginAll 之前已 ClearBonus，所以这里是「从零叠加」，不会与上次登录累加。
 // 状态损坏时吞掉错误继续登录：加成可以下次写操作时修复，
 // 但把玩家拦在登录外的影响更大（可用性优先）。
-func (m *Module) OnLogin(ctx *module.Context) error {
+func (m *Module) onLogin(ctx *module.Context) error {
 	d, err := load(ctx.State)
 	if err != nil {
 		return nil // 状态损坏不阻断登录；下次写操作会再次报错
@@ -176,29 +173,11 @@ func (m *Module) OnLogin(ctx *module.Context) error {
 	return nil
 }
 
-// OnLogout 无操作：加成是内存派生值，不落库，登录时按快照重算。
-func (*Module) OnLogout(*module.Context) error { return nil }
-
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDListReq:
-		return m.onList(ctx)
-	case msgIDActivateReq:
-		return m.onActivate(ctx, body)
-	case msgIDStarUpReq:
-		return m.onStarUp(ctx, body)
-	case msgIDFieldReq:
-		return m.onField(ctx, body)
-	default:
-		return fmt.Errorf("partner: unexpected msg %d", msgID)
-	}
-}
-
 // onList 伙伴列表：全部配置都下发，未拥有（星级 0）不带加成字段。
 //
 // 与任务/副本同构：列表 = 配置全集 JOIN 玩家进度，未解锁项也展示
 // （星级 0），客户端可渲染「可激活」入口。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	d, err := load(ctx.State)
 	if err != nil {
 		return err
@@ -225,7 +204,7 @@ func (m *Module) onList(ctx *module.Context) error {
 // onActivate 激活：消耗配置里的 col3 金币，状态置为 1 星（不上阵）。
 //
 // 扣费与置星都在内存：CAS 失败一起回滚，不会「扣了钱没激活」。
-func (m *Module) onActivate(ctx *module.Context, body []byte) error {
+func (m *Module) onActivate(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.PartnerActivateReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode PartnerActivateReq: %w", err)
@@ -266,7 +245,7 @@ func (m *Module) onActivate(ctx *module.Context, body []byte) error {
 // 已上阵的伙伴升星要同步改加成：先记旧加成，扣费置新星后
 // 加「新星加成 - 旧星加成」的差值——净变化只发生一次，
 // 比「先减后加」少一次中间态。
-func (m *Module) onStarUp(ctx *module.Context, body []byte) error {
+func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.PartnerStarUpReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode PartnerStarUpReq: %w", err)
@@ -317,7 +296,7 @@ func (m *Module) onStarUp(ctx *module.Context, body []byte) error {
 // 把「请求态 × 当前态」的四种组合平铺成四个分支，比 if-else 嵌套
 // 更能表达「状态机」语义。两个「已是目标态」的分支故意空转——
 // 幂等成功但不做任何内存改动。
-func (m *Module) onField(ctx *module.Context, body []byte) error {
+func (m *Module) onField(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.PartnerFieldReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode PartnerFieldReq: %w", err)

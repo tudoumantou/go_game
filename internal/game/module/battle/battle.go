@@ -138,6 +138,8 @@ type Session struct {
 // 还会被 CrossServer/中心服回调线程直接触达（OnBattleSync 等），
 // 因此必须用 sync.Mutex 显式保护。
 type Module struct {
+	*module.Thin
+
 	cross  CrossCaller
 	center CenterMatcher
 	ranker RankReporter
@@ -160,7 +162,7 @@ type Module struct {
 // 注意 cross 不可为空（onMatch 直接调用其 Available）；ranker 后置注入（SetRanker），
 // 因为排行上报是 P14 增量能力，demo 期允许缺失。
 func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Logger) *Module {
-	return &Module{
+	m := &Module{
 		cross:    cross,
 		center:   center,
 		pusher:   pusher,
@@ -169,44 +171,15 @@ func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Log
 		queue:    make(map[string][]int64),
 		queued:   make(map[int64]bool),
 	}
+	m.Thin = module.NewThin("battle", module.ThinLogger(logger))
+	m.Handle(msgIDMatchReq, m.onMatch)
+	m.Handle(msgIDOpReport, m.onOpReport)
+	m.Handle(msgIDResultReport, m.onResultReport)
+	return m
 }
-
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "battle" }
-
-// MsgIDs 实现 module.Module。
-func (m *Module) MsgIDs() []uint32 {
-	return []uint32{msgIDMatchReq, msgIDResultReport, msgIDOpReport}
-}
-
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDMatchReq:
-		return m.onMatch(ctx, body)
-	case msgIDOpReport:
-		return m.onOpReport(ctx, body)
-	case msgIDResultReport:
-		return m.onResultReport(ctx, body)
-	default:
-		return fmt.Errorf("battle: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
-
-// OnLogout 实现 module.Module：掉线不清战斗——战斗靠超时兜底结算（4.8 第 5 条）。
-func (m *Module) OnLogout(ctx *module.Context) error { return nil }
 
 // onMatch 发起匹配：入队 → 凑够人建房 → 双方下发 BattleStartNotify。
-func (m *Module) onMatch(ctx *module.Context, body []byte) error {
+func (m *Module) onMatch(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.MatchReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		// 解码失败是真故障：走 error 通道，由上层记日志/断开，不回业务码
@@ -385,7 +358,7 @@ func (m *Module) buildSnapshot(playerID int64) []byte {
 }
 
 // onOpReport 客户端操作上报 → 原样透传到房间（不解析 body）。
-func (m *Module) onOpReport(ctx *module.Context, body []byte) error {
+func (m *Module) onOpReport(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.BattleOpReport
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode BattleOpReport: %w", err)
@@ -408,7 +381,7 @@ func (m *Module) onOpReport(ctx *module.Context, body []byte) error {
 }
 
 // onResultReport 客户端上报结论：令牌校验 + 幂等 → 转发跨服 → 回执。
-func (m *Module) onResultReport(ctx *module.Context, body []byte) error {
+func (m *Module) onResultReport(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.BattleResultReport
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode BattleResultReport: %w", err)
