@@ -5,7 +5,11 @@
 // 「条数不一致」失败——这是故意的：防止有人只加号不进基线、绕过兼容审查。
 package codec
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // wireBaseline 协议兼容基线（R10.1）。
 //
@@ -126,16 +130,10 @@ var wireBaseline = map[string]uint32{
 func TestMsgIDsMatchWireBaseline(t *testing.T) {
 	for name, want := range wireBaseline {
 		got, ok := MsgID(name)
-		if !ok {
-			t.Fatalf("%s 未注册", name)
-		}
-		if got != want {
-			t.Fatalf("%s 号从 %d 变为 %d（会破坏旧客户端）", name, want, got)
-		}
+		require.True(t, ok, "%s 未注册", name)
+		require.EqualValues(t, want, got, "%s 号从 %d 变为 %d（会破坏旧客户端）", name, want, got)
 	}
-	if len(wireBaseline) != MsgCount() {
-		t.Fatalf("基线 %d 条，注册表 %d 条：新增消息请补进基线", len(wireBaseline), MsgCount())
-	}
+	require.EqualValues(t, MsgCount(), len(wireBaseline), "基线 %d 条，注册表 %d 条：新增消息请补进基线", len(wireBaseline), MsgCount())
 }
 
 // TestMsgNameReverse 反查必须与正查互为逆运算：MsgName(id) 回到同名。
@@ -147,16 +145,13 @@ func TestMsgIDsMatchWireBaseline(t *testing.T) {
 func TestMsgNameReverse(t *testing.T) {
 	for name, id := range wireBaseline {
 		got, ok := MsgName(id)
-		if !ok || got != name {
-			t.Fatalf("MsgName(%d) = %q,%v，期望 %q", id, got, ok, name)
-		}
+		require.True(t, ok, "MsgName(%d) = %q,%v，期望 %q", id, got, ok, name)
+		require.EqualValues(t, name, got, "MsgName(%d) = %q,%v，期望 %q", id, got, ok, name)
 	}
-	if _, ok := MsgName(999999); ok {
-		t.Fatal("未注册的号不应命中")
-	}
-	if _, ok := MsgID("NotAMessage"); ok {
-		t.Fatal("未注册的名字不应命中")
-	}
+	_, ok1 := MsgName(999999)
+	require.False(t, ok1, "未注册的号不应命中")
+	_, ok2 := MsgID("NotAMessage")
+	require.False(t, ok2, "未注册的名字不应命中")
 }
 
 // TestMsgIDsUnique 注册表内不允许一号多义（生成器已拦，这里守住产物）。
@@ -167,9 +162,8 @@ func TestMsgNameReverse(t *testing.T) {
 func TestMsgIDsUnique(t *testing.T) {
 	seen := map[uint32]string{}
 	for name, id := range wireBaseline {
-		if other, ok := seen[id]; ok {
-			t.Fatalf("号 %d 被 %s 与 %s 同时占用", id, other, name)
-		}
+		other3, ok4 := seen[id]
+		require.False(t, ok4, "号 %d 被 %s 与 %s 同时占用", id, other3, name)
 		seen[id] = name
 	}
 }

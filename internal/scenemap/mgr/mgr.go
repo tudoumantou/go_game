@@ -202,6 +202,12 @@ type Deps struct {
 	// NpcDead 怪物死亡回调（由 entity 在血量归零时调用，
 	// 这里允许玩法覆盖结算顺序）。
 	NpcDead func(s *State, uuid scenemap.UUID, npcID int32)
+	// NewTimer 定时器工厂。nil 时用真实 time.Timer。
+	//
+	// 存在的唯一理由是测试：断言"倍速 2x 时 loop 跑 twice as often"
+	// 若依赖真实时钟，CI 负载一高就 flaky。注入假定时器后测试显式
+	// 驱动每一拍，结果完全确定。
+	NewTimer func(iv time.Duration) Timer
 }
 
 // Mgr 是场景权威 Actor 的句柄。
@@ -246,10 +252,10 @@ type Mgr struct {
 
 	// ---- 以下字段只在 run goroutine 内访问（单写者）----
 	st       *State
-	loopT    *repeatingTimer
-	buffT    *repeatingTimer
-	oneSecT  *repeatingTimer
-	halfSecT *repeatingTimer
+	loopT    Timer
+	buffT    Timer
+	oneSecT  Timer
+	halfSecT Timer
 	oneSecC  <-chan time.Time
 	halfSecC <-chan time.Time
 	// oneSecArmed/halfSecArmed 记录开关状态，避免每次 rearm 都重置相位。
@@ -272,6 +278,9 @@ func New(cfg Config, deps Deps) *Mgr {
 	}
 	if deps.Clock == nil {
 		deps.Clock = func() int64 { return time.Now().UnixMilli() }
+	}
+	if deps.NewTimer == nil {
+		deps.NewTimer = realTimerFactory
 	}
 	gp := deps.Gameplay
 	if gp == nil {

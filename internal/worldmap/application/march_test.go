@@ -202,15 +202,13 @@ func makeMove(t *testing.T, from, to domain.Pos, speed, startMS int64, moveID st
 // 截断（ID 一旦上 2^53 就会丢精度，这正是 ResultJSON 用整数的原因）。
 func receiptMap(t *testing.T, plan *domain.MutationPlan) map[string]any {
 	t.Helper()
-	if plan == nil || plan.CommandReceipt == nil {
-		t.Fatalf("计划缺少回执")
-	}
+	require.NotNil(t, plan, "计划缺少回执")
+	require.NotNil(t, plan.CommandReceipt, "计划缺少回执")
 	dec := json.NewDecoder(bytes.NewReader(plan.CommandReceipt.ResultJSON))
 	dec.UseNumber()
 	var m map[string]any
-	if err := dec.Decode(&m); err != nil {
-		t.Fatalf("回执 JSON 解析失败: %v (%s)", err, plan.CommandReceipt.ResultJSON)
-	}
+	err1 := dec.Decode(&m)
+	require.NoError(t, err1, "回执 JSON 解析失败: %v (%s)", err1, plan.CommandReceipt.ResultJSON)
 	return m
 }
 
@@ -293,17 +291,14 @@ func TestPlanMarchStart(t *testing.T) {
 				require.EqualValues(t, domain.CodeOK, plan.CommandReceipt.ResultCode)
 				require.Len(t, plan.ObjectsUpsert, 1)
 				got := plan.ObjectsUpsert[0]
-				if got.Kind != domain.ObjectKindTroop || got.Troop == nil {
-					t.Fatalf("对象种类=%s", got.Kind)
-				}
+				require.EqualValues(t, domain.ObjectKindTroop, got.Kind, "对象种类=%s", got.Kind)
+				require.NotNil(t, got.Troop, "对象种类=%s", got.Kind)
 				tr := got.Troop
 				require.EqualValues(t, domain.TroopPhaseMarching, tr.Phase)
-				if tr.Header.Version != 1 || tr.Header.OwnerScene != testScene {
-					t.Fatalf("Header=%+v", tr.Header)
-				}
-				if tr.Cargo == nil || len(tr.Cargo) != 0 {
-					t.Fatalf("Cargo 必须是非 nil 空表: %v", tr.Cargo)
-				}
+				require.EqualValues(t, 1, tr.Header.Version, "Header=%+v", tr.Header)
+				require.EqualValues(t, testScene, tr.Header.OwnerScene, "Header=%+v", tr.Header)
+				require.NotNil(t, tr.Cargo, "Cargo 必须是非 nil 空表: %v", tr.Cargo)
+				require.EqualValues(t, 0, len(tr.Cargo), "Cargo 必须是非 nil 空表: %v", tr.Cargo)
 				require.EqualValues(t, h.rules.CapacityUnits, tr.CapacityUnits)
 				// 速度只能来自规则；MarchParams 根本没有速度字段。
 				require.EqualValues(t, h.rules.MarchSpeedUnitsPerSec, tr.Move.SpeedUnitsPerSec)
@@ -313,18 +308,14 @@ func TestPlanMarchStart(t *testing.T) {
 				wantArrive := int64(1000) + ((length+h.rules.MarchSpeedUnitsPerSec-1)/h.rules.MarchSpeedUnitsPerSec)*1000
 				require.EqualValues(t, wantArrive, tr.Move.EndAtMS)
 				m := receiptMap(t, plan)
-				if got := jsonInt(t, m, "arrive_at_ms"); got != wantArrive {
-					t.Fatalf("回执 arrive_at_ms=%d, want %d", got, wantArrive)
-				}
-				if got := jsonInt(t, m, "troop_id"); got != int64(tr.Header.ID) {
-					t.Fatalf("回执 troop_id=%d, want %d", got, tr.Header.ID)
-				}
-				if got := jsonStr(t, m, "move_id"); got != tr.Move.MoveID {
-					t.Fatalf("回执 move_id=%q, want %q", got, tr.Move.MoveID)
-				}
-				if len(plan.OutboxEvents) != 1 || plan.OutboxEvents[0].Kind != "TroopMoved" {
-					t.Fatalf("outbox=%+v", plan.OutboxEvents)
-				}
+				got2 := jsonInt(t, m, "arrive_at_ms")
+				require.EqualValues(t, wantArrive, got2, "回执 arrive_at_ms=%d, want %d", got2, wantArrive)
+				got3 := jsonInt(t, m, "troop_id")
+				require.EqualValues(t, int64(tr.Header.ID), got3, "回执 troop_id=%d, want %d", got3, tr.Header.ID)
+				got4 := jsonStr(t, m, "move_id")
+				require.EqualValues(t, tr.Move.MoveID, got4, "回执 move_id=%q, want %q", got4, tr.Move.MoveID)
+				require.EqualValues(t, 1, len(plan.OutboxEvents), "outbox=%+v", plan.OutboxEvents)
+				require.EqualValues(t, "TroopMoved", plan.OutboxEvents[0].Kind, "outbox=%+v", plan.OutboxEvents)
 			},
 		},
 		{
@@ -463,9 +454,8 @@ func TestPlanMarchStartIdempotentReplay(t *testing.T) {
 
 	first, err := h.planner.Plan(snapshot(SnapshotOptions{Objects: marchScene()}), env, cmd, 1000)
 	require.NoError(t, err, "首次规划")
-	if h.objCount == nil || *h.objCount != 1001 {
-		t.Fatalf("应分配一个对象 ID, got %d", *h.objCount)
-	}
+	require.NotNil(t, h.objCount, "应分配一个对象 ID, got %d", *h.objCount)
+	require.EqualValues(t, 1001, *h.objCount, "应分配一个对象 ID, got %d", *h.objCount)
 	firstTroopID := first.ObjectsUpsert[0].Troop.Header.ID
 
 	// 模拟首次已提交：快照里带上回执。
@@ -478,9 +468,8 @@ func TestPlanMarchStartIdempotentReplay(t *testing.T) {
 	require.EqualValues(t, first.CommandID, second.CommandID)
 	require.Len(t, second.ObjectsUpsert, 0)
 	require.EqualValues(t, 1001, *h.objCount)
-	if second.CommandReceipt == nil || !bytes.Equal(second.CommandReceipt.ResultJSON, first.CommandReceipt.ResultJSON) {
-		t.Fatalf("重放回执内容不一致")
-	}
+	require.NotNil(t, second.CommandReceipt, "重放回执内容不一致")
+	require.True(t, bytes.Equal(second.CommandReceipt.ResultJSON, first.CommandReceipt.ResultJSON), "重放回执内容不一致")
 	m := receiptMap(t, second)
 	require.EqualValues(t, int64(firstTroopID), jsonInt(t, m, "troop_id"), "重放回执 troop_id 应复用首次结果")
 }
@@ -501,9 +490,8 @@ func TestPlanMarchStartIdempotencyConflict(t *testing.T) {
 	})
 	// 同 request_id，不同 payload_hash。
 	other := testEnv(1, "req-conflict", 8)
-	if _, err := h.planner.Plan(snap, other, cmd, 1000); !errors.Is(err, domain.ErrIdempotencyConflict) {
-		t.Fatalf("err=%v, want ErrIdempotencyConflict", err)
-	}
+	_, err5 := h.planner.Plan(snap, other, cmd, 1000)
+	require.ErrorIs(t, err5, domain.ErrIdempotencyConflict, "err=%v, want ErrIdempotencyConflict", err5)
 }
 
 // TestPlanRejectsInvalidCommand 覆盖信封与命令种类的入口校验。
@@ -511,18 +499,14 @@ func TestPlanRejectsInvalidCommand(t *testing.T) {
 	h := newHarness(t)
 	snap := snapshot(SnapshotOptions{Objects: marchScene()})
 
-	if _, err := h.planner.Plan(snap, testEnv(1, "req-bad", 1), Command{Kind: CommandKind(99)}, 1000); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("未知 Kind: err=%v", err)
-	}
-	if _, err := h.planner.Plan(snap, domain.CommandEnvelope{}, Command{Kind: CmdMarchStart}, 1000); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("信封非法: err=%v", err)
-	}
+	_, err6 := h.planner.Plan(snap, testEnv(1, "req-bad", 1), Command{Kind: CommandKind(99)}, 1000)
+	require.ErrorIs(t, err6, domain.ErrInvalidArgument, "未知 Kind: err=%v", err6)
+	_, err7 := h.planner.Plan(snap, domain.CommandEnvelope{}, Command{Kind: CmdMarchStart}, 1000)
+	require.ErrorIs(t, err7, domain.ErrInvalidArgument, "信封非法: err=%v", err7)
 	for _, kind := range []CommandKind{CmdTransferPrepare, CmdTransferActivate, CmdTransferRelease} {
-		if _, err := h.planner.Plan(snap, testEnv(1, "req-t", 1), Command{Kind: kind}, 1000); !errors.Is(err, domain.ErrFeatureDisabled) {
-			t.Fatalf("%s: err=%v, want ErrFeatureDisabled", kind, err)
-		}
+		_, err8 := h.planner.Plan(snap, testEnv(1, "req-t", 1), Command{Kind: kind}, 1000)
+		require.ErrorIs(t, err8, domain.ErrFeatureDisabled, "%s: err=%v, want ErrFeatureDisabled", kind, err8)
 	}
-	if _, err := h.planner.Plan(snap, testEnv(1, "req-scene", 1), Command{Kind: CmdRefresh, TargetScene: 2}, 1000); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("场景不符: err=%v", err)
-	}
+	_, err9 := h.planner.Plan(snap, testEnv(1, "req-scene", 1), Command{Kind: CmdRefresh, TargetScene: 2}, 1000)
+	require.ErrorIs(t, err9, domain.ErrInvalidArgument, "场景不符: err=%v", err9)
 }

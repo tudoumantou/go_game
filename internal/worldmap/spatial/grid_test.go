@@ -48,9 +48,8 @@ func TestSceneAtConsistency(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := topo.SceneAt(tt.pos); got != tt.want {
-				t.Fatalf("SceneAt(%v) = %d, want %d", tt.pos, got, tt.want)
-			}
+			got1 := topo.SceneAt(tt.pos)
+			require.EqualValues(t, tt.want, got1, "SceneAt(%v) = %d, want %d", tt.pos, got1, tt.want)
 		})
 	}
 }
@@ -140,9 +139,8 @@ func TestQueryRectNoMissNoDup(t *testing.T) {
 	}
 	for _, p := range places {
 		pos := domain.Pos{X: p.cx * 1000, Y: p.cy * 1000}
-		if err := g.Put(key(p.id), domain.ObjectKindCity, testTopo().SceneAt(pos), pos); err != nil {
-			t.Fatalf("Put(%d) 失败: %v", p.id, err)
-		}
+		err2 := g.Put(key(p.id), domain.ObjectKindCity, testTopo().SceneAt(pos), pos)
+		require.NoError(t, err2, "Put(%d) 失败: %v", p.id, err2)
 	}
 	tests := []struct {
 		name    string
@@ -217,15 +215,12 @@ func TestGridLifecycle(t *testing.T) {
 	posB := domain.Pos{X: 1_000_000 + 100, Y: 100} // 场景 2
 	posC := domain.Pos{X: 200, Y: 200}             // 场景 1
 
-	if err := g.Put(key(1), domain.ObjectKindCity, 1, posA); err != nil {
-		t.Fatalf("Put A: %v", err)
-	}
-	if err := g.Put(key(2), domain.ObjectKindResource, 2, posB); err != nil {
-		t.Fatalf("Put B: %v", err)
-	}
-	if err := g.Put(key(3), domain.ObjectKindTroop, 1, posC); err != nil {
-		t.Fatalf("Put C: %v", err)
-	}
+	err3 := g.Put(key(1), domain.ObjectKindCity, 1, posA)
+	require.NoError(t, err3, "Put A: %v", err3)
+	err4 := g.Put(key(2), domain.ObjectKindResource, 2, posB)
+	require.NoError(t, err4, "Put B: %v", err4)
+	err5 := g.Put(key(3), domain.ObjectKindTroop, 1, posC)
+	require.NoError(t, err5, "Put C: %v", err5)
 	require.EqualValues(t, 3, g.Len())
 
 	// Get 返回值字段完整。
@@ -235,65 +230,54 @@ func TestGridLifecycle(t *testing.T) {
 	require.EqualValues(t, want, e)
 
 	// SceneOf。
-	if got := g.SceneOf(key(1)); got != 1 {
-		t.Fatalf("SceneOf(1) = %d, want 1", got)
-	}
-	if got := g.SceneOf(key(2)); got != 2 {
-		t.Fatalf("SceneOf(2) = %d, want 2", got)
-	}
-	if got := g.SceneOf(key(999)); got != 0 {
-		t.Fatalf("SceneOf(不存在) = %d, want 0", got)
-	}
+	got6 := g.SceneOf(key(1))
+	require.EqualValues(t, 1, got6, "SceneOf(1) = %d, want 1", got6)
+	got7 := g.SceneOf(key(2))
+	require.EqualValues(t, 2, got7, "SceneOf(2) = %d, want 2", got7)
+	got8 := g.SceneOf(key(999))
+	require.EqualValues(t, 0, got8, "SceneOf(不存在) = %d, want 0", got8)
 
 	// EntriesInScene 场景 1 应有 2 个对象，按 ID 排序。
 	entries := g.EntriesInScene(1)
-	if len(entries) != 2 || entries[0].Key.ID != 1 || entries[1].Key.ID != 3 {
-		t.Fatalf("EntriesInScene(1) = %+v", entries)
-	}
+	require.EqualValues(t, 2, len(entries), "EntriesInScene(1) = %+v", entries)
+	require.EqualValues(t, 1, entries[0].Key.ID, "EntriesInScene(1) = %+v", entries)
+	require.EqualValues(t, 3, entries[1].Key.ID, "EntriesInScene(1) = %+v", entries)
 	// 非法场景号返回空。
-	if got := g.EntriesInScene(0); got != nil {
-		t.Fatalf("EntriesInScene(0) = %+v, want nil", got)
-	}
-	if got := g.EntriesInScene(26); got != nil {
-		t.Fatalf("EntriesInScene(26) = %+v, want nil", got)
-	}
+	got9 := g.EntriesInScene(0)
+	require.Nil(t, got9, "EntriesInScene(0) = %+v, want nil", got9)
+	got10 := g.EntriesInScene(26)
+	require.Nil(t, got10, "EntriesInScene(26) = %+v, want nil", got10)
 
 	// 跨场景移动：key(1) 从场景 1 移到场景 2。
 	posA2 := domain.Pos{X: 1_000_000 + 300, Y: 400}
-	if err := g.Put(key(1), domain.ObjectKindCity, 2, posA2); err != nil {
-		t.Fatalf("Put 移动: %v", err)
-	}
-	if got := g.SceneOf(key(1)); got != 2 {
-		t.Fatalf("移动后 SceneOf(1) = %d, want 2", got)
-	}
-	if got := g.QueryRect(0, 0, 1000, 1000); len(got) != 1 || got[0].ID != 3 {
-		t.Fatalf("移动后场景1应只剩对象3, got %v", got)
-	}
-	if got := g.QueryRect(1000, 0, 2000, 1000); len(got) != 2 {
-		t.Fatalf("移动后场景2应有2个对象, got %v", got)
-	}
+	err11 := g.Put(key(1), domain.ObjectKindCity, 2, posA2)
+	require.NoError(t, err11, "Put 移动: %v", err11)
+	got12 := g.SceneOf(key(1))
+	require.EqualValues(t, 2, got12, "移动后 SceneOf(1) = %d, want 2", got12)
+	got13 := g.QueryRect(0, 0, 1000, 1000)
+	require.EqualValues(t, 1, len(got13), "移动后场景1应只剩对象3, got %v", got13)
+	require.EqualValues(t, 3, got13[0].ID, "移动后场景1应只剩对象3, got %v", got13)
+	got14 := g.QueryRect(1000, 0, 2000, 1000)
+	require.EqualValues(t, 2, len(got14), "移动后场景2应有2个对象, got %v", got14)
 	require.EqualValues(t, 3, g.Len())
 
 	// Delete：之后 Get/SceneOf 查不到，QueryRect 不含。
 	g.Delete(key(1))
-	if _, ok := g.Get(key(1)); ok {
-		t.Fatalf("Delete 后 Get 应不存在")
-	}
-	if got := g.SceneOf(key(1)); got != 0 {
-		t.Fatalf("Delete 后 SceneOf = %d, want 0", got)
-	}
+	_, ok15 := g.Get(key(1))
+	require.False(t, ok15, "Delete 后 Get 应不存在")
+	got16 := g.SceneOf(key(1))
+	require.EqualValues(t, 0, got16, "Delete 后 SceneOf = %d, want 0", got16)
 	require.EqualValues(t, 2, g.Len())
 	// 删除不存在的 key：幂等 no-op，不 panic。
 	g.Delete(key(999))
 	require.EqualValues(t, 2, g.Len())
 
 	// 删除后同 key 可重新 Put（复活）。
-	if err := g.Put(key(1), domain.ObjectKindCity, 1, posA); err != nil {
-		t.Fatalf("复活 Put: %v", err)
-	}
-	if e, ok := g.Get(key(1)); !ok || e.Deleted {
-		t.Fatalf("复活后 Get = %+v ok=%v", e, ok)
-	}
+	err17 := g.Put(key(1), domain.ObjectKindCity, 1, posA)
+	require.NoError(t, err17, "复活 Put: %v", err17)
+	e18, ok19 := g.Get(key(1))
+	require.True(t, ok19, "复活后 Get = %+v ok=%v", e18, ok19)
+	require.False(t, e18.Deleted, "复活后 Get = %+v ok=%v", e18, ok19)
 }
 
 // TestQueryRectDoesNotScanWorld 验证"按场景分块遍历"的局部性：
@@ -304,18 +288,15 @@ func TestQueryRectDoesNotScanWorld(t *testing.T) {
 	// 场景 25 放 3 个对象。
 	for i, id := range []domain.ObjectID{101, 102, 103} {
 		pos := domain.Pos{X: (4000 + int64(i)*100) * 1000, Y: (4000 + int64(i)*100) * 1000}
-		if err := g.Put(key(id), domain.ObjectKindCity, 25, pos); err != nil {
-			t.Fatalf("Put: %v", err)
-		}
+		err20 := g.Put(key(id), domain.ObjectKindCity, 25, pos)
+		require.NoError(t, err20, "Put: %v", err20)
 	}
 	// 场景 1 放 1 个对象。
-	if err := g.Put(key(1), domain.ObjectKindCity, 1, domain.Pos{X: 500, Y: 500}); err != nil {
-		t.Fatalf("Put: %v", err)
-	}
+	err21 := g.Put(key(1), domain.ObjectKindCity, 1, domain.Pos{X: 500, Y: 500})
+	require.NoError(t, err21, "Put: %v", err21)
 	got := g.QueryRect(0, 0, 100, 100)
-	if len(got) != 1 || got[0].ID != 1 {
-		t.Fatalf("局部查询应只见场景1对象, got %v", got)
-	}
+	require.EqualValues(t, 1, len(got), "局部查询应只见场景1对象, got %v", got)
+	require.EqualValues(t, 1, got[0].ID, "局部查询应只见场景1对象, got %v", got)
 	// byScene 桶数 = 2（两个非空场景），证明对象按场景隔离。
 	require.Len(t, g.byScene, 2)
 }

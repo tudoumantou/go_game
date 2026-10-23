@@ -44,6 +44,25 @@ type TriggerCondFunc func(s *State, uuid scenemap.UUID, oldPos, newPos scenemap.
 // MGR 只提供"每秒一次、串行、带 State"的执行点。
 type RefreshFunc func(s *State, now int64)
 
+// Timer 是 MGR 的定时器抽象。
+//
+// 生产用真实 time.Timer（repeatingTimer）。抽出接口只为一件事：让测试
+// 能显式驱动时间。用真实时钟断言"150ms 里跑了约 20 次"在 CI 上必然
+// flaky——机器负载高时同样 150ms 可能只跑到 3 次，这不是代码的问题。
+type Timer interface {
+	// C 返回触发通道。
+	C() <-chan time.Time
+	// SetInterval 只改间隔，不重置当前这一拍。
+	SetInterval(iv time.Duration)
+	// Reset 按当前间隔重新计时（用于"已触发，排下一拍"）。
+	Reset()
+	// Stop 停止并排空。
+	Stop()
+}
+
+// realTimerFactory 是默认的定时器工厂。
+func realTimerFactory(iv time.Duration) Timer { return newRepeating(iv) }
+
 // repeatingTimer 是自续期的单次定时器。
 //
 // # 为什么不用 time.Ticker
@@ -124,17 +143,17 @@ func (m *Mgr) buffInterval() time.Duration { return m.scale(m.cfg.TickInterval /
 
 // startTimers 创建并启动四个定时器（只在 run goroutine 内调用）。
 func (m *Mgr) startTimers() {
-	m.loopT = newRepeating(m.loopInterval())
-	m.buffT = newRepeating(m.buffInterval())
-	m.oneSecT = newRepeating(oneSecInterval)
-	m.halfSecT = newRepeating(halfSecInterval)
+	m.loopT = m.deps.NewTimer(m.loopInterval())
+	m.buffT = m.deps.NewTimer(m.buffInterval())
+	m.oneSecT = m.deps.NewTimer(oneSecInterval)
+	m.halfSecT = m.deps.NewTimer(halfSecInterval)
 	m.setOneSecArmed(m.getTrigger() != nil)
 	m.setHalfArmed(m.cfg.HalfSecEnabled)
 }
 
 // stopTimers 停掉全部定时器。
 func (m *Mgr) stopTimers() {
-	for _, t := range []*repeatingTimer{m.loopT, m.buffT, m.oneSecT, m.halfSecT} {
+	for _, t := range []Timer{m.loopT, m.buffT, m.oneSecT, m.halfSecT} {
 		if t != nil {
 			t.Stop()
 		}

@@ -173,6 +173,92 @@ func (w *closeWatch) lastReason() string {
 }
 
 // ============================================================================
+// 假定时器（确定性驱动）
+// ============================================================================
+
+// fakeTimers 是 Timer 的测试实现：不消耗真实时间，每一拍由测试显式投递。
+//
+// 为什么非要这样：断言"2 倍速时 loop 频率也翻倍"如果靠真实时钟，只能写成
+// "150ms 内 fast 约是 slow 的两倍"这种区间断言。CI 机器一抖动就落在区间外，
+// 这类失败不是代码错了，是测试在测机器。假定时器让拍数成为确定的整数。
+type fakeTimers struct {
+	mu      sync.Mutex
+	created []*fakeTimer
+}
+
+func (f *fakeTimers) New(iv time.Duration) Timer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ft := &fakeTimer{ch: make(chan time.Time), iv: iv}
+	f.created = append(f.created, ft)
+	return ft
+}
+
+// waitArmed 等待 startTimers 把四个定时器创建出来。
+func (f *fakeTimers) waitArmed(t *testing.T) {
+	t.Helper()
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return f.at(3) != nil }), "定时器未创建")
+}
+
+// at 按创建顺序取定时器：startTimers 固定是 loop, buff, oneSec, halfSec。
+func (f *fakeTimers) at(i int) *fakeTimer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i >= len(f.created) {
+		return nil
+	}
+	return f.created[i]
+}
+
+func (f *fakeTimers) loop() *fakeTimer { return f.at(0) }
+
+// fakeTimer 是单个假定时器。
+type fakeTimer struct {
+	ch chan time.Time
+
+	mu      sync.Mutex
+	iv      time.Duration
+	stopped bool
+}
+
+func (f *fakeTimer) C() <-chan time.Time { return f.ch }
+
+func (f *fakeTimer) SetInterval(iv time.Duration) {
+	f.mu.Lock()
+	f.iv = iv
+	f.mu.Unlock()
+}
+
+// Reset 是空实现：下一拍什么时候来由测试决定，不存在"排期"。
+func (f *fakeTimer) Reset() {}
+
+func (f *fakeTimer) Stop() {
+	f.mu.Lock()
+	f.stopped = true
+	f.mu.Unlock()
+}
+
+func (f *fakeTimer) interval() time.Duration {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.iv
+}
+
+// tick 投递一拍。
+//
+// ch 是无缓冲的：发送会一直阻塞到主循环接收。主循环的顺序是
+// 接收 → 处理 → Reset → 回 select，所以每次 tick 返回时上一拍已经处理完，
+// 测试与 MGR 天然同步，不需要任何 sleep。
+func (f *fakeTimer) tick(t *testing.T) {
+	t.Helper()
+	select {
+	case f.ch <- time.Time{}:
+	case <-time.After(2 * time.Second):
+		t.Fatal("定时器未被消费（MGR 主循环可能已停止）")
+	}
+}
+
+// ============================================================================
 // 测试环境装配
 // ============================================================================
 
@@ -344,9 +430,7 @@ func TestEnterPlayerUpdatesIndexAndUsers(t *testing.T) {
 
 	// 重复进图必须被拒。
 	_, err := env.call(t, CommandEnterPlayer{UUID: 1001, GridPos: pos})
-	if !errors.Is(err, scenemap.ErrAlreadyExists) {
-		t.Fatalf("重复进图错误 = %v, 期望 ErrAlreadyExists", err)
-	}
+	require.ErrorIs(t, err, scenemap.ErrAlreadyExists, "重复进图错误 = %v, 期望 ErrAlreadyExists", err)
 }
 
 func TestPlayerLeaveOfflineSetsGrace(t *testing.T) {
@@ -372,9 +456,7 @@ func TestPlayerLeaveOfflineSetsGrace(t *testing.T) {
 
 	// 过了 grace：关图一次，且幂等。
 	env.clock.Advance(2 * time.Second)
-	if !waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }) {
-		t.Fatalf("grace 到期未触发 OnClose")
-	}
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }), "grace 到期未触发 OnClose")
 	time.Sleep(50 * time.Millisecond)
 	n = env.closed.count()
 	require.EqualValues(t, 1, n, fmt.Sprintf("OnClose 被调用 %d 次, 期望 1（幂等）", n))
@@ -387,9 +469,7 @@ func TestQuitLeaveBranches(t *testing.T) {
 		env := newEnv(t, cfg, nil)
 		env.mustCall(t, CommandEnterPlayer{UUID: 3001, GridPos: scenemap.GridPos{X: 2, Y: 2}})
 		env.mustCall(t, CommandLeave{UUID: 3001, Reason: scenemap.LeaveReasonQuit})
-		if !waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }) {
-			t.Fatalf("QuitClose 未立即关图")
-		}
+		require.True(t, waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }), "QuitClose 未立即关图")
 	})
 
 	t.Run("QuitClose 为假时保留空房", func(t *testing.T) {
@@ -425,9 +505,7 @@ func TestEmptyMapEnterProtectClosesOnce(t *testing.T) {
 
 	// 开图时就应该有保底关闭时间。
 	time.Sleep(5 * time.Millisecond)
-	if !waitUntil(t, 2*time.Second, func() bool { return watch.count() == 1 }) {
-		t.Fatalf("空房 EnterProtect 到期未关图")
-	}
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return watch.count() == 1 }), "空房 EnterProtect 到期未关图")
 	time.Sleep(80 * time.Millisecond)
 	n := watch.count()
 	require.EqualValues(t, 1, n, fmt.Sprintf("OnClose 被调用 %d 次, 期望 1", n))
@@ -458,9 +536,7 @@ func TestCloseCommandIsIdempotent(t *testing.T) {
 	env.mustCall(t, CommandClose{Reason: "gm"})
 	env.mustCall(t, CommandClose{Reason: "gm"})
 
-	if !waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }) {
-		t.Fatalf("OnClose 次数 = %d, 期望 1", env.closed.count())
-	}
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return env.closed.count() == 1 }), "OnClose 次数 = %d, 期望 1", env.closed.count())
 	got := env.gp.terminates.Load()
 	require.EqualValues(t, 1, got, fmt.Sprintf("OnTerminate 调用 %d 次, 期望 1", got))
 	r := env.closed.lastReason()
@@ -486,9 +562,7 @@ func TestSyncSameCellDoesNotTriggerEntitySync(t *testing.T) {
 	reply := env.mustCall(t, CommandMove{UUID: 5001, Pixel: pixel, Dir: scenemap.DirLeft, State: 2})
 	mr, ok := reply.(MoveReply)
 	require.True(t, ok)
-	if mr.Moved {
-		t.Fatalf("同格微调不应报告 Moved")
-	}
+	require.False(t, mr.Moved, "同格微调不应报告 Moved")
 	got := len(env.gp.syncEvents())
 	require.EqualValues(t, 0, got, fmt.Sprintf("同格微调触发了 %d 次 EntitySync", got))
 
@@ -497,9 +571,7 @@ func TestSyncSameCellDoesNotTriggerEntitySync(t *testing.T) {
 	require.EqualValues(t, pixel, after.pixel)
 	require.EqualValues(t, scenemap.DirLeft, after.dir)
 	require.EqualValues(t, 2, after.anim)
-	if after.revision <= before.revision {
-		t.Fatalf("同格微调也必须 Touch（像素/朝向变了），revision %d → %d", before.revision, after.revision)
-	}
+	require.Greater(t, after.revision, before.revision, "同格微调也必须 Touch（像素/朝向变了），revision %d → %d", before.revision, after.revision)
 	_, syncs, _, _ := env.aoi.counts()
 	require.EqualValues(t, 1, syncs, fmt.Sprintf("AOI Sync 次数 = %d, 期望 1（同格也要同步像素）", syncs))
 }
@@ -513,15 +585,15 @@ func TestSyncCrossCellTriggersEntitySync(t *testing.T) {
 	next := scenemap.GridPos{X: 4, Y: 3}
 	reply := env.mustCall(t, CommandMove{UUID: 5002, Pixel: geo.CellCenter(next), Dir: scenemap.DirRight})
 	mr := reply.(MoveReply)
-	if !mr.Moved || mr.From != start || mr.To != next {
-		t.Fatalf("换格回执 = %+v", mr)
-	}
+	require.True(t, mr.Moved, "换格回执 = %+v", mr)
+	require.EqualValues(t, start, mr.From, "换格回执 = %+v", mr)
+	require.EqualValues(t, next, mr.To, "换格回执 = %+v", mr)
 
 	events := env.gp.syncEvents()
 	require.Len(t, events, 1)
-	if events[0].uuid != 5002 || events[0].oldPos != start || events[0].newPos != next {
-		t.Fatalf("EntitySync 参数 = %+v", events[0])
-	}
+	require.EqualValues(t, 5002, events[0].uuid, "EntitySync 参数 = %+v", events[0])
+	require.EqualValues(t, start, events[0].oldPos, "EntitySync 参数 = %+v", events[0])
+	require.EqualValues(t, next, events[0].newPos, "EntitySync 参数 = %+v", events[0])
 	s := env.snapshot(t, 5002)
 	require.EqualValues(t, next, s.pos, fmt.Sprintf("索引位置 = %s, 期望 %s", s.pos, next))
 }
@@ -540,16 +612,12 @@ func TestSyncRejectsIllegalMoves(t *testing.T) {
 	t.Run("单步过大", func(t *testing.T) {
 		far := scenemap.GridPos{X: 10, Y: 3}
 		_, err := env.call(t, CommandMove{UUID: 6001, Pixel: geo.CellCenter(far)})
-		if !errors.Is(err, scenemap.ErrOutOfRange) {
-			t.Fatalf("err = %v, 期望 ErrOutOfRange", err)
-		}
+		require.ErrorIs(t, err, scenemap.ErrOutOfRange, "err = %v, 期望 ErrOutOfRange", err)
 	})
 
 	t.Run("越界", func(t *testing.T) {
 		_, err := env.call(t, CommandMove{UUID: 6001, Pixel: scenemap.PixelPos{X: -1, Y: -1}})
-		if !errors.Is(err, scenemap.ErrOutOfRange) {
-			t.Fatalf("err = %v, 期望 ErrOutOfRange", err)
-		}
+		require.ErrorIs(t, err, scenemap.ErrOutOfRange, "err = %v, 期望 ErrOutOfRange", err)
 	})
 
 	t.Run("静态阻挡", func(t *testing.T) {
@@ -559,9 +627,7 @@ func TestSyncRejectsIllegalMoves(t *testing.T) {
 		})
 		d.mustCall(t, CommandEnterPlayer{UUID: 6002, GridPos: start})
 		_, err := d.call(t, CommandMove{UUID: 6002, Pixel: geo.CellCenter(scenemap.GridPos{X: 4, Y: 3})})
-		if !errors.Is(err, scenemap.ErrBlocked) {
-			t.Fatalf("err = %v, 期望 ErrBlocked", err)
-		}
+		require.ErrorIs(t, err, scenemap.ErrBlocked, "err = %v, 期望 ErrBlocked", err)
 	})
 
 	t.Run("怪物占位", func(t *testing.T) {
@@ -574,16 +640,12 @@ func TestSyncRejectsIllegalMoves(t *testing.T) {
 			TemplateID: 101,
 		})
 		_, err := d.call(t, CommandMove{UUID: 6003, Pixel: geo.CellCenter(scenemap.GridPos{X: 4, Y: 3})})
-		if !errors.Is(err, scenemap.ErrBlocked) {
-			t.Fatalf("err = %v, 期望 ErrBlocked", err)
-		}
+		require.ErrorIs(t, err, scenemap.ErrBlocked, "err = %v, 期望 ErrBlocked", err)
 	})
 
 	t.Run("未知实体", func(t *testing.T) {
 		_, err := env.call(t, CommandMove{UUID: 777777, Pixel: geo.CellCenter(start)})
-		if !errors.Is(err, scenemap.ErrNotFound) {
-			t.Fatalf("err = %v, 期望 ErrNotFound", err)
-		}
+		require.ErrorIs(t, err, scenemap.ErrNotFound, "err = %v, 期望 ErrNotFound", err)
 	})
 }
 
@@ -609,9 +671,7 @@ func TestPlayersMayOverlapMonstersMayNot(t *testing.T) {
 		TemplateID: 200,
 	})
 	er := reply.(EnterReply)
-	if er.GridPos == pos {
-		t.Fatalf("怪物与玩家重叠了: %s", er.GridPos)
-	}
+	require.NotEqualValues(t, pos, er.GridPos, "怪物与玩家重叠了: %s", er.GridPos)
 	d := grid.Chebyshev(er.GridPos, pos)
 	require.EqualValues(t, 1, d, fmt.Sprintf("怪物落点距玩家 %d 格, 期望 1（就近找空位）", d))
 	s = env.snapshot(t, 9101)
@@ -620,9 +680,7 @@ func TestPlayersMayOverlapMonstersMayNot(t *testing.T) {
 	// 玩家也不能走进怪物格（移动路径上拦住）。
 	geo := grid.DefaultGeometry()
 	_, err := env.call(t, CommandMove{UUID: 7001, Pixel: geo.CellCenter(er.GridPos)})
-	if !errors.Is(err, scenemap.ErrBlocked) {
-		t.Fatalf("走进怪物格 err = %v, 期望 ErrBlocked", err)
-	}
+	require.ErrorIs(t, err, scenemap.ErrBlocked, "走进怪物格 err = %v, 期望 ErrBlocked", err)
 }
 
 func TestMonsterFootprintBlocksNeighbors(t *testing.T) {
@@ -638,12 +696,8 @@ func TestMonsterFootprintBlocksNeighbors(t *testing.T) {
 			require.EqualValues(t, 1, n, fmt.Sprintf("(%d,%d) blockCount = %d, 期望 1", x, y, n))
 		}
 	}
-	if !ix.BlockedFor(2, scenemap.GridPos{X: 7, Y: 7}) {
-		t.Fatalf("footprint 内的格应阻挡其他实体")
-	}
-	if ix.BlockedFor(1, scenemap.GridPos{X: 7, Y: 7}) {
-		t.Fatalf("对自身不应判定阻挡")
-	}
+	require.True(t, ix.BlockedFor(2, scenemap.GridPos{X: 7, Y: 7}), "footprint 内的格应阻挡其他实体")
+	require.False(t, ix.BlockedFor(1, scenemap.GridPos{X: 7, Y: 7}), "对自身不应判定阻挡")
 
 	// 离开后 footprint 全部回收。
 	ix.Leave(1)
@@ -664,18 +718,15 @@ func TestIndexSameCellMoveDoesNotMigrate(t *testing.T) {
 
 	moved, err := ix.Move(42, p)
 	require.NoError(t, err, "Move")
-	if moved {
-		t.Fatalf("同格 Move 不应报告迁移")
-	}
+	require.False(t, moved, "同格 Move 不应报告迁移")
 	got := ix.PlayersAt(p)
 	require.EqualValues(t, 1, got, fmt.Sprintf("PlayersAt = %d, 期望 1（不能因为同格移动被重复计数）", got))
 	got = ix.BlockCount(p)
 	require.EqualValues(t, 1, got, fmt.Sprintf("BlockCount = %d, 期望 1", got))
 
 	moved, err = ix.Move(42, scenemap.GridPos{X: 3, Y: 2})
-	if err != nil || !moved {
-		t.Fatalf("换格 Move = (%v,%v), 期望 (true,nil)", moved, err)
-	}
+	require.NoError(t, err, "换格 Move = (%v,%v), 期望 (true,nil)", moved, err)
+	require.True(t, moved, "换格 Move = (%v,%v), 期望 (true,nil)", moved, err)
 	require.EqualValues(t, 0, ix.BlockCount(p), "旧格占位未回收")
 	require.EqualValues(t, 1, ix.BlockCount(scenemap.GridPos{X: 3, Y: 2}), "新格占位未登记")
 	require.EqualValues(t, 0, ix.PlayersAt(p), "旧格玩家计数未回收")
@@ -688,9 +739,7 @@ func TestIndexSameCellMoveDoesNotMigrate(t *testing.T) {
 func TestNoEffectCommandIsRejected(t *testing.T) {
 	env := newEnv(t, baseConfig(), nil)
 	_, err := env.call(t, NewFunc("noop", func(*State) (any, error) { return nil, nil }))
-	if !errors.Is(err, scenemap.ErrNoEffect) {
-		t.Fatalf("err = %v, 期望 ErrNoEffect", err)
-	}
+	require.ErrorIs(t, err, scenemap.ErrNoEffect, "err = %v, 期望 ErrNoEffect", err)
 
 	// 声明 MayNoop 的命令允许无效果。
 	_, err = env.call(t, &FuncCommand{CmdName: "noop-ok", AllowNoop: true, Fn: func(*State) (any, error) {
@@ -714,60 +763,65 @@ func TestLenientNoEffectOnlyLogs(t *testing.T) {
 func TestLoopTimerSelfRenewsAtExpectedRate(t *testing.T) {
 	cfg := baseConfig()
 	cfg.TickInterval = 10 * time.Millisecond
-	env := newEnv(t, cfg, nil)
+	ft := &fakeTimers{}
+	env := newEnv(t, cfg, func(_ *Config, d *Deps) { d.NewTimer = ft.New })
+	ft.waitArmed(t)
 
-	time.Sleep(120 * time.Millisecond)
-	n := env.gp.loops.Load()
-	if n < 5 || n > 20 {
-		t.Fatalf("120ms 内 loop 次数 = %d, 期望约 12（10ms 间隔）", n)
+	require.Equal(t, 10*time.Millisecond, ft.loop().interval(), "loop 间隔 = base / 倍速")
+
+	// 连投 12 拍。若定时器不自续期，只有第 1 拍会生效。
+	for i := 0; i < 12; i++ {
+		ft.loop().tick(t)
 	}
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return env.gp.loops.Load() == 12 }), "loop 次数 = %d, 期望 12", env.gp.loops.Load())
 }
 
-func TestTimerSpeedAffectsLoopRate(t *testing.T) {
-	run := func(permille int32) int64 {
+// TestLoopIntervalScalesWithSpeed 验证倍速只影响间隔换算，是纯函数。
+//
+// 原来的版本靠跑真实时钟比较次数，既慢又抖；这里直接断言换算结果，
+// 顺带覆盖整数截断与非法倍速的兜底。
+func TestLoopIntervalScalesWithSpeed(t *testing.T) {
+	cases := []struct {
+		permille int32
+		wantLoop time.Duration
+		wantBuff time.Duration
+	}{
+		{1000, 10 * time.Millisecond, 5 * time.Millisecond},
+		{2000, 5 * time.Millisecond, 2500 * time.Microsecond},
+		{1500, 6666666 * time.Nanosecond, 3333333 * time.Nanosecond}, // 整数截断
+		{500, 20 * time.Millisecond, 10 * time.Millisecond},
+		{0, 10 * time.Millisecond, 5 * time.Millisecond}, // 非法值按 1x 处理
+	}
+	for _, c := range cases {
 		cfg := baseConfig()
 		cfg.TickInterval = 10 * time.Millisecond
-		cfg.SpeedPermille = permille
-		gp := newStubGameplay()
-		m := New(cfg, Deps{Gameplay: gp, AOI: &stubAOI{}, Clock: func() int64 { return time.Now().UnixMilli() }})
-		m.Start(context.Background())
-		time.Sleep(150 * time.Millisecond)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_ = m.Stop(ctx)
-		cancel()
-		return gp.loops.Load()
-	}
+		cfg.SpeedPermille = c.permille
+		m := New(cfg, Deps{})
 
-	slow := run(1000) // 10ms
-	fast := run(2000) // 5ms
-
-	if slow < 5 || fast < 5 {
-		t.Fatalf("采样过少: slow=%d fast=%d", slow, fast)
-	}
-	// 允许调度抖动的宽松区间：约 2:1。
-	if fast*2 < slow*3 || fast*2 > slow*5 {
-		t.Fatalf("倍速比例异常: 1000‰=%d 次, 2000‰=%d 次, 期望约 2:1", slow, fast)
+		require.Equal(t, c.wantLoop, m.loopInterval(), fmt.Sprintf("倍速 %d‰ loop 间隔", c.permille))
+		require.Equal(t, c.wantBuff, m.buffInterval(), fmt.Sprintf("倍速 %d‰ buff 间隔", c.permille))
 	}
 }
 
 func TestSetSpeedRearmsWithoutStopping(t *testing.T) {
 	cfg := baseConfig()
 	cfg.TickInterval = 20 * time.Millisecond
-	env := newEnv(t, cfg, nil)
+	ft := &fakeTimers{}
+	env := newEnv(t, cfg, func(_ *Config, d *Deps) { d.NewTimer = ft.New })
+	ft.waitArmed(t)
+	require.Equal(t, 20*time.Millisecond, ft.loop().interval())
 
-	time.Sleep(50 * time.Millisecond)
-	base := env.gp.loops.Load()
-	if base == 0 {
-		t.Fatalf("定时器没有跑起来")
-	}
-	err := env.m.SetSpeed(3000)
-	require.NoError(t, err, fmt.Sprintf("SetSpeed: %v", err))
-	got := env.m.Speed()
-	require.EqualValues(t, 3000, got, fmt.Sprintf("Speed = %d", got))
-	time.Sleep(60 * time.Millisecond)
-	if env.gp.loops.Load() <= base {
-		t.Fatalf("提速后 loop 没有继续推进")
-	}
+	ft.loop().tick(t)
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return env.gp.loops.Load() == 1 }), "定时器没有跑起来")
+
+	require.NoError(t, env.m.SetSpeed(3000))
+	want := 20 * time.Millisecond * 1000 / 3000 // 6.666666ms
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return ft.loop().interval() == want }), "倍速变了但间隔没重建: %v, 期望 %v", ft.loop().interval(), want)
+	require.EqualValues(t, 3000, env.m.Speed())
+
+	// 重建后仍在同一台定时器上继续跑（不是 Stop 后新建）。
+	ft.loop().tick(t)
+	require.True(t, waitUntil(t, 2*time.Second, func() bool { return env.gp.loops.Load() == 2 }), "提速后 loop 没有继续推进")
 }
 
 // ============================================================================
@@ -813,9 +867,7 @@ func TestConcurrentPostSingleWriter(t *testing.T) {
 	require.EqualValues(t, goroutines*perG, got)
 
 	rev := env.snapshot(t, 0).revision
-	if rev < uint64(goroutines*perG) {
-		t.Fatalf("revision = %d, 少于命令数 %d", rev, goroutines*perG)
-	}
+	require.GreaterOrEqual(t, rev, uint64(goroutines*perG), "revision = %d, 少于命令数 %d", rev, goroutines*perG)
 }
 
 // ============================================================================
@@ -829,9 +881,7 @@ func TestNpeUUIDsAreSorted(t *testing.T) {
 	}
 	got := s.NpeUUIDs()
 	for i := 1; i < len(got); i++ {
-		if got[i-1] > got[i] {
-			t.Fatalf("NpeUUIDs 未排序: %v", got)
-		}
+		require.LessOrEqual(t, got[i-1], got[i], "NpeUUIDs 未排序: %v", got)
 	}
 	require.Len(t, got, 5)
 }
@@ -855,9 +905,8 @@ func TestBcastAndTickCommands(t *testing.T) {
 	env.aoi.mu.Lock()
 	scope := env.aoi.lastScope
 	env.aoi.mu.Unlock()
-	if scope.Kind != ScopeAround || scope.Radius != 5 {
-		t.Fatalf("广播范围 = %+v", scope)
-	}
+	require.EqualValues(t, ScopeAround, scope.Kind, "广播范围 = %+v", scope)
+	require.EqualValues(t, 5, scope.Radius, "广播范围 = %+v", scope)
 
 	// Tick 允许无效果。
 	_, err := env.call(t, CommandTick{})

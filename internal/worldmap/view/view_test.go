@@ -214,29 +214,25 @@ func TestSubscriptionLifecycle(t *testing.T) {
 	h.loader.put(troopUpsert(1001, 40, 40))
 	h.publish(2, nil, []domain.ObjectKey{key}, nil)
 	ev := recvEvent(t, h.sub.Events())
-	if ev.GetUpsert() == nil {
-		t.Fatalf("第 1 步应为 Upsert，got %v", ev)
-	}
-	if ev.GetRevision() != 2 || ev.GetUpsert().GetX() != 40*testUnits {
-		t.Fatalf("进入事件不符: revision=%d x=%d", ev.GetRevision(), ev.GetUpsert().GetX())
-	}
+	require.NotNil(t, ev.GetUpsert(), "第 1 步应为 Upsert，got %v", ev)
+	require.EqualValues(t, 2, ev.GetRevision(), "进入事件不符: revision=%d x=%d", ev.GetRevision(), ev.GetUpsert().GetX())
+	require.EqualValues(t, 40*testUnits, ev.GetUpsert().GetX(), "进入事件不符: revision=%d x=%d", ev.GetRevision(), ev.GetUpsert().GetX())
 	require.EqualValues(t, int32(domain.ObjectKindTroop), ev.GetUpsert().GetKind())
 
 	// 移动：同一对象再次更新，事件里是最终坐标。
 	h.loader.put(troopUpsert(1001, 60, 60))
 	h.publish(3, nil, []domain.ObjectKey{key}, nil)
 	ev = recvEvent(t, h.sub.Events())
-	if ev.GetRevision() != 3 || ev.GetUpsert() == nil || ev.GetUpsert().GetX() != 60*testUnits {
-		t.Fatalf("更新事件不符: %v", ev)
-	}
+	require.EqualValues(t, 3, ev.GetRevision(), "更新事件不符: %v", ev)
+	require.NotNil(t, ev.GetUpsert(), "更新事件不符: %v", ev)
+	require.EqualValues(t, 60*testUnits, ev.GetUpsert().GetX(), "更新事件不符: %v", ev)
 
 	// 离开视野（对象被删除）：只剩 Remove。
 	h.loader.drop(1001)
 	h.publish(4, nil, nil, []domain.ObjectKey{key})
 	ev = recvEvent(t, h.sub.Events())
-	if ev.GetRemove() == nil || ev.GetRemove().GetObjectId() != 1001 {
-		t.Fatalf("离开事件应为 Remove(1001)，got %v", ev)
-	}
+	require.NotNil(t, ev.GetRemove(), "离开事件应为 Remove(1001)，got %v", ev)
+	require.EqualValues(t, 1001, ev.GetRemove().GetObjectId(), "离开事件应为 Remove(1001)，got %v", ev)
 	expectNoEvent(t, h.sub.Events())
 }
 
@@ -329,9 +325,8 @@ func TestProjectionMerge(t *testing.T) {
 				}
 				return
 			}
-			if ev.GetUpsert() == nil || ev.GetUpsert().GetX() != tc.wantX*testUnits {
-				t.Fatalf("应为 x=%d 的最终态 Upsert，got %v", tc.wantX, ev)
-			}
+			require.NotNil(t, ev.GetUpsert(), "应为 x=%d 的最终态 Upsert，got %v", tc.wantX, ev)
+			require.EqualValues(t, tc.wantX*testUnits, ev.GetUpsert().GetX(), "应为 x=%d 的最终态 Upsert，got %v", tc.wantX, ev)
 		})
 	}
 }
@@ -363,12 +358,10 @@ func TestSlowConsumerResync(t *testing.T) {
 		}
 	}
 drained:
-	if len(got) == 0 || got[0].GetResync() == nil {
-		t.Fatalf("积压超限后首个事件应为 Resync，got %v", got)
-	}
-	if got := h.sub.PendingBytes(); got > cfg.ViewPendingBytes {
-		t.Fatalf("Resync 后积压计数未重置: %d > %d", got, cfg.ViewPendingBytes)
-	}
+	require.NotEqualValues(t, 0, len(got), "积压超限后首个事件应为 Resync，got %v", got)
+	require.NotNil(t, got[0].GetResync(), "积压超限后首个事件应为 Resync，got %v", got)
+	got1 := h.sub.PendingBytes()
+	require.LessOrEqual(t, got1, cfg.ViewPendingBytes, "Resync 后积压计数未重置: %d > %d", got1, cfg.ViewPendingBytes)
 	// Resync 之后（最后一次 Resync 起）不允许出现增量 Remove。
 	lastResync := -1
 	for i, ev := range got {
@@ -384,9 +377,8 @@ drained:
 	h.loader.put(troopUpsert(3001, 70, 70))
 	h.publish(12, nil, []domain.ObjectKey{key}, nil)
 	ev := recvEvent(t, h.sub.Events())
-	if ev.GetUpsert() == nil || ev.GetUpsert().GetX() != 70*testUnits {
-		t.Fatalf("Resync 后应收到全量 Upsert，got %v", ev)
-	}
+	require.NotNil(t, ev.GetUpsert(), "Resync 后应收到全量 Upsert，got %v", ev)
+	require.EqualValues(t, 70*testUnits, ev.GetUpsert().GetX(), "Resync 后应收到全量 Upsert，got %v", ev)
 	expectNoEvent(t, h.sub.Events())
 }
 
@@ -402,9 +394,8 @@ func TestRectCrossesBlockBoundary(t *testing.T) {
 
 	ev1 := recvEvent(t, h.sub.Events())
 	ev2 := recvEvent(t, h.sub.Events())
-	if ev1.GetUpsert().GetObjectId() != 4001 || ev2.GetUpsert().GetObjectId() != 4002 {
-		t.Fatalf("跨块对象不全: %v %v", ev1, ev2)
-	}
+	require.EqualValues(t, 4001, ev1.GetUpsert().GetObjectId(), "跨块对象不全: %v %v", ev1, ev2)
+	require.EqualValues(t, 4002, ev2.GetUpsert().GetObjectId(), "跨块对象不全: %v %v", ev1, ev2)
 	expectNoEvent(t, h.sub.Events())
 }
 
@@ -419,14 +410,12 @@ func TestViewClamp(t *testing.T) {
 	h.subscribe(0)
 
 	want := Rect{MinX: 240, MinY: 240, MaxX: 340, MaxY: 340}
-	if got := h.sub.Rect(); got != want {
-		t.Fatalf("视野裁剪 = %+v, want %+v", got, want)
-	}
+	got1 := h.sub.Rect()
+	require.EqualValues(t, want, got1, "视野裁剪 = %+v, want %+v", got1, want)
 	// [240,340)×[240,340) 跨 x/y 两个方向的块边界（块宽 250），
 	// 覆盖 4 个桶：块列 0/1 × 块行 0/1。
-	if blocks := BlocksInRect(h.topo, want); len(blocks) != 4 {
-		t.Fatalf("裁剪后应覆盖 4 个块，got %v", blocks)
-	}
+	blocks2 := BlocksInRect(h.topo, want)
+	require.EqualValues(t, 4, len(blocks2), "裁剪后应覆盖 4 个块，got %v", blocks2)
 
 	h.flush()
 	ev := recvEvent(t, h.sub.Events())
@@ -456,9 +445,8 @@ func TestLineCrossingViewport(t *testing.T) {
 
 	ev := recvEvent(t, h.sub.Events())
 	up := ev.GetUpsert()
-	if up == nil || up.GetKind() != LineKind {
-		t.Fatalf("应收到 kind=%d 的线事件，got %v", LineKind, ev)
-	}
+	require.NotNil(t, up, "应收到 kind=%d 的线事件，got %v", LineKind, ev)
+	require.EqualValues(t, LineKind, up.GetKind(), "应收到 kind=%d 的线事件，got %v", LineKind, ev)
 	require.EqualValues(t, lineObjectID("move-1"), up.GetObjectId())
 	h.flush() // 线没变 → 不应重复下发
 	expectNoEvent(t, h.sub.Events())
@@ -467,7 +455,6 @@ func TestLineCrossingViewport(t *testing.T) {
 	lines.Remove("move-1")
 	h.flush()
 	ev = recvEvent(t, h.sub.Events())
-	if ev.GetRemove() == nil || ev.GetRemove().GetObjectId() != lineObjectID("move-1") {
-		t.Fatalf("线删除应发 Remove，got %v", ev)
-	}
+	require.NotNil(t, ev.GetRemove(), "线删除应发 Remove，got %v", ev)
+	require.EqualValues(t, lineObjectID("move-1"), ev.GetRemove().GetObjectId(), "线删除应发 Remove，got %v", ev)
 }

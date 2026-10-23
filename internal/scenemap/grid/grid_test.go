@@ -15,21 +15,17 @@ func TestGeometryCellConversions(t *testing.T) {
 	g := Geometry{CellW: 48, CellH: 24, AoiGrid: 6}
 
 	// 常规换算
-	if got := g.CellOf(95, 47); got != (scenemap.GridPos{X: 1, Y: 1}) {
-		t.Fatalf("CellOf(95,47) = %s, want (1,1)", got)
-	}
+	got1 := g.CellOf(95, 47)
+	require.EqualValues(t, (scenemap.GridPos{X: 1, Y: 1}), got1, "CellOf(95,47) = %s, want (1,1)", got1)
 	// 负数必须向下取整：Go 的截断除法会得到 0，等于把图外当成图内
-	if got := g.CellOf(-1, -1); got != (scenemap.GridPos{X: -1, Y: -1}) {
-		t.Fatalf("CellOf(-1,-1) = %s, want (-1,-1)", got)
-	}
+	got2 := g.CellOf(-1, -1)
+	require.EqualValues(t, (scenemap.GridPos{X: -1, Y: -1}), got2, "CellOf(-1,-1) = %s, want (-1,-1)", got2)
 	// 格中心
-	if got := g.CellCenter(scenemap.GridPos{X: 2, Y: 3}); got != (scenemap.PixelPos{X: 2*48 + 24, Y: 3*24 + 12}) {
-		t.Fatalf("CellCenter = %+v", got)
-	}
+	got3 := g.CellCenter(scenemap.GridPos{X: 2, Y: 3})
+	require.EqualValues(t, (scenemap.PixelPos{X: 2*48 + 24, Y: 3*24 + 12}), got3, "CellCenter = %+v", got3)
 	// 视野格 = 行走格 / aoi_grid
-	if got := g.ViewOf(scenemap.GridPos{X: 13, Y: 5}); got != (scenemap.GridPos{X: 2, Y: 0}) {
-		t.Fatalf("ViewOf(13,5) = %s, want (2,0)", got)
-	}
+	got4 := g.ViewOf(scenemap.GridPos{X: 13, Y: 5})
+	require.EqualValues(t, (scenemap.GridPos{X: 2, Y: 0}), got4, "ViewOf(13,5) = %s, want (2,0)", got4)
 }
 
 func TestGeometryValidate(t *testing.T) {
@@ -44,9 +40,8 @@ func TestGeometryValidate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.g.Validate(); (err == nil) != tc.ok {
-				t.Fatalf("Validate() err=%v, want ok=%v", err, tc.ok)
-			}
+			err5 := tc.g.Validate()
+			require.EqualValues(t, tc.ok, (err5 == nil), "Validate() err=%v, want ok=%v", err5, tc.ok)
 		})
 	}
 }
@@ -55,15 +50,12 @@ func TestDistances(t *testing.T) {
 	a := scenemap.GridPos{X: 1, Y: 1}
 	b := scenemap.GridPos{X: 4, Y: 3}
 
-	if got := Chebyshev(a, b); got != 3 {
-		t.Fatalf("Chebyshev = %d, want 3", got)
-	}
-	if got := Manhattan(a, b); got != 5 {
-		t.Fatalf("Manhattan = %d, want 5", got)
-	}
-	if got := Euclidean2(a, b); got != 13 {
-		t.Fatalf("Euclidean2 = %d, want 13", got)
-	}
+	got6 := Chebyshev(a, b)
+	require.EqualValues(t, 3, got6, "Chebyshev = %d, want 3", got6)
+	got7 := Manhattan(a, b)
+	require.EqualValues(t, 5, got7, "Manhattan = %d, want 5", got7)
+	got8 := Euclidean2(a, b)
+	require.EqualValues(t, 13, got8, "Euclidean2 = %d, want 13", got8)
 	// (1,1)→(4,3) 的 dx=3, dy=2，距离 √13≈3.6：
 	// 半径 4 包含，半径 3 不包含。
 	require.False(t, !WithinRadius(a, b, 4), "半径 4 应包含 (4,3)（√13≈3.6）")
@@ -89,9 +81,8 @@ func TestInSector(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := InSector(origin, tc.dst, tc.dir, tc.half, tc.r); got != tc.want {
-				t.Fatalf("InSector = %v, want %v", got, tc.want)
-			}
+			got9 := InSector(origin, tc.dst, tc.dir, tc.half, tc.r)
+			require.EqualValues(t, tc.want, got9, "InSector = %v, want %v", got9, tc.want)
 		})
 	}
 }
@@ -132,12 +123,10 @@ func TestBlockerStaticDynamicAndFootprint(t *testing.T) {
 }
 
 func TestBlockerRejectsBadMatrix(t *testing.T) {
-	if _, err := NewBlocker(Size{Width: 2, Height: 2}, []byte{0}); err == nil {
-		t.Fatal("矩阵长度不符应报错")
-	}
-	if _, err := NewBlockerFromRows([]string{"..", "..."}); err == nil {
-		t.Fatal("行长度不一致应报错")
-	}
+	_, err10 := NewBlocker(Size{Width: 2, Height: 2}, []byte{0})
+	require.Error(t, err10, "矩阵长度不符应报错")
+	_, err11 := NewBlockerFromRows([]string{"..", "..."})
+	require.Error(t, err11, "行长度不一致应报错")
 }
 
 func TestAStarStraightAndAroundWall(t *testing.T) {
@@ -167,13 +156,11 @@ func TestAStarRejectsBlockedTargetAndBudget(t *testing.T) {
 		"..#.",
 		"....",
 	})
-	if _, err := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 2, Y: 1}, 1000); err == nil {
-		t.Fatal("目标是墙应返回错误")
-	}
+	_, err12 := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 2, Y: 1}, 1000)
+	require.Error(t, err12, "目标是墙应返回错误")
 	// 预算 1：第一步之后就会超限
-	if _, err := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 2}, 1); err == nil {
-		t.Fatal("超出节点预算应返回错误")
-	}
+	_, err13 := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 2}, 1)
+	require.Error(t, err13, "超出节点预算应返回错误")
 	// 起点即终点
 	path, err := AStar(b, scenemap.GridPos{X: 1, Y: 1}, scenemap.GridPos{X: 1, Y: 1}, 10)
 	require.NoError(t, err, fmt.Sprintf("原地应返回空路径, got %v err=%v", path, err))
@@ -187,17 +174,16 @@ func TestAStarNoDiagonalCornerCutting(t *testing.T) {
 		".#",
 		"#.",
 	})
-	if _, err := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 1, Y: 1}, 100); err == nil {
-		t.Fatal("不应允许斜穿墙角")
-	}
+	_, err14 := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 1, Y: 1}, 100)
+	require.Error(t, err14, "不应允许斜穿墙角")
 }
 
 func TestRingAndRandomCell(t *testing.T) {
 	ring := Ring(scenemap.GridPos{X: 5, Y: 5}, 2)
 	require.Len(t, ring, 16)
-	if got := Ring(scenemap.GridPos{X: 5, Y: 5}, 0); len(got) != 1 || got[0] != (scenemap.GridPos{X: 5, Y: 5}) {
-		t.Fatalf("半径 0 应只有中心: %v", got)
-	}
+	got15 := Ring(scenemap.GridPos{X: 5, Y: 5}, 0)
+	require.EqualValues(t, 1, len(got15), "半径 0 应只有中心: %v", got15)
+	require.EqualValues(t, (scenemap.GridPos{X: 5, Y: 5}), got15[0], "半径 0 应只有中心: %v", got15)
 	// 全部格都在切比雪夫距离 2 上
 	for _, p := range ring {
 		require.EqualValues(t, 2, Chebyshev(p, scenemap.GridPos{X: 5, Y: 5}))
