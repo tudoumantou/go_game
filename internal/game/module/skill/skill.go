@@ -100,8 +100,8 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogout(m.onLogout),
 	)
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.SkillListResp{}, m.onList)
-	m.HandleR(msgIDLearnReq, msgIDLearnResp, &gamev1.SkillLearnResp{}, m.onLearn)
-	m.HandleR(msgIDUpgradeReq, msgIDUpgradeResp, &gamev1.SkillUpgradeResp{}, m.onUpgrade)
+	m.HandleR(msgIDLearnReq, msgIDLearnResp, &gamev1.SkillLearnResp{}, module.Typed(msgIDLearnResp, m.onLearn))
+	m.HandleR(msgIDUpgradeReq, msgIDUpgradeResp, &gamev1.SkillUpgradeResp{}, module.Typed(msgIDUpgradeResp, m.onUpgrade))
 	return m
 }
 
@@ -153,20 +153,16 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 // onLearn 学习技能：Col2 是学习等级门槛，未达到直接拒绝。
 //
 // 「已学」用键存在判定：学习即置 1 级，与升级路径共用同一张表。
-func (m *Module) onLearn(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.SkillLearnReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode SkillLearnReq: %w", err)
-	}
-	resp := &gamev1.SkillLearnResp{}
+func (m *Module) onLearn(ctx *module.Context, req *gamev1.SkillLearnReq, resp *gamev1.SkillLearnResp) error {
+	*resp = gamev1.SkillLearnResp{}
 	cfg, ok := gamedata.GetSkillCfg(int64(req.SkillId))
 	if !ok {
 		resp.Code = codeNotExist
-		return reply(ctx, msgIDLearnResp, resp)
+		return nil
 	}
 	if ctx.State.Profile().Level < int32(cfg.Col2) {
 		resp.Code = codeLevelLow
-		return reply(ctx, msgIDLearnResp, resp)
+		return nil
 	}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -174,14 +170,14 @@ func (m *Module) onLearn(ctx *module.Context, _ uint32, body []byte) error {
 	}
 	if _, learned := d.Levels[req.SkillId]; learned {
 		resp.Code = codeLearned
-		return reply(ctx, msgIDLearnResp, resp)
+		return nil
 	}
 	d.Levels[req.SkillId] = 1
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
 	resp.Code = codeOK
-	return reply(ctx, msgIDLearnResp, resp)
+	return nil
 }
 
 // onUpgrade 升级：扣材料与等级变更在同一次快照提交。
@@ -189,16 +185,12 @@ func (m *Module) onLearn(ctx *module.Context, _ uint32, body []byte) error {
 // 消耗 = Col3 × 当前等级（线性增长，Col3=0 表示免费）；
 // 扣费（RemoveItem）与升级（Levels+1）都在内存里，CAS 失败一起回滚，
 // 不会「扣了钻石没升级」。
-func (m *Module) onUpgrade(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.SkillUpgradeReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode SkillUpgradeReq: %w", err)
-	}
-	resp := &gamev1.SkillUpgradeResp{}
+func (m *Module) onUpgrade(ctx *module.Context, req *gamev1.SkillUpgradeReq, resp *gamev1.SkillUpgradeResp) error {
+	*resp = gamev1.SkillUpgradeResp{}
 	cfg, ok := gamedata.GetSkillCfg(int64(req.SkillId))
 	if !ok {
 		resp.Code = codeNotExist
-		return reply(ctx, msgIDUpgradeResp, resp)
+		return nil
 	}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -207,14 +199,14 @@ func (m *Module) onUpgrade(ctx *module.Context, _ uint32, body []byte) error {
 	level, learned := d.Levels[req.SkillId]
 	if !learned {
 		resp.Code = codeNotLearned
-		return reply(ctx, msgIDUpgradeResp, resp)
+		return nil
 	}
 	// 升级消耗：Col3 * 当前等级 钻石（Col3=0 表示免费）
 	cost := int64(cfg.Col3) * int64(level)
 	// 免费（cost<=0）由 Spend 内部直接放行，不必再写分支。
 	if err := module.Spend(ctx.State, upgradeItemID, cost); err != nil {
 		resp.Code = codeNoResource
-		return reply(ctx, msgIDUpgradeResp, resp)
+		return nil
 	}
 	next := level + 1
 	d.Levels[req.SkillId] = next
@@ -223,7 +215,7 @@ func (m *Module) onUpgrade(ctx *module.Context, _ uint32, body []byte) error {
 	}
 	resp.Code = codeOK
 	resp.Level = next
-	return reply(ctx, msgIDUpgradeResp, resp)
+	return nil
 }
 
 // load 读取技能状态；从未学习过返回空结构。

@@ -178,8 +178,8 @@ func New(repo *Repo, messenger Messenger, logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
-	m.HandleR(msgIDSendReq, msgIDSendResp, &gamev1.ChatSendResp{}, m.onSend)
-	m.HandleR(msgIDHistoryReq, msgIDHistoryResp, &gamev1.ChatHistoryResp{}, m.onHistory)
+	m.HandleR(msgIDSendReq, msgIDSendResp, &gamev1.ChatSendResp{}, module.Typed(msgIDSendResp, m.onSend))
+	m.HandleR(msgIDHistoryReq, msgIDHistoryResp, &gamev1.ChatHistoryResp{}, module.Typed(msgIDHistoryResp, m.onHistory))
 	return m
 }
 
@@ -206,20 +206,16 @@ func (m *Module) DeliverInbound(ctx context.Context, msg *pkgmq.ChatCrossMsg) er
 }
 
 // onSend 发送私聊（17.3：本端 out → 对方在线本服直投 / 跨服走 Kafka / 离线 pend）。
-func (m *Module) onSend(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.ChatSendReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode ChatSendReq: %w", err)
-	}
-	resp := &gamev1.ChatSendResp{}
+func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *gamev1.ChatSendResp) error {
+	*resp = gamev1.ChatSendResp{}
 	// channel=0 按私聊兼容（老客户端不传频道字段），其余频道 P6 未开放
 	if req.Channel != channelPrivate && req.Channel != 0 {
 		resp.Code = codeChannelClosed // P6 仅开放私聊
-		return m.reply(ctx, msgIDSendResp, resp)
+		return nil
 	}
 	if req.Content == "" || req.PeerId <= 0 {
 		resp.Code = codeContentEmpty
-		return m.reply(ctx, msgIDSendResp, resp)
+		return nil
 	}
 
 	// msgID 先于一切 IO 生成：历史行与投递消息必须共用同一个 ID，
@@ -263,7 +259,7 @@ func (m *Module) onSend(ctx *module.Context, _ uint32, body []byte) error {
 	resp.Code = codeOK
 	resp.MsgId = fmt.Sprintf("%d", msgID)
 	resp.SentAt = now
-	return m.reply(ctx, msgIDSendResp, resp)
+	return nil
 }
 
 // deliver 按在线状态选择投递路径。
@@ -304,14 +300,10 @@ func (m *Module) deliver(toID int64, raw []byte, crossMsg *pkgmq.ChatCrossMsg) {
 }
 
 // onHistory 拉取与某好友的聊天历史。
-func (m *Module) onHistory(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.ChatHistoryReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode ChatHistoryReq: %w", err)
-	}
-	resp := &gamev1.ChatHistoryResp{Code: codeOK}
+func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp *gamev1.ChatHistoryResp) error {
+	*resp = gamev1.ChatHistoryResp{Code: codeOK}
 	if m.repo == nil {
-		return m.reply(ctx, msgIDHistoryResp, resp)
+		return nil
 	}
 	lines, err := m.repo.ListRecent(context.Background(), ctx.State.PlayerID(), req.PeerId, int(req.Limit))
 	if err != nil {
@@ -341,7 +333,7 @@ func (m *Module) onHistory(ctx *module.Context, _ uint32, body []byte) error {
 	// 取满一页即提示可能还有更多：精确判断要额外 count，
 	// 私聊翻页场景用「取满」近似足够（客户端可再拉一页确认）
 	resp.HasMore = len(lines) >= int(req.Limit)
-	return m.reply(ctx, msgIDHistoryResp, resp)
+	return nil
 }
 
 // reply 统一序列化并回包（与战斗模块同一约定：

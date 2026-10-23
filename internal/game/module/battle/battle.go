@@ -172,21 +172,16 @@ func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Log
 		queued:   make(map[int64]bool),
 	}
 	m.Thin = module.NewThin("battle", module.ThinLogger(logger))
-	m.HandleR(msgIDMatchReq, msgIDMatchResp, &gamev1.MatchResp{}, m.onMatch)
+	m.HandleR(msgIDMatchReq, msgIDMatchResp, &gamev1.MatchResp{}, module.Typed(msgIDMatchResp, m.onMatch))
 	// 战报是单向上报：客户端不等回包，服务端也没有响应协议可回。
 	// 用 Handle 而不是 HandleR（后者要求声明响应）。
 	m.Handle(msgIDOpReport, m.onOpReport)
-	m.HandleR(msgIDResultReport, msgIDSettleNotify, &gamev1.BattleSettleNotify{}, m.onResultReport)
+	m.HandleR(msgIDResultReport, msgIDSettleNotify, &gamev1.BattleSettleNotify{}, module.Typed(msgIDSettleNotify, m.onResultReport))
 	return m
 }
 
 // onMatch 发起匹配：入队 → 凑够人建房 → 双方下发 BattleStartNotify。
-func (m *Module) onMatch(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.MatchReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		// 解码失败是真故障：走 error 通道，由上层记日志/断开，不回业务码
-		return fmt.Errorf("decode MatchReq: %w", err)
-	}
+func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1.MatchResp) error {
 	// mode 空串兜底为 arena：避免客户端不传模式时把队列打散到 "" 键下永远凑不到人
 	mode := req.Mode
 	if mode == "" {
@@ -195,25 +190,25 @@ func (m *Module) onMatch(ctx *module.Context, _ uint32, body []byte) error {
 	// playerID 一律取 Actor 内的会话身份，不信协议体携带的 id（防伪造他人匹配）
 	playerID := ctx.State.PlayerID()
 
-	resp := &gamev1.MatchResp{Mode: mode}
+	*resp = gamev1.MatchResp{Mode: mode}
 
 	// 跨服节点全挂时直接拒绝：不给玩家「进了队列却永远匹配不到」的希望
 	if !m.cross.Available() {
 		resp.Code = codeModeClosed
-		return m.reply(ctx, msgIDMatchResp, resp)
+		return nil
 	}
 
 	m.mu.Lock()
 	if m.queued[playerID] {
 		m.mu.Unlock()
 		resp.Code = codeAlreadyIn
-		return m.reply(ctx, msgIDMatchResp, resp)
+		return nil
 	}
 	if s, inBattle := m.sessions[playerID]; inBattle {
 		if !s.Settled {
 			m.mu.Unlock()
 			resp.Code = codeAlreadyIn
-			return m.reply(ctx, msgIDMatchResp, resp)
+			return nil
 		}
 		// 已结算但会话还未回收（结算到清理之间有短暂窗口）：
 		// 立即清掉残留，允许重新匹配 —— 否则玩家打完一场要等 2s 才能再排。
@@ -229,11 +224,11 @@ func (m *Module) onMatch(ctx *module.Context, _ uint32, body []byte) error {
 		if err := m.center.Match(playerID, mode, elo, m.buildSnapshot(playerID)); err != nil {
 			m.logger.Warn("center match failed", "player_id", playerID, "err", err)
 			resp.Code = codeModeClosed
-			return m.reply(ctx, msgIDMatchResp, resp)
+			return nil
 		}
 		resp.Code = codeOK
 		resp.Queued = 1 // 中心服匹配池不回传精确人数，客户端按「已入队」处理
-		return m.reply(ctx, msgIDMatchResp, resp)
+		return nil
 	}
 
 	m.queue[mode] = append(m.queue[mode], playerID)
@@ -383,14 +378,10 @@ func (m *Module) onOpReport(ctx *module.Context, _ uint32, body []byte) error {
 }
 
 // onResultReport 客户端上报结论：令牌校验 + 幂等 → 转发跨服 → 回执。
-func (m *Module) onResultReport(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.BattleResultReport
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode BattleResultReport: %w", err)
-	}
+func (m *Module) onResultReport(ctx *module.Context, req *gamev1.BattleResultReport, resp *gamev1.BattleSettleNotify) error {
 	playerID := ctx.State.PlayerID()
 
-	resp := &gamev1.BattleSettleNotify{RoomId: req.RoomId}
+	*resp = gamev1.BattleSettleNotify{RoomId: req.RoomId}
 
 	m.mu.Lock()
 	s := m.sessions[playerID]
@@ -400,17 +391,17 @@ func (m *Module) onResultReport(ctx *module.Context, _ uint32, body []byte) erro
 	// 客户端改报别的房间，等价于拿着别房的信物来冒领
 	if s == nil || s.RoomID != req.RoomId {
 		resp.Code = codeTokenInvalid // 房间不匹配视同令牌无效
-		return m.reply(ctx, msgIDSettleNotify, resp)
+		return nil
 	}
 	// 令牌逐个比对：防玩家 A 用自己房间的令牌给 B 的房间冒领结算
 	if req.BattleToken != s.Token {
 		resp.Code = codeTokenInvalid
-		return m.reply(ctx, msgIDSettleNotify, resp)
+		return nil
 	}
 	// 已结算 → 6003：客户端重发/双端重复上报的幂等回执
 	if s.Settled {
 		resp.Code = codeAlreadyDone
-		return m.reply(ctx, msgIDSettleNotify, resp)
+		return nil
 	}
 
 	// 幂等标记（先在内存置位，避免并发重复上报）
@@ -430,7 +421,7 @@ func (m *Module) onResultReport(ctx *module.Context, _ uint32, body []byte) erro
 	// 即时回执（权威奖励由结算推送 5011 再下发一次）
 	resp.Code = codeOK
 	resp.Rewards = req.Rewards
-	return m.reply(ctx, msgIDSettleNotify, resp)
+	return nil
 }
 
 // OnMatchResult 处理中心服下发的匹配结果（P8 主路径）。

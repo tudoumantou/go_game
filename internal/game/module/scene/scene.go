@@ -70,7 +70,8 @@ func New(mgr *scn.Manager, logger *log.Logger) *Module {
 	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
 	m.Handle(codec.MsgSceneMoveReq, m.onMove)
 	m.HandleR(codec.MsgSceneLeaveReq, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{}, m.onLeave)
-	m.HandleR(codec.MsgSceneSyncReq, codec.MsgSceneSyncResp, &gamev1.SceneSyncResp{}, m.onSync)
+	m.HandleR(codec.MsgSceneSyncReq, codec.MsgSceneSyncResp, &gamev1.SceneSyncResp{},
+		module.Typed(codec.MsgSceneSyncResp, m.onSync))
 	return m
 }
 
@@ -210,18 +211,14 @@ func (m *Module) leaveScene(ctx *module.Context) error {
 // SyncMsg 带 PID：场景要把视野内实体快照推回该玩家 Actor。
 // 投递失败回 codeNotReady：与 onMove 的 codeNotIn 区分——同步请求
 // 语义上更偏「场景存在但没就绪」，客户端可稍后重试。
-func (m *Module) onSync(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.SceneSyncReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode SceneSyncReq: %w", err)
-	}
+func (m *Module) onSync(ctx *module.Context, _ *gamev1.SceneSyncReq, resp *gamev1.SceneSyncResp) error {
 	sceneID := ctx.State.Profile().SceneID
 	pid := m.mgr.PID(sceneID)
 	if pid == nil {
-		return m.reply(ctx, codec.MsgSceneSyncResp, &gamev1.SceneSyncResp{Code: codeNotIn, SceneId: sceneID})
+		return nil
 	}
 	if err := ctx.Actor.Send(pid, &scn.SyncMsg{PlayerID: ctx.State.PlayerID(), PID: ctx.Actor.PID()}); err != nil {
-		return m.reply(ctx, codec.MsgSceneSyncResp, &gamev1.SceneSyncResp{Code: codeNotReady, SceneId: sceneID})
+		return nil
 	}
 	return nil
 }

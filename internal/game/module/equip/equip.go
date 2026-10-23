@@ -123,8 +123,8 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogin(m.onLogin),
 	)
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.EquipListResp{}, m.onList)
-	m.HandleR(msgIDWearReq, msgIDWearResp, &gamev1.EquipWearResp{}, m.onWear)
-	m.HandleR(msgIDTakeOffReq, msgIDTakeOffResp, &gamev1.EquipTakeOffResp{}, m.onTakeOff)
+	m.HandleR(msgIDWearReq, msgIDWearResp, &gamev1.EquipWearResp{}, module.Typed(msgIDWearResp, m.onWear))
+	m.HandleR(msgIDTakeOffReq, msgIDTakeOffResp, &gamev1.EquipTakeOffResp{}, module.Typed(msgIDTakeOffResp, m.onTakeOff))
 	return m
 }
 
@@ -170,12 +170,8 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 }
 
 // onWear 穿戴：同部位冲突检查、等级校验，状态与加成同一次快照提交。
-func (m *Module) onWear(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.EquipWearReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode EquipWearReq: %w", err)
-	}
-	resp := &gamev1.EquipWearResp{}
+func (m *Module) onWear(ctx *module.Context, req *gamev1.EquipWearReq, resp *gamev1.EquipWearResp) error {
+	*resp = gamev1.EquipWearResp{}
 	d, err := load(ctx.State)
 	if err != nil {
 		return err
@@ -183,23 +179,23 @@ func (m *Module) onWear(ctx *module.Context, _ uint32, body []byte) error {
 	idx := findEquip(d, req.Uid)
 	if idx < 0 {
 		resp.Code = codeNotExist
-		return reply(ctx, msgIDWearResp, resp)
+		return nil
 	}
 	e := d.Equips[idx]
 	// 已穿戴再穿：幂等成功，直接回当前属性，不重复叠加 atk 加成。
 	if e.Equipped {
 		resp.Code = codeOK
 		resp.Attrs = attrPairs(ctx)
-		return reply(ctx, msgIDWearResp, resp)
+		return nil
 	}
 	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
 	if !ok {
 		resp.Code = codeNotExist
-		return reply(ctx, msgIDWearResp, resp)
+		return nil
 	}
 	if ctx.State.Profile().Level < int32(cfg.Col2) {
 		resp.Code = codeLevelLow
-		return reply(ctx, msgIDWearResp, resp)
+		return nil
 	}
 	// 同部位冲突检查（Col3=部位）
 	// 反查「同部位全部配置 ID」而不是逐件读对方配置：装备表很小，
@@ -212,7 +208,7 @@ func (m *Module) onWear(ctx *module.Context, _ uint32, body []byte) error {
 		for _, id := range sameSlot {
 			if other.EquipID == id {
 				resp.Code = codeSlotConflict
-				return reply(ctx, msgIDWearResp, resp)
+				return nil
 			}
 		}
 	}
@@ -229,19 +225,15 @@ func (m *Module) onWear(ctx *module.Context, _ uint32, body []byte) error {
 
 	resp.Code = codeOK
 	resp.Attrs = attrPairs(ctx)
-	return reply(ctx, msgIDWearResp, resp)
+	return nil
 }
 
 // onTakeOff 卸下：装备仍在列表里，只置 equipped=false 并扣回加成。
 //
 // 卸下不删除实例——「拥有」与「穿戴」是两个事实，分别由列表存在性
 // 与 Equipped 字段表达。
-func (m *Module) onTakeOff(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.EquipTakeOffReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode EquipTakeOffReq: %w", err)
-	}
-	resp := &gamev1.EquipTakeOffResp{}
+func (m *Module) onTakeOff(ctx *module.Context, req *gamev1.EquipTakeOffReq, resp *gamev1.EquipTakeOffResp) error {
+	*resp = gamev1.EquipTakeOffResp{}
 	d, err := load(ctx.State)
 	if err != nil {
 		return err
@@ -249,17 +241,17 @@ func (m *Module) onTakeOff(ctx *module.Context, _ uint32, body []byte) error {
 	idx := findEquip(d, req.Uid)
 	if idx < 0 {
 		resp.Code = codeNotExist
-		return reply(ctx, msgIDTakeOffResp, resp)
+		return nil
 	}
 	e := d.Equips[idx]
 	if !e.Equipped {
 		resp.Code = codeNotEquipped
-		return reply(ctx, msgIDTakeOffResp, resp)
+		return nil
 	}
 	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
 	if !ok {
 		resp.Code = codeNotExist
-		return reply(ctx, msgIDTakeOffResp, resp)
+		return nil
 	}
 
 	e.Equipped = false
@@ -273,7 +265,7 @@ func (m *Module) onTakeOff(ctx *module.Context, _ uint32, body []byte) error {
 
 	resp.Code = codeOK
 	resp.Attrs = attrPairs(ctx)
-	return reply(ctx, msgIDTakeOffResp, resp)
+	return nil
 }
 
 // findEquip 按实例 UID 找下标；找不到返回 -1。

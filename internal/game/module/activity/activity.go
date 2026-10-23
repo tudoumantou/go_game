@@ -126,7 +126,7 @@ func New(logger *log.Logger, producer ProgressProducer) *Module {
 		module.ThinOnEvent(m.onEvent),
 	)
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.ActivityListResp{}, m.onList)
-	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.ActivityClaimResp{}, m.onClaim)
+	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.ActivityClaimResp{}, module.Typed(msgIDClaimResp, m.onClaim))
 	return m
 }
 
@@ -283,22 +283,18 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 }
 
 // onClaim 领奖：进度达标 + 位图防重复，领奖事实与奖励同一次快照提交。
-func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.ActivityClaimReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode ActivityClaimReq: %w", err)
-	}
-	resp := &gamev1.ActivityClaimResp{}
+func (m *Module) onClaim(ctx *module.Context, req *gamev1.ActivityClaimReq, resp *gamev1.ActivityClaimResp) error {
+	*resp = gamev1.ActivityClaimResp{}
 	cfg, ok := gamedata.GetActivityCfg(int64(req.ActivityId))
 	if !ok {
 		resp.Code = codeActivityNotExist
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	// 领取同样校验开放期：不能依赖客户端「恰好没收到结束通知」。
 	// 服务端权威原则——客户端的任何展示状态都不能当准入条件。
 	if !openNow(req.ActivityId, time.Now().Unix()) {
 		resp.Code = codeNotOpen
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -307,13 +303,13 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	rec := d.Records[req.ActivityId]
 	if rec.Progress < int32(cfg.Col3) {
 		resp.Code = codeNotFinished
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	// 位图判重：bit0=已领。比 statusClaimed 多一档的写法（quest 用枚举）
 	// 是因为活动天生多档位，枚举会爆炸。
 	if rec.RewardMask&1 != 0 {
 		resp.Code = codeAlreadyClaimed
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 
 	// 发奖：target * 20 钻石；满包/超限时不发也不置领取位（Grant 失败不改状态）
@@ -321,7 +317,7 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	changes, grantErr := module.Grant(ctx.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
 	if grantErr != nil {
 		resp.Code = codeBagFull
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
 	d.Records[req.ActivityId] = rec
@@ -333,7 +329,7 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(changes)}); err == nil {
 		resp.Rewards = raw
 	}
-	return reply(ctx, msgIDClaimResp, resp)
+	return nil
 }
 
 // load 读取活动状态；从未参与返回空结构。

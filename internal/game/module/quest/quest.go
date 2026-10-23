@@ -123,8 +123,8 @@ func New(logger *log.Logger) *Module {
 		module.ThinOnEvent(m.onEvent),
 	)
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.QuestListResp{}, m.onList)
-	m.HandleR(msgIDAcceptReq, msgIDAcceptResp, &gamev1.QuestAcceptResp{}, m.onAccept)
-	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.QuestClaimResp{}, m.onClaim)
+	m.HandleR(msgIDAcceptReq, msgIDAcceptResp, &gamev1.QuestAcceptResp{}, module.Typed(msgIDAcceptResp, m.onAccept))
+	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.QuestClaimResp{}, module.Typed(msgIDClaimResp, m.onClaim))
 	return m
 }
 
@@ -225,15 +225,11 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 //
 // 已领奖的任务允许重新接取（日常任务的设计前提）：Status==claimed
 // 时覆盖为 doing 并清零进度，实现「每日刷新」而不需要删键。
-func (m *Module) onAccept(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.QuestAcceptReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode QuestAcceptReq: %w", err)
-	}
-	resp := &gamev1.QuestAcceptResp{}
+func (m *Module) onAccept(ctx *module.Context, req *gamev1.QuestAcceptReq, resp *gamev1.QuestAcceptResp) error {
+	*resp = gamev1.QuestAcceptResp{}
 	if _, ok := gamedata.GetQuestCfg(int64(req.QuestId)); !ok {
 		resp.Code = codeQuestNotExist
-		return reply(ctx, msgIDAcceptResp, resp)
+		return nil
 	}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -241,30 +237,26 @@ func (m *Module) onAccept(ctx *module.Context, _ uint32, body []byte) error {
 	}
 	if rec, ok := d.Quests[req.QuestId]; ok && rec.Status != statusClaimed {
 		resp.Code = codeQuestAccepted
-		return reply(ctx, msgIDAcceptResp, resp)
+		return nil
 	}
 	d.Quests[req.QuestId] = Record{Status: statusDoing}
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
 	resp.Code = codeOK
-	return reply(ctx, msgIDAcceptResp, resp)
+	return nil
 }
 
 // onClaim 领奖（经验 + 道具）。
 //
 // 领取事实与奖励在同一次快照提交：已领状态写进 Ext，道具进 Items，经验进 Profile，
 // Redis 提交失败时三者一起回滚，不会出现「状态已领、奖励没到账」。
-func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.QuestClaimReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode QuestClaimReq: %w", err)
-	}
-	resp := &gamev1.QuestClaimResp{}
+func (m *Module) onClaim(ctx *module.Context, req *gamev1.QuestClaimReq, resp *gamev1.QuestClaimResp) error {
+	*resp = gamev1.QuestClaimResp{}
 	cfg, ok := gamedata.GetQuestCfg(int64(req.QuestId))
 	if !ok {
 		resp.Code = codeQuestNotExist
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -273,15 +265,15 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	rec, ok := d.Quests[req.QuestId]
 	if !ok {
 		resp.Code = codeQuestUnfinished
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	if rec.Status == statusClaimed {
 		resp.Code = codeQuestClaimed
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 	if rec.Progress < int32(cfg.Col3) {
 		resp.Code = codeQuestUnfinished
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 
 	// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）
@@ -291,7 +283,7 @@ func (m *Module) onClaim(ctx *module.Context, _ uint32, body []byte) error {
 	changes, grantErr := module.Grant(ctx.State, grants)
 	if grantErr != nil {
 		resp.Code = codeBagFull
-		return reply(ctx, msgIDClaimResp, resp)
+		return nil
 	}
 
 	rec.Status = statusClaimed

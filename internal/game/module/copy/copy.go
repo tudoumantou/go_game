@@ -104,7 +104,7 @@ func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
 	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.CopyListResp{}, m.onList)
-	m.HandleR(msgIDSettleReq, msgIDSettleResp, &gamev1.CopySettleResp{}, m.onSettle)
+	m.HandleR(msgIDSettleReq, msgIDSettleResp, &gamev1.CopySettleResp{}, module.Typed(msgIDSettleResp, m.onSettle))
 	return m
 }
 
@@ -135,21 +135,17 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 
 // onSettle 通关结算：星级取历史最佳，首通发放掉落并写经验。
 // 结算事实、首通奖励与经验都在同一条消息内，随同一份快照提交。
-func (m *Module) onSettle(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.CopySettleReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode CopySettleReq: %w", err)
-	}
-	resp := &gamev1.CopySettleResp{}
+func (m *Module) onSettle(ctx *module.Context, req *gamev1.CopySettleReq, resp *gamev1.CopySettleResp) error {
+	*resp = gamev1.CopySettleResp{}
 
 	cfg, ok := gamedata.GetCopyCfg(int64(req.CopyId))
 	if !ok {
 		resp.Code = codeCopyNotExist
-		return reply(ctx, msgIDSettleResp, resp)
+		return nil
 	}
 	if ctx.State.Profile().Level < int32(cfg.Col2) {
 		resp.Code = codeLevelNotEnough
-		return reply(ctx, msgIDSettleResp, resp)
+		return nil
 	}
 	star := req.Star
 	// 客户端上报的星级裁剪到 1-3：0/负数按 1 星，超高按 3 星，防止脏数据落库。
@@ -201,7 +197,7 @@ func (m *Module) onSettle(ctx *module.Context, _ uint32, body []byte) error {
 		bagChanges, grantErr := module.Grant(ctx.State, grants)
 		if grantErr != nil {
 			resp.Code = codeBagFull
-			return reply(ctx, msgIDSettleResp, resp)
+			return nil
 		}
 		changes = module.ToItemChanges(bagChanges)
 		if len(changes) > 0 {

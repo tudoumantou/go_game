@@ -12,7 +12,6 @@
 package bag
 
 import (
-	"context"
 	"fmt"
 
 	"game_study/internal/game/module"
@@ -53,60 +52,44 @@ const (
 //
 // 无玩家级字段：logger 之外不持有任何状态，道具数据全部来自 Context.State。
 type Module struct {
+	*module.Thin
+
 	logger *log.Logger
 }
 
 // New 创建背包模块。
+//
+// 嵌入 Thin：接口七件套由基座提供；两个处理器经 module.Typed 拿到解包后的
+// 请求与待填的响应。Discardable 由本类型覆盖（见下），因为背包的写操作
+// 不能像只读模块那样「失败即丢弃」。
 func New(logger *log.Logger) *Module {
-	return &Module{logger: logger}
+	m := &Module{logger: logger}
+	m.Thin = module.NewThin("bag",
+		module.ThinLogger(logger),
+		module.ThinLogin(m.onLogin),
+		module.ThinLogout(m.onLogout),
+	)
+	m.HandleR(msgIDBagListReq, msgIDBagListResp, &gamev1.BagListResp{},
+		module.Typed(msgIDBagListResp, m.onList))
+	m.HandleR(msgIDUseItemReq, msgIDUseItemResp, &gamev1.UseItemResp{},
+		module.Typed(msgIDUseItemResp, m.onUse))
+	return m
 }
 
-// Name 实现 module.Module。
-func (m *Module) Name() string { return "bag" }
-
-// Discardable 实现 module.DiscardableAware：背包列表只读；使用道具会改资产，按不可丢弃处理。
-//
-// 判据是「重放有没有第二次副作用」：列表请求重放只是再查一次；
-// 使用道具若已扣道具，重放会再扣一次，所以只有列表可回滚。
+// Discardable 覆盖 Thin 的宽松默认：Thin 把「已注册协议」一律声明为可丢弃，
+// 但「使用道具」会改资产——提交失败时不能丢，必须保留待提交快照补提，
+// 否则会出现「道具扣了、奖励没发」且无从恢复。
 func (*Module) Discardable(msgID uint32) bool { return msgID == msgIDBagListReq }
 
-// MsgIDs 本模块处理的协议号：使用道具 + 背包列表（推送 3010 不走请求路由）。
-//
-// 3010（BagChangeNotify）是服务端主动推送，没有对应请求，
-// 因此不出现在路由表里——MsgIDs 只登记「客户端发起」的协议。
-func (m *Module) MsgIDs() []uint32 { return []uint32{msgIDUseItemReq, msgIDBagListReq} }
-
-// Init 实现 module.Module。
-func (m *Module) Init(ctx *module.Context) error { return nil }
-
-// OnMessage 实现 module.Module。
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	switch msgID {
-	case msgIDBagListReq:
-		return m.onList(ctx)
-	case msgIDUseItemReq:
-		return m.onUse(ctx, body)
-	default:
-		// 理论不可达：Registry 只会把 MsgIDs 里的协议分进来。
-		// 保留 default 是为了签名完备（switch 不必穷尽），顺带防手工调用。
-		return fmt.Errorf("bag: unexpected msg %d", msgID)
-	}
-}
-
-// OnSave 实现 module.Module。
-//
-// 背包资产不在本模块落库：随玩家主快照由 flusher 统一处理。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error {
+// onLogin 只记一条调试日志（背包不在登录时做任何预热）。
+func (m *Module) onLogin(ctx *module.Context) error {
 	m.logger.Debug("bag login", "player_id", ctx.State.PlayerID())
 	return nil
 }
 
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
+// onLogout 下线标脏：让 flusher 走一次常规 flush 周期。
+func (m *Module) onLogout(ctx *module.Context) error {
+	ctx.State.MarkDirty("bag")
 	return nil
 }
 
@@ -116,7 +99,7 @@ func (m *Module) OnLogout(ctx *module.Context) error {
 // **随机**的（Go 运行时故意打乱），所以每次拉列表的道具顺序可能不同。
 // 这里能接受是因为协议不承诺顺序、客户端自行排序；若哪天下发顺序
 // 变成契约，必须先排序再遍历。
-func (m *Module) onList(ctx *module.Context) error {
+func (m *Module) onList(ctx *module.Context, _ *gamev1.BagListReq, resp *gamev1.BagListResp) error {
 	items := ctx.State.Items()
 	// FilterMap：一次遍历完成「跳过脏数据 + 转协议结构」，比先 make 再
 	// append 少两行，且「哪些条目会被下发」集中在一个闭包里。
@@ -130,21 +113,12 @@ func (m *Module) onList(ctx *module.Context) error {
 			Count:   int32(e.Value),
 		}, true
 	})
-	resp := &gamev1.BagListResp{Code: codeOK, Items: entries}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgIDBagListResp, body)
+	*resp = gamev1.BagListResp{Code: codeOK, Items: entries}
+	return nil
 }
 
 // onUse 使用道具。
-func (m *Module) onUse(ctx *module.Context, body []byte) error {
-	var req gamev1.UseItemReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		// %w 包装：保留原始错误链，调用方可 errors.Is 判定解码失败
-		return fmt.Errorf("decode UseItemReq: %w", err)
-	}
+func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1.UseItemResp) error {
 	itemID := int32(req.ItemUid)
 	count := req.Count
 	// 未带数量按 1 个处理；堆叠模式下 ItemUid 即 item_id。
@@ -152,16 +126,15 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 		count = 1
 	}
 
-	resp := &gamev1.UseItemResp{}
 	cfg, ok := gamedata.GetItemCfg(int64(itemID))
 	if !ok {
 		resp.Code = codeItemNotExist
-		return m.replyUse(ctx, resp)
+		return nil
 	}
 	// 配置约定：Col3 = 单次可使用数量上限，<=0 表示不可主动使用（P7 接 item_type.xml）
 	if cfg.Col3 <= 0 {
 		resp.Code = codeItemNotUsable
-		return m.replyUse(ctx, resp)
+		return nil
 	}
 	// 请求数量超过单次上限时截断，而不是报错：与客户端的批量使用体验一致。
 	if int64(count) > cfg.Col3 {
@@ -171,13 +144,13 @@ func (m *Module) onUse(ctx *module.Context, body []byte) error {
 	have := ctx.State.GetItemCount(itemID)
 	if have < int64(count) {
 		resp.Code = codeItemNotEnough
-		return m.replyUse(ctx, resp)
+		return nil
 	}
 	// RemoveItem 自带原子性：数量不足返回 false 且不做部分扣减；
 	// Actor 单线程下上面的 have 检查已足够，这次是纵深防御。
 	if !ctx.State.RemoveItem(itemID, int64(count)) {
 		resp.Code = codeItemNotEnough
-		return m.replyUse(ctx, resp)
+		return nil
 	}
 	ctx.State.MarkDirty(m.Name())
 	// 事件：驱动任务/成就（use_item，Key=道具 ID）

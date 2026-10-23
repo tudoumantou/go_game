@@ -320,7 +320,7 @@ func New(repo *Repo, logger *log.Logger) *Module {
 		module.ThinLogout(m.onLogout),
 	)
 	m.HandleR(msgIDMailListReq, msgIDMailListResp, &gamev1.MailListResp{}, m.onList)
-	m.HandleR(msgIDMailTakeReq, msgIDMailTakeResp, &gamev1.MailTakeAttachmentResp{}, m.onTake)
+	m.HandleR(msgIDMailTakeReq, msgIDMailTakeResp, &gamev1.MailTakeAttachmentResp{}, module.Typed(msgIDMailTakeResp, m.onTake))
 	return m
 }
 
@@ -438,13 +438,9 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 // 5002（已领）与 5003（无附件）对客户端语义不同：前者静默、后者可能
 // 弹错误提示。MarkTaken 生效后重复请求必须稳定回 5002，所以 HasBiz
 // 必须先于 FindAttachments——顺序颠倒是可观测的行为退化。
-func (m *Module) onTake(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.MailTakeAttachmentReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode MailTakeAttachmentReq: %w", err)
-	}
+func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, resp *gamev1.MailTakeAttachmentResp) error {
 
-	resp := &gamev1.MailTakeAttachmentResp{}
+	*resp = gamev1.MailTakeAttachmentResp{}
 	// 前置挡掉非正 id：省一次 DB 往返，也防负 id 扫表
 	if req.MailId <= 0 {
 		resp.Code = codeMailNotExist

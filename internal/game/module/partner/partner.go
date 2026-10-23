@@ -149,9 +149,9 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogin(m.onLogin),
 	)
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.PartnerListResp{}, m.onList)
-	m.HandleR(msgIDActivateReq, msgIDActivateResp, &gamev1.PartnerActivateResp{}, m.onActivate)
-	m.HandleR(msgIDStarUpReq, msgIDStarUpResp, &gamev1.PartnerStarUpResp{}, m.onStarUp)
-	m.HandleR(msgIDFieldReq, msgIDFieldResp, &gamev1.PartnerFieldResp{}, m.onField)
+	m.HandleR(msgIDActivateReq, msgIDActivateResp, &gamev1.PartnerActivateResp{}, module.Typed(msgIDActivateResp, m.onActivate))
+	m.HandleR(msgIDStarUpReq, msgIDStarUpResp, &gamev1.PartnerStarUpResp{}, module.Typed(msgIDStarUpResp, m.onStarUp))
+	m.HandleR(msgIDFieldReq, msgIDFieldResp, &gamev1.PartnerFieldResp{}, module.Typed(msgIDFieldResp, m.onField))
 	return m
 }
 
@@ -204,17 +204,13 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 // onActivate 激活：消耗配置里的 col3 金币，状态置为 1 星（不上阵）。
 //
 // 扣费与置星都在内存：CAS 失败一起回滚，不会「扣了钱没激活」。
-func (m *Module) onActivate(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.PartnerActivateReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode PartnerActivateReq: %w", err)
-	}
-	resp := &gamev1.PartnerActivateResp{}
+func (m *Module) onActivate(ctx *module.Context, req *gamev1.PartnerActivateReq, resp *gamev1.PartnerActivateResp) error {
+	*resp = gamev1.PartnerActivateResp{}
 
 	cfg, ok := gamedata.GetPartnerCfg(int64(req.PartnerId))
 	if !ok {
 		resp.Code = codeNotFound
-		return reply(ctx, msgIDActivateResp, resp)
+		return nil
 	}
 	d, err := load(ctx.State)
 	if err != nil {
@@ -222,18 +218,18 @@ func (m *Module) onActivate(ctx *module.Context, _ uint32, body []byte) error {
 	}
 	if d.Stars[req.PartnerId] > 0 {
 		resp.Code = codeOwned
-		return reply(ctx, msgIDActivateResp, resp)
+		return nil
 	}
 	if err := module.Spend(ctx.State, itemCoin, cfg.Col3); err != nil {
 		resp.Code = codeNoCoin
-		return reply(ctx, msgIDActivateResp, resp)
+		return nil
 	}
 
 	d.Stars[req.PartnerId] = 1
 	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
 		return err
 	}
-	return reply(ctx, msgIDActivateResp, resp)
+	return nil
 }
 
 // onStarUp 升星：按 partner_star 的「当前星级 → 下一星」消耗金币。
@@ -241,12 +237,8 @@ func (m *Module) onActivate(ctx *module.Context, _ uint32, body []byte) error {
 // 已上阵的伙伴升星要同步改加成：先记旧加成，扣费置新星后
 // 加「新星加成 - 旧星加成」的差值——净变化只发生一次，
 // 比「先减后加」少一次中间态。
-func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.PartnerStarUpReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode PartnerStarUpReq: %w", err)
-	}
-	resp := &gamev1.PartnerStarUpResp{}
+func (m *Module) onStarUp(ctx *module.Context, req *gamev1.PartnerStarUpReq, resp *gamev1.PartnerStarUpResp) error {
+	*resp = gamev1.PartnerStarUpResp{}
 
 	d, err := load(ctx.State)
 	if err != nil {
@@ -255,18 +247,18 @@ func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 	star := d.Stars[req.PartnerId]
 	if star <= 0 {
 		resp.Code = codeNotOwned
-		return reply(ctx, msgIDStarUpResp, resp)
+		return nil
 	}
 	cost, ok := starCost(req.PartnerId, star)
 	if !ok {
 		// 配置里没有「当前星 → 下一星」行 = 已满星
 		resp.Code = codeMaxStar
-		return reply(ctx, msgIDStarUpResp, resp)
+		return nil
 	}
 	// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
 	if err := module.Spend(ctx.State, itemCoin, cost); err != nil {
 		resp.Code = codeNoCoin
-		return reply(ctx, msgIDStarUpResp, resp)
+		return nil
 	}
 
 	wasOnField := contains(d.Field, req.PartnerId)
@@ -282,7 +274,7 @@ func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 		ctx.State.AddBonus("atk", atkBonus(req.PartnerId, star+1)-oldBonus)
 	}
 	resp.Star = star + 1
-	return reply(ctx, msgIDStarUpResp, resp)
+	return nil
 }
 
 // onField 上阵/下阵；幂等，重复请求不重复加/减属性。
@@ -291,12 +283,8 @@ func (m *Module) onStarUp(ctx *module.Context, _ uint32, body []byte) error {
 // 把「请求态 × 当前态」的四种组合平铺成四个分支，比 if-else 嵌套
 // 更能表达「状态机」语义。两个「已是目标态」的分支故意空转——
 // 幂等成功但不做任何内存改动。
-func (m *Module) onField(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.PartnerFieldReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode PartnerFieldReq: %w", err)
-	}
-	resp := &gamev1.PartnerFieldResp{}
+func (m *Module) onField(ctx *module.Context, req *gamev1.PartnerFieldReq, resp *gamev1.PartnerFieldResp) error {
+	*resp = gamev1.PartnerFieldResp{}
 	d, err := load(ctx.State)
 	if err != nil {
 		return err
@@ -304,7 +292,7 @@ func (m *Module) onField(ctx *module.Context, _ uint32, body []byte) error {
 	star := d.Stars[req.PartnerId]
 	if star <= 0 {
 		resp.Code = codeNotOwned
-		return reply(ctx, msgIDFieldResp, resp)
+		return nil
 	}
 
 	onField := contains(d.Field, req.PartnerId)
@@ -314,7 +302,7 @@ func (m *Module) onField(ctx *module.Context, _ uint32, body []byte) error {
 	case req.On && !onField:
 		if len(d.Field) >= fieldLimit {
 			resp.Code = codeFieldFull
-			return reply(ctx, msgIDFieldResp, resp)
+			return nil
 		}
 		d.Field = append(d.Field, req.PartnerId)
 		ctx.State.AddBonus("atk", atkBonus(req.PartnerId, star))
@@ -329,7 +317,7 @@ func (m *Module) onField(ctx *module.Context, _ uint32, body []byte) error {
 		return err
 	}
 	resp.AtkBonus = totalBonus(d)
-	return reply(ctx, msgIDFieldResp, resp)
+	return nil
 }
 
 // atkBonus 一个伙伴当前星级提供的攻击加成：配置基础值 × 星级。

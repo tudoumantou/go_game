@@ -18,7 +18,6 @@ package rank
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"game_study/internal/game/module"
@@ -27,7 +26,6 @@ import (
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/samber/lo"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -108,15 +106,11 @@ func New(q Querier, logger *log.Logger) *Module {
 		// 缓存不可用时回业务码（榜单本来就依赖中心服，客户端照常提示重试）
 		module.PlainErrCode(codeUnavailable),
 	)
-	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.RankListResp{}, m.onList)
+	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.RankListResp{}, module.Typed(msgIDListResp, m.onList))
 	return m
 }
 
-func (m *Module) onList(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.RankListReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode RankListReq: %w", err)
-	}
+func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *gamev1.RankListResp) error {
 
 	rankType := req.GetRankType()
 	if rankType == "" {
@@ -125,10 +119,13 @@ func (m *Module) onList(ctx *module.Context, _ uint32, body []byte) error {
 	// 长度预检在打到中心服之前：超长 rankType 既是无效输入也是潜在滥用
 	// （会变成 Redis key 的一部分），本地挡掉最便宜
 	if len(rankType) > maxRankTypeLen {
-		return m.reply(ctx, &gamev1.RankListResp{Code: codeBadType})
+		resp.Code = codeBadType
+		return nil
 	}
 	if m.q == nil {
-		return m.reply(ctx, &gamev1.RankListResp{Code: codeUnavailable, RankType: rankType})
+		resp.Code = codeUnavailable
+		resp.RankType = rankType
+		return nil
 	}
 
 	// WithTimeout 给中心服 RPC 加超时；cancel 必须 defer——
@@ -142,10 +139,12 @@ func (m *Module) onList(ctx *module.Context, _ uint32, body []byte) error {
 	if err != nil {
 		// 中心服断连/超时：明确告诉客户端稍后重试，不伪造空榜。
 		m.logger.Debug("rank query failed", "rank_type", rankType, "err", err)
-		return m.reply(ctx, &gamev1.RankListResp{Code: codeUnavailable, RankType: rankType})
+		resp.Code = codeUnavailable
+		resp.RankType = rankType
+		return nil
 	}
 
-	resp := &gamev1.RankListResp{
+	*resp = gamev1.RankListResp{
 		Code:      codeOK,
 		RankType:  rankType,
 		Season:    res.Season,
@@ -156,7 +155,7 @@ func (m *Module) onList(ctx *module.Context, _ uint32, body []byte) error {
 		MyScore:   res.MyScore,
 		UpdatedAt: res.UpdatedAt,
 	}
-	return m.reply(ctx, resp)
+	return nil
 }
 
 // toProto 中性结构 → proto 条目。

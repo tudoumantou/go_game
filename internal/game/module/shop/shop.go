@@ -103,7 +103,7 @@ func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
 	m.Thin = module.NewThin(stateKey, module.ThinLogger(logger))
 	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.ShopListResp{}, m.onList)
-	m.HandleR(msgIDBuyReq, msgIDBuyResp, &gamev1.ShopBuyResp{}, m.onBuy)
+	m.HandleR(msgIDBuyReq, msgIDBuyResp, &gamev1.ShopBuyResp{}, module.Typed(msgIDBuyResp, m.onBuy))
 	return m
 }
 
@@ -130,17 +130,13 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 }
 
 // onBuy 购买：扣费、发货与次数累加同一次快照提交。
-func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
-	var req gamev1.ShopBuyReq
-	if err := proto.Unmarshal(body, &req); err != nil {
-		return fmt.Errorf("decode ShopBuyReq: %w", err)
-	}
-	resp := &gamev1.ShopBuyResp{}
+func (m *Module) onBuy(ctx *module.Context, req *gamev1.ShopBuyReq, resp *gamev1.ShopBuyResp) error {
+	*resp = gamev1.ShopBuyResp{}
 
 	cfg, ok := gamedata.GetShopGoodsCfg(int64(req.GoodsId))
 	if !ok {
 		resp.Code = codeGoodsNotExist
-		return reply(ctx, msgIDBuyResp, resp)
+		return nil
 	}
 	count := int64(req.Count)
 	// 数量裁剪到 1-999：0/负数按 1，上限防单次请求买穿限购与造成大额扣费。
@@ -158,20 +154,20 @@ func (m *Module) onBuy(ctx *module.Context, _ uint32, body []byte) error {
 	grants := []module.ItemGrant{{ItemID: itemID, Count: gain}}
 	if err := module.PrecheckGrant(ctx.State, grants); err != nil {
 		resp.Code = codeBagFull
-		return reply(ctx, msgIDBuyResp, resp)
+		return nil
 	}
 
 	price := int64(cfg.Col3) * count
 	if err := module.Spend(ctx.State, itemDiamond, price); err != nil {
 		resp.Code = codeDiamondNotEnough
-		return reply(ctx, msgIDBuyResp, resp)
+		return nil
 	}
 
 	// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
 	changes, grantErr := module.Grant(ctx.State, grants)
 	if grantErr != nil {
 		resp.Code = codeBagFull
-		return reply(ctx, msgIDBuyResp, resp)
+		return nil
 	}
 
 	// 购买次数在扣费/发货之后才累加，但同属一份快照：CAS 失败时扣费与次数一起回滚。

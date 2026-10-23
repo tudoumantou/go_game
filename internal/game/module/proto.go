@@ -31,6 +31,9 @@ type ProtoPtr[T any] interface {
 
 // Typed 把「类型化业务函数」包装成 ThinHandler：自动解包请求、回包响应。
 //
+// 返回未命名函数类型：ThinHandler 与 PlainHandler 的底层签名一致，
+// 未命名类型可以隐式赋给两者，因此同一个 Typed 既能喂给 Thin 也能喂给 Plain。
+//
 // 用法（配合 HandleR，响应号声明一次即可）：
 //
 //	m.HandleR(msgIDApplyReq, msgIDApplyResp, &gamev1.FriendApplyResp{},
@@ -49,7 +52,7 @@ type ProtoPtr[T any] interface {
 func Typed[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
 	respID uint32,
 	fn func(ctx *Context, req *TReq, resp *TResp) error,
-) ThinHandler {
+) func(ctx *Context, msgID uint32, body []byte) error {
 	return func(ctx *Context, msgID uint32, body []byte) error {
 		// 每次 new 一个实例：模块是单例，被多个玩家 Actor 并发调用，
 		// 复用实例会让两个玩家的请求内容互相串味。
