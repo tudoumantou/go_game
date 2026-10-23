@@ -11,6 +11,7 @@ import (
 	"game_study/pkg/log"
 
 	internalv2 "game_study/pkg/pb/internalv2"
+	"github.com/stretchr/testify/require"
 )
 
 // mockSink 记录下行帧，供断言。
@@ -91,9 +92,7 @@ func TestRoomSettlesWhenAllReported(t *testing.T) {
 	logger := log.New("test", log.WithLevel("error"))
 	room := NewRoom(100, "arena", 2, 5*time.Second, sink, logger)
 	pid, err := sys.Spawn("room:100", room)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	room.SetPID(pid)
 
 	// 两人入房 → 满员开战

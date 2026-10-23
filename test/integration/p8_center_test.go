@@ -25,6 +25,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -48,15 +49,11 @@ func TestP8CenterMatchFlow(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -72,15 +69,11 @@ func TestP8CenterMatchFlow(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -89,9 +82,7 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	initSchema(t, mysqlDSN)
 
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	// ② 端口
@@ -198,28 +189,20 @@ func TestP8CenterMatchFlow(t *testing.T) {
 
 	// ⑥ 双方匹配：中心服匹配池凑人 → MatchResult 分发 → 各自建房 → 开战通知
 	respA, err := clientA.Match("arena")
-	if err != nil {
-		t.Fatalf("match A: %v", err)
-	}
+	require.NoError(t, err, "match A")
 	if respA.Code != 0 {
 		t.Fatalf("match A code=%d", respA.Code)
 	}
 	respB, err := clientB.Match("arena")
-	if err != nil {
-		t.Fatalf("match B: %v", err)
-	}
+	require.NoError(t, err, "match B")
 	if respB.Code != 0 {
 		t.Fatalf("match B code=%d", respB.Code)
 	}
 
 	startA, err := clientA.WaitBattleStart(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start A: %v", err)
-	}
+	require.NoError(t, err, "wait start A")
 	startB, err := clientB.WaitBattleStart(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start B: %v", err)
-	}
+	require.NoError(t, err, "wait start B")
 	if startA.RoomId == 0 || startA.RoomId != startB.RoomId {
 		t.Fatalf("room mismatch: A=%d B=%d", startA.RoomId, startB.RoomId)
 	}
@@ -240,9 +223,7 @@ func TestP8CenterMatchFlow(t *testing.T) {
 		t.Fatalf("battle op: %v", err)
 	}
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
-	if err != nil {
-		t.Fatalf("wait battle sync: %v", err)
-	}
+	require.NoError(t, err, "wait battle sync")
 	if string(sync.Body) != "op-via-center" {
 		t.Fatalf("relay body mismatch: %q", sync.Body)
 	}
@@ -255,9 +236,7 @@ func TestP8CenterMatchFlow(t *testing.T) {
 		t.Fatalf("result B: %v", err)
 	}
 	settleA, err := clientA.WaitBattleSettle(15 * time.Second)
-	if err != nil {
-		t.Fatalf("settle A: %v", err)
-	}
+	require.NoError(t, err, "settle A")
 	if settleA.RoomId != roomID || settleA.Code != 0 {
 		t.Fatalf("settle A unexpected: %+v", settleA)
 	}

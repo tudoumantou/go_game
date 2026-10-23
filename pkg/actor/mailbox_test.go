@@ -3,6 +3,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 	"time"
@@ -86,9 +87,7 @@ func TestConcurrentSendTerminate(t *testing.T) {
 	defer sys.Stop()
 
 	pid, err := sys.Spawn("gone", &counterActor{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {

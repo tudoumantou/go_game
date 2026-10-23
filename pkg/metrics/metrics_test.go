@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/stretchr/testify/require"
 )
 
 // TestInitRegisters 指标初始化后可正常读写。
@@ -108,9 +109,7 @@ func TestServerEndpoints(t *testing.T) {
 		}
 		return errors.New("dependency down")
 	})
-	if err != nil {
-		t.Fatalf("new server: %v", err)
-	}
+	require.NoError(t, err, "new server")
 	srv.Start()
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -149,9 +148,7 @@ func TestServerEndpoints(t *testing.T) {
 // TestServerDisabled addr 为空不启动。
 func TestServerDisabled(t *testing.T) {
 	srv, err := NewServer("", nil)
-	if err != nil {
-		t.Fatalf("empty addr should not error: %v", err)
-	}
+	require.NoError(t, err, "empty addr should not error")
 	if srv != nil {
 		t.Fatal("empty addr should return nil server")
 	}
@@ -173,9 +170,7 @@ func mustGet(t *testing.T, url string) string {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
+	require.NoError(t, err, "read body")
 	return string(b)
 }
 

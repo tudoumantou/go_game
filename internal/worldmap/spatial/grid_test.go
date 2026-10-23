@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // testTopo 返回文档 5.1 的默认拓扑：5000×5000 格、5×5 场景、
@@ -112,9 +113,7 @@ func TestPutSceneMismatch(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("Put 意外错误: %v", err)
-			}
+			require.NoError(t, err, "Put 意外错误")
 		})
 	}
 	// 合法写入的 2 个对象应在索引中。

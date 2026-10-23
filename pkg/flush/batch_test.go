@@ -1,6 +1,7 @@
 package flush
 
 import (
+	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
 )
@@ -14,9 +15,7 @@ func TestBuildBatchUpsert(t *testing.T) {
 	}
 
 	sql, args, err := BuildBatchUpsert("player_item", cols, rows)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 
 	want := "INSERT INTO player_item (player_id, item_id, count) VALUES (?, ?, ?),(?, ?, ?)" +
 		" ON DUPLICATE KEY UPDATE item_id=VALUES(item_id), count=VALUES(count)"
@@ -55,9 +54,7 @@ func TestBuildBatchUpsertEmpty(t *testing.T) {
 // TestBuildBatchUpsertSingleColumn 只有一列时更新子句不能留下悬空逗号。
 func TestBuildBatchUpsertSingleColumn(t *testing.T) {
 	sql, _, err := BuildBatchUpsert("t", []string{"id"}, [][]any{{1}})
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	if strings.Contains(sql, "UPDATE ,") || strings.HasSuffix(strings.TrimSpace(sql), "UPDATE") {
 		t.Fatalf("malformed update clause: %s", sql)
 	}
@@ -66,9 +63,7 @@ func TestBuildBatchUpsertSingleColumn(t *testing.T) {
 // TestBuildBatchDelete 合批删除。
 func TestBuildBatchDelete(t *testing.T) {
 	sql, args, err := BuildBatchDelete("mail", "id", []any{1, 2, 3})
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	if sql != "DELETE FROM mail WHERE id IN (?,?,?)" {
 		t.Fatalf("sql = %s", sql)
 	}
@@ -80,9 +75,7 @@ func TestBuildBatchDelete(t *testing.T) {
 // TestBuildBatchDeleteWhere 带前置固定条件的删除（按玩家删道具）。
 func TestBuildBatchDeleteWhere(t *testing.T) {
 	sql, args, err := BuildBatchDeleteWhere("player_item", "player_id = ?", []any{int64(7)}, "item_id", []any{1001, 1002})
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	if sql != "DELETE FROM player_item WHERE player_id = ? AND item_id IN (?,?)" {
 		t.Fatalf("sql = %s", sql)
 	}

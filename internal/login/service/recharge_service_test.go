@@ -11,14 +11,13 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/require"
 )
 
 func newRechargeService(t *testing.T) (*RechargeService, sqlmock.Sqlmock) {
 	t.Helper()
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
 	svc := NewRechargeService(repo.NewOrderRepo(&db.DB{DB: database}), NopOrderProducer{},
 		log.New("test", log.WithLevel("error")))
@@ -32,9 +31,7 @@ func TestCreateOrderUsesServerPrice(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	orderID, amountFen, err := svc.CreateOrder(context.Background(), 7, 3, 1)
-	if err != nil {
-		t.Fatalf("create order: %v", err)
-	}
+	require.NoError(t, err, "create order")
 	if orderID == "" || amountFen != 9800 {
 		t.Fatalf("order=%q amount=%d, want 9800", orderID, amountFen)
 	}
@@ -93,9 +90,7 @@ func TestPayCallbackIdempotentOnPaid(t *testing.T) {
 		WillReturnRows(orderRow("O1", 9800, repo.OrderStatusPaid))
 
 	res, err := svc.PayCallback(context.Background(), "O1", 9800)
-	if err != nil {
-		t.Fatalf("idempotent callback: %v", err)
-	}
+	require.NoError(t, err, "idempotent callback")
 	if res.Code != 0 {
 		t.Fatalf("code=%d", res.Code)
 	}

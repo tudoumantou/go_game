@@ -10,6 +10,7 @@ import (
 
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/grid"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -718,9 +719,7 @@ func TestIndexSameCellMoveDoesNotMigrate(t *testing.T) {
 	}
 
 	moved, err := ix.Move(42, p)
-	if err != nil {
-		t.Fatalf("Move: %v", err)
-	}
+	require.NoError(t, err, "Move")
 	if moved {
 		t.Fatalf("同格 Move 不应报告迁移")
 	}
@@ -761,9 +760,7 @@ func TestNoEffectCommandIsRejected(t *testing.T) {
 	_, err = env.call(t, &FuncCommand{CmdName: "noop-ok", AllowNoop: true, Fn: func(*State) (any, error) {
 		return 1, nil
 	}})
-	if err != nil {
-		t.Fatalf("AllowNoop 命令失败: %v", err)
-	}
+	require.NoError(t, err, "AllowNoop 命令失败")
 }
 
 func TestLenientNoEffectOnlyLogs(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	gatev1 "game_study/pkg/pb/gate/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -19,20 +20,14 @@ import (
 func TestPacketEncodeDecode(t *testing.T) {
 	p := Packet{MsgID: 1001, Seq: 42, Body: []byte("encrypted-body")}
 	buf, err := EncodePacket(p)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
+	require.NoError(t, err, "encode")
 	length, err := ReadLength(buf)
-	if err != nil {
-		t.Fatalf("read length: %v", err)
-	}
+	require.NoError(t, err, "read length")
 	if length != HeaderSize+len(p.Body) {
 		t.Fatalf("length mismatch: %d", length)
 	}
 	got, err := DecodePacket(buf[LengthFieldSize:])
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	require.NoError(t, err, "decode")
 	if got.MsgID != p.MsgID || got.Seq != p.Seq || !bytes.Equal(got.Body, p.Body) {
 		t.Fatalf("decode mismatch: %+v", got)
 	}
@@ -49,9 +44,7 @@ func TestMessageRegistry(t *testing.T) {
 	r.Register(1001, func() proto.Message { return &gatev1.HandshakeReq{} })
 
 	m, err := r.Create(1001)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	require.NoError(t, err, "create")
 	if _, ok := m.(*gatev1.HandshakeReq); !ok {
 		t.Fatalf("type mismatch")
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -70,9 +71,7 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 		t.Fatal(err)
 	}
 	database, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	t.Cleanup(func() { database.Close() })
 	repo := NewRepository(&db.DB{DB: database})
 	repo.SetCache(store)
@@ -83,9 +82,7 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 	a := NewActor(7, registry, logger, repo, nil,
 		func(_ uint64, id uint32, _ []byte) error { responses <- id; return nil })
 	state, version, err := repo.LoadCached(ctx, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version
 	a.loaded = true
@@ -95,9 +92,7 @@ func newSpendRig(t *testing.T, items map[int32]int64) *spendRig {
 	sys.Start(ctx)
 	t.Cleanup(sys.Stop)
 	pid, err := sys.Spawn("r21", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return &spendRig{actor: a, sys: sys, pid: pid, store: store, mr: mr, responses: responses}
 }
 
@@ -122,9 +117,7 @@ func TestSpendAndRewardCommitTogether(t *testing.T) {
 		t.Fatalf("unexpected reply %d", id)
 	}
 	record, err := rig.store.Load(context.Background(), 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if record.State.Items[costItem] != 0 || record.State.Items[gainItem] != 200 {
 		t.Fatalf("snapshot items: %v", record.State.Items)
 	}
@@ -135,9 +128,7 @@ func TestSpendAndRewardCommitTogether(t *testing.T) {
 func TestSpendRollsBackWhenCacheFails(t *testing.T) {
 	rig := newSpendRig(t, map[int32]int64{costItem: 100})
 	before, err := rig.store.Load(context.Background(), 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	rig.mr.SetError("cache unavailable")
 	if id := rig.send(t); id != 20 { // 网关通用错误通知
@@ -153,9 +144,7 @@ func TestSpendRollsBackWhenCacheFails(t *testing.T) {
 	// Redis 权威状态保持提交前版本。
 	rig.mr.SetError("")
 	after, err := rig.store.Load(context.Background(), 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if after.Version != before.Version || after.State.Items[costItem] != 100 {
 		t.Fatalf("snapshot changed after failed commit: %+v", after)
 	}

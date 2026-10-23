@@ -9,13 +9,12 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSQLFenceSkipsOlderSnapshot(t *testing.T) {
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT IGNORE INTO player_writebehind").WithArgs(int64(7)).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -32,9 +31,7 @@ func TestSQLFenceSkipsOlderSnapshot(t *testing.T) {
 
 func TestSQLFailureRollsBackFenceAndState(t *testing.T) {
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	mock.ExpectBegin()
 	mock.ExpectExec("INSERT IGNORE INTO player_writebehind").WillReturnResult(sqlmock.NewResult(0, 0))
@@ -68,9 +65,7 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 	}
 
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	// 单批单玩家的完整期望（顺序匹配）：版本栅栏 → 各表合批写 → 提交
 	mock.ExpectBegin()
@@ -98,9 +93,7 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		ids, err := store.Pending(ctx, 3, 10)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if len(ids) == 0 {
 			break
 		}

@@ -22,6 +22,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/test/robot"
 
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -60,15 +61,11 @@ func TestP6GameplayFlow(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -84,15 +81,11 @@ func TestP6GameplayFlow(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -102,9 +95,7 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// 数据库句柄（造邮件用）
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	// ② 配置
@@ -143,17 +134,13 @@ func TestP6GameplayFlow(t *testing.T) {
 	// 使用独立临时密钥，不依赖开发机的 keys/ 或已有部署私钥。
 	keyDir := t.TempDir()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	privatePath := filepath.Join(keyDir, "gateway_rsa.pem")
 	if err := os.WriteFile(privatePath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600); err != nil {
 		t.Fatal(err)
 	}
 	publicDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := os.WriteFile(filepath.Join(keyDir, "gateway_rsa_pub.pem"), pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -192,18 +179,14 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("handshake: %v", err)
 	}
 	hs, err := r.SendHandshakeReq("1.0.0", "pc")
-	if err != nil {
-		t.Fatalf("handshake req: %v", err)
-	}
+	require.NoError(t, err, "handshake req")
 	if hs.Code != 0 || hs.AccountId == 0 {
 		t.Fatalf("handshake resp code=%d account=%d", hs.Code, hs.AccountId)
 	}
 
 	// 无角色 → 2003
 	eg, err := r.EnterGame()
-	if err != nil {
-		t.Fatalf("enter game: %v", err)
-	}
+	require.NoError(t, err, "enter game")
 	if eg.Code != 2003 {
 		t.Fatalf("expect 2003 for empty account, got %d", eg.Code)
 	}
@@ -211,9 +194,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	// ⑤ 创角
 	roleName := fmt.Sprintf("勇士%d", time.Now().UnixNano()%1000000)
 	cr, err := r.CreateRole(roleName, 1)
-	if err != nil {
-		t.Fatalf("create role: %v", err)
-	}
+	require.NoError(t, err, "create role")
 	if cr.Code != 0 || cr.RoleId == 0 {
 		t.Fatalf("create role resp code=%d role=%d", cr.Code, cr.RoleId)
 	}
@@ -235,18 +216,14 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("handshake req 2: %v", err)
 	}
 	dup, err := r2.CreateRole(roleName, 1)
-	if err != nil {
-		t.Fatalf("create duplicate role: %v", err)
-	}
+	require.NoError(t, err, "create duplicate role")
 	if dup.Code != 2004 {
 		t.Fatalf("expect 2004 for duplicate name, got %d", dup.Code)
 	}
 
 	// ⑥ 玩家信息
 	info, err := r.PlayerInfo()
-	if err != nil {
-		t.Fatalf("player info: %v", err)
-	}
+	require.NoError(t, err, "player info")
 	if info.RoleId != roleID || info.Name != roleName || info.Level != 1 {
 		t.Fatalf("player info mismatch: %+v", info)
 	}
@@ -256,9 +233,7 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// 登录礼包会在进游戏时先发一笔钻石，这里记录基线，后续按增量断言
 	bagBase, err := r.BagList()
-	if err != nil {
-		t.Fatalf("bag list (baseline): %v", err)
-	}
+	require.NoError(t, err, "bag list (baseline)")
 	var diamondBase int32
 	for _, it := range bagBase.Items {
 		if it.ItemId == 1001 {
@@ -270,36 +245,28 @@ func TestP6GameplayFlow(t *testing.T) {
 	mailID := insertTestMail(t, database, roleID)
 
 	list, err := r.MailList()
-	if err != nil {
-		t.Fatalf("mail list: %v", err)
-	}
+	require.NoError(t, err, "mail list")
 	if len(list.Mails) != 1 || !list.Mails[0].HasAttachment {
 		t.Fatalf("mail list unexpected: %+v", list.Mails)
 	}
 
 	// ⑧ 领取附件
 	take, err := r.TakeMail(mailID)
-	if err != nil {
-		t.Fatalf("take mail: %v", err)
-	}
+	require.NoError(t, err, "take mail")
 	if take.Code != 0 || len(take.Rewards) == 0 {
 		t.Fatalf("take mail code=%d rewards=%d", take.Code, len(take.Rewards))
 	}
 
 	// 幂等：重复领取 → 5002
 	take2, err := r.TakeMail(mailID)
-	if err != nil {
-		t.Fatalf("take mail again: %v", err)
-	}
+	require.NoError(t, err, "take mail again")
 	if take2.Code != 5002 {
 		t.Fatalf("expect 5002 for repeated take, got %d", take2.Code)
 	}
 
 	// ⑨ 背包
 	bag, err := r.BagList()
-	if err != nil {
-		t.Fatalf("bag list: %v", err)
-	}
+	require.NoError(t, err, "bag list")
 	var diamond int32
 	for _, it := range bag.Items {
 		if it.ItemId == 1001 {
@@ -312,18 +279,14 @@ func TestP6GameplayFlow(t *testing.T) {
 
 	// ⑩ 使用道具（1001 配置 Col3=1 → 单次上限 1 个）
 	use, err := r.UseItem(1001, 10)
-	if err != nil {
-		t.Fatalf("use item: %v", err)
-	}
+	require.NoError(t, err, "use item")
 	if use.Code != 0 || use.RemainCount != diamondBase+49 {
 		t.Fatalf("use item code=%d remain=%d (base %d)", use.Code, use.RemainCount, diamondBase)
 	}
 
 	// ⑪ 场景：越界钳制 → 近距离移动成功 → 瞬移被拒 → 离开后同步报「不在场景」
 	sceneEnt, err := r.SceneEnter(1, 150, 150)
-	if err != nil {
-		t.Fatalf("scene enter: %v", err)
-	}
+	require.NoError(t, err, "scene enter")
 	if sceneEnt.Code != 0 {
 		t.Fatalf("scene enter code = %d", sceneEnt.Code)
 	}
@@ -333,18 +296,14 @@ func TestP6GameplayFlow(t *testing.T) {
 	}
 
 	nearMove, err := r.SceneMove(97, 99, 1)
-	if err != nil {
-		t.Fatalf("scene move: %v", err)
-	}
+	require.NoError(t, err, "scene move")
 	if nearMove.Code != 0 || nearMove.X != 97 {
 		t.Fatalf("near move = %+v", nearMove)
 	}
 
 	// 跨地图瞬移：超出「距上次移动时间 × 速度上限」，应被拒并回权威坐标。
 	farMove, err := r.SceneMove(10, 10, 2)
-	if err != nil {
-		t.Fatalf("scene move (far): %v", err)
-	}
+	require.NoError(t, err, "scene move (far)")
 	if farMove.Code != 4004 {
 		t.Fatalf("far move code = %d, want 4004", farMove.Code)
 	}
@@ -356,9 +315,7 @@ func TestP6GameplayFlow(t *testing.T) {
 		t.Fatalf("scene leave: %v", err)
 	}
 	syncResp, err := r.SceneSync(1)
-	if err != nil {
-		t.Fatalf("scene sync after leave: %v", err)
-	}
+	require.NoError(t, err, "scene sync after leave")
 	if syncResp.Code != 4005 {
 		t.Fatalf("sync after leave code = %d, want 4005", syncResp.Code)
 	}
@@ -366,9 +323,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	// ⑫ 榜单查询：本用例没有启动中心服，必须回「暂不可用」（6702）而不是空榜。
 	// 空榜会让玩家误以为自己没有成绩，是列表类协议最容易做错的语义（R8.1/R11.1）。
 	rank, err := r.RankList("arena_score")
-	if err != nil {
-		t.Fatalf("rank list: %v", err)
-	}
+	require.NoError(t, err, "rank list")
 	if rank.Code != 6702 {
 		t.Fatalf("rank code = %d, want 6702 (center not running)", rank.Code)
 	}
@@ -390,13 +345,9 @@ func insertTestMail(t *testing.T, database *db.DB, playerID int64) int64 {
 	res, err := database.Exec(
 		`INSERT INTO mail (player_id, template_id, title, content, channel, status) VALUES (?, 1, '系统补偿', '附件请查收', 0, 0)`,
 		playerID)
-	if err != nil {
-		t.Fatalf("insert mail: %v", err)
-	}
+	require.NoError(t, err, "insert mail")
 	mailID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("mail id: %v", err)
-	}
+	require.NoError(t, err, "mail id")
 	if _, err := database.Exec(
 		`INSERT INTO mail_attachment (mail_id, item_id, count) VALUES (?, 1001, 50)`, mailID); err != nil {
 		t.Fatalf("insert attachment: %v", err)

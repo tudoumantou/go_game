@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
@@ -208,16 +209,12 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		app := newFakeDeliveryApplier()
 		d := testDelivery()
 		first, err := app.Apply(ctx, d)
-		if err != nil {
-			t.Fatalf("Apply 失败: %v", err)
-		}
+		require.NoError(t, err, "Apply 失败")
 		if first.Status != DeliveryApplyApplied {
 			t.Fatalf("首次状态 = %d, want APPLIED", int32(first.Status))
 		}
 		second, err := app.Apply(ctx, d)
-		if err != nil {
-			t.Fatalf("重复 Apply 失败: %v", err)
-		}
+		require.NoError(t, err, "重复 Apply 失败")
 		if second.Status != DeliveryApplyAlreadyApplied {
 			t.Fatalf("重复状态 = %d, want ALREADY_APPLIED", int32(second.Status))
 		}
@@ -230,9 +227,7 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		}
 		// Query 命中的是同一份回执。
 		q, err := app.Query(ctx, DeliveryReceiptQuery{WorldID: 1, DeliveryID: d.DeliveryID, PayloadHash: d.PayloadHash})
-		if err != nil {
-			t.Fatalf("Query 失败: %v", err)
-		}
+		require.NoError(t, err, "Query 失败")
 		if q.Status != DeliveryApplyAlreadyApplied {
 			t.Fatalf("Query 状态 = %d, want ALREADY_APPLIED", int32(q.Status))
 		}
@@ -242,9 +237,7 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		app := newFakeDeliveryApplier()
 		app.blocked = "背包已满"
 		got, err := app.Apply(ctx, testDelivery())
-		if err != nil {
-			t.Fatalf("Apply 失败: %v", err)
-		}
+		require.NoError(t, err, "Apply 失败")
 		if got.Status != DeliveryApplyRetryableBlocked {
 			t.Fatalf("状态 = %d, want RETRYABLE_BLOCKED", int32(got.Status))
 		}
@@ -266,9 +259,7 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		tampered.Cargo = map[int32]int64{9001: 999}
 		tampered.PayloadHash = PayloadHashOf([]byte("d-1|4001|100|9001:999"))
 		got, err := app.Apply(ctx, tampered)
-		if err != nil {
-			t.Fatalf("Apply 失败: %v", err)
-		}
+		require.NoError(t, err, "Apply 失败")
 		if got.Status != DeliveryApplyQuarantined {
 			t.Fatalf("状态 = %d, want QUARANTINED", int32(got.Status))
 		}
@@ -278,9 +269,7 @@ func TestDeliveryApplierFlow(t *testing.T) {
 		app := newFakeDeliveryApplier()
 		d := testDelivery()
 		got, err := app.Query(ctx, DeliveryReceiptQuery{WorldID: 1, DeliveryID: d.DeliveryID, PayloadHash: d.PayloadHash})
-		if err != nil {
-			t.Fatalf("Query 失败: %v", err)
-		}
+		require.NoError(t, err, "Query 失败")
 		if got.Status != DeliveryApplyRetryableBlocked {
 			t.Fatalf("状态 = %d, want RETRYABLE_BLOCKED", int32(got.Status))
 		}

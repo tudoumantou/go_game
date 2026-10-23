@@ -7,6 +7,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
@@ -17,9 +18,7 @@ func TestCacheCommitAndVersionedAcknowledgement(t *testing.T) {
 	store := NewStore(rdb)
 	snapshot := Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 10}}
 	initial, err := store.Seed(ctx, snapshot, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if initial.Version != 0 {
 		t.Fatal(initial.Version)
 	}

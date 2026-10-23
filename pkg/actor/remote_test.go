@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 	"time"
@@ -186,9 +187,7 @@ func TestDeliverRemoteDeliversToLocalActor(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg, err := DecodeRemote("test.RemoteMsg", []byte("from-other-node"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := sys.DeliverRemote("player:9", msg); err != nil {
 		t.Fatal(err)
 	}
@@ -208,13 +207,9 @@ func TestDeliverRemoteDeliversToLocalActor(t *testing.T) {
 func TestEnvelopeRoundTrip(t *testing.T) {
 	registerTestRemote()
 	env, err := EncodeRemote(&PID{ID: "player:5", Node: "game-02"}, &remoteTestMsg{Text: "payload"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	actorID, msg, err := DecodeRemoteEnvelope(env)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if actorID != "player:5" {
 		t.Fatalf("actorID = %q", actorID)
 	}

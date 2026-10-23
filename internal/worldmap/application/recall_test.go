@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPlanRecall(t *testing.T) {
@@ -370,9 +371,7 @@ func TestPlanRecall(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("意外错误: %v", err)
-			}
+			require.NoError(t, err, "意外错误")
 			tc.check(t, h, plan)
 		})
 	}

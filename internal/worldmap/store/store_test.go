@@ -25,6 +25,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	mysqlDriver "github.com/go-sql-driver/mysql"
+	"github.com/stretchr/testify/require"
 )
 
 // 测试固定时钟：所有租约/回执时间都基于它，断言才可复现。
@@ -37,9 +38,7 @@ func newTestRepo(t *testing.T) (*Repository, sqlmock.Sqlmock) {
 		// 「期望串是正则、是子串匹配」，避免误以为要写完整 SQL。
 		sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp),
 	)
-	if err != nil {
-		t.Fatalf("创建 sqlmock: %v", err)
-	}
+	require.NoError(t, err, "创建 sqlmock")
 	t.Cleanup(func() { _ = sqlDB.Close() })
 	r := NewRepository(sqlDB, nil, Options{
 		OwnerID:    "node-a",
@@ -535,9 +534,7 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := encodePayload(&tc.snap)
-			if err != nil {
-				t.Fatalf("编码: %v", err)
-			}
+			require.NoError(t, err, "编码")
 			// snake_case 契约：数据库里绝不能出现 Go 字段名。
 			for _, want := range []string{`"kind"`, `"header"`, `"object_id"`, `"schema_version"`} {
 				if !strings.Contains(string(raw), want) {
@@ -555,9 +552,7 @@ func TestPayloadJSONRoundTrip(t *testing.T) {
 				playerID: tc.snap.PlayerID, payload: raw,
 			}
 			got, err := row.toSnapshot()
-			if err != nil {
-				t.Fatalf("解码: %v", err)
-			}
+			require.NoError(t, err, "解码")
 			if !reflect.DeepEqual(got, tc.snap) {
 				t.Fatalf("JSON 往返不相等:\n got=%+v\nwant=%+v", got, tc.snap)
 			}
@@ -577,9 +572,7 @@ func TestLoadScene(t *testing.T) {
 
 	troop := testTroopSnapshot(101, 1, 4)
 	payload, err := encodePayload(&troop)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rows := sqlmock.NewRows([]string{"object_id", "kind", "owner_scene", "version", "schema_version", "player_id", "payload", "deleted"}).
 		AddRow(uint64(101), int32(2), int32(1), uint64(4), uint32(1), int64(7), payload, int32(0))
 	mock.ExpectQuery(`SELECT object_id, kind, owner_scene, version`).
@@ -587,9 +580,7 @@ func TestLoadScene(t *testing.T) {
 		WillReturnRows(rows)
 
 	objects, maxVersion, err := r.LoadScene(context.Background(), 1, 1)
-	if err != nil {
-		t.Fatalf("LoadScene: %v", err)
-	}
+	require.NoError(t, err, "LoadScene")
 	if len(objects) != 1 || maxVersion != 4 {
 		t.Fatalf("应读到 1 个对象且 maxVersion=4, got %d/%d", len(objects), maxVersion)
 	}
@@ -606,9 +597,7 @@ func TestAllocObjectID(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO map_id_allocator`).WillReturnResult(sqlmock.NewResult(4321, 1))
 
 	id, err := r.AllocObjectID(context.Background(), r.db)
-	if err != nil {
-		t.Fatalf("AllocObjectID: %v", err)
-	}
+	require.NoError(t, err, "AllocObjectID")
 	if id != 4321 {
 		t.Fatalf("应返回自增 ID 4321, got %d", id)
 	}
@@ -624,9 +613,7 @@ func TestRecoverWorldOrder(t *testing.T) {
 
 	troop := testTroopSnapshot(101, 2, 4)
 	payload, err := encodePayload(&troop)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	mock.ExpectBegin()
 	// 1) 世界行（epoch）
@@ -666,9 +653,7 @@ func TestRecoverWorldOrder(t *testing.T) {
 	mock.ExpectCommit()
 
 	got, err := r.RecoverWorld(context.Background(), 1)
-	if err != nil {
-		t.Fatalf("RecoverWorld: %v", err)
-	}
+	require.NoError(t, err, "RecoverWorld")
 	if got.Epoch != 9 {
 		t.Fatalf("epoch 应为 9, got %d", got.Epoch)
 	}
@@ -710,9 +695,7 @@ func TestAcquireLease(t *testing.T) {
 		mock.ExpectCommit()
 
 		epoch, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
-		if err != nil {
-			t.Fatalf("Acquire: %v", err)
-		}
+		require.NoError(t, err, "Acquire")
 		if epoch != 1 {
 			t.Fatalf("首次创建 epoch 应为 1, got %d", epoch)
 		}
@@ -748,9 +731,7 @@ func TestAcquireLease(t *testing.T) {
 		mock.ExpectCommit()
 
 		epoch, err := r.Acquire(context.Background(), 1, "node-a", 30*time.Second)
-		if err != nil {
-			t.Fatalf("Acquire: %v", err)
-		}
+		require.NoError(t, err, "Acquire")
 		if epoch != 6 {
 			t.Fatalf("接管后 epoch 应为 6, got %d", epoch)
 		}
@@ -843,9 +824,7 @@ func TestDeliveryLifecycle(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"delivery_id", "world_id", "troop_id", "player_id", "payload_hash", "cargo", "status", "attempts", "next_retry_ms", "settlement_no", "applied_player_version", "created_at_ms"}).
 			AddRow("dl-1", int64(1), uint64(101), int64(7), hash[:], []byte(`{"1001":5}`), int32(1), int32(0), int64(0), int64(1), int64(0), int64(5000)))
 	list, err := r.ListDeliveryPending(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("ListDeliveryPending: %v", err)
-	}
+	require.NoError(t, err, "ListDeliveryPending")
 	if len(list) != 1 || list[0].DeliveryID != "dl-1" || list[0].Cargo[1001] != 5 {
 		t.Fatalf("待投递单不符: %+v", list)
 	}

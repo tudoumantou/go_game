@@ -23,6 +23,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
+	"github.com/stretchr/testify/require"
 )
 
 func TestR7ActivityMilestone(t *testing.T) {
@@ -73,9 +74,7 @@ func TestR7ActivityMilestone(t *testing.T) {
 		env, err := pkgmq.NewEnvelope(
 			fmt.Sprintf("progress:%s:%d:%d", instanceID, playerID, progress),
 			pkgmq.TopicActivityProgress, instanceID, msg)
-		if err != nil {
-			t.Fatalf("build envelope: %v", err)
-		}
+		require.NoError(t, err, "build envelope")
 		if err := producer.ProduceEnvelope(ctx, env); err != nil {
 			t.Fatalf("produce: %v", err)
 		}

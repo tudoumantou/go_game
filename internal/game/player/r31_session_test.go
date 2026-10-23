@@ -15,6 +15,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 // TestStaleUnbindDoesNotDetachNewSession 玩家在设备 B 顶号后，设备 A 迟到的
@@ -29,9 +30,7 @@ func TestStaleUnbindDoesNotDetachNewSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	database, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	repo := NewRepository(&db.DB{DB: database})
 	repo.SetCache(store)
@@ -41,9 +40,7 @@ func TestStaleUnbindDoesNotDetachNewSession(t *testing.T) {
 
 	a := NewActor(7, registry, logger, repo, nil, func(uint64, uint32, []byte) error { return nil })
 	state, version, err := repo.LoadCached(ctx, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version
 	a.loaded = true
@@ -55,9 +52,7 @@ func TestStaleUnbindDoesNotDetachNewSession(t *testing.T) {
 	sys.Start(ctx)
 	defer sys.Stop()
 	pid, err := sys.Spawn("r31", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// 旧会话 1 断开：必须被忽略
 	if err := sys.Send(pid, &UnbindMsg{SessionID: 1}); err != nil {

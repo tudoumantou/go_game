@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
 )
@@ -24,9 +25,7 @@ import (
 // 轮数太低可能「碰巧通过」，200 能把窗口命中概率推到稳定可观测。
 func TestHandshakeConcurrentIntegrity(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	// 与 LoadRSAKeyPair 保持一致：加载即预计算
 	priv.Precompute()
 	pub := &priv.PublicKey
@@ -105,16 +104,12 @@ func runHandshake(pub *rsa.PublicKey, priv *rsa.PrivateKey) error {
 // TestHandshakeKeyStable 同一把密钥的并发解密结果必须一致（CRT 预计算不变量）。
 func TestHandshakeKeyStable(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	priv.Precompute()
 
 	msg := []byte("precomputed-check")
 	ct, err := RSAEncrypt(&priv.PublicKey, msg)
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
+	require.NoError(t, err, "encrypt")
 
 	const n = 50
 	var wg sync.WaitGroup

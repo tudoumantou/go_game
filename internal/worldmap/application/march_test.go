@@ -20,6 +20,7 @@ import (
 
 	"game_study/internal/worldmap/domain"
 	"game_study/internal/worldmap/spatial"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -72,9 +73,7 @@ func newHarness(t *testing.T, mutate ...func(*Rules)) *harness {
 		ids: ids, idCount: idCount, objects: objs, objCount: objCount, seeds: fixedSeeds,
 	}
 	p, err := NewPlanner(h.topo, rules, ids, objs, h.seeds)
-	if err != nil {
-		t.Fatalf("NewPlanner: %v", err)
-	}
+	require.NoError(t, err, "NewPlanner")
 	h.planner = p
 	return h
 }
@@ -195,9 +194,7 @@ func newResource(id domain.ObjectID, x, y int64, remaining int64) *domain.Resour
 func makeMove(t *testing.T, from, to domain.Pos, speed, startMS int64, moveID string) *domain.MoveSegment {
 	t.Helper()
 	seg, err := spatial.BuildMove(from, to, speed, startMS, moveID, domain.DefaultTopology(testWorld).InBounds)
-	if err != nil {
-		t.Fatalf("BuildMove: %v", err)
-	}
+	require.NoError(t, err, "BuildMove")
 	return seg
 }
 
@@ -336,9 +333,7 @@ func TestPlanMarchStart(t *testing.T) {
 				}
 				// 到达时间 = ceil(len/speed)*1000 + now。
 				length, err := spatial.SegmentLengthUnits(domain.Pos{X: 0, Y: 0}, domain.Pos{X: 10000, Y: 0})
-				if err != nil {
-					t.Fatalf("SegmentLengthUnits: %v", err)
-				}
+				require.NoError(t, err, "SegmentLengthUnits")
 				wantArrive := int64(1000) + ((length+h.rules.MarchSpeedUnitsPerSec-1)/h.rules.MarchSpeedUnitsPerSec)*1000
 				if tr.Move.EndAtMS != wantArrive {
 					t.Fatalf("EndAtMS=%d, want %d", tr.Move.EndAtMS, wantArrive)
@@ -468,9 +463,7 @@ func TestPlanMarchStart(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("意外错误: %v", err)
-			}
+			require.NoError(t, err, "意外错误")
 			if tc.check != nil {
 				tc.check(t, h, plan)
 			}
@@ -497,9 +490,7 @@ func TestPlanMarchStartIdempotentReplay(t *testing.T) {
 	}}
 
 	first, err := h.planner.Plan(snapshot(SnapshotOptions{Objects: marchScene()}), env, cmd, 1000)
-	if err != nil {
-		t.Fatalf("首次规划: %v", err)
-	}
+	require.NoError(t, err, "首次规划")
 	if h.objCount == nil || *h.objCount != 1001 {
 		t.Fatalf("应分配一个对象 ID, got %d", *h.objCount)
 	}
@@ -511,9 +502,7 @@ func TestPlanMarchStartIdempotentReplay(t *testing.T) {
 		Receipts: []domain.CommandReceipt{*first.CommandReceipt},
 	})
 	second, err := h.planner.Plan(replaySnap, env, cmd, 2000)
-	if err != nil {
-		t.Fatalf("重放: %v", err)
-	}
+	require.NoError(t, err, "重放")
 	if second.CommandID != first.CommandID {
 		t.Fatalf("重放 CommandID=%q, want %q", second.CommandID, first.CommandID)
 	}
@@ -541,9 +530,7 @@ func TestPlanMarchStartIdempotencyConflict(t *testing.T) {
 		Target: domain.TargetRef{TargetID: 1000, Intent: domain.MarchIntentCollect},
 	}}
 	first, err := h.planner.Plan(snapshot(SnapshotOptions{Objects: marchScene()}), env, cmd, 1000)
-	if err != nil {
-		t.Fatalf("首次规划: %v", err)
-	}
+	require.NoError(t, err, "首次规划")
 	snap := snapshot(SnapshotOptions{
 		Objects:  marchScene(),
 		Receipts: []domain.CommandReceipt{*first.CommandReceipt},

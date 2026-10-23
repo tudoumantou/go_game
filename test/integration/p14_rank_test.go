@@ -34,6 +34,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	internalv2 "game_study/pkg/pb/internalv2"
+	"github.com/stretchr/testify/require"
 )
 
 func TestP14RankAndLeader(t *testing.T) {
@@ -52,15 +53,11 @@ func TestP14RankAndLeader(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := tcredis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -76,15 +73,11 @@ func TestP14RankAndLeader(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -95,9 +88,7 @@ func TestP14RankAndLeader(t *testing.T) {
 	initSchema(t, mysqlDSN)
 
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	loginPort := freePort(t)
@@ -202,13 +193,9 @@ func TestP14RankAndLeader(t *testing.T) {
 		t.Fatalf("match B: %v", err)
 	}
 	startA, err := clientA.WaitBattleStart(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start A: %v", err)
-	}
+	require.NoError(t, err, "wait start A")
 	startB, err := clientB.WaitBattleStart(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start B: %v", err)
-	}
+	require.NoError(t, err, "wait start B")
 	roomID := startA.RoomId
 
 	// A 胜(0)，B 负(1)
@@ -227,9 +214,7 @@ func TestP14RankAndLeader(t *testing.T) {
 	// ③ 通过 GM 接口查榜：A 应在 B 之上（+30 vs -10）
 	conn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", centerGRPCPort),
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		t.Fatalf("dial center: %v", err)
-	}
+	require.NoError(t, err, "dial center")
 	defer func() { _ = conn.Close() }()
 
 	gm := internalv2.NewCenterServiceClient(conn)
@@ -264,27 +249,19 @@ func TestP14RankAndLeader(t *testing.T) {
 
 	// ④ 再打一场（A 再胜）→ 分数应累加到 60（验证 ZINCRBY 而非覆盖）
 	respA2, err := clientA.Match("arena")
-	if err != nil {
-		t.Fatalf("match A2: %v", err)
-	}
+	require.NoError(t, err, "match A2")
 	if respA2.Code != 0 {
 		t.Fatalf("match A2 code=%d (settled battle must allow re-match)", respA2.Code)
 	}
 	respB2, err := clientB.Match("arena")
-	if err != nil {
-		t.Fatalf("match B2: %v", err)
-	}
+	require.NoError(t, err, "match B2")
 	if respB2.Code != 0 {
 		t.Fatalf("match B2 code=%d", respB2.Code)
 	}
 	startA2, err := clientA.WaitBattleStart(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start A2: %v", err)
-	}
+	require.NoError(t, err, "wait start A2")
 	startB2, err := clientB.WaitBattleStart(20 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start B2: %v", err)
-	}
+	require.NoError(t, err, "wait start B2")
 	if _, err := clientA.BattleResult(startA2.RoomId, startA2.BattleToken, 0); err != nil {
 		t.Fatalf("result A2: %v", err)
 	}
@@ -303,9 +280,7 @@ func TestP14RankAndLeader(t *testing.T) {
 
 	// ⑤ 统计查询（本测试未上报 feature，应返回空列表且不报错）
 	statsResp, err := gm.QueryFeatureStats(context.Background(), &internalv2.QueryStatsReq{})
-	if err != nil {
-		t.Fatalf("query stats: %v", err)
-	}
+	require.NoError(t, err, "query stats")
 	if statsResp.Code != 0 {
 		t.Fatalf("stats query code=%d", statsResp.Code)
 	}

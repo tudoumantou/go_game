@@ -10,6 +10,7 @@ import (
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/aoi"
 	"game_study/internal/scenemap/grid"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -138,9 +139,7 @@ func newTestAOI(t *testing.T, sink aoi.Sink) *aoi.AOI {
 		Sink:   sink,
 		Logger: aoi.NopLogger{},
 	})
-	if err != nil {
-		t.Fatalf("NewAOI: %v", err)
-	}
+	require.NoError(t, err, "NewAOI")
 	t.Cleanup(func() {
 		_ = a.Close(context.Background())
 	})
@@ -660,9 +659,7 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 	keyC := scenemap.MapKey{MapID: 1, CliKey: "c"}
 
 	a1, err := pool.Acquire(keyA)
-	if err != nil {
-		t.Fatalf("Acquire A: %v", err)
-	}
+	require.NoError(t, err, "Acquire A")
 	if a1.Key() != keyA {
 		t.Fatalf("Key=%v, want %v", a1.Key(), keyA)
 	}
@@ -677,9 +674,7 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 
 	// 容量 2：第二个可以开，第三个必须被拒（池空 ⇒ 明确过载，而不是排队）
 	a2, err := pool.Acquire(keyB)
-	if err != nil {
-		t.Fatalf("Acquire B: %v", err)
-	}
+	require.NoError(t, err, "Acquire B")
 	if _, err := pool.Acquire(keyC); !errors.Is(err, scenemap.ErrRoomPoolExhausted) {
 		t.Fatalf("第三个 Acquire err=%v, want ErrRoomPoolExhausted", err)
 	}
@@ -698,9 +693,7 @@ func TestPoolAcquireReleaseAndReset(t *testing.T) {
 
 	// 复用的实例不能带上一局的实体，也不能带旧 Key
 	a3, err := pool.Acquire(keyC)
-	if err != nil {
-		t.Fatalf("Acquire C: %v", err)
-	}
+	require.NoError(t, err, "Acquire C")
 	if a3.Len() != 0 {
 		t.Fatalf("复用实例 Len=%d, want 0（索引未清空）", a3.Len())
 	}

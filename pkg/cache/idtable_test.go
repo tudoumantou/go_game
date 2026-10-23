@@ -9,6 +9,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 // newTestIDTable 构造「miniredis + sqlmock」环境。
@@ -19,9 +20,7 @@ func newTestIDTable(t *testing.T) (*IDTable, *miniredis.Miniredis, sqlmock.Sqlmo
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 
 	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
+	require.NoError(t, err, "sqlmock")
 
 	it := NewIDTable(rdb, sqlDB)
 	cleanup := func() {
@@ -49,9 +48,7 @@ func TestBuildOneKeysetPaging(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(5))
 
 	n, err := it.BuildOne(context.Background(), meta)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	if n != 3 {
 		t.Fatalf("count = %d, want 3", n)
 	}
@@ -87,9 +84,7 @@ func TestBuildOneEmptyTable(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"})) // 0 行
 
 	n, err := it.BuildOne(context.Background(), meta)
-	if err != nil {
-		t.Fatalf("build empty table: %v", err)
-	}
+	require.NoError(t, err, "build empty table")
 	if n != 0 {
 		t.Fatalf("count = %d, want 0", n)
 	}
@@ -121,9 +116,7 @@ func TestBuildOneIdempotent(t *testing.T) {
 
 	// 第二次不再查库
 	n, err := it.BuildOne(context.Background(), meta)
-	if err != nil {
-		t.Fatalf("second build: %v", err)
-	}
+	require.NoError(t, err, "second build")
 	if n != 1 {
 		t.Fatalf("second build count = %d, want 1 (from SCARD)", n)
 	}
@@ -143,9 +136,7 @@ func TestExistsFallsBackWhenNotReady(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 
 	ok, err := it.Exists(context.Background(), "player", 42)
-	if err != nil {
-		t.Fatalf("exists: %v", err)
-	}
+	require.NoError(t, err, "exists")
 	if !ok {
 		t.Fatal("expect exists via DB fallback")
 	}
@@ -163,18 +154,14 @@ func TestExistsHitsRedisWhenReady(t *testing.T) {
 	mustSAdd(t, mr, IDTabKey("player"), "42")
 
 	ok, err := it.Exists(context.Background(), "player", 42)
-	if err != nil {
-		t.Fatalf("exists: %v", err)
-	}
+	require.NoError(t, err, "exists")
 	if !ok {
 		t.Fatal("expect exists")
 	}
 
 	// 不存在的 ID 也不打库（这是 idtab 的核心价值）
 	ok, err = it.Exists(context.Background(), "player", 99)
-	if err != nil {
-		t.Fatalf("exists miss: %v", err)
-	}
+	require.NoError(t, err, "exists miss")
 	if ok {
 		t.Fatal("expect not exists")
 	}
@@ -251,9 +238,7 @@ func TestReconcileRebuild(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1).AddRow(2))
 
 	rebuilt, err := it.Reconcile(context.Background(), meta)
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
+	require.NoError(t, err, "reconcile")
 	if !rebuilt {
 		t.Fatal("expect rebuild")
 	}
@@ -265,9 +250,7 @@ func TestReconcileRebuild(t *testing.T) {
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM guild`).
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(2))
 	rebuilt, err = it.Reconcile(context.Background(), meta)
-	if err != nil {
-		t.Fatalf("reconcile 2: %v", err)
-	}
+	require.NoError(t, err, "reconcile 2")
 	if rebuilt {
 		t.Fatal("should not rebuild when counts match")
 	}
@@ -291,9 +274,7 @@ func TestLoadEntityCacheMissLoadsDB(t *testing.T) {
 			AddRow(42, "alice", 7))
 
 	row, err := it.LoadEntity(context.Background(), meta, 42)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
+	require.NoError(t, err, "load")
 	if row["name"] != "alice" || row["level"] != "7" {
 		t.Fatalf("row = %v", row)
 	}
@@ -305,9 +286,7 @@ func TestLoadEntityCacheMissLoadsDB(t *testing.T) {
 
 	// 第二次读命中 Redis，不再查库
 	row2, err := it.LoadEntity(context.Background(), meta, 42)
-	if err != nil {
-		t.Fatalf("load 2: %v", err)
-	}
+	require.NoError(t, err, "load 2")
 	if row2["name"] != "alice" {
 		t.Fatalf("cached row = %v", row2)
 	}
@@ -359,9 +338,7 @@ func TestCleanOrphans(t *testing.T) {
 	mr.HSet(EntityKey("player", 2), "name", "orphan")
 
 	removed, err := it.CleanOrphans(context.Background(), "player", 1000)
-	if err != nil {
-		t.Fatalf("clean: %v", err)
-	}
+	require.NoError(t, err, "clean")
 	if removed != 1 {
 		t.Fatalf("removed = %d, want 1", removed)
 	}
@@ -376,9 +353,7 @@ func TestCleanOrphans(t *testing.T) {
 // TestNoRedisDegrades 无 Redis 时所有方法降级为查库，不 panic。
 func TestNoRedisDegrades(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
+	require.NoError(t, err, "sqlmock")
 	defer func() { _ = sqlDB.Close() }()
 
 	it := NewIDTable(nil, sqlDB)

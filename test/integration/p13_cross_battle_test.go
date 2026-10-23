@@ -27,6 +27,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -50,15 +51,11 @@ func TestP13CrossBattleFlow(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -74,15 +71,11 @@ func TestP13CrossBattleFlow(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -91,9 +84,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	initSchema(t, mysqlDSN)
 
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	// ② 配置
@@ -190,9 +181,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 
 	// ④ 双方发起匹配：A 先入队（等），B 入队触发建房
 	respA, err := clientA.Match("arena")
-	if err != nil {
-		t.Fatalf("match A: %v", err)
-	}
+	require.NoError(t, err, "match A")
 	if respA.Code != 0 {
 		t.Fatalf("match A code=%d", respA.Code)
 	}
@@ -201,22 +190,16 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	}
 
 	respB, err := clientB.Match("arena")
-	if err != nil {
-		t.Fatalf("match B: %v", err)
-	}
+	require.NoError(t, err, "match B")
 	if respB.Code != 0 {
 		t.Fatalf("match B code=%d", respB.Code)
 	}
 
 	// ⑤ 双方收到开战通知
 	startA, err := clientA.WaitBattleStart(15 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start A: %v", err)
-	}
+	require.NoError(t, err, "wait start A")
 	startB, err := clientB.WaitBattleStart(15 * time.Second)
-	if err != nil {
-		t.Fatalf("wait start B: %v", err)
-	}
+	require.NoError(t, err, "wait start B")
 	if startA.RoomId == 0 || startA.RoomId != startB.RoomId {
 		t.Fatalf("room mismatch: A=%d B=%d", startA.RoomId, startB.RoomId)
 	}
@@ -237,9 +220,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 		t.Fatalf("battle op: %v", err)
 	}
 	sync, err := clientB.WaitBattleSync(10 * time.Second)
-	if err != nil {
-		t.Fatalf("wait battle sync: %v", err)
-	}
+	require.NoError(t, err, "wait battle sync")
 	if sync.RoomId != roomID {
 		t.Fatalf("sync room mismatch: %d != %d", sync.RoomId, roomID)
 	}
@@ -255,52 +236,40 @@ func TestP13CrossBattleFlow(t *testing.T) {
 
 	// ⑦ 伪造令牌上报 → 被拒（6002）
 	bad, err := clientA.BattleResult(roomID, "forged-token", 0)
-	if err != nil {
-		t.Fatalf("bad token report: %v", err)
-	}
+	require.NoError(t, err, "bad token report")
 	if bad.Code != 6002 {
 		t.Fatalf("expect 6002 for forged token, got %d", bad.Code)
 	}
 
 	// ⑧ 正常上报（A 胜）
 	resA, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
-	if err != nil {
-		t.Fatalf("result A: %v", err)
-	}
+	require.NoError(t, err, "result A")
 	if resA.Code != 0 {
 		t.Fatalf("result A code=%d", resA.Code)
 	}
 
 	// 重复上报 → 6003（幂等）
 	dup, err := clientA.BattleResult(roomID, startA.BattleToken, 0)
-	if err != nil {
-		t.Fatalf("dup result A: %v", err)
-	}
+	require.NoError(t, err, "dup result A")
 	if dup.Code != 6003 {
 		t.Fatalf("expect 6003 for duplicate report, got %d", dup.Code)
 	}
 
 	// B 上报（败）→ 房间收齐双方，CrossServer 结算回推
 	resB, err := clientB.BattleResult(roomID, startB.BattleToken, 1)
-	if err != nil {
-		t.Fatalf("result B: %v", err)
-	}
+	require.NoError(t, err, "result B")
 	if resB.Code != 0 {
 		t.Fatalf("result B code=%d", resB.Code)
 	}
 
 	// ⑨ 双方都收到兜底结算推送（5011）
 	settleA, err := clientA.WaitBattleSettle(15 * time.Second)
-	if err != nil {
-		t.Fatalf("wait settle A: %v", err)
-	}
+	require.NoError(t, err, "wait settle A")
 	if settleA.RoomId != roomID || settleA.Code != 0 {
 		t.Fatalf("settle A unexpected: %+v", settleA)
 	}
 	settleB, err := clientB.WaitBattleSettle(15 * time.Second)
-	if err != nil {
-		t.Fatalf("wait settle B: %v", err)
-	}
+	require.NoError(t, err, "wait settle B")
 	if settleB.RoomId != roomID || settleB.Code != 0 {
 		t.Fatalf("settle B unexpected: %+v", settleB)
 	}

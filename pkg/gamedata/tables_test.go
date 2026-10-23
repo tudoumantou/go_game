@@ -1,6 +1,7 @@
 package gamedata
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,9 +52,7 @@ func TestReplaceAppliesAtomically(t *testing.T) {
 		{"id":1001,"col1":"改名金币","col2":1,"col3":1},
 		{"id":1002,"col1":"经验药水","col2":99,"col3":10}
 	]`))
-	if err != nil {
-		t.Fatalf("replace: %v", err)
-	}
+	require.NoError(t, err, "replace")
 	if ver == oldVersion {
 		t.Fatal("version must change after replace")
 	}
@@ -116,9 +115,7 @@ func TestRollback(t *testing.T) {
 	}
 
 	ver, err := Rollback()
-	if err != nil {
-		t.Fatalf("rollback: %v", err)
-	}
+	require.NoError(t, err, "rollback")
 	if ver != oldVersion {
 		t.Fatalf("rollback version = %s, want %s", ver, oldVersion)
 	}
@@ -142,9 +139,7 @@ func TestLoadDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	ver, err := LoadDir(dir)
-	if err != nil {
-		t.Fatalf("load dir: %v", err)
-	}
+	require.NoError(t, err, "load dir")
 	if ver == "" {
 		t.Fatal("version must not be empty")
 	}

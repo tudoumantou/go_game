@@ -10,6 +10,7 @@ import (
 
 	"game_study/internal/worldmap/application"
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // stubPlanner 是最小规划器：产出「一个回执 + 一个对象」的计划，
@@ -74,13 +75,9 @@ func testTopo() domain.Topology {
 func newTestScene(t *testing.T, planner application.Planner, committer Committer, clock Clock) (*SceneLoop, *TxWorkerPool) {
 	t.Helper()
 	pool, err := NewTxWorkerPool(2, 8, committer, NopLogger{})
-	if err != nil {
-		t.Fatalf("构造事务池失败: %v", err)
-	}
+	require.NoError(t, err, "构造事务池失败")
 	scene, err := NewSceneLoop(DefaultSceneConfig(), 1, 1, 0, testTopo(), planner, pool, NoopSink{}, clock, NopLogger{})
-	if err != nil {
-		t.Fatalf("构造场景失败: %v", err)
-	}
+	require.NoError(t, err, "构造场景失败")
 	return scene, pool
 }
 
@@ -216,14 +213,10 @@ func TestSceneMailboxOverload(t *testing.T) {
 	cfg := DefaultSceneConfig()
 	cfg.MailboxSize = 2
 	pool, err := NewTxWorkerPool(1, 2, NewMemoryCommitter(), NopLogger{})
-	if err != nil {
-		t.Fatalf("构造池失败: %v", err)
-	}
+	require.NoError(t, err, "构造池失败")
 	defer func() { _ = pool.Shutdown(context.Background()) }()
 	scene, err := NewSceneLoop(cfg, 1, 1, 0, testTopo(), &stubPlanner{}, pool, NoopSink{}, clock, NopLogger{})
-	if err != nil {
-		t.Fatalf("构造场景失败: %v", err)
-	}
+	require.NoError(t, err, "构造场景失败")
 
 	var overloaded int
 	for i := 0; i < 5; i++ {
@@ -263,15 +256,11 @@ func TestDueQueueOrderAndCancel(t *testing.T) {
 // TestTxPoolReservation 验证回执名额与结果投递。
 func TestTxPoolReservation(t *testing.T) {
 	pool, err := NewTxWorkerPool(1, 2, NewMemoryCommitter(), NopLogger{})
-	if err != nil {
-		t.Fatalf("构造池失败: %v", err)
-	}
+	require.NoError(t, err, "构造池失败")
 	defer func() { _ = pool.Shutdown(context.Background()) }()
 
 	tok1, err := pool.TryReserveCompletion()
-	if err != nil {
-		t.Fatalf("首个名额应成功: %v", err)
-	}
+	require.NoError(t, err, "首个名额应成功")
 	if _, err := pool.TryReserveCompletion(); err != nil {
 		t.Fatalf("第二个名额应成功: %v", err)
 	}

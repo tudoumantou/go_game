@@ -8,6 +8,7 @@ package domain
 import (
 	"context"
 	"encoding/json"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
 )
@@ -41,9 +42,7 @@ func TestDeterministicResolverSameInput100Times(t *testing.T) {
 	in := ruleTestInput(42, 120, 100, 1000)
 
 	first, err := r.Resolve(context.Background(), in)
-	if err != nil {
-		t.Fatalf("首次裁决失败: %v", err)
-	}
+	require.NoError(t, err, "首次裁决失败")
 	if first.WinnerID != in.AttackerID && first.WinnerID != in.DefenderID {
 		t.Fatalf("胜者 %d 不是攻守任何一方", first.WinnerID)
 	}
@@ -223,9 +222,7 @@ func TestDeterministicResolverDetailDamage(t *testing.T) {
 	in := ruleTestInput(7, 1000, 1, 999) // 攻击方必胜
 
 	res, err := r.Resolve(context.Background(), in)
-	if err != nil {
-		t.Fatalf("裁决失败: %v", err)
-	}
+	require.NoError(t, err, "裁决失败")
 	if !res.AttackerWon {
 		t.Fatalf("攻击方战力 1000 对 1，应获胜: %s", res.DetailJSON)
 	}
@@ -317,9 +314,7 @@ func TestDeterministicResolverOverflowSafe(t *testing.T) {
 	r := &DeterministicResolver{Rule: rule}
 	in := ruleTestInput(3, 1<<40, 1, 100)
 	got, err := r.Resolve(context.Background(), in)
-	if err != nil {
-		t.Fatalf("裁决失败: %v", err)
-	}
+	require.NoError(t, err, "裁决失败")
 	if !got.AttackerWon {
 		t.Fatalf("饱和后攻击方仍应获胜: %s", got.DetailJSON)
 	}

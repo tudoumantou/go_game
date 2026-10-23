@@ -8,6 +8,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestPresence(t *testing.T) (*Presence, *miniredis.Miniredis) {
@@ -38,9 +39,7 @@ func TestTrySetOnlineBlocksOtherNode(t *testing.T) {
 		t.Fatal("setup claim failed")
 	}
 	ok, owner, err := p.TrySetOnline(ctx, 1, "game-2", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if ok || owner != "game-1" {
 		t.Fatalf("other node must be rejected: ok=%v owner=%q", ok, owner)
 	}

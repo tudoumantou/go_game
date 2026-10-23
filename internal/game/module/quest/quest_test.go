@@ -10,6 +10,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -99,9 +100,7 @@ func TestAcceptProgressClaim(t *testing.T) {
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3)})
 
 	d, err := load(st)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	rec := d.Quests[int32(cfg.Id)]
 	if rec.Status != statusDone || rec.Progress != int32(cfg.Col3) {
 		t.Fatalf("progress not advanced: %+v", rec)

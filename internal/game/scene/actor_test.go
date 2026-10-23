@@ -13,6 +13,7 @@ import (
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
 	"game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -54,9 +55,7 @@ func newRigWith(t *testing.T, cfg Config) (*Actor, *actor.System, *actor.PID) {
 
 	sc := NewActor(cfg, sys, log.New("test", log.WithLevel("error")))
 	pid, err := sys.Spawn("scene:1", sc)
-	if err != nil {
-		t.Fatalf("spawn scene: %v", err)
-	}
+	require.NoError(t, err, "spawn scene")
 	return sc, sys, pid
 }
 
@@ -76,9 +75,7 @@ func spawnCollector(t *testing.T, sys *actor.System, id string) (*actor.PID, *co
 		pushes:  make(chan *player.ScenePush, 64),
 	}
 	pid, err := sys.Spawn(id, c)
-	if err != nil {
-		t.Fatalf("spawn collector: %v", err)
-	}
+	require.NoError(t, err, "spawn collector")
 	return pid, c
 }
 

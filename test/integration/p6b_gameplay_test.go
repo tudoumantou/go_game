@@ -18,6 +18,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/test/robot"
 
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -56,15 +57,11 @@ func TestP6BGameplayFlow(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -80,15 +77,11 @@ func TestP6BGameplayFlow(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -97,9 +90,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	initSchema(t, mysqlDSN)
 
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	// ② 配置（P6-B 不需要 Kafka：私聊走在线直投分支）
@@ -175,16 +166,12 @@ func TestP6BGameplayFlow(t *testing.T) {
 	res, err := database.Exec(
 		`INSERT INTO player_equip (player_id, equip_id, enhance_level, quality, equipped) VALUES (?, ?, 0, 1, 0)`,
 		roleA, equipSword)
-	if err != nil {
-		t.Fatalf("seed player_equip: %v", err)
-	}
+	require.NoError(t, err, "seed player_equip")
 	equipUID, _ := res.LastInsertId()
 
 	// ============ B1：任务 ============
 	ql, err := clientA.QuestList()
-	if err != nil {
-		t.Fatalf("quest list: %v", err)
-	}
+	require.NoError(t, err, "quest list")
 	if ql.Code != 0 || len(ql.Quests) != 2 {
 		t.Fatalf("quest list unexpected: code=%d n=%d", ql.Code, len(ql.Quests))
 	}
@@ -214,9 +201,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	// 领奖 → 发经验 + 钻石
 	claim, err := clientA.QuestClaim(2)
-	if err != nil {
-		t.Fatalf("quest claim: %v", err)
-	}
+	require.NoError(t, err, "quest claim")
 	if claim.Code != 0 || claim.ExpGain <= 0 {
 		t.Fatalf("quest claim code=%d exp=%d", claim.Code, claim.ExpGain)
 	}
@@ -228,49 +213,37 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	// 经验已入账（等级/经验由 LevelInfoNotify 推送，这里用 PlayerInfo 校验）
 	pinfo, err := clientA.PlayerInfo()
-	if err != nil {
-		t.Fatalf("player info: %v", err)
-	}
+	require.NoError(t, err, "player info")
 	if pinfo.Exp <= 0 {
 		t.Fatalf("expect exp > 0 after quest claim, got %d", pinfo.Exp)
 	}
 
 	// ============ B2：装备 ============
 	el, err := clientA.EquipList()
-	if err != nil {
-		t.Fatalf("equip list: %v", err)
-	}
+	require.NoError(t, err, "equip list")
 	if el.Code != 0 || len(el.Equips) != 1 || el.Equips[0].Uid != equipUID {
 		t.Fatalf("equip list unexpected: code=%d %+v", el.Code, el.Equips)
 	}
 	wear, err := clientA.EquipWear(equipUID)
-	if err != nil {
-		t.Fatalf("equip wear: %v", err)
-	}
+	require.NoError(t, err, "equip wear")
 	if wear.Code != 0 || len(wear.Attrs) == 0 {
 		t.Fatalf("equip wear code=%d attrs=%d", wear.Code, len(wear.Attrs))
 	}
 	// 脱下
 	off, err := clientA.EquipTakeOff(equipUID)
-	if err != nil {
-		t.Fatalf("equip take off: %v", err)
-	}
+	require.NoError(t, err, "equip take off")
 	if off.Code != 0 {
 		t.Fatalf("equip take off code=%d", off.Code)
 	}
 
 	// ============ B2：技能 ============
 	sl, err := clientA.SkillList()
-	if err != nil {
-		t.Fatalf("skill list: %v", err)
-	}
+	require.NoError(t, err, "skill list")
 	if sl.Code != 0 {
 		t.Fatalf("skill list code=%d", sl.Code)
 	}
 	learn, err := clientA.SkillLearn(skillFire)
-	if err != nil {
-		t.Fatalf("skill learn: %v", err)
-	}
+	require.NoError(t, err, "skill learn")
 	if learn.Code != 0 {
 		t.Fatalf("skill learn code=%d", learn.Code)
 	}
@@ -281,9 +254,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 		t.Fatalf("expect 3203 for repeated learn, got %d", resp.Code)
 	}
 	up, err := clientA.SkillUpgrade(skillFire)
-	if err != nil {
-		t.Fatalf("skill upgrade: %v", err)
-	}
+	require.NoError(t, err, "skill upgrade")
 	if up.Code != 0 || up.Level != 2 {
 		t.Fatalf("skill upgrade code=%d level=%d", up.Code, up.Level)
 	}
@@ -296,41 +267,31 @@ func TestP6BGameplayFlow(t *testing.T) {
 
 	// ============ B3：私聊（同服在线直投） ============
 	sent, err := clientA.ChatSend(2, roleB, "你好，乙士")
-	if err != nil {
-		t.Fatalf("chat send: %v", err)
-	}
+	require.NoError(t, err, "chat send")
 	if sent.Code != 0 || sent.MsgId == "" {
 		t.Fatalf("chat send code=%d msg_id=%q", sent.Code, sent.MsgId)
 	}
 	notify, err := clientB.WaitChatNotify(10 * time.Second)
-	if err != nil {
-		t.Fatalf("wait chat notify: %v", err)
-	}
+	require.NoError(t, err, "wait chat notify")
 	if notify.SenderId != roleA || notify.Content != "你好，乙士" {
 		t.Fatalf("chat notify mismatch: %+v", notify)
 	}
 	// 历史（B 视角拉与 A 的会话）
 	hist, err := clientB.ChatHistory(roleA, 20)
-	if err != nil {
-		t.Fatalf("chat history: %v", err)
-	}
+	require.NoError(t, err, "chat history")
 	if hist.Code != 0 || len(hist.Messages) == 0 {
 		t.Fatalf("chat history code=%d n=%d", hist.Code, len(hist.Messages))
 	}
 
 	// ============ B4：公会 ============
 	gi, err := clientA.GuildInfo()
-	if err != nil {
-		t.Fatalf("guild info: %v", err)
-	}
+	require.NoError(t, err, "guild info")
 	if gi.Code != 6101 { // 未加入
 		t.Fatalf("expect 6101 before join, got %d", gi.Code)
 	}
 	gname := fmt.Sprintf("远征军%d", time.Now().UnixNano()%100000)
 	gc, err := clientA.GuildCreate(gname)
-	if err != nil {
-		t.Fatalf("guild create: %v", err)
-	}
+	require.NoError(t, err, "guild create")
 	if gc.Code != 0 || gc.GuildId == 0 {
 		t.Fatalf("guild create code=%d id=%d", gc.Code, gc.GuildId)
 	}
@@ -342,16 +303,12 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	// B 加入
 	gj, err := clientB.GuildJoin(gc.GuildId)
-	if err != nil {
-		t.Fatalf("guild join: %v", err)
-	}
+	require.NoError(t, err, "guild join")
 	if gj.Code != 0 {
 		t.Fatalf("guild join code=%d", gj.Code)
 	}
 	gi2, err := clientA.GuildInfo()
-	if err != nil {
-		t.Fatalf("guild info after join: %v", err)
-	}
+	require.NoError(t, err, "guild info after join")
 	if gi2.Code != 0 || gi2.MemberCount != 2 || !gi2.IsLeader {
 		t.Fatalf("guild info after join unexpected: %+v", gi2)
 	}
@@ -364,30 +321,22 @@ func TestP6BGameplayFlow(t *testing.T) {
 
 	// ============ B4：组队 ============
 	ti, err := clientA.TeamInfo()
-	if err != nil {
-		t.Fatalf("team info: %v", err)
-	}
+	require.NoError(t, err, "team info")
 	if ti.Code != 6201 { // 未组队
 		t.Fatalf("expect 6201 before team, got %d", ti.Code)
 	}
 	tc, err := clientA.TeamCreate(1)
-	if err != nil {
-		t.Fatalf("team create: %v", err)
-	}
+	require.NoError(t, err, "team create")
 	if tc.Code != 0 || tc.TeamId == 0 {
 		t.Fatalf("team create code=%d id=%d", tc.Code, tc.TeamId)
 	}
 	tj, err := clientB.TeamJoin(tc.TeamId)
-	if err != nil {
-		t.Fatalf("team join: %v", err)
-	}
+	require.NoError(t, err, "team join")
 	if tj.Code != 0 {
 		t.Fatalf("team join code=%d", tj.Code)
 	}
 	ti2, err := clientA.TeamInfo()
-	if err != nil {
-		t.Fatalf("team info after join: %v", err)
-	}
+	require.NoError(t, err, "team info after join")
 	if ti2.Code != 0 || len(ti2.Members) != 2 {
 		t.Fatalf("team info after join unexpected: %+v", ti2)
 	}
@@ -401,18 +350,14 @@ func TestP6BGameplayFlow(t *testing.T) {
 		t.Fatalf("team leave code=%d", resp.Code)
 	}
 	info3, err := clientA.TeamInfo()
-	if err != nil {
-		t.Fatalf("team info after leave: %v", err)
-	}
+	require.NoError(t, err, "team info after leave")
 	if len(info3.Members) != 1 {
 		t.Fatalf("expect 1 member after leave, got %d", len(info3.Members))
 	}
 
 	// ============ B4：副本 ============
 	cl, err := clientA.CopyList()
-	if err != nil {
-		t.Fatalf("copy list: %v", err)
-	}
+	require.NoError(t, err, "copy list")
 	if cl.Code != 0 || len(cl.Copies) < 2 {
 		t.Fatalf("copy list unexpected: code=%d n=%d", cl.Code, len(cl.Copies))
 	}
@@ -424,36 +369,28 @@ func TestP6BGameplayFlow(t *testing.T) {
 	}
 	// 副本 1 首通 → first_pass=true + 掉落
 	s1, err := clientA.CopySettle(1, 3)
-	if err != nil {
-		t.Fatalf("copy settle: %v", err)
-	}
+	require.NoError(t, err, "copy settle")
 	if s1.Code != 0 || !s1.FirstPass || s1.ExpGain <= 0 || len(s1.Rewards) == 0 {
 		t.Fatalf("copy settle unexpected: code=%d first=%v exp=%d rewards=%d",
 			s1.Code, s1.FirstPass, s1.ExpGain, len(s1.Rewards))
 	}
 	// 二次通关 → first_pass=false
 	s2, err := clientA.CopySettle(1, 2)
-	if err != nil {
-		t.Fatalf("copy settle again: %v", err)
-	}
+	require.NoError(t, err, "copy settle again")
 	if s2.Code != 0 || s2.FirstPass {
 		t.Fatalf("expect first_pass=false on second run, code=%d first=%v", s2.Code, s2.FirstPass)
 	}
 
 	// ============ B4：商店 ============
 	sgl, err := clientA.ShopList()
-	if err != nil {
-		t.Fatalf("shop list: %v", err)
-	}
+	require.NoError(t, err, "shop list")
 	if sgl.Code != 0 || len(sgl.Goods) == 0 {
 		t.Fatalf("shop list unexpected: code=%d n=%d", sgl.Code, len(sgl.Goods))
 	}
 	goods := sgl.Goods[0]
 	before := bagItem(clientA, t, goods.ItemId)
 	buy, err := clientA.ShopBuy(goods.GoodsId, 2)
-	if err != nil {
-		t.Fatalf("shop buy: %v", err)
-	}
+	require.NoError(t, err, "shop buy")
 	if buy.Code != 0 || buy.Bought != 2 {
 		t.Fatalf("shop buy code=%d bought=%d", buy.Code, buy.Bought)
 	}
@@ -473,9 +410,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 
 	// ============ B4：活动 ============
 	al, err := clientA.ActivityList()
-	if err != nil {
-		t.Fatalf("activity list: %v", err)
-	}
+	require.NoError(t, err, "activity list")
 	if al.Code != 0 || len(al.Activities) == 0 {
 		t.Fatalf("activity list unexpected: code=%d n=%d", al.Code, len(al.Activities))
 	}
@@ -543,9 +478,7 @@ func itemCount(t *testing.T, database *db.DB, playerID int64, itemID int32) int6
 func bagItem(c *robot.Client, t *testing.T, itemID int32) int64 {
 	t.Helper()
 	bag, err := c.BagList()
-	if err != nil {
-		t.Fatalf("bag list: %v", err)
-	}
+	require.NoError(t, err, "bag list")
 	for _, it := range bag.Items {
 		if it.ItemId == itemID {
 			return int64(it.Count)

@@ -9,6 +9,7 @@
 package main
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,9 +29,7 @@ func parseOne(t *testing.T, name, body string) ([]rowItem, error) {
 func mustParse(t *testing.T, name, body string) []rowItem {
 	t.Helper()
 	rows, err := parseOne(t, name, body)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
+	require.NoError(t, err, "parse")
 	return rows
 }
 

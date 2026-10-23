@@ -17,6 +17,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 func insertTestPlayer(t *testing.T, database *db.DB, id int64) {
@@ -110,9 +111,7 @@ func TestR12SaveFailureKeepsDirtyThenRecovers(t *testing.T) {
 
 	// 恢复：同一 DSN 新建连接池，重新落库成功。
 	db2, err := db.New(db.Config{DSN: dsn, MaxOpen: 5, MaxIdle: 2})
-	if err != nil {
-		t.Fatalf("reconnect: %v", err)
-	}
+	require.NoError(t, err, "reconnect")
 	t.Cleanup(func() { _ = db2.Close() })
 	f2 := flush.New(flush.Config{ShardCount: 1, Interval: time.Minute, BatchRows: 10},
 		persist(player.NewRepository(db2)), log.New("test"))

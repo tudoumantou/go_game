@@ -19,6 +19,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/writebehind"
+	"github.com/stretchr/testify/require"
 )
 
 func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
@@ -68,9 +69,7 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 				return nil
 			})
 		pid, err := sys.Spawn(fmt.Sprintf("r13:%d", id), a)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if err := sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)}); err != nil {
 			t.Fatal(err)
 		}
@@ -139,9 +138,7 @@ func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
 	a := player.NewActor(id, registry, logger, repo, nil,
 		func(uint64, uint32, []byte) error { return nil })
 	pid, err := sys.Spawn(fmt.Sprintf("r13b:%d", id), a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)}); err != nil {
 		t.Fatal(err)
 	}
@@ -170,9 +167,7 @@ func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
 
 	// 恢复连接后同一脏任务可以落库。
 	reopened, err := db.New(db.Config{DSN: dsn, MaxOpen: 5, MaxIdle: 2})
-	if err != nil {
-		t.Fatalf("reconnect: %v", err)
-	}
+	require.NoError(t, err, "reconnect")
 	defer func() {
 		database.Exec("DELETE FROM player_signin WHERE player_id=?", id)
 		database.Exec("DELETE FROM player_writebehind WHERE player_id=?", id)

@@ -4,6 +4,7 @@ package actor
 import (
 	"context"
 	"errors"
+	"github.com/stretchr/testify/require"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -30,9 +31,7 @@ func TestSpawnAndSend(t *testing.T) {
 
 	a := &counterActor{}
 	pid, err := sys.Spawn("p1", a)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	for i := 0; i < 100; i++ {
 		if err := sys.Send(pid, i); err != nil {
 			t.Fatalf("send: %v", err)
@@ -58,9 +57,7 @@ func TestMailboxBackpressure(t *testing.T) {
 	blockCh := make(chan struct{})
 	a := &blockActor{block: blockCh}
 	pid, err := sys.Spawn("slow", a)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 	// 塞满 + 溢出：满队列必须显式返回 ErrMailboxFull，不允许 panic 或静默丢弃。
 	rejected := 0
 	for i := 0; i < 20; i++ {

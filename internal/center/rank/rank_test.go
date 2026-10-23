@@ -10,6 +10,7 @@ import (
 	internalv2 "game_study/pkg/pb/internalv2"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestService(t *testing.T) (*Service, *miniredis.Miniredis) {
@@ -141,9 +142,7 @@ func TestArchiveAndReset(t *testing.T) {
 		archived = entries
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("archive: %v", err)
-	}
+	require.NoError(t, err, "archive")
 	if len(archived) != 2 || archived[0].PlayerId != 1002 {
 		t.Fatalf("archive should be rank-ordered, got %+v", archived)
 	}

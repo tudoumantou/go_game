@@ -9,23 +9,20 @@ import (
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/require"
 )
 
 func loginLogEnvelope(t *testing.T, msg pkgmq.LoginLogMsg) *pkgmq.Envelope {
 	t.Helper()
 	env, err := pkgmq.NewEnvelope("login-9-1", pkgmq.TopicLoginLog, "9", msg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return env
 }
 
 // TestLoginLogConsumerInserts 合法事件落一行 login_log。
 func TestLoginLogConsumerInserts(t *testing.T) {
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	mock.ExpectExec(`INSERT INTO login_log`).
 		WithArgs(int64(9), int64(0), "1.2.3.4", "device-a", int32(1), "invalid token").
@@ -46,9 +43,7 @@ func TestLoginLogConsumerInserts(t *testing.T) {
 // TestLoginLogConsumerRejectsEmptyAccount 缺账号的事件不写库，交给重试/死信。
 func TestLoginLogConsumerRejectsEmptyAccount(t *testing.T) {
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	c := NewLoginLogConsumer(nil, &db.DB{DB: database}, log.New("test", log.WithLevel("error")))
 	if err := c.handle(context.Background(), loginLogEnvelope(t, pkgmq.LoginLogMsg{Result: 0})); err == nil {
@@ -62,9 +57,7 @@ func TestLoginLogConsumerRejectsEmptyAccount(t *testing.T) {
 // TestLoginLogConsumerSurfacesWriteError 写库失败要上报，让消费端重试。
 func TestLoginLogConsumerSurfacesWriteError(t *testing.T) {
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	mock.ExpectExec(`INSERT INTO login_log`).
 		WillReturnError(context.DeadlineExceeded)

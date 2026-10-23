@@ -6,6 +6,7 @@ import (
 	"game_study/internal/scenemap"
 	"game_study/internal/scenemap/grid"
 	"game_study/internal/scenemap/mgr"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -90,9 +91,7 @@ func TestSpawnFallsBackToRingWhenBlocked(t *testing.T) {
 	s := newTestState(grid.Size{Width: 9, Height: 9})
 	first := mustSpawn(t, s, Spec{ConfigID: 1, HP: 10}, scenemap.GridPos{X: 4, Y: 4})
 	second, err := Spawn(s, Spec{ConfigID: 1, HP: 10}, scenemap.GridPos{X: 4, Y: 4}, grid.DefaultGeometry())
-	if err != nil {
-		t.Fatalf("第二只怪应能在附近找到空位: %v", err)
-	}
+	require.NoError(t, err, "第二只怪应能在附近找到空位")
 	p1, _ := s.Index.At(first)
 	p2, _ := s.Index.At(second)
 	if p1 == p2 {

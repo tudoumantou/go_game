@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
 )
@@ -53,9 +54,7 @@ func TestFakeResolverDeterministic(t *testing.T) {
 	r := &FakeResolver{}
 	in := testBattleInput(42)
 	first, err := r.Resolve(context.Background(), in)
-	if err != nil {
-		t.Fatalf("首次 Resolve 失败: %v", err)
-	}
+	require.NoError(t, err, "首次 Resolve 失败")
 	for i := 0; i < 5; i++ {
 		got, err := r.Resolve(context.Background(), in)
 		if err != nil {
@@ -198,9 +197,7 @@ func TestApplyBattleResultPending(t *testing.T) {
 	r := &FakeResolver{}
 	in := testBattleInput(42)
 	res, err := r.Resolve(context.Background(), in)
-	if err != nil {
-		t.Fatalf("Resolve 失败: %v", err)
-	}
+	require.NoError(t, err, "Resolve 失败")
 	attacker, defender := testBattleTroops()
 	rec := &BattleRecord{
 		BattleID:    in.BattleID,
@@ -216,9 +213,7 @@ func TestApplyBattleResultPending(t *testing.T) {
 	}
 
 	got, err := ApplyBattleResult(rec, attacker, defender, res, "op-7001")
-	if err != nil {
-		t.Fatalf("ApplyBattleResult 失败: %v", err)
-	}
+	require.NoError(t, err, "ApplyBattleResult 失败")
 	if !reflect.DeepEqual(got, res) {
 		t.Fatalf("返回结果与传入不一致:\ngot=%+v\nwant=%+v", got, res)
 	}
@@ -293,9 +288,7 @@ func TestApplyBattleResultLateDoesNotOverride(t *testing.T) {
 			late := BattleResult{WinnerID: 2001, LoserID: 3001, AppliedAtMS: 1_700_000_020_000, AttackerWon: true}
 
 			got, err := ApplyBattleResult(rec, attacker, defender, late, "op-late")
-			if err != nil {
-				t.Fatalf("ApplyBattleResult 失败: %v", err)
-			}
+			require.NoError(t, err, "ApplyBattleResult 失败")
 			if got.WinnerID != tc.wantWinner {
 				t.Fatalf("返回胜者 = %d, want %d", got.WinnerID, tc.wantWinner)
 			}
@@ -336,13 +329,9 @@ func TestApplyBattleResultIdempotent(t *testing.T) {
 	rec := &BattleRecord{BattleID: "bt-1001", Status: BattleStatusPending, DeadlineMS: 1_700_000_015_000}
 
 	first, err := ApplyBattleResult(rec, attacker, defender, res, "op-1")
-	if err != nil {
-		t.Fatalf("首次应用失败: %v", err)
-	}
+	require.NoError(t, err, "首次应用失败")
 	second, err := ApplyBattleResult(rec, attacker, defender, res, "op-2")
-	if err != nil {
-		t.Fatalf("二次应用失败: %v", err)
-	}
+	require.NoError(t, err, "二次应用失败")
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("两次返回不一致:\nfirst=%+v\nsecond=%+v", first, second)
 	}

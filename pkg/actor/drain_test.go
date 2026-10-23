@@ -3,6 +3,7 @@ package actor
 
 import (
 	"context"
+	"github.com/stretchr/testify/require"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,9 +41,7 @@ func TestDrainWaitsForInFlight(t *testing.T) {
 
 	a := &slowActor{delay: time.Millisecond}
 	pid, err := sys.Spawn("slow", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	const n = 50
 	for i := 0; i < n; i++ {
 		if err := sys.Send(pid, i); err != nil {
@@ -70,9 +69,7 @@ func TestDrainTimesOut(t *testing.T) {
 
 	a := &slowActor{delay: 200 * time.Millisecond, started: make(chan struct{}, 1)}
 	pid, err := sys.Spawn("slow", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := sys.Send(pid, 1); err != nil {
 		t.Fatal(err)
 	}

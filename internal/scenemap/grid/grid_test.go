@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"game_study/internal/scenemap"
+	"github.com/stretchr/testify/require"
 )
 
 // 这批测试只覆盖"纯函数 + 边界"，不涉及 Actor。
@@ -118,9 +119,7 @@ func TestBlockerStaticDynamicAndFootprint(t *testing.T) {
 		".##.",
 		"....",
 	})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
+	require.NoError(t, err, "构造失败")
 	if b.Walkable(scenemap.GridPos{X: 1, Y: 1}) {
 		t.Fatal("墙格应不可走")
 	}
@@ -170,22 +169,16 @@ func TestAStarStraightAndAroundWall(t *testing.T) {
 		".###.",
 		".....",
 	})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
+	require.NoError(t, err, "构造失败")
 	// 同行直达
 	path, err := AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 3, Y: 0}, 1000)
-	if err != nil {
-		t.Fatalf("直线寻路失败: %v", err)
-	}
+	require.NoError(t, err, "直线寻路失败")
 	if len(path) != 3 || path[len(path)-1] != (scenemap.GridPos{X: 3, Y: 0}) {
 		t.Fatalf("直线路径异常: %v", path)
 	}
 	// 绕墙：必须从第 0 行或第 2 行绕过去，且不穿墙
 	path, err = AStar(b, scenemap.GridPos{X: 0, Y: 0}, scenemap.GridPos{X: 4, Y: 2}, 1000)
-	if err != nil {
-		t.Fatalf("绕墙寻路失败: %v", err)
-	}
+	require.NoError(t, err, "绕墙寻路失败")
 	for _, p := range path {
 		if !b.Walkable(p) {
 			t.Fatalf("路径穿墙: %s", p)
@@ -248,9 +241,7 @@ func TestRingAndRandomCell(t *testing.T) {
 	// 注入确定性随机：永远取第 0 个候选
 	p, err := RandomCellInRing(scenemap.GridPos{X: 5, Y: 5}, 1, 3, size,
 		walkable, func(int) int { return 0 })
-	if err != nil {
-		t.Fatalf("应能找到落点: %v", err)
-	}
+	require.NoError(t, err, "应能找到落点")
 	if p == (scenemap.GridPos{X: 6, Y: 4}) || p == (scenemap.GridPos{X: 6, Y: 5}) || p == (scenemap.GridPos{X: 6, Y: 6}) {
 		t.Fatalf("落点撞上了不可走格: %s", p)
 	}

@@ -12,6 +12,7 @@ import (
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
+	"github.com/stretchr/testify/require"
 )
 
 // captureActor 捕获 GrantItemsMsg。
@@ -143,9 +144,7 @@ func setupConsumer(t *testing.T, presence *memPresence, deduper *memDeduper) (*R
 
 	act := &captureActor{}
 	pid, err := sys.Spawn("player:1001", act)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 
 	deps := Deps{
 		Deduper:  deduper,
@@ -164,9 +163,7 @@ func mustEnvelope(t *testing.T, orderID string, playerID int64, amountFen int32)
 	env, err := pkgmq.NewEnvelope(orderID, pkgmq.TopicRechargeOrder, orderID, pkgmq.RechargeOrderMsg{
 		OrderID: orderID, PlayerID: playerID, AmountFen: amountFen, ProductID: 1, Channel: 1,
 	})
-	if err != nil {
-		t.Fatalf("envelope: %v", err)
-	}
+	require.NoError(t, err, "envelope")
 	return env
 }
 

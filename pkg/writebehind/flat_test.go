@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"game_study/pkg/flush"
+	"github.com/stretchr/testify/require"
 )
 
 // flatRow 模拟一张玩家级单行状态表（PK = player_id）。
@@ -63,9 +64,7 @@ func TestRegisterFlatRoundTrip(t *testing.T) {
 		{PlayerID: 1, Data: good},
 		{PlayerID: 2, Data: json.RawMessage(`{"player_id":2,"anchor_day":3}`)},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(upserted) != 2 || upserted[1].Anchor != 3 {
 		t.Fatalf("upserted=%+v", upserted)
 	}

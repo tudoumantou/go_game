@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -17,9 +18,7 @@ import (
 func generateTestKeyPair(t *testing.T) *RSAKeyPair {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
+	require.NoError(t, err, "generate key")
 	return &RSAKeyPair{Public: &priv.PublicKey, Private: priv}
 }
 
@@ -34,13 +33,9 @@ func TestRSAOAEPRoundTrip(t *testing.T) {
 
 	plain := []byte("pre-master-secret-32bytes-long!!")
 	ct, err := RSAEncrypt(pair.Public, plain)
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
+	require.NoError(t, err, "encrypt")
 	got, err := RSADecrypt(pair.Private, ct)
-	if err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
+	require.NoError(t, err, "decrypt")
 	if !bytes.Equal(got, plain) {
 		t.Fatalf("roundtrip mismatch")
 	}
@@ -57,18 +52,12 @@ func TestAESGCMRoundTrip(t *testing.T) {
 		key[i] = byte(i)
 	}
 	gcm, err := NewAESGCM(key)
-	if err != nil {
-		t.Fatalf("new aes: %v", err)
-	}
+	require.NoError(t, err, "new aes")
 	plain := []byte("hello game study")
 	ct, err := gcm.Encrypt(plain)
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
+	require.NoError(t, err, "encrypt")
 	got, err := gcm.Decrypt(ct)
-	if err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
+	require.NoError(t, err, "decrypt")
 	if !bytes.Equal(got, plain) {
 		t.Fatalf("roundtrip mismatch")
 	}
@@ -88,9 +77,7 @@ func TestHandshakeRoundTrip(t *testing.T) {
 
 	server := NewHandshakeServer(pair.Public, pair.Private)
 	client, err := NewHandshakeClient()
-	if err != nil {
-		t.Fatalf("new client: %v", err)
-	}
+	require.NoError(t, err, "new client")
 
 	pub, salt := server.ServerHello()
 	if err := client.OnServerHello(pub, salt); err != nil {
@@ -98,17 +85,13 @@ func TestHandshakeRoundTrip(t *testing.T) {
 	}
 
 	cek, err := client.ClientKeyExchange()
-	if err != nil {
-		t.Fatalf("client key exchange: %v", err)
-	}
+	require.NoError(t, err, "client key exchange")
 	if err := server.OnClientKeyExchange(cek); err != nil {
 		t.Fatalf("server key exchange: %v", err)
 	}
 
 	finished, err := client.Finished()
-	if err != nil {
-		t.Fatalf("client finished: %v", err)
-	}
+	require.NoError(t, err, "client finished")
 	if err := server.VerifyFinished(finished); err != nil {
 		t.Fatalf("server verify finished: %v", err)
 	}
@@ -136,23 +119,17 @@ func TestSessionCipherRoundTripAndReplay(t *testing.T) {
 		key[i] = byte(i)
 	}
 	s, err := NewSessionCipher(key)
-	if err != nil {
-		t.Fatalf("new session cipher: %v", err)
-	}
+	require.NoError(t, err, "new session cipher")
 
 	plain := []byte("payload")
 	ct1, seq1, err := s.Encrypt(1001, plain)
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
+	require.NoError(t, err, "encrypt")
 	if seq1 != 1 {
 		t.Fatalf("first seq should be 1, got %d", seq1)
 	}
 
 	gotID, gotSeq, gotPlain, err := s.Decrypt(ct1)
-	if err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
+	require.NoError(t, err, "decrypt")
 	if gotID != 1001 || gotSeq != 1 || !bytes.Equal(gotPlain, plain) {
 		t.Fatalf("decrypt mismatch")
 	}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSaveMsgRepliesResult 保存请求必须回执真实结果，调用方不能靠「投递成功」猜测已落库。
@@ -16,9 +17,7 @@ func TestSaveMsgRepliesResult(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("save ack: %v", err)
-		}
+		require.NoError(t, err, "save ack")
 	case <-time.After(time.Second):
 		t.Fatal("save did not reply")
 	}

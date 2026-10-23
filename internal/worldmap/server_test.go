@@ -9,6 +9,7 @@ import (
 	"game_study/internal/worldmap/domain"
 	"game_study/internal/worldmap/runtime"
 	"game_study/pkg/config"
+	"github.com/stretchr/testify/require"
 )
 
 // testConfig 返回与 configs/map/map-dev.yaml 等价的小世界配置。
@@ -130,16 +131,12 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestServerMarchCollectRecallLoop(t *testing.T) {
 	clock := runtime.NewFakeClock(time.Unix(1_700_000_000, 0))
 	srv, err := New(testConfig(), runtime.NopLogger{}, WithClock(clock))
-	if err != nil {
-		t.Fatalf("构造服务失败: %v", err)
-	}
+	require.NoError(t, err, "构造服务失败")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	world, err := srv.Manager().LoadWorld(ctx, testWorld)
-	if err != nil {
-		t.Fatalf("加载世界失败: %v", err)
-	}
+	require.NoError(t, err, "加载世界失败")
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	scene, ok := world.Scene(testScene)
@@ -287,9 +284,7 @@ func TestServerRejectsInvalidConfig(t *testing.T) {
 // TestServerLifecycle 验证 Run/Shutdown 的幂等与 ctx 取消语义。
 func TestServerLifecycle(t *testing.T) {
 	srv, err := New(testConfig(), runtime.NopLogger{})
-	if err != nil {
-		t.Fatalf("构造失败: %v", err)
-	}
+	require.NoError(t, err, "构造失败")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- srv.Run(ctx) }()
@@ -303,9 +298,7 @@ func TestServerLifecycle(t *testing.T) {
 	cancel()
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("正常取消不应返回错误: %v", err)
-		}
+		require.NoError(t, err, "正常取消不应返回错误")
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run 未在取消后退出")
 	}

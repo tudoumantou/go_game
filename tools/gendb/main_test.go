@@ -6,6 +6,7 @@
 package main
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,9 +51,7 @@ func writeTempSQL(t *testing.T, content string) string {
 // 列定义段的字节偏移不受影响。
 func TestParseSQLFlatAnnotation(t *testing.T) {
 	tables, err := parseSQL(writeTempSQL(t, flatDDL))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(tables) != 2 {
 		t.Fatalf("want 2 tables, got %d", len(tables))
 	}
@@ -96,9 +95,7 @@ CREATE TABLE player_quest (
 // 防止注解泄漏到集合表。
 func TestGenModelGeneratesFlatSpec(t *testing.T) {
 	tables, err := parseSQL(writeTempSQL(t, flatDDL))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	out := t.TempDir()
 	for _, tb := range tables {
 		if err := genModel(out, tb); err != nil {
@@ -106,9 +103,7 @@ func TestGenModelGeneratesFlatSpec(t *testing.T) {
 		}
 	}
 	raw, err := os.ReadFile(filepath.Join(out, "player_settings_gen.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	src := string(raw)
 	for _, want := range []string{
 		"var PlayerSettingsFlat = flush.FlatOps[PlayerSettings]{",
@@ -122,9 +117,7 @@ func TestGenModelGeneratesFlatSpec(t *testing.T) {
 
 	// 未标注的表不能出现 Flat spec。
 	quest, err := os.ReadFile(filepath.Join(out, "player_quest_gen.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if strings.Contains(string(quest), "FlatOps") {
 		t.Fatal("unannotated table must not generate FlatOps")
 	}

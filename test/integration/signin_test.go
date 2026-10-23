@@ -28,6 +28,7 @@ import (
 	gamev1 "game_study/pkg/pb/game/v1"
 	"game_study/pkg/writebehind"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -37,9 +38,7 @@ func TestSigninActorFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	database, err := db.New(db.Config{DSN: testDSN, MaxOpen: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	rdb := redis.NewClient(&redis.Options{Addr: testRedisAddr})
 	defer rdb.Close()
@@ -84,9 +83,7 @@ func TestSigninActorFlow(t *testing.T) {
 	spawn := func(id int64) *actor.PID {
 		a := player.NewActor(id, registry, logger, repo, nil, func(_ uint64, id uint32, body []byte) error { responses <- response{id, body}; return nil })
 		pid, err := sys.Spawn(fmt.Sprintf("signin:%d", id), a)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		if err := sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)}); err != nil {
 			t.Fatal(err)
 		}

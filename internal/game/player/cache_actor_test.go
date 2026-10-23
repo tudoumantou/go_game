@@ -18,6 +18,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -46,9 +47,7 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	database, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	repo := NewRepository(&db.DB{DB: database})
 	repo.SetCache(store)
@@ -59,9 +58,7 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	responses := make(chan uint32, 4)
 	a := NewActor(7, registry, logger, repo, nil, func(_ uint64, id uint32, _ []byte) error { responses <- id; return nil })
 	state, version, err := repo.LoadCached(ctx, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	a.setState(state)
 	a.cacheVersion = version
 	a.loaded = true
@@ -70,9 +67,7 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	sys.Start(ctx)
 	defer sys.Stop()
 	pid, err := sys.Spawn("legacy", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	send := func() uint32 {
 		t.Helper()
 		if err := sys.Send(pid, &PacketMsg{MsgID: 9001}); err != nil {
@@ -110,9 +105,7 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), MaxRetries: -1})
 	defer rdb.Close()
 	database, _, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	repo := NewRepository(&db.DB{DB: database})
 	repo.SetCache(writebehind.NewStore(rdb))
@@ -130,9 +123,7 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	sys.Start(ctx)
 	defer sys.Stop()
 	pid, err := sys.Spawn("bind-failure", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := sys.Send(pid, &BindMsg{SessionID: 9, PlayerID: 7}); err != nil {
 		t.Fatal(err)
 	}
@@ -179,9 +170,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 				t.Fatal(err)
 			}
 			sqlDB, mock, err := sqlmock.New()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer sqlDB.Close()
 			repo := NewRepository(&db.DB{DB: sqlDB})
 			repo.SetCache(store)
@@ -203,16 +192,12 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			sys.Start(ctx)
 			defer sys.Stop()
 			pid, err := sys.Spawn("cached-player", a)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			// 先从预置 Redis 恢复；mock 没有 SQL 预期，任何回源都会导致测试失败。
 			a.sessionID = 1
 			a.loaded = true
 			state, version, err := repo.LoadCached(ctx, 7)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			a.setState(state)
 			a.cacheVersion = version
 			if failure == "before" {

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"github.com/stretchr/testify/require"
 	"testing"
 )
 
@@ -139,9 +140,7 @@ func TestValidateTroop(t *testing.T) {
 			tc.mutate(troop)
 			err := ValidateTroop(troop, tc.hasActiveSession)
 			if tc.wantErr == nil {
-				if err != nil {
-					t.Fatalf("合法组合被拒绝: %v", err)
-				}
+				require.NoError(t, err, "合法组合被拒绝")
 				return
 			}
 			if !isErr(err, tc.wantErr) {
@@ -228,9 +227,7 @@ func TestValidateResource(t *testing.T) {
 			tc.mutate(r)
 			err := ValidateResource(r)
 			if tc.wantErr == nil {
-				if err != nil {
-					t.Fatalf("合法资源被拒绝: %v", err)
-				}
+				require.NoError(t, err, "合法资源被拒绝")
 				return
 			}
 			if !isErr(err, tc.wantErr) {
@@ -311,9 +308,7 @@ func TestValidateOccupancyClaim(t *testing.T) {
 			}
 			err := ValidateOccupancyClaim(c, useTopo)
 			if tc.wantErr == nil {
-				if err != nil {
-					t.Fatalf("合法占位被拒绝: %v", err)
-				}
+				require.NoError(t, err, "合法占位被拒绝")
 				return
 			}
 			if !isErr(err, tc.wantErr) {

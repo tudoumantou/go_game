@@ -19,6 +19,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/test/robot"
 
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -54,15 +55,11 @@ func TestP1toP4Smoke(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -78,16 +75,12 @@ func TestP1toP4Smoke(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	// ② DSN
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -172,18 +165,14 @@ func TestP1toP4Smoke(t *testing.T) {
 		t.Fatalf("handshake: %v", err)
 	}
 	resp, err := r.SendHandshakeReq("1.0.0", "pc")
-	if err != nil {
-		t.Fatalf("handshake req: %v", err)
-	}
+	require.NoError(t, err, "handshake req")
 	if resp.Code != 0 {
 		t.Fatalf("handshake resp code=%d", resp.Code)
 	}
 
 	// 心跳
 	hb, err := r.Heartbeat()
-	if err != nil {
-		t.Fatalf("heartbeat: %v", err)
-	}
+	require.NoError(t, err, "heartbeat")
 	if hb.ServerTime == 0 {
 		t.Fatalf("heartbeat server_time is 0")
 	}
@@ -215,9 +204,7 @@ func startAndWait(t *testing.T, name string, start func() error) {
 func freePort(t *testing.T) int {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
+	require.NoError(t, err, "free port")
 	port := l.Addr().(*net.TCPAddr).Port
 	_ = l.Close()
 	return port
@@ -227,16 +214,12 @@ func freePort(t *testing.T) int {
 func initSchema(t *testing.T, dsn string) {
 	t.Helper()
 	database, err := db.New(db.Config{DSN: dsn, MaxOpen: 5, MaxIdle: 2})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	root := projectRoot(t)
 	files, err := filepath.Glob(filepath.Join(root, "sql/schema/*.sql"))
-	if err != nil {
-		t.Fatalf("glob schema: %v", err)
-	}
+	require.NoError(t, err, "glob schema")
 	if len(files) == 0 {
 		t.Fatalf("no schema files found under %s", root)
 	}
@@ -260,9 +243,7 @@ func initSchema(t *testing.T, dsn string) {
 func projectRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
+	require.NoError(t, err, "getwd")
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir

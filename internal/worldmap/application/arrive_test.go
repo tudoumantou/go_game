@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // arrivedTroop 造一支刚好到达 at 的部队：MoveID 用于过期判定。
@@ -366,9 +367,7 @@ func TestPlanArrive(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("意外错误: %v", err)
-			}
+			require.NoError(t, err, "意外错误")
 			tc.check(t, h, plan)
 		})
 	}

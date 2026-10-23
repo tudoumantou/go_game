@@ -28,6 +28,7 @@ import (
 	pkgmq "game_study/pkg/mq"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/stretchr/testify/require"
 )
 
 // grantActor 捕获 GrantItemsMsg 的测试 Actor：记录发奖次数并暂存道具列表，
@@ -132,9 +133,7 @@ func TestKafkaRechargeFlow(t *testing.T) {
 
 	act := &grantActor{}
 	pid, err := sys.Spawn("player:2001", act)
-	if err != nil {
-		t.Fatalf("spawn: %v", err)
-	}
+	require.NoError(t, err, "spawn")
 
 	// 消费者（唯一 group，保证本次测试独占消费）
 	groupID := fmt.Sprintf("it-recharge-%d", time.Now().UnixNano())
@@ -165,9 +164,7 @@ func TestKafkaRechargeFlow(t *testing.T) {
 		OrderID: orderID, PlayerID: 2001, ProductID: 1, AmountFen: 300, Channel: 1,
 	}
 	env, err := pkgmq.NewEnvelope(orderID, topic, orderID, msg)
-	if err != nil {
-		t.Fatalf("envelope: %v", err)
-	}
+	require.NoError(t, err, "envelope")
 	if err := producer.ProduceEnvelope(ctx, env); err != nil {
 		t.Fatalf("produce: %v", err)
 	}

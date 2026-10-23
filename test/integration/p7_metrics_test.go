@@ -28,6 +28,7 @@ import (
 	"game_study/internal/login"
 	"game_study/pkg/config"
 
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -51,15 +52,11 @@ func TestP7MetricsEndpoints(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -75,15 +72,11 @@ func TestP7MetricsEndpoints(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -188,9 +181,7 @@ func TestP7MetricsEndpoints(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
 
 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", gwTCP), 3*time.Second)
-	if err != nil {
-		t.Fatalf("dial gateway: %v", err)
-	}
+	require.NoError(t, err, "dial gateway")
 	defer func() { _ = conn.Close() }()
 	time.Sleep(300 * time.Millisecond)
 

@@ -10,6 +10,7 @@ import (
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/require"
 )
 
 // TestBuildInitialItems 覆盖初始背包配置的合并、截断与容错：
@@ -60,9 +61,7 @@ func TestInitialItemsFromConfig(t *testing.T) {
 // player → player_attr → 初始道具（按 item_id 升序），最后提交。
 func TestCreateWritesInitialBagInTx(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer sqlDB.Close()
 	svc := NewRoleService(&db.DB{DB: sqlDB}, log.New("role-service-test", log.WithLevel("error")))
 
@@ -85,9 +84,7 @@ func TestCreateWritesInitialBagInTx(t *testing.T) {
 	mock.ExpectCommit()
 
 	got, err := svc.Create(context.Background(), accountID, "张三", 1)
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
+	require.NoError(t, err, "create")
 	if got != roleID {
 		t.Fatalf("role id = %d, want %d", got, roleID)
 	}
@@ -100,9 +97,7 @@ func TestCreateWritesInitialBagInTx(t *testing.T) {
 // 不能留下「有角色但没有新手道具」的半成品。
 func TestCreateRollbackOnInitialItemFailure(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer sqlDB.Close()
 	svc := NewRoleService(&db.DB{DB: sqlDB}, log.New("role-service-test", log.WithLevel("error")))
 

@@ -20,6 +20,7 @@ import (
 
 	"game_study/internal/worldmap/application"
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -63,9 +64,7 @@ func newBattlePlanner(t *testing.T) *application.DefaultPlanner {
 		return block*1000003 + generation*1009 + slot*31
 	}
 	p, err := application.NewPlanner(domain.DefaultTopology(1), rules, ids, objectIDs, seeds)
-	if err != nil {
-		t.Fatalf("构造规划器失败: %v", err)
-	}
+	require.NoError(t, err, "构造规划器失败")
 	return p
 }
 
@@ -301,9 +300,7 @@ func TestBattleResultCommandAdvancesQueue(t *testing.T) {
 		Kind:         application.CmdBattleResult,
 		BattleResult: application.BattleResultParams{BattleID: "b1", Winner: testTargetID},
 	})
-	if err != nil {
-		t.Fatalf("提交裁决失败: %v", err)
-	}
+	require.NoError(t, err, "提交裁决失败")
 
 	attacker := findTroop(t, f.scene, 1, testAttackerID)
 	if attacker == nil || attacker.Phase != domain.TroopPhaseReturning {

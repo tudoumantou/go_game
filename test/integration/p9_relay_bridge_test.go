@@ -25,6 +25,7 @@ import (
 
 	"game_study/internal/center/relay"
 	"game_study/pkg/log"
+	"github.com/stretchr/testify/require"
 )
 
 // relayRecorder 记录本实例实际投递到的中转消息。
@@ -181,9 +182,7 @@ func TestP9CrossInstanceRelay(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case err := <-runErr:
-			if err != nil {
-				t.Fatalf("bridge run returned error: %v", err)
-			}
+			require.NoError(t, err, "bridge run returned error")
 		case <-time.After(10 * time.Second):
 			t.Fatal("bridge Run did not exit after ctx cancel")
 		}

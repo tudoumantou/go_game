@@ -31,6 +31,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"game_study/pkg/model"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -146,9 +147,7 @@ func execSQLDir(ctx context.Context, db *sql.DB, dir string) error {
 // TestSchemaApplied 断言 22+ 张表全部建成（DDL 可执行性是本测试核心价值）
 func TestSchemaApplied(t *testing.T) {
 	rows, err := testDB.Query("SELECT table_name FROM information_schema.tables WHERE table_schema = ?", testDBName)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rows.Close()
 	got := map[string]bool{}
 	for rows.Next() {
@@ -175,9 +174,7 @@ func TestSchemaApplied(t *testing.T) {
 // TestSeedLoaded 断言种子数据可查（23.3 第 1 步灌数验证）
 func TestSeedLoaded(t *testing.T) {
 	acc, err := model.FindAccountByPK(context.Background(), testDB, 1)
-	if err != nil {
-		t.Fatalf("FindAccountByPK(1): %v", err)
-	}
+	require.NoError(t, err, "FindAccountByPK(1)")
 	if acc.Account != "test001" {
 		t.Errorf("account = %q, want test001", acc.Account)
 	}
@@ -204,9 +201,7 @@ func TestCRUDAndIdempotent(t *testing.T) {
 	}
 	// 终态断言
 	got, err := model.FindPlayerByPK(ctx, testDB, 1001)
-	if err != nil {
-		t.Fatalf("FindPlayerByPK: %v", err)
-	}
+	require.NoError(t, err, "FindPlayerByPK")
 	if got.Coin != 200 || got.Name != "集成测试" {
 		t.Errorf("终态异常: coin=%d name=%q", got.Coin, got.Name)
 	}
@@ -233,9 +228,7 @@ func TestCRUDAndIdempotent(t *testing.T) {
 		t.Fatalf("InsertPlayerItem: %v", err)
 	}
 	gotItem, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
-	if err != nil {
-		t.Fatalf("FindPlayerItemByPK: %v", err)
-	}
+	require.NoError(t, err, "FindPlayerItemByPK")
 	if gotItem.ExpireAt.Valid {
 		t.Error("未设过期时间的道具 expire_at 应为 NULL")
 	}
@@ -246,9 +239,7 @@ func TestCRUDAndIdempotent(t *testing.T) {
 		t.Fatalf("UpdatePlayerItemByPK: %v", err)
 	}
 	gotItem2, err := model.FindPlayerItemByPK(ctx, testDB, 9001)
-	if err != nil {
-		t.Fatalf("FindPlayerItemByPK(2): %v", err)
-	}
+	require.NoError(t, err, "FindPlayerItemByPK(2)")
 	if !gotItem2.ExpireAt.Valid || !gotItem2.ExpireAt.Time.Equal(expire) {
 		t.Errorf("expire_at 往返异常: %+v", gotItem2.ExpireAt)
 	}

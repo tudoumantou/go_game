@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 func refreshCmd(block, generation int64, slot int32) Command {
@@ -32,9 +33,7 @@ func TestPlanRefresh(t *testing.T) {
 	t.Run("批次上限", func(t *testing.T) {
 		h := newHarness(t)
 		plan, err := h.planner.Plan(snapshot(SnapshotOptions{}), testEnv(1, "rf-batch", 1), refreshCmd(0, 1, 0), 1000)
-		if err != nil {
-			t.Fatalf("刷新: %v", err)
-		}
+		require.NoError(t, err, "刷新")
 		if len(plan.ObjectsUpsert) != h.rules.RefreshBatchSize {
 			t.Fatalf("created=%d, want %d", len(plan.ObjectsUpsert), h.rules.RefreshBatchSize)
 		}
@@ -82,9 +81,7 @@ func TestPlanRefresh(t *testing.T) {
 		}
 		snap := snapshot(SnapshotOptions{BlockedCells: blocked})
 		plan, err := h.planner.Plan(snap, testEnv(1, "rf-blocked", 1), refreshCmd(0, 2, 0), 1000)
-		if err != nil {
-			t.Fatalf("刷新: %v", err)
-		}
+		require.NoError(t, err, "刷新")
 		if len(plan.ObjectsUpsert) != 0 {
 			t.Fatalf("全阻挡时不应创建对象, got %d", len(plan.ObjectsUpsert))
 		}
@@ -99,9 +96,7 @@ func TestPlanRefresh(t *testing.T) {
 		// 该 generation 已达到 MaxCount：整批视为已完成。
 		snap := snapshot(SnapshotOptions{Objects: blockResources(h.rules.RichBlock.MaxCount, 5)})
 		plan, err := h.planner.Plan(snap, testEnv(1, "rf-idem", 1), refreshCmd(0, 5, 0), 1000)
-		if err != nil {
-			t.Fatalf("刷新: %v", err)
-		}
+		require.NoError(t, err, "刷新")
 		if len(plan.ObjectsUpsert) != 0 {
 			t.Fatalf("幂等分支不应创建对象")
 		}
@@ -132,9 +127,7 @@ func TestPlanRefresh(t *testing.T) {
 		}
 		snap := snapshot(SnapshotOptions{Objects: objs})
 		plan, err := h.planner.Plan(snap, testEnv(1, "rf-min", 1), refreshCmd(0, 5, 0), 1000)
-		if err != nil {
-			t.Fatalf("刷新: %v", err)
-		}
+		require.NoError(t, err, "刷新")
 		if len(plan.ObjectsUpsert) != h.rules.RefreshBatchSize {
 			t.Fatalf("created=%d", len(plan.ObjectsUpsert))
 		}
@@ -150,13 +143,9 @@ func TestPlanRefresh(t *testing.T) {
 		h1 := newHarness(t, func(r *Rules) { r.RefreshBatchSize = 6 })
 		h2 := newHarness(t, func(r *Rules) { r.RefreshBatchSize = 6 })
 		p1, err := h1.planner.Plan(snapshot(SnapshotOptions{}), testEnv(1, "rf-seed-1", 1), refreshCmd(0, 9, 0), 1000)
-		if err != nil {
-			t.Fatalf("刷新 1: %v", err)
-		}
+		require.NoError(t, err, "刷新 1")
 		p2, err := h2.planner.Plan(snapshot(SnapshotOptions{}), testEnv(1, "rf-seed-2", 1), refreshCmd(0, 9, 0), 1000)
-		if err != nil {
-			t.Fatalf("刷新 2: %v", err)
-		}
+		require.NoError(t, err, "刷新 2")
 		if len(p1.ObjectsUpsert) != 6 || len(p2.ObjectsUpsert) != 6 {
 			t.Fatalf("batches=%d/%d", len(p1.ObjectsUpsert), len(p2.ObjectsUpsert))
 		}

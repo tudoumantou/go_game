@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSegmentLengthUnits 覆盖文档 9.2 的段长公式：
@@ -40,9 +41,7 @@ func TestSegmentLengthUnits(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("意外错误: %v", err)
-			}
+			require.NoError(t, err, "意外错误")
 			if got != tt.want {
 				t.Fatalf("SegmentLengthUnits(%v→%v) = %d, want %d", tt.from, tt.to, got, tt.want)
 			}
@@ -114,9 +113,7 @@ func TestBuildMove(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("意外错误: %v", err)
-			}
+			require.NoError(t, err, "意外错误")
 			if m.MoveID != "move-1" || m.From != tt.from || m.To != tt.to ||
 				m.StartAtMS != tt.startAt || m.SpeedUnitsPerSec != tt.speed {
 				t.Fatalf("字段回填错误: %+v", m)
@@ -143,9 +140,7 @@ func TestBuildMove(t *testing.T) {
 func TestAdvanceAlongTrajectory(t *testing.T) {
 	topo := testTopo()
 	m, err := BuildMove(domain.Pos{}, domain.Pos{X: 3000, Y: 4000}, 1000, 10_000, "m1", topo.InBounds)
-	if err != nil {
-		t.Fatalf("BuildMove: %v", err)
-	}
+	require.NoError(t, err, "BuildMove")
 	// len=5000 units, speed=1000 → 5s → [10000,15000]。
 	tests := []struct {
 		name string
@@ -161,9 +156,7 @@ func TestAdvanceAlongTrajectory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := AdvanceAlong(m, tt.now)
-			if err != nil {
-				t.Fatalf("AdvanceAlong 错误: %v", err)
-			}
+			require.NoError(t, err, "AdvanceAlong 错误")
 			if got != tt.want {
 				t.Fatalf("AdvanceAlong(%d) = %v, want %v", tt.now, got, tt.want)
 			}

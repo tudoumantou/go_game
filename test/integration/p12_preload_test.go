@@ -26,6 +26,7 @@ import (
 	"game_study/test/robot"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -48,15 +49,11 @@ func TestP12LoginPreload(t *testing.T) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	defer func() { _ = mysqlC.Terminate(context.Background()) }()
 
 	redisC, err := tcredis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	defer func() { _ = redisC.Terminate(context.Background()) }()
 
 	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
@@ -72,15 +69,11 @@ func TestP12LoginPreload(t *testing.T) {
 		},
 		Started: true,
 	})
-	if err != nil {
-		t.Fatalf("start etcd: %v", err)
-	}
+	require.NoError(t, err, "start etcd")
 	defer func() { _ = etcdC.Terminate(context.Background()) }()
 
 	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	redisHost, _ := redisC.Host(ctx)
 	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
 	etcdHost, _ := etcdC.Host(ctx)
@@ -90,9 +83,7 @@ func TestP12LoginPreload(t *testing.T) {
 	initSchema(t, mysqlDSN)
 
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	defer func() { _ = database.Close() }()
 
 	loginPort := freePort(t)
@@ -183,9 +174,7 @@ func TestP12LoginPreload(t *testing.T) {
 		SendTime: time.Now().UnixMilli(),
 	}
 	raw, err := json.Marshal(offlineMsg)
-	if err != nil {
-		t.Fatalf("marshal offline msg: %v", err)
-	}
+	require.NoError(t, err, "marshal offline msg")
 	pendKey := fmt.Sprintf("pend:chat:%d", roleID)
 	if err := rdb.RPush(context.Background(), pendKey, raw).Err(); err != nil {
 		t.Fatalf("push pend: %v", err)
@@ -210,18 +199,14 @@ func TestP12LoginPreload(t *testing.T) {
 		t.Fatalf("rehandshake req: %v", err)
 	}
 	eg, err := client2.EnterGame()
-	if err != nil {
-		t.Fatalf("enter game: %v", err)
-	}
+	require.NoError(t, err, "enter game")
 	if eg.RoleId != roleID {
 		t.Fatalf("expect same role %d on reconnect, got %d", roleID, eg.RoleId)
 	}
 
 	// ⑤ 校验装备加成（预加载路径生效）
 	info, err := client2.PlayerInfo()
-	if err != nil {
-		t.Fatalf("player info: %v", err)
-	}
+	require.NoError(t, err, "player info")
 	var atk int64
 	for _, a := range info.Attrs {
 		if a.AttrId == 3 { // atk
@@ -246,9 +231,7 @@ func TestP12LoginPreload(t *testing.T) {
 
 	// ⑦ 校验离线暂存被 drain 并补投
 	chat, err := client2.WaitChatNotify(10 * time.Second)
-	if err != nil {
-		t.Fatalf("expect offline chat redelivered: %v", err)
-	}
+	require.NoError(t, err, "expect offline chat redelivered")
 	if chat.Content != "你不在的时候我发了一条" {
 		t.Fatalf("offline chat content mismatch: %q", chat.Content)
 	}

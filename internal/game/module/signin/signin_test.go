@@ -11,6 +11,7 @@ import (
 
 	"game_study/internal/game/module"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -78,9 +79,7 @@ func newCtx(st module.PlayerState) (*module.Context, *recorder) {
 func call(t *testing.T, m *Module, ctx *module.Context, rec *recorder, msgID uint32, req proto.Message) []byte {
 	t.Helper()
 	body, err := proto.Marshal(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := m.OnMessage(ctx, msgID, body); err != nil {
 		t.Fatal(err)
 	}

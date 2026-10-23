@@ -14,6 +14,7 @@ import (
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -21,9 +22,7 @@ func TestCommitItemsAtomic(t *testing.T) {
 	for _, fail := range []string{"", "business", "items", "commit"} {
 		t.Run(fail, func(t *testing.T) {
 			sqlDB, mock, err := sqlmock.New()
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer sqlDB.Close()
 			r := NewRepository(&db.DB{DB: sqlDB})
 			s := NewState(7)
@@ -56,9 +55,7 @@ func TestCommitItemsAtomic(t *testing.T) {
 				return err
 			})
 			if fail == "" {
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 				if s.GetItemCount(1001) != 35 || len(s.DirtyItems()) != 0 {
 					t.Fatal("committed reward not synchronized")
 				}
@@ -82,9 +79,7 @@ func TestCommitItemsAtomic(t *testing.T) {
 
 func TestReloadItemsPreservesOtherActorState(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer sqlDB.Close()
 	s := NewState(7)
 	s.SetProfile(module.Profile{Name: "hero", Level: 9, Exp: 17})
@@ -110,9 +105,7 @@ func TestReloadItemsPreservesOtherActorState(t *testing.T) {
 
 func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer sqlDB.Close()
 	r := NewRepository(&db.DB{DB: sqlDB})
 	logger := log.New("grant-test", log.WithLevel("error"))
@@ -160,9 +153,7 @@ func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	sys.Start(ctx)
 	defer sys.Stop()
 	pid, err := sys.Spawn("unknown-commit", a)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := sys.Send(pid, &SaveMsg{}); err != nil {
 		t.Fatal(err)
 	}

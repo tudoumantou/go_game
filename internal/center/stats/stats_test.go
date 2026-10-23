@@ -11,6 +11,7 @@ import (
 	internalv2 "game_study/pkg/pb/internalv2"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 func newTestService(t *testing.T) (*Service, *miniredis.Miniredis) {
@@ -136,9 +137,7 @@ func TestSnapshotWritesRedis(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer func() { _ = rdb.Close() }()
 	vals, err := rdb.HGetAll(context.Background(), key).Result()
-	if err != nil {
-		t.Fatalf("hgetall: %v", err)
-	}
+	require.NoError(t, err, "hgetall")
 	if len(vals) != 1 {
 		t.Fatalf("expect 1 instance field, got %d: %v", len(vals), vals)
 	}

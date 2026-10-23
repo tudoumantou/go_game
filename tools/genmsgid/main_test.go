@@ -6,6 +6,7 @@
 package main
 
 import (
+	"github.com/stretchr/testify/require"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,9 +49,7 @@ message UseItemReq {
 message UseItemResp {}
 `)
 	decls, err := scanFile(p)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err, "scan")
 	if len(decls) != 2 {
 		t.Fatalf("decls = %d, want 2 (%+v)", len(decls), decls)
 	}
@@ -163,13 +162,9 @@ func TestGenerateIsStable(t *testing.T) {
 // 后续新增消息忘记加注解不会失败，但撞号、重名、越界会在这里拦住。
 func TestRepoProtoDeclarations(t *testing.T) {
 	segs, err := parseSegments("../../internal/common/constant")
-	if err != nil {
-		t.Fatalf("segments: %v", err)
-	}
+	require.NoError(t, err, "segments")
 	decls, err := scanProtos("../../api/proto/game/v1")
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err, "scan")
 	if len(decls) < 60 {
 		t.Fatalf("unexpectedly few declarations: %d", len(decls))
 	}

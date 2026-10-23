@@ -26,6 +26,7 @@ import (
 	"game_study/pkg/log"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -49,27 +50,19 @@ func startStorage(t *testing.T) (*db.DB, *redis.Client, string) {
 			},
 		}),
 	)
-	if err != nil {
-		t.Fatalf("start mysql: %v", err)
-	}
+	require.NoError(t, err, "start mysql")
 	t.Cleanup(func() { _ = mysqlC.Terminate(context.Background()) })
 
 	redisC, err := tcredis.Run(ctx, "redis:7-alpine")
-	if err != nil {
-		t.Fatalf("start redis: %v", err)
-	}
+	require.NoError(t, err, "start redis")
 	t.Cleanup(func() { _ = redisC.Terminate(context.Background()) })
 
 	dsn, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	if err != nil {
-		t.Fatalf("mysql dsn: %v", err)
-	}
+	require.NoError(t, err, "mysql dsn")
 	initSchema(t, dsn)
 
 	database, err := db.New(db.Config{DSN: dsn, MaxOpen: 10, MaxIdle: 5})
-	if err != nil {
-		t.Fatalf("connect mysql: %v", err)
-	}
+	require.NoError(t, err, "connect mysql")
 	t.Cleanup(func() { _ = database.Close() })
 
 	host, _ := redisC.Host(ctx)
@@ -99,9 +92,7 @@ func TestP10IDTable(t *testing.T) {
 
 	// ① 构建
 	n, err := it.BuildOne(ctx, meta)
-	if err != nil {
-		t.Fatalf("build: %v", err)
-	}
+	require.NoError(t, err, "build")
 	if n < 3 {
 		t.Fatalf("built %d ids, want >= 3", n)
 	}
@@ -154,9 +145,7 @@ func TestP10IDTable(t *testing.T) {
 
 	// ⑤ 对账：集合与表行数一致 → 不重建
 	rebuilt, err := it.Reconcile(ctx, meta)
-	if err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
+	require.NoError(t, err, "reconcile")
 	if rebuilt {
 		t.Fatal("should not rebuild when counts match")
 	}
@@ -166,9 +155,7 @@ func TestP10IDTable(t *testing.T) {
 		t.Fatalf("srem: %v", err)
 	}
 	rebuilt, err = it.Reconcile(ctx, meta)
-	if err != nil {
-		t.Fatalf("reconcile 2: %v", err)
-	}
+	require.NoError(t, err, "reconcile 2")
 	if !rebuilt {
 		t.Fatal("expect rebuild after manual removal")
 	}
@@ -180,9 +167,7 @@ func TestP10IDTable(t *testing.T) {
 	key := cache.EntityKey("player", playerID)
 	_ = rdb.Del(ctx, key).Err()
 	row, err := it.LoadEntity(ctx, meta, playerID)
-	if err != nil {
-		t.Fatalf("load entity: %v", err)
-	}
+	require.NoError(t, err, "load entity")
 	if row["name"] != "idtab_role_a" {
 		t.Fatalf("row name = %q", row["name"])
 	}
@@ -204,9 +189,7 @@ func TestP11IncrementalFlush(t *testing.T) {
 	// 造一个角色 + 两格初始道具
 	res, err := database.ExecContext(ctx,
 		`INSERT INTO player (account_id, name, level, exp, coin, scene_id) VALUES (7001, 'p11_role', 1, 0, 0, 0)`)
-	if err != nil {
-		t.Fatalf("insert player: %v", err)
-	}
+	require.NoError(t, err, "insert player")
 	playerID, _ := res.LastInsertId()
 	if _, err := database.ExecContext(ctx,
 		`INSERT INTO player_item (player_id, item_id, count) VALUES (?, 1001, 10), (?, 1002, 20)`,
@@ -218,9 +201,7 @@ func TestP11IncrementalFlush(t *testing.T) {
 
 	// ① 加载：SeedItem 不标脏 → 直接保存不应产生任何道具写
 	state, err := repo.Load(ctx, playerID)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
+	require.NoError(t, err, "load")
 	if state.GetItemCount(1001) != 10 || state.GetItemCount(1002) != 20 {
 		t.Fatalf("loaded items = %d/%d", state.GetItemCount(1001), state.GetItemCount(1002))
 	}

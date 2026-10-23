@@ -8,6 +8,7 @@ import (
 	"game_study/internal/scenemap/battle"
 	"game_study/internal/scenemap/gameplay"
 	"game_study/internal/scenemap/mgr"
+	"github.com/stretchr/testify/require"
 )
 
 // countHarmBroadcasts 数某个玩家收到的飘字广播条数。
@@ -47,9 +48,7 @@ func TestBattleFlowDungeon(t *testing.T) {
 
 	// 第一波已由 MgrInit 刷出。
 	v, err := h.Read(func(s *mgr.State) any { return len(s.NPES) })
-	if err != nil {
-		t.Fatalf("读状态失败: %v", err)
-	}
+	require.NoError(t, err, "读状态失败")
 	if v.(int) != 1 {
 		t.Fatalf("第一波应刷出 1 只怪，实际 %d", v.(int))
 	}
@@ -59,9 +58,7 @@ func TestBattleFlowDungeon(t *testing.T) {
 	}
 
 	res, err := h.Cast(1, 6001, ids[0], nil)
-	if err != nil {
-		t.Fatalf("施法失败: %v", err)
-	}
+	require.NoError(t, err, "施法失败")
 	if !res.Accepted {
 		t.Fatalf("施法被拒: code=%d", res.Code)
 	}
@@ -142,9 +139,7 @@ func TestCityBlocksSkill(t *testing.T) {
 		t.Fatalf("进图失败: %v", err)
 	}
 	res, err := h.Cast(1, 6003, 0, nil)
-	if err != nil {
-		t.Fatalf("施法调用失败: %v", err)
-	}
+	require.NoError(t, err, "施法调用失败")
 	if res.Accepted || res.Code != battle.ErrCodeNoBattle {
 		t.Fatalf("主城应拒绝: %+v", res)
 	}
@@ -157,8 +152,6 @@ func TestCityBlocksSkill(t *testing.T) {
 func (h *Harness) monsterIDs(t *testing.T) []scenemap.UUID {
 	t.Helper()
 	v, err := h.Read(func(s *mgr.State) any { return s.NpeUUIDs() })
-	if err != nil {
-		t.Fatalf("读怪物列表失败: %v", err)
-	}
+	require.NoError(t, err, "读怪物列表失败")
 	return v.([]scenemap.UUID)
 }

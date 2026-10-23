@@ -32,6 +32,7 @@ import (
 	"game_study/internal/worldmap/domain"
 	"game_study/internal/worldmap/runtime"
 	"game_study/pkg/pb/internalv2"
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -170,9 +171,7 @@ func newFixture(t *testing.T, verifier TokenVerifier) *fixture {
 	}
 
 	planner, err := application.NewPlanner(topo, testRules(), idGen, objectIDGen, seedGen)
-	if err != nil {
-		t.Fatalf("构造规划器失败: %v", err)
-	}
+	require.NoError(t, err, "构造规划器失败")
 	manager, err := runtime.NewWorldManager(runtime.ManagerConfig{
 		Topo: topo,
 		Scene: runtime.SceneConfig{
@@ -193,17 +192,13 @@ func newFixture(t *testing.T, verifier TokenVerifier) *fixture {
 		TxWorkers:       2,
 		TxQueueCapacity: 32,
 	})
-	if err != nil {
-		t.Fatalf("构造世界管理器失败: %v", err)
-	}
+	require.NoError(t, err, "构造世界管理器失败")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 
 	world, err := manager.LoadWorld(ctx, testWorld)
-	if err != nil {
-		t.Fatalf("加载世界失败: %v", err)
-	}
+	require.NoError(t, err, "加载世界失败")
 	scene, ok := world.Scene(testScene)
 	if !ok {
 		t.Fatalf("场景 %d 不存在", testScene)
@@ -319,9 +314,7 @@ func TestSubmitMarchThenQueryTroops(t *testing.T) {
 	ctx := inboundContext(t, testToken)
 
 	reply, err := f.srv.Submit(ctx, marchRequest("req-march-1", 1))
-	if err != nil {
-		t.Fatalf("出征应被接受，实际 gRPC 错误: %v", err)
-	}
+	require.NoError(t, err, "出征应被接受，实际 gRPC 错误")
 	if reply.GetCode() != domain.CodeOK {
 		t.Fatalf("出征业务码应为 0，实际 %d（%s）", reply.GetCode(), reply.GetMessage())
 	}
@@ -336,9 +329,7 @@ func TestSubmitMarchThenQueryTroops(t *testing.T) {
 	}
 
 	qr, err := f.srv.Query(ctx, troopsQuery(testPlayer))
-	if err != nil {
-		t.Fatalf("查询部队失败: %v", err)
-	}
+	require.NoError(t, err, "查询部队失败")
 	if qr.GetRevision() == 0 {
 		t.Fatal("查询结果应带场景 revision")
 	}
@@ -369,13 +360,9 @@ func TestSubmitReplayIsIdempotent(t *testing.T) {
 	ctx := inboundContext(t, testToken)
 
 	first, err := f.srv.Submit(ctx, marchRequest("req-replay", 1))
-	if err != nil {
-		t.Fatalf("首次出征失败: %v", err)
-	}
+	require.NoError(t, err, "首次出征失败")
 	second, err := f.srv.Submit(ctx, marchRequest("req-replay", 1))
-	if err != nil {
-		t.Fatalf("重放应成功返回首次结果，实际错误: %v", err)
-	}
+	require.NoError(t, err, "重放应成功返回首次结果，实际错误")
 	if !second.GetReplayed() {
 		t.Fatal("第二次同 request_id 提交应标记 Replayed=true")
 	}
@@ -389,9 +376,7 @@ func TestSubmitReplayIsIdempotent(t *testing.T) {
 
 	// 重放不得产生第二支部队（否则幂等只是“看起来成功”）。
 	qr, err := f.srv.Query(ctx, troopsQuery(testPlayer))
-	if err != nil {
-		t.Fatalf("查询失败: %v", err)
-	}
+	require.NoError(t, err, "查询失败")
 	if len(qr.GetTroops()) != 1 {
 		t.Fatalf("重放后仍应只有 1 支部队，实际 %d", len(qr.GetTroops()))
 	}
@@ -447,9 +432,7 @@ func TestSubmitIdempotencyConflictReturnsBusinessCode(t *testing.T) {
 		2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
 	}
 	reply, err := f.srv.Submit(ctx, second)
-	if err != nil {
-		t.Fatalf("同键不同参应通过业务码返回，实际 gRPC 错误: %v", err)
-	}
+	require.NoError(t, err, "同键不同参应通过业务码返回，实际 gRPC 错误")
 	if reply.GetCode() != domain.CodeIdempotencyConflict {
 		t.Fatalf("业务码应为 %d(IdempotencyConflict)，实际 %d（%s）",
 			domain.CodeIdempotencyConflict, reply.GetCode(), reply.GetMessage())
@@ -498,9 +481,7 @@ func TestQueryCargoOrderIsStable(t *testing.T) {
 	}
 
 	first, err := f.srv.Query(ctx, troopsQuery(testOther))
-	if err != nil {
-		t.Fatalf("首次查询失败: %v", err)
-	}
+	require.NoError(t, err, "首次查询失败")
 	want := []int32{1001, 1002, 1003} // item_id 升序
 	if got := idsOf(first); !reflect.DeepEqual(got, want) {
 		t.Fatalf("cargo 应按 item_id 升序，实际 %v", got)
@@ -526,9 +507,7 @@ func TestQueryResourcesFiltersByCellRect(t *testing.T) {
 
 	// 资源点在 (5,8) 格。
 	inside, err := f.srv.Query(ctx, resourcesQuery(0, 0, 10, 10))
-	if err != nil {
-		t.Fatalf("查询资源失败: %v", err)
-	}
+	require.NoError(t, err, "查询资源失败")
 	if len(inside.GetResources()) != 1 {
 		t.Fatalf("矩形内应有 1 个资源点，实际 %d", len(inside.GetResources()))
 	}
@@ -545,9 +524,7 @@ func TestQueryResourcesFiltersByCellRect(t *testing.T) {
 
 	// 相邻矩形（左闭右开）不包含 (5,8)。
 	outside, err := f.srv.Query(ctx, resourcesQuery(10, 10, 20, 20))
-	if err != nil {
-		t.Fatalf("查询资源失败: %v", err)
-	}
+	require.NoError(t, err, "查询资源失败")
 	if len(outside.GetResources()) != 0 {
 		t.Fatalf("矩形外不应有资源点，实际 %d", len(outside.GetResources()))
 	}

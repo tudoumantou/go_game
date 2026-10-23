@@ -3,6 +3,7 @@ package mq
 
 import (
 	"context"
+	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
@@ -13,18 +14,12 @@ import (
 func TestEnvelopeRoundTrip(t *testing.T) {
 	msg := RechargeOrderMsg{OrderID: "O20260101", PlayerID: 1001, ProductID: 3, AmountFen: 600, Channel: 1}
 	env, err := NewEnvelope("O20260101", TopicRechargeOrder, "O20260101", msg)
-	if err != nil {
-		t.Fatalf("new envelope: %v", err)
-	}
+	require.NoError(t, err, "new envelope")
 	raw, err := env.Marshal()
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
+	require.NoError(t, err, "marshal")
 
 	got, err := Unmarshal(raw)
-	if err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
+	require.NoError(t, err, "unmarshal")
 	if got.BizID != "O20260101" || got.Topic != TopicRechargeOrder || got.Key != "O20260101" {
 		t.Fatalf("envelope mismatch: %+v", got)
 	}
@@ -43,9 +38,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 // 防止没有幂等键的消息流入消费端造成重复应用。
 func TestEnvelopeRequiresBizID(t *testing.T) {
 	env, err := NewEnvelope("", TopicMail, "1", MailMsg{MailID: 1})
-	if err != nil {
-		t.Fatalf("new envelope: %v", err)
-	}
+	require.NoError(t, err, "new envelope")
 	if _, err := env.Marshal(); err == nil {
 		t.Fatalf("empty biz_id should fail")
 	}

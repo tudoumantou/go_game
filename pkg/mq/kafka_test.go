@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"github.com/stretchr/testify/require"
 )
 
 // fakeReader 按顺序吐出预置消息，记录每次 commit。
@@ -60,13 +61,9 @@ func (d *fakeDLQ) DeadLetter(_ context.Context, env *Envelope, cause error) erro
 func validMessage(t *testing.T, offset int64) kafka.Message {
 	t.Helper()
 	env, err := NewEnvelope("biz-1", "gs.test", "k1", map[string]string{"v": "1"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	raw, err := env.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return kafka.Message{Topic: "gs.test", Partition: 0, Offset: offset, Key: []byte("k1"), Value: raw}
 }
 
@@ -98,9 +95,7 @@ func TestRunRetriesThenDeadLettersAndCommits(t *testing.T) {
 		attempts++
 		return errors.New("boom")
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if attempts != 2 {
 		t.Fatalf("retry attempts: got %d want 2", attempts)
 	}
@@ -189,9 +184,7 @@ func TestRunCancelDoesNotCommit(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	if err != nil {
-		t.Fatalf("cancel should exit cleanly: %v", err)
-	}
+	require.NoError(t, err, "cancel should exit cleanly")
 	if len(reader.committed) != 0 {
 		t.Fatal("offset committed while shutting down")
 	}

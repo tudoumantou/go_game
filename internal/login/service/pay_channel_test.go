@@ -3,6 +3,7 @@ package service
 
 import (
 	"errors"
+	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
 	"time"
@@ -24,9 +25,7 @@ func signedPayload(orderID string, amount int32) CallbackPayload {
 // TestSandboxChannelAcceptsValidSignature 合法签名通过。
 func TestSandboxChannelAcceptsValidSignature(t *testing.T) {
 	c, err := NewSandboxChannel(testSecret, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if err := c.Verify(signedPayload("O1", 600)); err != nil {
 		t.Fatalf("valid signature rejected: %v", err)
 	}
@@ -91,9 +90,7 @@ func TestSandboxChannelRequiresSecret(t *testing.T) {
 // 服务仍可启动，但绝不会放行伪造回调。
 func TestNewPayChannelDisabledWithoutSecret(t *testing.T) {
 	c, err := NewPayChannel("sandbox", "", time.Minute)
-	if err != nil {
-		t.Fatalf("disabled channel should not fail startup: %v", err)
-	}
+	require.NoError(t, err, "disabled channel should not fail startup")
 	if c.Name() != "disabled" {
 		t.Fatalf("unexpected channel: %s", c.Name())
 	}

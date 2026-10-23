@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 // fightingTroop 造一支正在战斗的部队（FIGHTING + battle_id + Busy=Battle
@@ -73,9 +74,7 @@ func TestPlanBattleResultAttackerWinsOnResource(t *testing.T) {
 		Kind:         CmdBattleResult,
 		BattleResult: BattleResultParams{BattleID: "b1", Winner: 200, AttackerWon: true},
 	}, 10000)
-	if err != nil {
-		t.Fatalf("裁决计划失败: %v", err)
-	}
+	require.NoError(t, err, "裁决计划失败")
 
 	if len(plan.BattleUpsert) != 1 {
 		t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
@@ -144,9 +143,7 @@ func TestPlanBattleResultDefenderTroopWins(t *testing.T) {
 		Kind:         CmdBattleResult,
 		BattleResult: BattleResultParams{BattleID: "b1", Winner: 900},
 	}, 10000)
-	if err != nil {
-		t.Fatalf("裁决计划失败: %v", err)
-	}
+	require.NoError(t, err, "裁决计划失败")
 	if len(plan.ObjectsUpsert) != 2 {
 		t.Fatalf("双方都要落计划, got %+v", plan.ObjectsUpsert)
 	}
@@ -203,9 +200,7 @@ func TestPlanBattleResultIdempotent(t *testing.T) {
 		Objects: objects,
 		Battles: []*domain.BattleRecord{pendingBattle("b1", 200, 1000)},
 	}), env, cmd, 10000)
-	if err != nil {
-		t.Fatalf("首次裁决失败: %v", err)
-	}
+	require.NoError(t, err, "首次裁决失败")
 
 	// (a) 同一请求重放：快照里已有回执，规划器直接返回回执，零写入。
 	replay, err := h.planner.Plan(snapshot(SnapshotOptions{
@@ -213,9 +208,7 @@ func TestPlanBattleResultIdempotent(t *testing.T) {
 		Battles:  []*domain.BattleRecord{pendingBattle("b1", 200, 1000)},
 		Receipts: []domain.CommandReceipt{*first.CommandReceipt},
 	}), env, cmd, 20000)
-	if err != nil {
-		t.Fatalf("重放失败: %v", err)
-	}
+	require.NoError(t, err, "重放失败")
 	if len(replay.ObjectsUpsert) != 0 || len(replay.BattleUpsert) != 0 || len(replay.CollectStart) != 0 {
 		t.Fatalf("重放不得产生业务写入: %+v", replay)
 	}
@@ -238,9 +231,7 @@ func TestPlanBattleResultIdempotent(t *testing.T) {
 		Kind:         CmdBattleResult,
 		BattleResult: BattleResultParams{BattleID: "b1", Winner: 1000},
 	}, 30000)
-	if err != nil {
-		t.Fatalf("迟到结果应返回幂等回执而不是错误: %v", err)
-	}
+	require.NoError(t, err, "迟到结果应返回幂等回执而不是错误")
 	if len(late.ObjectsUpsert) != 0 || len(late.BattleUpsert) != 0 || len(late.QueueEnqueue) != 0 {
 		t.Fatalf("迟到结果不得改任何状态: %+v", late)
 	}
@@ -304,9 +295,7 @@ func TestPlanBattleTimeoutIdempotent(t *testing.T) {
 				Kind:          CmdBattleTimeout,
 				BattleTimeout: BattleTimeoutParams{BattleID: "b1"},
 			}, 40000)
-			if err != nil {
-				t.Fatalf("终态战斗的超时应幂等返回: %v", err)
-			}
+			require.NoError(t, err, "终态战斗的超时应幂等返回")
 			if len(plan.ObjectsUpsert) != 0 || len(plan.BattleUpsert) != 0 {
 				t.Fatalf("终态战斗不得被改写: %+v", plan)
 			}
@@ -338,9 +327,7 @@ func TestPlanBattleTimeoutNoDamage(t *testing.T) {
 		Kind:          CmdBattleTimeout,
 		BattleTimeout: BattleTimeoutParams{BattleID: "b1"},
 	}, 40000)
-	if err != nil {
-		t.Fatalf("超时计划失败: %v", err)
-	}
+	require.NoError(t, err, "超时计划失败")
 	if len(plan.BattleUpsert) != 1 {
 		t.Fatalf("BattleUpsert=%+v", plan.BattleUpsert)
 	}
@@ -404,9 +391,7 @@ func TestPlanBattleResultAdvancesQueue(t *testing.T) {
 		Kind:         CmdBattleResult,
 		BattleResult: BattleResultParams{BattleID: "b1", Winner: 1000},
 	}, 10000)
-	if err != nil {
-		t.Fatalf("裁决计划失败: %v", err)
-	}
+	require.NoError(t, err, "裁决计划失败")
 
 	// 只出队队首；第二名继续等待。
 	if len(plan.QueueDequeue) != 1 || plan.QueueDequeue[0].TroopID != 300 {
@@ -480,9 +465,7 @@ func TestBattleQueueFIFO(t *testing.T) {
 		Kind:         CmdBattleResult,
 		BattleResult: BattleResultParams{BattleID: "b2", Winner: 300},
 	}, 20000)
-	if err != nil {
-		t.Fatalf("第一轮失败: %v", err)
-	}
+	require.NoError(t, err, "第一轮失败")
 	if len(first.QueueDequeue) != 1 || first.QueueDequeue[0].TroopID != 400 {
 		t.Fatalf("第一轮应出队 400: %+v", first.QueueDequeue)
 	}
@@ -500,9 +483,7 @@ func TestBattleQueueFIFO(t *testing.T) {
 		Kind:          CmdBattleTimeout,
 		BattleTimeout: BattleTimeoutParams{BattleID: "b4"},
 	}, 30000)
-	if err != nil {
-		t.Fatalf("第二轮失败: %v", err)
-	}
+	require.NoError(t, err, "第二轮失败")
 	if len(second.QueueDequeue) != 0 {
 		t.Fatalf("空队列不应出队: %+v", second.QueueDequeue)
 	}
@@ -538,9 +519,7 @@ func TestEnqueueSeqMonotonic(t *testing.T) {
 			Kind:   CmdArrive,
 			Arrive: ArriveParams{TroopID: tr.Header.ID, MoveID: tr.Move.MoveID},
 		}, 10000)
-		if err != nil {
-			t.Fatalf("入队计划失败: %v", err)
-		}
+		require.NoError(t, err, "入队计划失败")
 		return plan
 	}
 

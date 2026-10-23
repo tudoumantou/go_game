@@ -10,6 +10,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/require"
 )
 
 // demoPersister 是测试用模块，用来证明「注册即接入」不需要改框架代码。
@@ -72,9 +73,7 @@ func TestRegisteredPersisterReceivesItsRows(t *testing.T) {
 	})
 
 	database, mock, err := sqlmock.New()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer database.Close()
 	expectCommonBatch(mock, 7, 8)
 	mock.ExpectExec("INSERT INTO demo_state").WillReturnResult(sqlmock.NewResult(0, 2))
@@ -140,9 +139,7 @@ func TestLegacySigninSnapshotMigratesToExt(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := store.Load(ctx, 7)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	if len(record.State.Ext["signin"]) == 0 {
 		t.Fatal("legacy signin state was dropped")
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"game_study/internal/worldmap/domain"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPlanCollectStart(t *testing.T) {
@@ -123,9 +124,7 @@ func TestPlanCollectStart(t *testing.T) {
 				}
 				return
 			}
-			if err != nil {
-				t.Fatalf("意外错误: %v", err)
-			}
+			require.NoError(t, err, "意外错误")
 			tc.check(t, h, plan)
 		})
 	}
@@ -156,9 +155,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		h := newHarness(t)
 		plan, err := h.planner.Plan(settleFixture(t, 100), testEnv(1, "req-settle", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 3000}}, 3000)
-		if err != nil {
-			t.Fatalf("结算: %v", err)
-		}
+		require.NoError(t, err, "结算")
 		if len(plan.CollectSettle) != 1 || plan.CollectSettle[0].SettledQty != 7 {
 			t.Fatalf("CollectSettle=%+v", plan.CollectSettle)
 		}
@@ -186,9 +183,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		h := newHarness(t)
 		plan, err := h.planner.Plan(settleFixture(t, 5), testEnv(1, "req-settle-zero", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 3000}}, 3000)
-		if err != nil {
-			t.Fatalf("结算: %v", err)
-		}
+		require.NoError(t, err, "结算")
 		if plan.CollectSettle[0].SettledQty != 5 {
 			t.Fatalf("SettledQty=%d", plan.CollectSettle[0].SettledQty)
 		}
@@ -203,9 +198,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		// 第一次结算（活动会话）。
 		first, err := h.planner.Plan(settleFixture(t, 100), testEnv(1, "req-settle-a", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 3000}}, 3000)
-		if err != nil {
-			t.Fatalf("首次结算: %v", err)
-		}
+		require.NoError(t, err, "首次结算")
 		qty := first.CollectSettle[0].SettledQty
 
 		// 第二次：快照里会话已 SETTLED（不同 request_id，仍有回执可比）。
@@ -220,9 +213,7 @@ func TestPlanCollectSettle(t *testing.T) {
 		})
 		second, err := h.planner.Plan(snap, testEnv(1, "req-settle-b", 1),
 			Command{Kind: CmdCollectSettle, CollectSettle: CollectSettleParams{SessionID: "sess-1", SettleAtMS: 9000}}, 9000)
-		if err != nil {
-			t.Fatalf("重复结算: %v", err)
-		}
+		require.NoError(t, err, "重复结算")
 		if len(second.ObjectsUpsert) != 0 || len(second.CollectSettle) != 0 {
 			t.Fatalf("重复结算不得改状态: %+v", second)
 		}

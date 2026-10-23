@@ -10,6 +10,7 @@ import (
 	"game_study/internal/scenemap/gameplay"
 	"game_study/internal/scenemap/grid"
 	"game_study/internal/scenemap/mgr"
+	"github.com/stretchr/testify/require"
 )
 
 // ============================================================================
@@ -188,9 +189,7 @@ func readDungeon(t *testing.T, h *Harness, d *gameplay.Dungeon) dungeonSnap {
 	v, err := h.Read(func(s *mgr.State) any {
 		return dungeonSnap{wave: d.CurrentWave, killed: d.Killed, cleared: d.Cleared, npes: len(s.NPES)}
 	})
-	if err != nil {
-		t.Fatalf("读副本状态: %v", err)
-	}
+	require.NoError(t, err, "读副本状态")
 	return v.(dungeonSnap)
 }
 
