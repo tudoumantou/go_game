@@ -238,6 +238,20 @@ type CacheFailureAware interface {
 	CacheFailureReply(msgID uint32) (respID uint32, body []byte, ok bool)
 }
 
+// StatelessAware 可选接口：声明某协议**不修改玩家状态**。
+//
+// 缓存权威模式下，玩家 Actor 默认对每条消息执行「clone State → 业务 →
+// JSON 比对 → 有差异才 CAS」。声明为无状态后，该消息直接在 receive 路径
+// 分发，跳过 clone 与两次 Marshal——即使 diff 为空不产生 Redis 写，
+// 那份序列化开销也是白付的（State 含背包/属性/各模块 Ext，clone 不便宜）。
+//
+// 正确性责任：实现方保证处理器不调用 State 的任何写方法。误声明不会
+// 造成数据错乱（状态照常随快照提交），只是那份改动要到下一次有状态消息
+// 才落库——所以这是一个性能声明，不是一致性开关。
+type StatelessAware interface {
+	IsStateless(msgID uint32) bool
+}
+
 // Registry 模块注册表（含 msgID 路由索引）。
 //
 // 设计：modules 切片保序（Init/Login 按 17.1 的顺序），route map 提供
@@ -307,6 +321,22 @@ func (r *Registry) CacheFailureReply(msgID uint32) (uint32, []byte, bool) {
 		return 0, nil, false
 	}
 	return ca.CacheFailureReply(msgID)
+}
+
+// IsStateless 查询某协议是否声明为无状态（未注册或未实现 StatelessAware 时返回 false）。
+//
+// 玩家 Actor 据此选择分发路径：true → 直接 receive（跳过快照流程），
+// false → receiveCached（clone/CAS）。保守默认 false，误判只会多付开销，不会丢数据。
+func (r *Registry) IsStateless(msgID uint32) bool {
+	m, ok := r.route[msgID]
+	if !ok {
+		return false
+	}
+	sa, ok := m.(StatelessAware)
+	if !ok {
+		return false
+	}
+	return sa.IsStateless(msgID)
 }
 
 // DispatchEvent 把事件分发给所有 EventAware 模块。

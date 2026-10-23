@@ -89,7 +89,12 @@ type Querier interface {
 }
 
 // Module 榜单模块。
+//
+// 嵌入 *module.Plain：本模块零状态（不读写玩家快照、不落库），只需声明
+// 协议与处理器。Plain 同时向框架声明「这些消息无状态」——玩家 Actor 因此
+// 跳过 clone State + 两次 JSON Marshal 的快照流程，纯读请求不再为 CAS 付开销。
 type Module struct {
+	*module.Plain
 	// q 中心服查询代理；nil 表示未配置中心服（单机环境），全部查询回 6702
 	q      Querier
 	logger *log.Logger
@@ -97,31 +102,13 @@ type Module struct {
 
 // New 创建模块；q 为 nil 时所有查询回「暂不可用」（未配置中心服的单机环境）。
 func New(q Querier, logger *log.Logger) *Module {
-	return &Module{q: q, logger: logger}
+	m := &Module{q: q, logger: logger}
+	m.Plain = module.NewPlain("rank", module.PlainLogger(logger))
+	m.Handle(msgIDListReq, m.onList)
+	return m
 }
 
-// 以下方法用匿名接收者 (*Module)：它们不触碰 m 的任何字段，
-// 匿名接收者是 Go 惯用写法——向读者声明「与实例状态无关」，
-// 同时避免 m 声明了不用的编译告警之外的噪音。
-func (*Module) Name() string { return "rank" }
-
-func (*Module) MsgIDs() []uint32 { return []uint32{msgIDListReq} }
-
-func (*Module) Init(*module.Context) error { return nil }
-
-// 榜单是只读查询，不持有玩家状态，也没有需要落库的聚合数据。
-func (*Module) OnSave(context.Context) error   { return nil }
-func (*Module) OnLogin(*module.Context) error  { return nil }
-func (*Module) OnLogout(*module.Context) error { return nil }
-
-func (m *Module) OnMessage(ctx *module.Context, msgID uint32, body []byte) error {
-	if msgID != msgIDListReq {
-		return fmt.Errorf("rank: unexpected msg %d", msgID)
-	}
-	return m.onList(ctx, body)
-}
-
-func (m *Module) onList(ctx *module.Context, body []byte) error {
+func (m *Module) onList(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.RankListReq
 	if err := proto.Unmarshal(body, &req); err != nil {
 		return fmt.Errorf("decode RankListReq: %w", err)
@@ -189,9 +176,5 @@ func toProto(entries []Entry) []*gamev1.RankEntry {
 
 // reply 序列化并回包（marshal 失败用 %w 包装，保留错误链）。
 func (m *Module) reply(ctx *module.Context, resp *gamev1.RankListResp) error {
-	raw, err := proto.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("marshal RankListResp: %w", err)
-	}
-	return ctx.Reply(msgIDListResp, raw)
+	return m.Plain.Reply(ctx, msgIDListResp, resp)
 }

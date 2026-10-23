@@ -238,23 +238,44 @@ func (a *Actor) State() *State { return a.state }
 
 // Receive 实现 actor.Actor。
 //
-// 分发逻辑：缓存权威模式下，纯下行消息（Push/ScenePush/心跳）不参与快照
-// 提交，直接进 receive；其余消息进 receiveCached 的「克隆→业务→CAS」流程。
+// 分发逻辑：缓存权威模式下有三条路径——
+//   - 纯下行消息（Push/ScenePush/心跳）：不改状态，直接进 receive；
+//   - 无状态模块的协议（见 module.StatelessAware）：同样直接进 receive，
+//     跳过 clone/CAS（榜单查询、聊天转发这类不碰 State 的请求占相当比例，
+//     而 clone 一份含背包/属性/Ext 的 State 并不便宜）；
+//   - 其余消息进 receiveCached 的「克隆→业务→CAS」流程。
 //
 // Go 知识点：Receive 由 actor.System 的分片 goroutine 调用，同一 Actor 的
 // 消息在 mailbox channel 上 FIFO 串行——这是「业务无锁」的前提；类型
 // switch 的 default 分支兜住未知消息，避免新增消息类型时静默丢包。
 func (a *Actor) Receive(ctx *actor.Context) {
 	if a.repo.CacheEnabled() {
-		// 纯下行消息不参与「克隆快照 → 提交」流程：它们只读状态、不改状态。
-		switch ctx.Message().(type) {
+		switch msg := ctx.Message().(type) {
 		case *PushMsg, *ScenePush, *sceneHeartbeatTick:
+			// 纯下行消息不参与「克隆快照 → 提交」流程：它们只读状态、不改状态。
+		case *PacketMsg:
+			if a.canBypassCache(msg.MsgID) {
+				a.receive(ctx)
+				return
+			}
+			a.receiveCached(ctx)
+			return
 		default:
 			a.receiveCached(ctx)
 			return
 		}
 	}
 	a.receive(ctx)
+}
+
+// canBypassCache 判断一条协议能否跳过缓存快照流程。
+//
+// 三个前提缺一不可：模块声明无状态（不写 State）；状态已加载（否则处理器
+// 读到空背包）；没有未决提交或待重载（cachePending / cacheReload 必须走
+// 完整流程才能恢复一致的版本栅栏）。
+func (a *Actor) canBypassCache(msgID uint32) bool {
+	return a.loaded && a.cachePending == nil && !a.cacheReload &&
+		a.registry != nil && a.registry.IsStateless(msgID)
 }
 
 // receive 非缓存路径的消息分发（直连 MySQL 落库形态）。
