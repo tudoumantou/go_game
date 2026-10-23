@@ -15,7 +15,6 @@ package activity
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -24,9 +23,7 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
-	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -75,28 +72,11 @@ type Data struct {
 	Records map[int32]Record `json:"records"`
 }
 
-// init 注册持久化：activity_record 主键为 (player_id)。
-func init() {
-	writebehind.RegisterFlat[model.ActivityRecord](stateKey, model.ActivityRecordFlat, validate)
-}
-
-// validate 落库前校验：进度非负、活动 ID 合法。
-func validate(row *model.ActivityRecord) error {
-	d, err := decode(row)
-	if err != nil {
-		return err
-	}
-	for id, rec := range d.Records {
-		if id <= 0 || rec.Progress < 0 {
-			return fmt.Errorf("invalid activity %d progress %d", id, rec.Progress)
-		}
-	}
-	return nil
-}
-
 // Module 活动模块。
 type Module struct {
-	*module.Thin
+	// Stateful 内嵌 Thin：消息注册与生命周期仍由 Thin 提供，
+	// 多出来的是「Data ↔ Ext ↔ 表行」的编解码与标脏。
+	*module.Stateful[Data]
 
 	logger   *log.Logger
 	producer ProgressProducer // 全服里程碑贡献上报；nil 表示不上报（单机/测试）
@@ -120,7 +100,7 @@ func New(logger *log.Logger, producer ProgressProducer) *Module {
 	if producer != nil {
 		m.producer = producer
 	}
-	m.Thin = module.NewThin(stateKey,
+	m.Stateful = module.NewStateful(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinLogin(m.onLogin),
 		module.ThinOnEvent(m.onEvent),
@@ -137,28 +117,26 @@ func New(logger *log.Logger, producer ProgressProducer) *Module {
 // 状态损坏时吞错继续登录：活动进度丢一次可以原谅，
 // 把玩家拦在登录外不能。
 func (m *Module) onLogin(ctx *module.Context) error {
-	d, err := load(ctx.State)
-	if err != nil {
-		return nil // 状态损坏不阻断登录，后续消息会再次报错
-	}
-	changed := false
-	for _, cfg := range gamedata.ActivityCfgList() {
-		if cfg.Col2 != "login" {
-			continue
+	// 一次 Mutate 走完「读状态 → 逐活动推进」；没有任何活动推进时不产生提交。
+	if err := m.Mutate(ctx, func(d *Data) bool {
+		changed := false
+		for _, cfg := range gamedata.ActivityCfgList() {
+			if cfg.Col2 != "login" {
+				continue
+			}
+			id := int32(cfg.Id)
+			rec := d.Records[id]
+			if rec.Progress >= int32(cfg.Col3) {
+				continue // 已达目标，登录不再推进
+			}
+			rec.Progress++
+			d.Records[id] = rec
+			changed = true
 		}
-		id := int32(cfg.Id)
-		rec := d.Records[id]
-		if rec.Progress >= int32(cfg.Col3) {
-			continue // 已达目标，登录不再推进
-		}
-		rec.Progress++
-		d.Records[id] = rec
-		changed = true
-	}
-	if changed {
-		if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-			m.warn("activity login progress failed", ctx, err)
-		}
+		return changed
+	}); err != nil {
+		// 状态损坏不阻断登录：后续消息会再次报错，把玩家拦在登录外不能。
+		m.warn("activity login progress failed", ctx, err)
 	}
 	return nil
 }
@@ -169,39 +147,35 @@ func (m *Module) onLogin(ctx *module.Context) error {
 //  1. 进度到目标后仍然接受事件（只是截断），不改变任何领取态；
 //  2. server_progress 类活动要额外收集上报，攒批后统一发 Kafka。
 func (m *Module) onEvent(ctx *module.Context, evt module.Event) {
-	d, err := load(ctx.State)
-	if err != nil {
-		return
-	}
-	changed := false
 	var reports [][2]int32 // 全服贡献上报：(activity_id, progress)
-	for _, cfg := range gamedata.ActivityCfgList() {
-		if cfg.Col2 != evt.Type {
-			continue
+	if err := m.Mutate(ctx, func(d *Data) bool {
+		changed := false
+		for _, cfg := range gamedata.ActivityCfgList() {
+			if cfg.Col2 != evt.Type {
+				continue
+			}
+			id := int32(cfg.Id)
+			rec := d.Records[id]
+			next := rec.Progress + int32(evt.Delta)
+			if next > int32(cfg.Col3) {
+				next = int32(cfg.Col3)
+			}
+			if next == rec.Progress {
+				continue // 已封顶，无变化
+			}
+			rec.Progress = next
+			d.Records[id] = rec
+			changed = true
+			if cfg.Col2 == "server_progress" {
+				// 全服活动：进度变化后上报新值（绝对值，中心服按差值累加）。
+				reports = append(reports, [2]int32{id, next})
+			}
 		}
-		id := int32(cfg.Id)
-		rec := d.Records[id]
-		next := rec.Progress + int32(evt.Delta)
-		if next > int32(cfg.Col3) {
-			next = int32(cfg.Col3)
-		}
-		if next == rec.Progress {
-			continue // 已封顶，无变化
-		}
-		rec.Progress = next
-		d.Records[id] = rec
-		changed = true
-		if cfg.Col2 == "server_progress" {
-			// 全服活动：进度变化后上报新值（绝对值，中心服按差值累加）。
-			reports = append(reports, [2]int32{id, next})
-		}
+		return changed
+	}); err != nil {
+		m.warn("activity progress update failed", ctx, err)
 	}
-	if changed {
-		if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-			m.warn("activity progress update failed", ctx, err)
-		}
-	}
-	// 上报在 save 之后：本地进度先落，再尝试广播——
+	// 上报在提交之后：本地进度先落，再尝试广播——
 	// 广播失败不影响本地正确性（见 reportProgress）。
 	for _, r := range reports {
 		m.reportProgress(ctx, r[0], r[1])
@@ -258,26 +232,27 @@ func instanceIDFor(activityID int32, now int64) string {
 // 不需要服务端推「活动结束」通知——少一种推送，少一类时序问题。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	resp := &gamev1.ActivityListResp{Code: codeOK}
-	d, err := load(ctx.State)
-	if err != nil {
+	now := time.Now().Unix()
+	if err := m.Read(ctx, func(d *Data) {
+		for _, cfg := range gamedata.ActivityCfgList() {
+			// 下发的窗口已过期就不展示：客户端仍会定时刷新。
+			if !openNow(int32(cfg.Id), now) {
+				continue
+			}
+			entry := &gamev1.ActivityEntry{
+				ActivityId: int32(cfg.Id),
+				Name:       cfg.Col1,
+				Type:       cfg.Col2,
+				Target:     int32(cfg.Col3),
+			}
+			if rec, ok := d.Records[int32(cfg.Id)]; ok {
+				entry.Progress = rec.Progress
+				entry.Claimed = rec.RewardMask&1 != 0
+			}
+			resp.Activities = append(resp.Activities, entry)
+		}
+	}); err != nil {
 		return err
-	}
-	for _, cfg := range gamedata.ActivityCfgList() {
-		// 下发的窗口已过期就不展示：客户端仍会定时刷新，不需要服务端推「活动结束」。
-		if !openNow(int32(cfg.Id), time.Now().Unix()) {
-			continue
-		}
-		entry := &gamev1.ActivityEntry{
-			ActivityId: int32(cfg.Id),
-			Name:       cfg.Col1,
-			Type:       cfg.Col2,
-			Target:     int32(cfg.Col3),
-		}
-		if rec, ok := d.Records[int32(cfg.Id)]; ok {
-			entry.Progress = rec.Progress
-			entry.Claimed = rec.RewardMask&1 != 0
-		}
-		resp.Activities = append(resp.Activities, entry)
 	}
 	return reply(ctx, msgIDListResp, resp)
 }
@@ -296,33 +271,41 @@ func (m *Module) onClaim(ctx *module.Context, req *gamev1.ActivityClaimReq, resp
 		resp.Code = codeNotOpen
 		return nil
 	}
-	d, err := load(ctx.State)
+
+	var (
+		applied bool
+		changes []module.BagChange
+	)
+	err := m.Mutate(ctx, func(d *Data) bool {
+		rec := d.Records[req.ActivityId]
+		if rec.Progress < int32(cfg.Col3) {
+			resp.Code = codeNotFinished
+			return false
+		}
+		// 位图判重：bit0=已领。活动天生多档位，枚举会爆炸。
+		if rec.RewardMask&1 != 0 {
+			resp.Code = codeAlreadyClaimed
+			return false
+		}
+		// 发奖：target * 20 钻石；满包/超限时不发也不置领取位。
+		gain := int64(cfg.Col3) * 20
+		c, grantErr := module.Grant(ctx.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
+		if grantErr != nil {
+			resp.Code = codeBagFull
+			return false
+		}
+		changes = c
+		rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
+		d.Records[req.ActivityId] = rec
+		applied = true
+		return true
+	})
 	if err != nil {
 		return err
 	}
-	rec := d.Records[req.ActivityId]
-	if rec.Progress < int32(cfg.Col3) {
-		resp.Code = codeNotFinished
+	if !applied {
+		// 闭包里已设好拒绝码，不能再被下面的成功码覆盖。
 		return nil
-	}
-	// 位图判重：bit0=已领。比 statusClaimed 多一档的写法（quest 用枚举）
-	// 是因为活动天生多档位，枚举会爆炸。
-	if rec.RewardMask&1 != 0 {
-		resp.Code = codeAlreadyClaimed
-		return nil
-	}
-
-	// 发奖：target * 20 钻石；满包/超限时不发也不置领取位（Grant 失败不改状态）
-	gain := int64(cfg.Col3) * 20
-	changes, grantErr := module.Grant(ctx.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
-	if grantErr != nil {
-		resp.Code = codeBagFull
-		return nil
-	}
-	rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
-	d.Records[req.ActivityId] = rec
-	if err := save(ctx.State, ctx.State.PlayerID(), d); err != nil {
-		return err
 	}
 
 	resp.Code = codeOK
@@ -330,44 +313,6 @@ func (m *Module) onClaim(ctx *module.Context, req *gamev1.ActivityClaimReq, resp
 		resp.Rewards = raw
 	}
 	return nil
-}
-
-// load 读取活动状态；从未参与返回空结构。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.ActivityRecord](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{Records: map[int32]Record{}}, nil
-	}
-	return decode(row)
-}
-
-// decode 把表行 JSON 解成业务视图；保证 map 非 nil。
-func decode(row *model.ActivityRecord) (*Data, error) {
-	d := &Data{Records: map[int32]Record{}}
-	if row.Records != "" {
-		if err := json.Unmarshal([]byte(row.Records), &d.Records); err != nil {
-			return nil, fmt.Errorf("decode activity state: %w", err)
-		}
-	}
-	if d.Records == nil {
-		d.Records = map[int32]Record{}
-	}
-	return d, nil
-}
-
-// save 把进度与位图编码回 Ext 槽位；落库由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	raw, err := json.Marshal(d.Records)
-	if err != nil {
-		return fmt.Errorf("encode activity state: %w", err)
-	}
-	return writebehind.SaveExt(state, stateKey, &model.ActivityRecord{
-		PlayerId: playerID,
-		Records:  string(raw),
-	})
 }
 
 // reply 序列化 proto 并经 ctx.Reply 下发。

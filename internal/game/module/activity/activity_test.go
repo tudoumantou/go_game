@@ -76,11 +76,8 @@ func TestClaimOnce(t *testing.T) {
 	st := newFakeState(1)
 	ctx := newCtx(st)
 	m := New(nil, nil)
-	if err := save(st, st.PlayerID(), &Data{Records: map[int32]Record{
-		int32(cfg.Id): {Progress: int32(cfg.Col3)},
-	}}); err != nil {
-		t.Fatal(err)
-	}
+	seed := &Data{Records: map[int32]Record{int32(cfg.Id): {Progress: int32(cfg.Col3)}}}
+	require.NoError(t, m.Mutate(ctx, func(d *Data) bool { *d = *seed; return true }))
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
 	for i := 0; i < 2; i++ {
 		err := m.OnMessage(ctx, msgIDClaimReq, body)
@@ -88,7 +85,7 @@ func TestClaimOnce(t *testing.T) {
 	}
 	want := int64(cfg.Col3) * 20
 	require.EqualValues(t, want, st.GetItemCount(itemDiamond))
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	require.NotEqualValues(t, 0, d.Records[int32(cfg.Id)].RewardMask&1, "claim fact not persisted in snapshot")
 }
 
@@ -114,7 +111,7 @@ func TestEventClampsProgress(t *testing.T) {
 	ctx := newCtx(st)
 	m := New(nil, nil)
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3) + 100})
-	d, _ := load(st)
+	d, _ := m.State(ctx)
 	got := d.Records[int32(cfg.Id)].Progress
 	require.EqualValues(t, int32(cfg.Col3), got, fmt.Sprintf("progress not clamped: %d", got))
 }
