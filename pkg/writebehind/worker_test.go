@@ -105,3 +105,28 @@ func TestRunStaggersPartitionsAndDrains(t *testing.T) {
 	err = mock.ExpectationsWereMet()
 	require.NoError(t, err)
 }
+
+// TestIsShutdownCancel 停机取消与真故障的边界。
+//
+// 这条规则决定「日志里会不会出现假告警」：停机时 flush 被打断必须静默，
+// 而超时、或者进程还在跑却拿到取消，都是真问题，不能被吞掉。
+func TestIsShutdownCancel(t *testing.T) {
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	liveCtx := context.Background()
+
+	require.True(t, isShutdownCancel(canceledCtx, context.Canceled),
+		"父 ctx 已取消 + Canceled = 正常停机")
+	require.True(t, isShutdownCancel(canceledCtx, fmt.Errorf("partition 5: %w", context.Canceled)),
+		"包装过的 Canceled 也要认（Run 里是 partition %d: %w 包装）")
+
+	require.False(t, isShutdownCancel(liveCtx, context.Canceled),
+		"父 ctx 还活着却收到 Canceled，说明有人在内部误取消，必须上报")
+	require.False(t, isShutdownCancel(canceledCtx, context.DeadlineExceeded),
+		"超时是真故障，停机时也要报")
+	require.False(t, isShutdownCancel(liveCtx, context.DeadlineExceeded))
+	require.False(t, isShutdownCancel(canceledCtx, errors.New("connection refused")),
+		"停机途中遇到 DB 故障同样要报")
+	require.False(t, isShutdownCancel(canceledCtx, nil))
+}

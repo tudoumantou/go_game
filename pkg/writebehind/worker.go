@@ -176,12 +176,30 @@ func (w *Worker) Run(ctx context.Context, interval time.Duration, onError func(e
 				runCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 				_, err := w.FlushBatch(runCtx, part)
 				cancel()
-				if err != nil && onError != nil {
+				if err == nil {
+					continue
+				}
+				// 停机取消不是故障：flush 用的是派生 ctx，父 ctx 取消后
+				// 正在进行的 Redis/SQL 调用会返回 context.Canceled。
+				// 这是正常退出路径，不该触发告警/重试（真故障是超时的
+				// DeadlineExceeded，或父 ctx 仍存活时的其他错误）。
+				if isShutdownCancel(ctx, err) {
+					return nil
+				}
+				if onError != nil {
 					onError(fmt.Errorf("partition %d: %w", part, err))
 				}
 			}
 		}
 	}
+}
+
+// isShutdownCancel 判断错误是否只是「停机时被打断」。
+//
+// 只认「父 ctx 已取消 + 错误是 context.Canceled」：超时（DeadlineExceeded）
+// 与父 ctx 仍存活时的取消都属于真故障，必须照常上报。
+func isShutdownCancel(ctx context.Context, err error) bool {
+	return ctx.Err() != nil && errors.Is(err, context.Canceled)
 }
 
 // Persist 在同一个 SQL 事务中保存多个玩家。版本行是数据库最终栅栏，
