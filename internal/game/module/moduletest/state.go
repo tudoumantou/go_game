@@ -151,10 +151,16 @@ func NewRecorder() *Recorder {
 }
 
 // Send 实现 module.Sender。
+//
+// 这里用 make+copy 而不是 append([]byte(nil), body...)：proto 空消息
+// （例如只有 code=0 的响应）序列化后是 0 字节，append 到 nil 切片会返回 nil，
+// 把「回了一个空包」变成「没回包」——调用方据此判空就会误报。
 func (r *Recorder) Send(msgID uint32, body []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.last[msgID] = append([]byte(nil), body...)
+	buf := make([]byte, len(body))
+	copy(buf, body)
+	r.last[msgID] = buf
 	r.count[msgID]++
 	return nil
 }
