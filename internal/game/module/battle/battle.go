@@ -620,15 +620,3 @@ func (m *Module) SetBattleTimeout(d time.Duration) {
 		m.timeout = d
 	}
 }
-
-// reply 统一序列化并回包。
-//
-// 约定：可预期失败一律以业务码（msg.Code）表达；走到 error 返回的只有
-// proto.Marshal 失败或 ctx.Reply 失败这类真故障，由上层记日志。
-func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
-}
