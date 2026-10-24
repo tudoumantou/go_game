@@ -37,6 +37,12 @@ import (
 // 改动前先确认 Demo 客户端已同步。
 const msgIDLevelInfoNotify uint32 = 2011
 
+// SetKickHook 注入跨节点顶号回调（组装层在 Spawn 前调用）。
+//
+// 传 nil 表示「不支持跨节点顶号」：收到 KickMsg 时只记日志不处理，
+// 用于单机/测试环境——那里不会有别的节点来抢同一个玩家。
+func (a *Actor) SetKickHook(fn func(playerID int64, fromNode string)) { a.onKick = fn }
+
 // Message 类型常量。
 //
 // 字符串即消息的类型标识：actor.System 不做反射分发，这些常量只用于
@@ -63,6 +69,27 @@ type UnbindMsg struct {
 	// 「被顶号旧连接的迟到解绑」，直接忽略（见 onUnbind）。
 	SessionID uint64
 }
+
+// KickMsg 跨节点顶号通知：让持有该玩家的旧节点踢掉本地会话。
+//
+// 为什么用 Actor 消息而不是节点级 RPC：踢人是「这个玩家的会话」的事，
+// 玩家 Actor 是它的唯一权威（数据所有权）。节点级广播要先查 sid 表，
+// 还会绕过 Actor 的串行化——那条路径上的竞态（正在处理业务包时被踢）
+// 得用锁重新解决一遍。
+//
+// 不带 Done channel：远程投递是单向的，发起方（新节点）不等待确认。
+// 旧节点即使没收到也不影响正确性——presence 已被强制覆盖，旧 Actor
+// 的后续提交会被围栏令牌（epoch）挡掉，最终由 UNBIND 正常下线。
+type KickMsg struct {
+	// FromNode 发起顶号的节点（日志/排查用）
+	FromNode string
+}
+
+// RemoteTypeURL 实现 actor.RemoteMessage。
+func (KickMsg) RemoteTypeURL() string { return remoteTypeURLKickMsg }
+
+// MarshalRemote 实现 actor.RemoteMessage。
+func (m KickMsg) MarshalRemote() ([]byte, error) { return json.Marshal(m) }
 
 // PacketMsg 客户端消息。
 // PacketMsg 客户端上行数据包（经网关透传，含业务 protobuf）。
@@ -180,7 +207,12 @@ type Actor struct {
 	heartbeatEvery time.Duration // 0 用默认；测试注入短间隔
 	// sessionID 当前权威会话（0 = 不在线）；UNBIND 身份校验与下行都读它。
 	sessionID uint64
-	online    bool
+
+	// onKick 跨节点顶号回调（由组装层注入：关闭该玩家在本节点的网关会话）。
+	// 不在这里直接清 sessionID：等网关断连后的 UNBIND 走标准下线流程，
+	// 否则会跳过模块 OnLogout 的落库时机。
+	onKick func(playerID int64, fromNode string)
+	online bool
 	// loaded 预加载已完成；false 时丢弃业务包（onPacket）——
 	// 用空状态处理业务会写坏数据。
 	loaded      bool
@@ -336,6 +368,11 @@ func (a *Actor) receive(ctx *actor.Context) {
 		a.onGrantItems(ctx, msg)
 	case *PushMsg:
 		_ = a.send(msg.MsgID, msg.Body)
+	case KickMsg:
+		if a.onKick != nil {
+			a.logger.Info("kicked by remote node", "from", msg.FromNode)
+			a.onKick(a.playerID, msg.FromNode)
+		}
 	case *SceneResult:
 		a.onSceneResult(msg)
 	case *ScenePush:

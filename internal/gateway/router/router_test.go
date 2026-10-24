@@ -11,8 +11,12 @@ package router
 
 import (
 	"bytes"
+	"encoding/binary"
+	"fmt"
+	"io"
 	"net"
 	"testing"
+	"time"
 
 	"game_study/internal/common/constant"
 	"game_study/internal/gateway/conn"
@@ -20,7 +24,9 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/crypto"
 	"game_study/pkg/log"
+	gatev1 "game_study/pkg/pb/gate/v1"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // nopHandler 满足 conn.Handler：本测试只关心「连接是否被关」，不关心回调内容。
@@ -148,4 +154,109 @@ func TestDropsPacketFromUnknownConn(t *testing.T) {
 		h.OnPacket(c, codec.Packet{MsgID: 1001})
 	})
 	require.True(t, c.IsClosed(), "未知会话的包必须断连")
+}
+
+// ============================================================================
+// 登出
+// ============================================================================
+
+// readPacket 从客户端侧读一个完整帧（net.Pipe 的 Write 会阻塞到对端读，
+// 所以调用 OnPacket 必须放 goroutine，否则 Send 与 Read 互等死锁）。
+func (r *rig) readPacket(t *testing.T) codec.Packet {
+	t.Helper()
+	_ = r.client.SetReadDeadline(time.Now().Add(3 * time.Second))
+
+	var lenBuf [2]byte
+	_, err := io.ReadFull(r.client, lenBuf[:])
+	require.NoError(t, err, "读包长度失败")
+	n := binary.BigEndian.Uint16(lenBuf[:])
+
+	// ReadLength 的 length 不含自身：后续 n 字节就是 DecodePacket 的入参
+	// （msgID|seq|body），不能再把 2 字节长度拼回去，否则整体错位 2 字节。
+	rest := make([]byte, n)
+	_, err = io.ReadFull(r.client, rest)
+	require.NoError(t, err, "读包体失败")
+
+	pkt, err := codec.DecodePacket(rest)
+	require.NoError(t, err)
+	return pkt
+}
+
+// readLogoutResp 解密并解析登出响应。
+func (r *rig) readLogoutResp(t *testing.T) *gatev1.LogoutResp {
+	t.Helper()
+	pkt := r.readPacket(t)
+	msgID, _, plain, err := r.clientCipher.Decrypt(pkt.Body)
+	require.NoError(t, err, "登出响应必须是密文（已鉴权连接）")
+	require.EqualValues(t, constant.MsgIDLogoutResp, msgID)
+
+	resp := &gatev1.LogoutResp{}
+	require.NoError(t, proto.Unmarshal(plain, resp))
+	return resp
+}
+
+// TestLogoutRevokesTokenAndCloses 登出：token 被作废、回 code=0、连接断开。
+func TestLogoutRevokesTokenAndCloses(t *testing.T) {
+	r := newRig(t, true)
+
+	var revoked []string
+	r.h.SetRevoker(func(token string) error {
+		revoked = append(revoked, token)
+		return nil
+	})
+
+	go r.h.OnPacket(r.c, encryptedPacket(t, r.clientCipher, constant.MsgIDLogoutReq))
+	resp := r.readLogoutResp(t)
+
+	require.EqualValues(t, 0, resp.Code)
+	require.Equal(t, []string{"tok"}, revoked, "必须按会话里的 token 作废，且只作废一次")
+	require.Eventually(t, r.c.IsClosed, time.Second, 10*time.Millisecond,
+		"登出后必须断连（断连才会触发游戏服下线落库）")
+}
+
+// TestLogoutReportsRevokeFailure 作废失败回 1005，但仍断连。
+//
+// 留着连接更糟：用户以为已登出，却还能继续发业务包。
+func TestLogoutReportsRevokeFailure(t *testing.T) {
+	r := newRig(t, true)
+	r.h.SetRevoker(func(string) error { return fmt.Errorf("redis down") })
+
+	go r.h.OnPacket(r.c, encryptedPacket(t, r.clientCipher, constant.MsgIDLogoutReq))
+	resp := r.readLogoutResp(t)
+
+	require.EqualValues(t, 1005, resp.Code, "作废失败必须让客户端知道并重试")
+	require.Eventually(t, r.c.IsClosed, time.Second, 10*time.Millisecond)
+}
+
+// TestLogoutWithoutRevoker 未注入 revoker（无 Redis 环境）：不 panic，仍断连。
+func TestLogoutWithoutRevoker(t *testing.T) {
+	r := newRig(t, true)
+
+	go r.h.OnPacket(r.c, encryptedPacket(t, r.clientCipher, constant.MsgIDLogoutReq))
+	resp := r.readLogoutResp(t)
+
+	require.EqualValues(t, 0, resp.Code)
+	require.Eventually(t, r.c.IsClosed, time.Second, 10*time.Millisecond)
+}
+
+// TestLogoutBeforeAuthRejected 未鉴权连接发登出：被 pre-auth 闸门断连。
+//
+// 没有 token 可作废，登出无意义；这条锁的是「未鉴权不能触发本地 handler」。
+func TestLogoutBeforeAuthRejected(t *testing.T) {
+	r := newRig(t, false)
+
+	called := false
+	r.h.SetRevoker(func(string) error { called = true; return nil })
+
+	r.h.OnPacket(r.c, codec.Packet{MsgID: constant.MsgIDLogoutReq})
+	require.True(t, r.c.IsClosed())
+	require.False(t, called, "未鉴权时不能调用 revoker")
+}
+
+// encryptedPacket 用客户端 cipher 构造一个加密包（内外 msgID 一致）。
+func encryptedPacket(t *testing.T, c *crypto.SessionCipher, msgID uint16) codec.Packet {
+	t.Helper()
+	ct, _, err := c.Encrypt(msgID, nil)
+	require.NoError(t, err)
+	return codec.Packet{MsgID: msgID, Body: ct}
 }

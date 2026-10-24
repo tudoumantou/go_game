@@ -44,6 +44,7 @@ type Handler struct {
 	msgRegistry *codec.MessageRegistry
 	logger      *log.Logger
 	validator   TokenValidator
+	revoker     TokenRevoker
 	onAuthed    func(sess *session.Session)
 	forward     PacketForwarder
 	onClosed    func(sess *session.Session)
@@ -65,6 +66,17 @@ func (h *Handler) SetOnClosed(f func(sess *session.Session)) { h.onClosed = f }
 // TokenValidator 校验 token 并返回 player_id。
 // 同步阻塞调用，实现方（Redis 查询）应自带超时；返回错误即鉴权失败。
 type TokenValidator func(token string) (int64, error)
+
+// TokenRevoker 作废 token（登出时调用）。
+//
+// 与 Validator 分开而不是合成一个接口：两者的失败语义完全不同——
+// 校验失败只是拒绝登录，作废失败意味着「用户以为登出了，token 其实还有效」，
+// 必须让客户端知道并重试。合成接口会让调用方误以为两者可以同等对待。
+type TokenRevoker func(token string) error
+
+// SetRevoker 注入 token 作废能力（组装期调用）。
+// 未注入时登出仍会断连但不作废 token——只在无 Redis 的单测环境可接受。
+func (h *Handler) SetRevoker(fn TokenRevoker) { h.revoker = fn }
 
 // NewHandler 创建路由处理器。
 // 注册表（消息工厂 + handler）在构造期一次性建好，运行期只读——
@@ -93,6 +105,8 @@ func (h *Handler) registerMessages() {
 	h.msgRegistry.Register(constant.MsgIDKickNotify, func() proto.Message { return &gatev1.KickNotify{} })
 	h.msgRegistry.Register(constant.MsgIDHandshakeReq, func() proto.Message { return &gatev1.HandshakeReq{} })
 	h.msgRegistry.Register(constant.MsgIDHandshakeResp, func() proto.Message { return &gatev1.HandshakeResp{} })
+	h.msgRegistry.Register(constant.MsgIDLogoutReq, func() proto.Message { return &gatev1.LogoutReq{} })
+	h.msgRegistry.Register(constant.MsgIDLogoutResp, func() proto.Message { return &gatev1.LogoutResp{} })
 }
 
 // registerHandlers 登记网关本地处理的消息（心跳/握手）。
@@ -100,6 +114,7 @@ func (h *Handler) registerMessages() {
 func (h *Handler) registerHandlers() {
 	h.registry.Register(constant.MsgIDHeartbeatReq, h.handleHeartbeat)
 	h.registry.Register(constant.MsgIDHandshakeReq, h.handleHandshakeReq)
+	h.registry.Register(constant.MsgIDLogoutReq, h.handleLogout)
 }
 
 // OnPacket 实现 conn.Handler。
@@ -329,6 +344,42 @@ func (h *Handler) handleHeartbeat(ctx context.Context, msg proto.Message) error 
 // 这是 token 鉴权入口：校验通过即置会话为 AUTHED，并触发 onAuthed
 // （server.bindToGame 绑定游戏服）。失败只回错误码不断连——客户端
 // 可能换 token 重试，连接成本已付，没有安全理由断开。
+// handleLogout 处理主动登出：作废 token → 回包 → 断连。
+//
+// 顺序不能变：先作废再回包再断连。
+//   - 先作废：回包代表「已登出」，若回包后作废失败，客户端会以为 token 已失效；
+//   - 回包后才断：conn.Send 是同步 raw.Write，返回即已交给内核；
+//     先断会导致客户端收不到 LogoutResp，只能靠读 EOF 猜结果。
+//
+// 不作废成功也要断连：token 还在是安全隐患，但把连接留着更糟
+// （用户会继续用一条「已登出」的连接发业务包）。回 code=1005 让客户端重试。
+func (h *Handler) handleLogout(ctx context.Context, _ proto.Message) error {
+	connID := ctx.Value(ctxKeyConnID{}).(int64)
+	sess := h.sessMgr.GetByConn(connID)
+	if sess == nil {
+		return fmt.Errorf("session not found")
+	}
+
+	code := int32(0)
+	if token := sess.Token(); token != "" && h.revoker != nil {
+		if err := h.revoker(token); err != nil {
+			h.logger.Warn("revoke token failed", "conn_id", connID, "err", err)
+			code = 1005 // 服务器繁忙：token 未能作废，客户端应重试登出
+		}
+	}
+
+	body, err := proto.Marshal(&gatev1.LogoutResp{Code: code})
+	if err != nil {
+		return err
+	}
+	if err := sess.Send(constant.MsgIDLogoutResp, body); err != nil {
+		h.logger.Warn("send logout resp failed", "conn_id", connID, "err", err)
+	}
+	// 断连触发 OnClose → 路由表清理 → 游戏服 OnUnbind → Actor 下线落库
+	_ = sess.Conn().Close(fmt.Errorf("client logout"))
+	return nil
+}
+
 func (h *Handler) handleHandshakeReq(ctx context.Context, msg proto.Message) error {
 	req := msg.(*gatev1.HandshakeReq)
 	connID := ctx.Value(ctxKeyConnID{}).(int64)

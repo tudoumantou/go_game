@@ -21,6 +21,7 @@ import (
 const (
 	remoteTypeURLPacketMsg = "game_study.player.PacketMsg"
 	remoteTypeURLPushMsg   = "game_study.player.PushMsg"
+	remoteTypeURLKickMsg   = "game_study.player.KickMsg"
 )
 
 func init() {
@@ -37,5 +38,12 @@ func init() {
 			return nil, err
 		}
 		return &m, nil
+	})
+	actor.RegisterRemote(remoteTypeURLKickMsg, func(b []byte) (any, error) {
+		var m KickMsg
+		if err := json.Unmarshal(b, &m); err != nil {
+			return nil, err
+		}
+		return m, nil
 	})
 }

@@ -60,6 +60,12 @@ const (
 	MsgIDFinished          uint16 = 13 // 双向：握手完成确认
 	MsgIDHandshakeReq      uint16 = 1001
 	MsgIDHandshakeResp     uint16 = 1002
+
+	// 连接管理段（100-199）：登出。
+	// 100/101 落在连接段而非登录段——登出作用在「已建立的网关连接」上，
+	// 但要作废的是登录服签发的 token，网关持有 Redis 客户端直接删。
+	MsgIDLogoutReq  uint16 = 100
+	MsgIDLogoutResp uint16 = 101
 )
 
 // IsClientMsgID 判断是否客户端消息号（内部号段不暴露）

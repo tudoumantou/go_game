@@ -330,6 +330,9 @@ func (s *Server) initPlayerManager() {
 	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, onDirty, s.sendToClient)
 	// 场景心跳与重连同步：反向依赖由组装层注入，player 包不认识 scene。
 	s.players.SetSceneLink(s.sceneMgr)
+	// 跨节点顶号：别的节点接管本玩家的在线归属时，会发 KickMsg 过来，
+	// Actor 收到后回调这里关闭本节点的网关会话（与同节点顶号同一条下线路径）。
+	s.players.SetKickHook(s.kickLocalPlayer)
 	// 跨节点（P0）：本节点标识 + 在线归属表。Resolve 据此在本地未命中时
 	// 返回远程 PID（Send 自动走中心服中转）；presence 未配置（无 Redis）
 	// 时退化为纯本地查询。

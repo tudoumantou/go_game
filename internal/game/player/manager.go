@@ -43,6 +43,8 @@ type Manager struct {
 	preloader *Preloader
 	onDirty   func(playerID int64)
 	sendFunc  SendFunc
+	// onKick 跨节点顶号回调（透传给每个 Actor；nil 表示不支持）
+	onKick    func(playerID int64, fromNode string)
 	sceneLink SceneLink // 场景心跳与重连同步（启动时注入一次，之后只读）
 
 	// 跨节点（P0）：nodeID 是本节点标识；presence 是在线归属表。
@@ -77,6 +79,11 @@ func (m *Manager) SetPreloader(p *Preloader) { m.preloader = p }
 // SetSceneLink 注入场景连接（启动时调用一次，须在首个玩家 Spawn 之前）。
 func (m *Manager) SetSceneLink(l SceneLink) { m.sceneLink = l }
 
+// SetKickHook 注入跨节点顶号回调（启动时调用一次，须在首个玩家 Spawn 之前）。
+//
+// 与 SetSceneLink 同一约束：Actor 创建时读取，之后再设置对新 Actor 无效。
+func (m *Manager) SetKickHook(fn func(playerID int64, fromNode string)) { m.onKick = fn }
+
 // SetNodeID 设置本节点标识（跨节点路由基准，启动时调用一次）。
 func (m *Manager) SetNodeID(id string) { m.nodeID = id }
 
@@ -88,6 +95,13 @@ func (m *Manager) SetPresence(p PresenceLookup) { m.presence = p }
 // 抽成函数是因为远程 PID 也要用同一个名字——本地 Spawn 的 key 与
 // 远程投递的 actorID 必须是同一个字符串，否则消息到不了目标 Actor。
 func playerPID(playerID int64) string { return fmt.Sprintf("player:%d", playerID) }
+
+// ActorID 玩家 Actor 的全局 ID。
+//
+// 跨节点路由用：PID{ID: ActorID(playerID), Node: 目标节点}。
+// 导出它是因为「给别的节点上的玩家发消息」是这个包之外的需求
+// （跨节点顶号、远程推送），而 ID 格式必须与 Spawn 时一致。
+func ActorID(playerID int64) string { return playerPID(playerID) }
 
 // GetOrSpawn 获取或创建玩家 Actor。
 //
@@ -122,6 +136,9 @@ func (m *Manager) GetOrSpawn(ctx context.Context, playerID int64) (*actor.PID, e
 
 	id := playerPID(playerID)
 	actor := NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty, m.sendFunc)
+	if m.onKick != nil {
+		actor.SetKickHook(m.onKick)
+	}
 	if m.preloader != nil {
 		actor.WithPreloader(m.preloader)
 	}

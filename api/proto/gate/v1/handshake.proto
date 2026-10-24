@@ -20,6 +20,17 @@ message HandshakeReq { // MsgID: 1001
   string platform      = 3; // 平台：ios/android/pc
 }
 
+// 登出：客户端主动退出。网关作废 token 后回包并断连，
+// 断连会触发游戏服 OnUnbind → Actor 下线落库。
+//
+// 为什么要服务端作废而不是客户端丢弃：token TTL 通常 24h，
+// 单纯关 socket 的话 token 仍然有效，被截获后可在 TTL 内重放登录。
+message LogoutReq {} // MsgID: 100
+
+message LogoutResp { // MsgID: 101
+  int32 code = 1; // 0 成功；非 0 见错误码表
+}
+
 message HandshakeResp { // MsgID: 1002
   int32  code               = 1; // 0 成功，非 0 见错误码表
   int64  account_id         = 2; // 鉴权通过后返回账号 ID（一个账号可有多角色）

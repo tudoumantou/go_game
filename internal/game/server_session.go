@@ -16,6 +16,7 @@ import (
 
 	"game_study/internal/game/player"
 	"game_study/internal/game/service"
+	"game_study/pkg/actor"
 	"game_study/pkg/codec"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -113,20 +114,101 @@ func (s *Server) OnBind(ctx context.Context, sessionID uint64, accountID, player
 	return s.bindPlayer(ctx, sessionID, role.Id)
 }
 
+// onlinePresence 是顶号抢占用到的在线归属能力（接口隔离）。
+//
+// 只声明这两个方法：抢占用 TrySetOnline（带冲突检测），接管用 SetOnline
+// （强制覆盖）。*cache.Presence 隐式实现，测试可注入 fake。
+type onlinePresence interface {
+	TrySetOnline(ctx context.Context, playerID int64, nodeID string, ttl time.Duration) (ok bool, owner string, err error)
+	SetOnline(ctx context.Context, playerID int64, nodeID string, ttl time.Duration) error
+}
+
+// claimOnline 占用玩家在线归属；被别的节点持有时先通知对方踢人再强制接管。
+//
+// 为什么是「接管」而不是「拒绝」：顶号的产品语义是「新登录挤掉旧会话」，
+// 与连接落在哪个节点无关。早先的实现跨节点直接拒绝，玩家换设备时如果
+// 网关把连接路由到另一个游戏服，就会看到「已在其它节点登录」的报错——
+// 同节点顶号、跨节点报错，行为不一致。
+//
+// 时序：notify 是异步通知（远程投递单向、不等待），随后立刻覆盖 presence。
+// 旧节点的 Actor 可能还活着一小会儿，但它的快照提交会被围栏令牌（epoch）
+// 挡掉——这正是 R2.5 设计的目标场景，不需要在顶号路径上额外加锁等待。
+//
+// 返回值 tookOver 表示「是否从别的节点手里接管」，只用于日志与断言。
+func claimOnline(ctx context.Context, p onlinePresence, self string, playerID int64,
+	ttl time.Duration, notify func(nodeID string, playerID int64)) (tookOver bool, err error) {
+	ok, owner, err := p.TrySetOnline(ctx, playerID, self, ttl)
+	switch {
+	case err != nil:
+		// 占用失败不阻断绑定：Redis 抖动时宁可双开一会儿，也别让玩家登不进来。
+		// 双开的窗口由围栏令牌兜底（后写者胜），最终一致。
+		return false, nil
+	case ok || owner == self:
+		return false, nil
+	}
+
+	if notify != nil {
+		notify(owner, playerID)
+	}
+	if err := p.SetOnline(ctx, playerID, self, ttl); err != nil {
+		return true, fmt.Errorf("force online after remote kick: %w", err)
+	}
+	return true, nil
+}
+
+// claimOnline 是 claimOnline 自由函数的 Server 绑定版（补日志与踢人实现）。
+func (s *Server) claimOnline(ctx context.Context, playerID int64) error {
+	tookOver, err := claimOnline(ctx, s.presence, s.cfg.Server.Name, playerID, onlineTTL, s.kickRemotePlayer)
+	if err != nil {
+		return err
+	}
+	if tookOver {
+		s.logger.Info("took over player from other node", "player_id", playerID)
+	}
+	return nil
+}
+
+// kickRemotePlayer 通知持有该玩家的节点踢掉本地会话。
+//
+// 发不出去不算失败：presence 已被覆盖，旧节点的提交会被围栏令牌挡住，
+// 它自己的心跳/UNBIND 也会让它下线，只是晚一点。
+func (s *Server) kickRemotePlayer(nodeID string, playerID int64) {
+	if nodeID == "" || s.actorSys == nil {
+		return
+	}
+	pid := &actor.PID{ID: player.ActorID(playerID), Node: nodeID}
+	if err := s.actorSys.Send(pid, player.KickMsg{FromNode: s.cfg.Server.Name}); err != nil {
+		s.logger.Warn("notify remote kick failed",
+			"player_id", playerID, "node", nodeID, "err", err)
+	}
+}
+
+// kickLocalPlayer 踢掉玩家在本节点的网关会话（Actor 收到 KickMsg 时回调）。
+//
+// 只发 KickNotify 不断 TCP：与同节点顶号走同一条路径，客户端收到通知后
+// 自行断开，随后的 UNBIND 走标准下线（模块 OnLogout + 落库）。
+func (s *Server) kickLocalPlayer(playerID int64, fromNode string) {
+	s.mu.RLock()
+	sid := s.players2sess[playerID]
+	s.mu.RUnlock()
+	if sid == 0 {
+		return
+	}
+	s.kickSession(sid, "login_elsewhere")
+	s.logger.Info("local session kicked by remote node",
+		"player_id", playerID, "session_id", sid, "from", fromNode)
+}
+
 // bindPlayer 拉起玩家 Actor 并绑定会话。
 //
 // 顶号规则（R3.1）：同一角色只允许一个权威会话。新会话绑定成功后主动踢掉旧会话，
 // 旧连接收到 KickNotify 后断开，其迟到的 UNBIND 会被 Actor 的会话身份校验忽略。
 func (s *Server) bindPlayer(ctx context.Context, sessionID uint64, playerID int64) error {
-	// 跨服权威归属：先原子占用在线状态，别的节点正持有时拒绝绑定。
+	// 跨服权威归属：占用在线状态。被别的节点持有时通知对方踢人后强制接管。
 	// 同节点旧会话（重连）视为成功，由下面的顶号逻辑处理。
 	if s.presence != nil {
-		ok, owner, err := s.presence.TrySetOnline(ctx, playerID, s.cfg.Server.Name, onlineTTL)
-		switch {
-		case err != nil:
-			s.logger.Warn("presence claim failed; bind continues", "player_id", playerID, "err", err)
-		case !ok && owner != s.cfg.Server.Name:
-			return fmt.Errorf("player %d is online on node %s", playerID, owner)
+		if err := s.claimOnline(ctx, playerID); err != nil {
+			return err
 		}
 	}
 

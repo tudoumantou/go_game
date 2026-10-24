@@ -19,18 +19,32 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
-
-	"game_study/internal/login/repo"
 )
 
 // AuthService 认证服务。
 // 依赖两个仓储 + 一个策略参数：tokenRepo 管「凭证」，accountRepo
 // 管「身份」，tokenTTL 管「凭证寿命」——三者都可注入替换。
+// tokenStore / accountStore 是本服务对两个仓储的全部依赖（接口隔离）。
+//
+// 抽成接口只为一件事：让「冻结账号拒绝发 token」这类规则能在内存里测，
+// 不必为一条断言拉起 MySQL + Redis。*repo.TokenRepo / *repo.AccountRepo
+// 隐式实现，装配层不变。
+type tokenStore interface {
+	Set(ctx context.Context, token string, playerID int64, ttl time.Duration) error
+	Get(ctx context.Context, token string) (int64, error)
+}
+
+type accountStore interface {
+	FindOrCreateByDevice(ctx context.Context, device string) (int64, int32, error)
+	TouchLogin(ctx context.Context, accountID int64) error
+}
+
 type AuthService struct {
-	tokenRepo   *repo.TokenRepo
-	accountRepo *repo.AccountRepo
+	tokenRepo   tokenStore
+	accountRepo accountStore
 	tokenTTL    time.Duration
 }
 
@@ -38,7 +52,25 @@ type AuthService struct {
 // 知识点：依赖经构造函数注入而非包级单例——多测试并行时各自持
 // 独立实例，无共享状态；nil 依赖是「可选协作者」的显式表达，
 // 每个使用点必须判空（见 GuestLogin）。
-func NewAuthService(tokenRepo *repo.TokenRepo, accountRepo *repo.AccountRepo, tokenTTL time.Duration) *AuthService {
+
+// 账号状态（account.status 列，见 sql/schema/account.sql）。
+//
+// 为什么在登录入口拦而不是网关：冻结/注销是「账号」属性，网关只认 token；
+// 已签发的 token 仍会通过校验，所以必须在**发 token 之前**拒绝——
+// 否则封禁只是「下次登录失败」，手上那张 token 还能用到 TTL 结束。
+const (
+	statusNormal  int32 = 0
+	statusFrozen  int32 = 1 // 冻结/封禁
+	statusDeleted int32 = 2 // 注销
+)
+
+// 账号不可用的哨兵错误（handler 用 errors.Is 映射 HTTP 状态与业务码）。
+var (
+	ErrAccountFrozen  = errors.New("account frozen")
+	ErrAccountDeleted = errors.New("account deleted")
+)
+
+func NewAuthService(tokenRepo tokenStore, accountRepo accountStore, tokenTTL time.Duration) *AuthService {
 	return &AuthService{tokenRepo: tokenRepo, accountRepo: accountRepo, tokenTTL: tokenTTL}
 }
 
@@ -47,9 +79,21 @@ func NewAuthService(tokenRepo *repo.TokenRepo, accountRepo *repo.AccountRepo, to
 // token 生成放在账号之后：账号失败就不浪费随机源与一次 Redis 写。
 func (s *AuthService) GuestLogin(ctx context.Context, deviceID string) (token string, accountID int64, err error) {
 	if s.accountRepo != nil {
-		accountID, err = s.accountRepo.FindOrCreateByDevice(ctx, deviceID)
+		var status int32
+		accountID, status, err = s.accountRepo.FindOrCreateByDevice(ctx, deviceID)
 		if err != nil {
 			return "", 0, fmt.Errorf("find or create account: %w", err)
+		}
+		// 状态校验放在发 token 之前：已冻结的账号不能拿到新凭证。
+		// 未知状态按「拒绝」处理（fail-closed）——脏数据不该成为后门。
+		switch status {
+		case statusNormal:
+		case statusFrozen:
+			return "", accountID, ErrAccountFrozen
+		case statusDeleted:
+			return "", accountID, ErrAccountDeleted
+		default:
+			return "", accountID, fmt.Errorf("account %d has unknown status %d", accountID, status)
 		}
 		// 忽略错误：last_login_at 是审计字段，更新失败不影响登录正确性
 		_ = s.accountRepo.TouchLogin(ctx, accountID)

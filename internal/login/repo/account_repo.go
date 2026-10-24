@@ -38,27 +38,31 @@ func NewAccountRepo(database *db.DB) *AccountRepo {
 }
 
 // FindOrCreateByDevice 按设备找账号，没有则创建游客账号。
+//
+// 返回值带上 status：封禁（1）/注销（2）必须在登录入口拦掉，
+// 否则一个被冻结的账号照样能换 token 进游戏。
 // 并发语义：SELECT 未命中 → INSERT。两个相同 device 的并发首次登录
 // 会都走到 INSERT，靠 account.device 唯一索引保证只有一个成功
 // （另一个报 1062）；当前实现把 1062 当错误上抛，由调用方重试
 // 即转到 SELECT 命中路径——「唯一索引是并发找/建的最终仲裁者」。
-func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (int64, error) {
+func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (int64, int32, error) {
 	if device == "" {
 		device = "anonymous"
 	}
 
 	// 占位符 ? 而非字符串拼接：SQL 注入的唯一可靠防御是参数化——
 	// device 来自客户端，拼接即把注入面敞开；? 由驱动做转义
-	const q = `SELECT id FROM account WHERE device = ? ORDER BY id LIMIT 1`
+	const q = `SELECT id, status FROM account WHERE device = ? ORDER BY id LIMIT 1`
 	var id int64
-	err := r.db.QueryRowContext(ctx, q, device).Scan(&id)
+	var status int32
+	err := r.db.QueryRowContext(ctx, q, device).Scan(&id, &status)
 	if err == nil {
-		return id, nil
+		return id, status, nil
 	}
 	// 知识点：errors.Is 判 sql.ErrNoRows——驱动可能包装错误，
 	// Is 沿 %w 链查找；== 比较会漏。ErrNoRows 不是故障，是「没有」。
 	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("query account by device: %w", err)
+		return 0, 0, fmt.Errorf("query account by device: %w", err)
 	}
 
 	// 创建游客账号（密码占位，P7 接入渠道登录）
@@ -66,7 +70,7 @@ func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (
 	// 超长，hex 随机串保证合法且不与已有账号撞名
 	suffix, err := randomHex(6)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	acc := &model.Account{
 		Account:      "guest_" + suffix,
@@ -80,9 +84,13 @@ func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (
 	}
 	res, err := model.InsertAccount(ctx, r.db.DB, acc)
 	if err != nil {
-		return 0, fmt.Errorf("insert account: %w", err)
+		return 0, 0, fmt.Errorf("insert account: %w", err)
 	}
-	return res.LastInsertId()
+	id, err = res.LastInsertId()
+	if err != nil {
+		return 0, 0, fmt.Errorf("insert account id: %w", err)
+	}
+	return id, 0, nil // 新建账号必然是正常状态
 }
 
 // TouchLogin 更新最近登录时间。

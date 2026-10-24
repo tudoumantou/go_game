@@ -14,6 +14,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 
@@ -96,6 +97,20 @@ func (h *AuthHandler) GuestLogin(w http.ResponseWriter, r *http.Request) {
 	token, accountID, err := h.auth.GuestLogin(r.Context(), req.DeviceID)
 	if err != nil {
 		h.record(r, LoginEvent{AccountID: accountID, Device: req.DeviceID, Result: 1, Reason: err.Error()})
+		// 账号不可用是「可预期的拒绝」，用 403 + 业务码返回：
+		// 客户端据此弹「账号已被封禁」，而不是当成服务器故障去重试。
+		switch {
+		case errors.Is(err, service.ErrAccountFrozen):
+			writeJSONStatus(w, http.StatusForbidden, map[string]any{
+				"code": 2001, "msg": "账号已被封禁",
+			})
+			return
+		case errors.Is(err, service.ErrAccountDeleted):
+			writeJSONStatus(w, http.StatusForbidden, map[string]any{
+				"code": 2001, "msg": "账号已注销",
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -132,6 +147,12 @@ func clientIP(r *http.Request) string {
 // Encode 错误被忽略——响应已经开始写入，无法再改状态码，
 // 由 server 的 withMetrics 中间件记录 5xx。
 func writeJSON(w http.ResponseWriter, v any) {
+	writeJSONStatus(w, http.StatusOK, v)
+}
+
+// writeJSONStatus 带状态码的 JSON 响应（错误分支用）。
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
