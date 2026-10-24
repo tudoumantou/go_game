@@ -25,6 +25,9 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/crypto"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
+	"game_study/pkg/ratelimit"
+	"strconv"
 
 	gatev1 "game_study/pkg/pb/gate/v1"
 	"google.golang.org/protobuf/proto"
@@ -46,8 +49,11 @@ type Handler struct {
 	validator   TokenValidator
 	revoker     TokenRevoker
 	onAuthed    func(sess *session.Session)
-	forward     PacketForwarder
-	onClosed    func(sess *session.Session)
+	// packetLimiter 连接级包频率限制（nil = 不限流，单测环境）。
+	// 按 connID 分桶：一个连接一个桶，互不挤占。
+	packetLimiter *ratelimit.Keyed
+	forward       PacketForwarder
+	onClosed      func(sess *session.Session)
 }
 
 // PacketForwarder 业务消息透传（网关不解析，直接转发游戏服）。
@@ -73,6 +79,9 @@ type TokenValidator func(token string) (int64, error)
 // 校验失败只是拒绝登录，作废失败意味着「用户以为登出了，token 其实还有效」，
 // 必须让客户端知道并重试。合成接口会让调用方误以为两者可以同等对待。
 type TokenRevoker func(token string) error
+
+// SetPacketLimiter 注入连接级限流器（组装期调用；nil 表示不限流）。
+func (h *Handler) SetPacketLimiter(l *ratelimit.Keyed) { h.packetLimiter = l }
 
 // SetRevoker 注入 token 作废能力（组装期调用）。
 // 未注入时登出仍会断连但不作废 token——只在无 Redis 的单测环境可接受。
@@ -131,6 +140,17 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 		_ = c.Close(fmt.Errorf("unknown session"))
 		return
 	}
+	// 连接级限流：先于解密/分发执行，避免刷包把 CPU 和 Actor 信箱打满。
+	//
+	// 超限的处理是「丢弃」而不是断连：移动网络抖动会短暂堆包，
+	// 断连等于把正常玩家踢下线。丢弃已经消除了后续业务成本——
+	// 客户端有超时重试；真要更严就把 burst 调小。
+	if h.packetLimiter != nil && !h.packetLimiter.Allow(strconv.FormatInt(c.ID(), 10)) {
+		metrics.MsgInc("in", "rate_limited")
+		h.logger.Debug("packet rate limited", "conn_id", c.ID(), "msg_id", p.MsgID)
+		return
+	}
+
 	sess.Touch()
 
 	// 握手完成前，只允许系统消息（心跳/握手）

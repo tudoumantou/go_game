@@ -28,6 +28,8 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/ratelimit"
+	"strconv"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -48,6 +50,9 @@ const (
 	codeChannelClosed  int32 = 4001 // 频道未开放（P6 仅私聊）
 	codeContentEmpty   int32 = 4005 // 内容为空 / 对端 id 非法
 	codeContentTooLong int32 = 4006 // 内容超长
+	// codeTooFast 发言过快（与 proto 的 ERR_CODE_CHAT_TOO_FAST 同义，
+	// 已在 errcheck_test 的白名单登记）。
+	codeTooFast int32 = 4003
 )
 
 // 消息内容上限。
@@ -193,11 +198,28 @@ type Module struct {
 	repo      chatRepo
 	messenger Messenger
 	logger    *log.Logger
+	// chatLimiter 发言频控（按 playerID 分桶，nil = 不限流）。
+	//
+	// 为什么需要独立于网关的包级限流：包限流是「总量」，聊天是「单条成本高」
+	// ——每条要写 MySQL、推给对手、进 Kafka。一个玩家每秒 1 条、连发一小时，
+	// 包限流完全放行，但已经写了 3600 行库、推了 3600 次。
+	chatLimiter *ratelimit.Keyed
 }
+
+// SetChatLimiter 覆盖默认频控（装配期调用；nil 表示关闭）。
+//
+// 默认在 New 里建（1 条/秒、突发 3）：即使装配层忘了配，也有基本防护。
+func (m *Module) SetChatLimiter(l *ratelimit.Keyed) { m.chatLimiter = l }
 
 // New 创建聊天模块（messenger 可为 nil：单机降级为只落库）。
 func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
-	m := &Module{repo: repo, messenger: messenger, logger: logger}
+	m := &Module{
+		repo:      repo,
+		messenger: messenger,
+		logger:    logger,
+		// 默认 1 条/秒、突发 3：连发三句还来得及，第四句开始挡。
+		chatLimiter: ratelimit.NewKeyed(1, 3, 10*time.Minute),
+	}
 	m.Thin = module.NewThin("chat",
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
@@ -243,6 +265,12 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	}
 	if len(req.Content) > maxContentBytes || utf8.RuneCountInString(req.Content) > maxContentRunes {
 		resp.Code = codeContentTooLong
+		return nil
+	}
+	// 频控放在内容校验之后：被拒绝的脏请求不占用额度（否则玩家打字打错
+	// 一次就要等一秒），只有真正要发出去的才计数。
+	if m.chatLimiter != nil && !m.chatLimiter.Allow(strconv.FormatInt(ctx.State.PlayerID(), 10)) {
+		resp.Code = codeTooFast
 		return nil
 	}
 

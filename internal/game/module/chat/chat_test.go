@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -445,4 +446,76 @@ func TestSendAcceptsBoundaryContent(t *testing.T) {
 	})
 	require.EqualValues(t, codeOK, resp.Code, "正好 200 字必须允许")
 	require.Len(t, repo.inserts, 1)
+}
+
+// clock 可推进的测试时钟（限流器要「过一秒」才能再发，不能真睡）。
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newClock() *clock { return &clock{t: time.Unix(1700000000, 0)} }
+
+func (c *clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *clock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
+// TestSendRateLimited 连发超过突发额度后回 4003，且不再落库/投递。
+//
+// 频控的价值在于「单条成本」：聊天每条都要写 MySQL、推对手、进 Kafka。
+// 网关的包级限流只挡总量，挡不住「每秒一条、永不停止」。
+func TestSendRateLimited(t *testing.T) {
+	repo := &fakeRepo{}
+	msg := &fakeMessenger{self: "game-01"}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	clk := newClock()
+	m.chatLimiter.SetClock(clk.Now)
+
+	req := &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"}
+	for i := 0; i < 3; i++ { // 默认突发 3
+		resp := send(t, m, ctx, rec, req)
+		require.EqualValues(t, codeOK, resp.Code, "第 %d 条应放行", i+1)
+	}
+
+	resp := send(t, m, ctx, rec, req)
+	require.EqualValues(t, codeTooFast, resp.Code, "超过突发额度必须回 4003")
+	require.Len(t, repo.inserts, 3, "被限流的消息不能落库")
+	require.Len(t, msg.pended, 3, "被限流的消息不能投递")
+
+	// 过一秒：补一个令牌
+	clk.Advance(1100 * time.Millisecond)
+	resp = send(t, m, ctx, rec, req)
+	require.EqualValues(t, codeOK, resp.Code, "间隔够了应恢复发送")
+	require.Len(t, repo.inserts, 4)
+}
+
+// TestSendBadContentDoesNotConsumeQuota 内容校验失败的请求不占额度。
+//
+// 否则玩家打字打错一次就要等一秒，体验比限流本身更糟。
+func TestSendBadContentDoesNotConsumeQuota(t *testing.T) {
+	repo := &fakeRepo{}
+	m, _, rec, ctx := newTestModule(repo, &fakeMessenger{self: "game-01"})
+	clk := newClock()
+	m.chatLimiter.SetClock(clk.Now)
+
+	// 先打 10 次空内容
+	for i := 0; i < 10; i++ {
+		resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200})
+		require.EqualValues(t, codeContentEmpty, resp.Code)
+	}
+
+	// 额度应该还在：连续 3 条正常消息全部放行
+	for i := 0; i < 3; i++ {
+		resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"})
+		require.EqualValues(t, codeOK, resp.Code, "第 %d 条正常消息应放行（脏请求不该占额度）", i+1)
+	}
 }

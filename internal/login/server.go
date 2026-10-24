@@ -32,6 +32,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/ratelimit"
 )
 
 // Server 登录服（组装层入口，职责见设计文档 3.1 目录树）
@@ -152,6 +153,14 @@ func (s *Server) Start(ctx context.Context) error {
 	// loginAudit 以值类型实现 LoginLogger：producer 为 nil 时静默，
 	// 审计链路可选（R3.2）
 	s.authHandler = handler.NewAuthHandler(authSvc, loginAudit{producer: s.producer, logger: s.logger})
+	// 登录频控：默认 20 次/分钟/IP；配置负数则关闭（排查问题时的临时开关）
+	if perMin := s.cfg.Limit.LoginLimit(); perMin > 0 {
+		s.authHandler.SetLoginLimiter(ratelimit.NewKeyed(perMin/60, 10, 10*time.Minute))
+		s.logger.Info("login rate limit enabled", "per_min", perMin)
+	} else {
+		s.authHandler.SetLoginLimiter(nil)
+		s.logger.Warn("login rate limit disabled by config")
+	}
 	s.serverListHandler = handler.NewServerListHandler(dispatchSvc)
 	if rechargeSvc != nil {
 		// 支付渠道：未配置密钥直接启动失败，不允许「无验签回调」上线（R3.3）。

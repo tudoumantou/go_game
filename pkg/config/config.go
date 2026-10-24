@@ -51,6 +51,7 @@ type Config struct {
 	Etcd     EtcdConfig     `yaml:"etcd"`
 	MySQL    MySQLConfig    `yaml:"mysql"`
 	Log      LogConfig      `yaml:"log"`
+	Limit    LimitConfig    `yaml:"limit"`
 	Metrics  MetricsConfig  `yaml:"metrics"`
 	Shutdown ShutdownConfig `yaml:"shutdown"`
 
@@ -91,6 +92,70 @@ type ServerConfig struct {
 	ReadTimeout      string `yaml:"read_timeout"`          // 空闲读超时（心跳保活依据）
 	WriteQueueSize   int    `yaml:"write_queue_size"`      // 每连接写队列；满则背压/断连
 	SessionReconnTTL string `yaml:"session_reconnect_ttl"` // 断线重连会话保留窗
+}
+
+// LimitConfig 限流阈值。
+//
+// 语义：0 = 用内置默认（默认是**开启**的，漏配不能变成不限流）；
+// 负数 = 关闭该类限流（排查问题时的临时开关）。
+type LimitConfig struct {
+	// PacketRate/PacketBurst 每连接每秒包数与突发容量。
+	// 默认 20/40：够一个正常客户端在登录后连发十几个请求，
+	// 又能压住「一个连接把 Actor 信箱打满」的刷包。
+	PacketRate  float64 `yaml:"packet_rate"`
+	PacketBurst float64 `yaml:"packet_burst"`
+	// ChatIntervalMS 聊天最小间隔（毫秒），默认 1000。
+	// 比包级限流更严：聊天会写库 + 推对手 + 进 Kafka，成本高得多。
+	ChatIntervalMS int `yaml:"chat_interval_ms"`
+	// LoginPerMin 每 IP 每分钟登录次数，默认 20。
+	// 登录要查库、签 token，是爆破的首选目标。
+	LoginPerMin float64 `yaml:"login_per_min"`
+}
+
+// 内置默认值。
+const (
+	DefaultPacketRate     = 20
+	DefaultPacketBurst    = 40
+	DefaultChatIntervalMS = 1000
+	DefaultLoginPerMinute = 20
+)
+
+// PacketLimit 返回连接级限流参数；rate<=0 表示关闭。
+func (c LimitConfig) PacketLimit() (rate, burst float64) {
+	if c.PacketRate < 0 {
+		return 0, 0
+	}
+	rate, burst = c.PacketRate, c.PacketBurst
+	if rate == 0 {
+		rate = DefaultPacketRate
+	}
+	if burst == 0 {
+		burst = DefaultPacketBurst
+	}
+	return rate, burst
+}
+
+// ChatInterval 返回聊天最小间隔；<=0 表示关闭。
+func (c LimitConfig) ChatInterval() time.Duration {
+	if c.ChatIntervalMS < 0 {
+		return 0
+	}
+	ms := c.ChatIntervalMS
+	if ms == 0 {
+		ms = DefaultChatIntervalMS
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+// LoginLimit 返回每 IP 每分钟登录次数；<=0 表示关闭。
+func (c LimitConfig) LoginLimit() float64 {
+	if c.LoginPerMin < 0 {
+		return 0
+	}
+	if c.LoginPerMin == 0 {
+		return DefaultLoginPerMinute
+	}
+	return c.LoginPerMin
 }
 
 // AdminConfig 管理接口（GM 操作）鉴权。

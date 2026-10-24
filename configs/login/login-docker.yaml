@@ -38,6 +38,12 @@ kafka:                          # 充值订单生产
   producer_required_acks: all
   consumer_group: "login-server"
 
+limit:                         # 限流：0 = 用内置默认（默认开启），负数 = 关闭该项
+  packet_rate: 20              # 每连接每秒包数（网关）
+  packet_burst: 40             # 每连接突发容量
+  chat_interval_ms: 1000       # 聊天最小间隔（毫秒，游戏服）
+  login_per_min: 20            # 每 IP 每分钟登录次数（登录服）
+
 log:
   level: info
   format: json

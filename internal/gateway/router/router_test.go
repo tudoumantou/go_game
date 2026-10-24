@@ -25,6 +25,7 @@ import (
 	"game_study/pkg/crypto"
 	"game_study/pkg/log"
 	gatev1 "game_study/pkg/pb/gate/v1"
+	"game_study/pkg/ratelimit"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -259,4 +260,44 @@ func encryptedPacket(t *testing.T, c *crypto.SessionCipher, msgID uint16) codec.
 	ct, _, err := c.Encrypt(msgID, nil)
 	require.NoError(t, err)
 	return codec.Packet{MsgID: msgID, Body: ct}
+}
+
+// TestPacketRateLimitDropsExcess 超过突发额度的包被丢弃，连接保持存活。
+//
+// 断言的是「透传次数」而不是「连接状态」：限流的处理是丢弃，不是断连
+// （移动网络抖动会短暂堆包，断连等于把正常玩家踢下线）。
+func TestPacketRateLimitDropsExcess(t *testing.T) {
+	r := newRig(t, true)
+
+	var forwarded int
+	r.h.SetForward(func(*session.Session, uint32, []byte) error {
+		forwarded++
+		return nil
+	})
+
+	// 几乎不补充令牌、突发 1：只有第一个包能过
+	r.h.SetPacketLimiter(ratelimit.NewKeyed(0.001, 1, time.Minute))
+
+	for i := 0; i < 5; i++ {
+		r.send(t, 2001) // 已鉴权的业务号，走透传分支
+	}
+
+	require.Equal(t, 1, forwarded, "超过突发额度后必须丢弃，不能再透传")
+	require.False(t, r.c.IsClosed(), "限流不该断连——抖动期的堆包不是攻击")
+}
+
+// TestPacketRateLimitDisabled 未注入限流器（单测/关闭配置）时不限制。
+func TestPacketRateLimitDisabled(t *testing.T) {
+	r := newRig(t, true)
+
+	var forwarded int
+	r.h.SetForward(func(*session.Session, uint32, []byte) error {
+		forwarded++
+		return nil
+	})
+
+	for i := 0; i < 20; i++ {
+		r.send(t, 2001)
+	}
+	require.Equal(t, 20, forwarded)
 }

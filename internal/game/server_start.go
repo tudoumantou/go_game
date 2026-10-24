@@ -12,6 +12,7 @@ package game
 import (
 	"context"
 	"fmt"
+	"time"
 
 	gamecenter "game_study/internal/game/center"
 	gamecross "game_study/internal/game/cross"
@@ -50,6 +51,7 @@ import (
 	"game_study/pkg/flush"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/ratelimit"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 	"game_study/pkg/writebehind"
@@ -240,6 +242,13 @@ func (s *Server) initModules() {
 	if s.database != nil {
 		s.mailMod = mail.New(mail.NewRepo(s.database), s.logger)
 		s.chatMod = chat.New(chat.NewRepo(s.database), chatMessenger{srv: s}, s.logger)
+		// 聊天频控：默认 1 条/秒（突发 3），配置负数关闭。
+		// 与网关包级限流是两道：包限流管总量，这里管「单条成本」。
+		if iv := s.cfg.Limit.ChatInterval(); iv > 0 {
+			s.chatMod.SetChatLimiter(ratelimit.NewKeyed(1/iv.Seconds(), 3, 10*time.Minute))
+		} else {
+			s.chatMod.SetChatLimiter(nil)
+		}
 		s.modules.Register(s.mailMod)
 		s.modules.Register(s.chatMod)
 		s.modules.Register(quest.New(s.logger))

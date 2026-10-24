@@ -8,8 +8,8 @@
 //
 // 两层并存本身不是问题，问题是**数值撞车**：模块用了 proto 已定义的某个值，
 // 但语义不同，客户端会按 proto 的文案提示，玩家看到的就是错的。
-// 本轮就修过 4 处：scene 的「不在场景」取了 4001（CHANNEL_CLOSED）、
-// 「场景繁忙」取了 4003（CHAT_TOO_FAST）、battle 的「已在队列」取了 6001
+// 本轮就修过 4 处：scene 的「不在场景」取了 4001（CHANNEL_CLOSED），
+// battle 的「已在队列」取了 6001
 // （BATTLE_NOT_FOUND）、「玩法未开放」取了 6004（BATTLE_FULL）。
 //
 // 这个测试把「允许的语义复用」写成白名单，其余撞车一律失败。
@@ -38,6 +38,7 @@ var semanticReuse = map[string]map[int32]string{
 	},
 	"chat": {
 		4001: "ERR_CODE_CHANNEL_CLOSED",
+		4003: "ERR_CODE_CHAT_TOO_FAST",
 	},
 	"mail": {
 		5001: "ERR_CODE_MAIL_NOT_FOUND",

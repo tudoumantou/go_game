@@ -40,6 +40,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	netpkg "game_study/pkg/net"
+	"game_study/pkg/ratelimit"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 	resolver "game_study/pkg/rpc/resolver"
@@ -182,6 +183,16 @@ func (s *Server) Start(ctx context.Context) error {
 		return s.redis.GetClient().Get(ctx, tokenKeyPrefix+token).Int64()
 	}
 	s.router = router.NewHandler(s.sessMgr, s.connMgr, s.logger, validator, s.bindToGame)
+
+	// 连接级限流：默认 20 包/秒（突发 40），配置里给负数可关闭。
+	// 放在网关上而不是业务模块里：越早拦越省 CPU，且能挡住心跳之外的
+	// 任何协议刷包（模块级限流只覆盖各自的消息）。
+	if rate, burst := s.cfg.Limit.PacketLimit(); rate > 0 {
+		s.router.SetPacketLimiter(ratelimit.NewKeyed(rate, burst, 5*time.Minute))
+		s.logger.Info("packet rate limit enabled", "rate", rate, "burst", burst)
+	} else {
+		s.logger.Warn("packet rate limit disabled by config")
+	}
 
 	// 登出：作废 token（删 key）。失败时上层回 1005，客户端重试——
 	// 「用户以为登出了、token 其实还有效」是安全问题，不能静默。

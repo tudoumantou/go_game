@@ -15,8 +15,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"game_study/pkg/config"
+	"game_study/pkg/ratelimit"
 	"net"
 	"net/http"
+	"time"
 
 	"game_study/internal/login/service"
 )
@@ -46,13 +49,29 @@ type LoginLogger interface {
 type AuthHandler struct {
 	auth  *service.AuthService
 	audit LoginLogger
+	// limiter 按 IP 的登录频控（nil = 不限流）。
+	//
+	// 为什么在登录入口限而不在网关：爆破发生在「还没拿到 token」的阶段，
+	// 网关根本看不到这些请求。登录要查库、签 token、写审计，成本是
+	// 普通消息的几十倍，且成功一次就能拿到凭证。
+	limiter *ratelimit.Keyed
 }
+
+// SetLoginLimiter 覆盖默认频控（装配期调用；nil 表示关闭）。
+//
+// 默认在 NewAuthHandler 里建（20 次/分钟/IP）：漏配不能变成不限流。
+func (h *AuthHandler) SetLoginLimiter(l *ratelimit.Keyed) { h.limiter = l }
 
 // NewAuthHandler 创建 AuthHandler（audit 可选）。
 // 知识点：可变参数 audit ...LoginLogger 实现「可选注入」——不传即
 // nil，传多个只取第一个；比「传 interface 再判 nil」调用处更干净。
 func NewAuthHandler(auth *service.AuthService, audit ...LoginLogger) *AuthHandler {
-	h := &AuthHandler{auth: auth}
+	h := &AuthHandler{
+		auth: auth,
+		// 默认 20 次/分钟/IP，突发 10：正常玩家重试几次不会被拦，
+		// 而脚本爆破（每秒几十次）立刻失效。
+		limiter: ratelimit.NewKeyed(config.DefaultLoginPerMinute/60, 10, 10*time.Minute),
+	}
 	if len(audit) > 0 {
 		h.audit = audit[0]
 	}
@@ -78,7 +97,7 @@ type GuestLoginResp struct {
 }
 
 // GuestLogin POST /v1/auth/guest
-// 流程：方法校验 → 解 JSON → 设备号兜底 → 调 service → 旁路流水 → 回包。
+// 流程：方法校验 → 频控 → 解 JSON → 设备号兜底 → 调 service → 旁路流水 → 回包。
 // 失败时 accountID 可能非 0（service 找到了账号但后续失败），
 // 一并写进流水便于定位失败发生在哪一步。
 func (h *AuthHandler) GuestLogin(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +105,15 @@ func (h *AuthHandler) GuestLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// 频控放在解析 body 之前：爆破请求连 JSON 都不必解，直接回 429。
+	if h.limiter != nil && !h.limiter.Allow(clientIP(r)) {
+		w.Header().Set("Retry-After", "60")
+		writeJSONStatus(w, http.StatusTooManyRequests, map[string]any{
+			"code": 1004, "msg": "登录过于频繁，请稍后再试",
+		})
+		return
+	}
+
 	var req GuestLoginReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
