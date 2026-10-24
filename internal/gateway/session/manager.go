@@ -1,16 +1,17 @@
 // internal/gateway/session/manager.go —— 会话管理（SID 生成、reconnect 窗口、按 player_id 索引）
 //
 // Package session 网关会话层（见 session.go 的包注释）：Manager 是会话的
-// 索引与生命周期管家——四张 map 分别按 SID/数值 ID/连接/玩家检索，
-// 并提供「顶号检测、超时回收、批量关闭」三个运维必需能力。
+// 索引与生命周期管家——三张 map 分别按 SID/数值 ID/连接检索，
+// 并提供「超时回收、批量关闭」两个运维必需能力。
 // 协作关系：server.onAccept 调 NewSession；router.OnPacket 按连接查
-// 会话；server.deliverToClient 按数值 ID 查；BindPlayer 由绑定流程调用；
-// GC 由后台定时任务驱动（见 game_study 主程序），CloseAll 供优雅停机。
-// 设计取舍：① 四张索引冗余换查询效率——不同调用方持有不同的键
-// （connID/numID/SID/playerID），避免遍历；代价是任何增删都要四张
-// 同步，由 Remove/GC/CloseAll 三个私有模式保证。② 顶号检测放在
-// byPlayer 上：同一 player_id 只允许一个会话，是「双连接顶号」的
-// 唯一防线。③ 无持久化：重启后全部会话随进程消失。
+// 会话；server.deliverToClient 按数值 ID 查；GC 由后台定时任务驱动
+// （见 game_study 主程序），CloseAll 供优雅停机。
+// 设计取舍：① 三张索引冗余换查询效率——不同调用方持有不同的键
+// （connID/numID/SID），避免遍历；代价是任何增删都要三张同步，
+// 由 Remove/GC/CloseAll 三个私有模式保证。② 这里刻意**不**维护
+// 「角色 → 会话」索引：那份映射属于游戏服（players2sess 是唯一权威），
+// 网关存一份副本会变成两份真相，顶号/换角时必然对不上。③ 无持久化：
+// 重启后全部会话随进程消失。
 package session
 
 import (
@@ -25,19 +26,18 @@ import (
 
 // Manager 会话管理器。
 //
-// 四张索引必须保持一致：任何增删都要四张 map 同步（Remove/GC/CloseAll
+// 三张索引必须保持一致：任何增删都要三张 map 同步（Remove/GC/CloseAll
 // 都遵循同一模式）。seq 只在新会话创建时自增，用于生成可读 SID。
-// 知识点：单把 RWMutex 保护四张 map 而不是四把——四张表的增删必须
+// 知识点：单把 RWMutex 保护三张 map 而不是三把——三张表的增删必须
 // 原子完成（半同步状态会被并发读到），多锁无法表达这个复合不变量；
 // 锁粒度取舍为「整组操作一把锁」。
 type Manager struct {
-	// mu 保护下面四张索引表；byPlayer 同时承担「顶号检测」职责
+	// mu 保护下面三张索引表
 	// bySID：gw-{unix秒}-{seq} 字符串 → 会话（日志/运维检索）
-	mu       sync.RWMutex
-	bySID    map[string]*Session
-	byNum    map[uint64]*Session // 数值会话 ID → 会话（gRPC/下行路由主键）
-	byConn   map[int64]*Session  // 连接 ID → 会话（读循环收包主键）
-	byPlayer map[int64]*Session  // player_id → 会话（顶号检测主键）
+	mu     sync.RWMutex
+	bySID  map[string]*Session
+	byNum  map[uint64]*Session // 数值会话 ID → 会话（gRPC/下行路由主键）
+	byConn map[int64]*Session  // 连接 ID → 会话（读循环收包主键）
 
 	// seq 会话序号（SID 后缀）；logger 只读
 	seq    int64
@@ -47,11 +47,10 @@ type Manager struct {
 // NewManager 创建 Manager。
 func NewManager(logger *log.Logger) *Manager {
 	return &Manager{
-		bySID:    make(map[string]*Session),
-		byNum:    make(map[uint64]*Session),
-		byConn:   make(map[int64]*Session),
-		byPlayer: make(map[int64]*Session),
-		logger:   logger,
+		bySID:  make(map[string]*Session),
+		byNum:  make(map[uint64]*Session),
+		byConn: make(map[int64]*Session),
+		logger: logger,
 	}
 }
 
@@ -97,33 +96,8 @@ func (m *Manager) GetByConn(connID int64) *Session {
 	return m.byConn[connID]
 }
 
-// GetByPlayer 按 player_id 查。
-// 顶号检测与「玩家是否在线」查询用；未绑定时返回 nil。
-func (m *Manager) GetByPlayer(playerID int64) *Session {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.byPlayer[playerID]
-}
-
-// BindPlayer 把会话绑定到玩家 ID。
-//
-// 双连接顶号保护：同一 player_id 已有别的会话时返回错误（由调用方决定
-// 踢旧还是拒新）；同一会话重复绑定（如断线重连同会话）放行。
-// 知识点：比较用指针相等（old != s）而非 ID 相等——同一会话重入
-// （重连路径）放行，不同会话（顶号）拒绝，语义精确且无歧义。
-func (m *Manager) BindPlayer(s *Session, playerID int64) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if old, ok := m.byPlayer[playerID]; ok && old != s {
-		return fmt.Errorf("player %d already online", playerID)
-	}
-	m.byPlayer[playerID] = s
-	s.SetState(StateBound)
-	return nil
-}
-
 // Remove 移除会话。
-// 四张表同步 delete；playerID=0 表示未绑定（无需清 byPlayer）。
+// 三张表同步 delete。
 // 幂等：对已移除的会话重复调用是空 delete。
 func (m *Manager) Remove(s *Session) {
 	m.mu.Lock()
@@ -132,9 +106,6 @@ func (m *Manager) Remove(s *Session) {
 	delete(m.byNum, s.NumID())
 	if s.Conn() != nil {
 		delete(m.byConn, s.Conn().ID())
-	}
-	if pid := s.PlayerID(); pid != 0 {
-		delete(m.byPlayer, pid)
 	}
 }
 
@@ -162,7 +133,6 @@ func (m *Manager) CloseAll() {
 	m.bySID = make(map[string]*Session)
 	m.byNum = make(map[uint64]*Session)
 	m.byConn = make(map[int64]*Session)
-	m.byPlayer = make(map[int64]*Session)
 	m.mu.Unlock()
 
 	for _, s := range sessions {
@@ -186,9 +156,6 @@ func (m *Manager) GC(now time.Time) {
 			delete(m.byNum, s.NumID())
 			if s.Conn() != nil {
 				delete(m.byConn, s.Conn().ID())
-			}
-			if pid := s.PlayerID(); pid != 0 {
-				delete(m.byPlayer, pid)
 			}
 			continue
 		}

@@ -312,6 +312,7 @@ func (s *Server) bindActor(ctx context.Context, sessionID uint64, playerID int64
 	s.mu.Lock()
 	s.players2sess[playerID] = sessionID
 	s.mu.Unlock()
+
 	return nil
 }
 
@@ -325,25 +326,49 @@ func (s *Server) markOnline(ctx context.Context, playerID int64) {
 	}
 }
 
+// OnKick 实现 rpc.StreamHandler：网关要求强制下线（GM 踢人 / 封禁生效）。
+//
+// 参数是角色 ID：网关只转达「踢谁」，会话由这里查（players2sess 是
+// 会话↔角色映射的唯一权威）。网关会把指令广播给所有 game 节点，
+// 非持有者查不到会话即返回 nil——这不算失败。
+//
+// 与顶号、掉线的区别：这是服务端主动发起。动作只是发 KickNotify——
+// 客户端收到后自行断开，随后的 UNBIND 走标准下线（模块 OnLogout + 落库），
+// 不在这一层直接清会话状态：那条路径会跳过模块的下线钩子。
+func (s *Server) OnKick(_ context.Context, playerID int64, reason string) error {
+	if reason == "" {
+		reason = "kicked_by_admin"
+	}
+
+	sessionID := s.resolveSessionByPlayer(playerID)
+	if sessionID == 0 {
+		// 该玩家不在本节点：广播的常见结果，正常返回
+		s.logger.Debug("kick target not on this node", "player_id", playerID)
+		return nil
+	}
+
+	s.kickSession(sessionID, reason)
+	s.logger.Info("session kicked by admin",
+		"player_id", playerID, "session_id", sessionID, "reason", reason)
+	return nil
+}
+
+// resolveSessionByPlayer 返回玩家当前权威会话（0 = 不在本节点）。
+//
+// players2sess 是「角色 → 会话」的唯一权威：顶号时它先于 kick 完成切换，
+// 所以这里读到的永远是最新会话。网关不持有这份映射（它只知道角色号），
+// 这也正是「按角色踢人」必须经游戏服的原因。
+func (s *Server) resolveSessionByPlayer(playerID int64) uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.players2sess[playerID]
+}
+
 // OnUnbind 实现 rpc.StreamHandler。
 //
 // 三段式：摘本地映射 → 判定是否被顶号 → 权威会话才解 Actor + 清在线归属。
 // 「被顶号的旧会话」是最容易写错的分支：它的一切副作用都必须跳过，
 // 否则会把仍在线的权威会话打成离线（见下方 stale 注释）。
-// OnKick 实现 rpc.StreamHandler：网关要求强制下线（GM 踢人 / 封禁生效）。
-//
-// 与顶号、掉线的区别：这是服务端主动发起。动作只是发 KickNotify——
-// 客户端收到后自行断开，随后的 UNBIND 走标准下线（模块 OnLogout + 落库），
-// 不在这一层直接清会话状态：那条路径会跳过模块的下线钩子。
-func (s *Server) OnKick(_ context.Context, sessionID uint64, reason string) error {
-	if reason == "" {
-		reason = "kicked_by_admin"
-	}
-	s.kickSession(sessionID, reason)
-	s.logger.Info("session kicked by admin", "session_id", sessionID, "reason", reason)
-	return nil
-}
-
 func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	s.mu.Lock()
 	playerID := s.sessions[sessionID]

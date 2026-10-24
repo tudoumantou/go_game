@@ -24,25 +24,26 @@ func newTestServer(adminToken string) *Server {
 	}
 }
 
-// TestKickFrameCarriesTypeAndReason 帧内容：类型必须是 KICK、会话号与原因不能丢。
+// TestKickFrameCarriesPlayerID 帧内容：类型必须是 KICK、角色号不能丢。
 //
 // 类型写错（比如退化成默认值 UNBIND）时游戏服会把它当成解绑处理——
-// 玩家掉线但收不到 KickNotify，客户端表现为「莫名断线」。
-func TestKickFrameCarriesTypeAndReason(t *testing.T) {
-	frame := kickFrame(77, "banned")
-	require.EqualValues(t, 77, frame.GetCtrl().GetSessionId())
+// 玩家掉线但收不到 KickNotify，客户端表现为「莫名断线」；
+// player_id 漏填则游戏服不知道踢谁（它不认会话号）。
+func TestKickFrameCarriesPlayerID(t *testing.T) {
+	frame := kickFrame(42, "banned")
 
 	ctrl := frame.GetCtrl()
 	require.NotNil(t, ctrl)
 	require.Equal(t, internalv2.CtrlMsg_KICK, ctrl.GetType(), "必须是 KICK，不能是 UNBIND")
-	require.EqualValues(t, 77, ctrl.GetSessionId())
+	require.EqualValues(t, 42, ctrl.GetPlayerId(), "游戏服按角色号定位会话")
+	require.EqualValues(t, 0, ctrl.GetSessionId(), "这条指令不针对某个会话，会话号必须留空")
 	require.Equal(t, "banned", string(ctrl.GetPayload()), "原因要传给客户端显示")
 }
 
-// TestKickSessionWithoutBackend 无后端连接池时报错，不能假装成功。
-func TestKickSessionWithoutBackend(t *testing.T) {
+// TestKickPlayerWithoutBackend 无后端连接池时报错，不能假装成功。
+func TestKickPlayerWithoutBackend(t *testing.T) {
 	s := newTestServer("")
-	err := s.KickSession(1, "test")
+	err := s.KickPlayer(42, "test")
 	require.Error(t, err, "没有游戏服流时必须报错，否则运维以为踢成功了")
 }
 
@@ -108,7 +109,7 @@ func TestAdminKickHTTP(t *testing.T) {
 	h.ServeHTTP(w, req)
 	require.Equal(t, http.StatusForbidden, w.Code)
 
-	// 缺 session_id
+	// 缺 player_id
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/admin/kick", strings.NewReader(`{}`))
 	req.RemoteAddr = "127.0.0.1:1"
@@ -117,7 +118,7 @@ func TestAdminKickHTTP(t *testing.T) {
 
 	// 本机 + 合法参数：无后端流 → 502（区别「请求不合法」与「发不出去」）
 	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/admin/kick", strings.NewReader(`{"session_id":7,"reason":"gm"}`))
+	req = httptest.NewRequest(http.MethodPost, "/admin/kick", strings.NewReader(`{"player_id":7,"reason":"gm"}`))
 	req.RemoteAddr = "127.0.0.1:1"
 	h.ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadGateway, w.Code)

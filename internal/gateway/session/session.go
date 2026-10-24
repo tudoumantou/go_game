@@ -5,7 +5,7 @@
 // 玩家四维索引与超时回收。本包是「谁在线」的唯一事实源。
 // 协作关系：conn 层每接受一个连接由 Manager.NewSession 创建会话；
 // router 驱动状态推进（握手/鉴权）并调用 Send/Decrypt；server 在
-// bindToGame 成功后由 Manager.BindPlayer 置 BOUND。
+// bindToGame 成功后置 BOUND（表示已转发过业务包）。
 // 设计取舍：会话纯内存、不持久化——网关无状态，断线重连 = 新会话
 // 重走握手（token 仍在 Redis 所以玩家无感）；reconnect 窗口
 // （DefaultSessionReconnectTTL）只用于回收半开连接，不恢复旧会话。
@@ -37,7 +37,7 @@ const (
 	StateHelloSent
 	// StateAuthed 握手完成且 token 校验通过（handleHandshakeReq 内置）
 	StateAuthed
-	// StateBound 已绑定游戏服并建流（Manager.BindPlayer 置位）
+	// StateBound 已绑定游戏服并建流（bindToGame 成功后置位）
 	StateBound
 	// StateClosed 已关闭（终态，Manager.GC 负责回收条目）
 	StateClosed
@@ -87,10 +87,15 @@ type Session struct {
 	serverHS *crypto.HandshakeServer
 	cipher   *crypto.SessionCipher
 
-	// 认证相关：token 即 login 服签发的字符串，playerID 鉴权后置入
-	// （早期版本语义为 player_id，现为 account_id，字段名保留兼容）
-	token    string
-	playerID int64
+	// 认证相关：token 即 login 服签发的字符串，accountID 在握手鉴权时置入。
+	//
+	// 这里只有账号 ID，没有角色 ID：会话 ↔ 角色的映射属于游戏服
+	// （players2sess 是唯一权威）。网关若再存一份，顶号/换角时两边必然
+	// 不一致——所以「按角色踢人」是把 player_id 透传给游戏服，由它查表。
+	// 历史坑：早期本字段名叫 playerID 却存的是 account_id，读代码的人
+	// 很容易把它当角色用。
+	token     string
+	accountID int64
 
 	// mu 保护以上所有可变字段（读多写少用 RWMutex）；logger 创建后不变
 	mu     sync.RWMutex
@@ -193,20 +198,22 @@ func (s *Session) Cipher() *crypto.SessionCipher {
 // SetAuth 设置认证信息。
 // token 校验通过时调用，同时把状态推到 AUTHED——「置认证信息」与
 // 「状态推进」在同一把锁里完成，避免中间态被并发读到。
-func (s *Session) SetAuth(token string, playerID int64) {
+//
+// accountID 来自 token 校验结果。角色 ID 不在这里——它属于游戏服
+// （players2sess），网关不维护「角色 → 会话」映射。
+func (s *Session) SetAuth(token string, accountID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.token = token
-	s.playerID = playerID
+	s.accountID = accountID
 	s.state = StateAuthed
 }
 
-// PlayerID 返回玩家 ID。
-// 鉴权前为 0（调用方需区分「未鉴权」与「id=0 的玩家」）。
-func (s *Session) PlayerID() int64 {
+// AccountID 返回账号 ID（鉴权前为 0）。
+func (s *Session) AccountID() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.playerID
+	return s.accountID
 }
 
 // Token 返回 token。

@@ -270,7 +270,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // bindToGame 鉴权成功后把会话绑定到游戏服。
 //
-// 选路策略：按 player_id 对存活 game 节点取模——同一玩家始终落到同一节点，
+// 选路策略：按 account_id 对存活 game 节点取模——同一账号始终落到同一节点，
 // 玩家数据（Actor）无需跨节点迁移；节点列表来自 etcd（故障节点已被摘除）。
 // 绑定即建流：首帧 BIND 随 stream 一起发出（4.5），失败必须断客户端连接，
 // 否则玩家会对着一个「永远进不去」的会话反复发包。
@@ -292,10 +292,11 @@ func (s *Server) bindToGame(sess *session.Session) {
 		s.logger.Warn("no game server available", "err", err)
 		return
 	}
-	// 按 player_id 取模选 game server
+	// 按 account_id 取模选 game server：选路要跟「账号」绑，不能跟角色绑——
+	// 同一账号换角色重连时应当落回同一节点（Actor 缓存、presence 都在那边）
 	// 一致性哈希的简化版：节点数不变时同一玩家永远落同一节点；
 	// 节点扩缩时取模值跳变，需重连才会迁移（本版本不处理在线迁移）
-	idx := int(sess.PlayerID() % int64(len(nodes)))
+	idx := int(sess.AccountID() % int64(len(nodes)))
 	node := nodes[idx]
 
 	// target 用 etcd resolver scheme 表达，gRPC 目标解析交给 backend.ClientPool
@@ -307,7 +308,7 @@ func (s *Server) bindToGame(sess *session.Session) {
 			Ctrl: &internalv2.CtrlMsg{
 				Type:      internalv2.CtrlMsg_BIND,
 				SessionId: sess.NumID(),
-				AccountId: sess.PlayerID(), // 鉴权后此处为 account_id
+				AccountId: sess.AccountID(),
 			},
 		},
 	}
@@ -455,35 +456,41 @@ func (s *Server) httpHandler() http.Handler {
 	return mux
 }
 
-// KickSession 让游戏服踢掉某个会话（GM 踢人 / 封禁生效）。
+// KickPlayer 让游戏服踢掉某个角色（GM 踢人 / 封禁生效）。
 //
-// 走 CtrlMsg_KICK 控制帧而不是直接断 TCP：断 socket 只会触发 UNBIND，
-// 客户端看到的是「连接异常」；控制帧让游戏服发 KickNotify，客户端能显示
-// 具体原因并做「被踢下线」的 UI 处理。
+// 参数是角色 ID，不是会话号：会话↔角色的映射是游戏服的事
+// （players2sess 是唯一权威），网关不该再存一份。
 //
-// 帧经 backend.Pool 复用会话已有的 gRPC 流——不需要另建连接，也不需要
-// 知道目标节点地址（流本身就绑着目标节点）。
-func (s *Server) KickSession(sessionID uint64, reason string) error {
+// 帧怎么送到「持有该玩家的那个节点」：广播。网关手里只有「本实例到各
+// game 节点的会话流」，没有 player→node（那份在 presence），而为了踢一个
+// 人先去查 presence 再建连接并不划算。节点通常个位数，广播成本可接受；
+// 非持有者收到后查不到会话，静默忽略。
+func (s *Server) KickPlayer(playerID int64, reason string) error {
 	if s.backend == nil {
 		return fmt.Errorf("gateway: backend pool not ready")
 	}
-	if err := s.backend.Send(sessionID, kickFrame(sessionID, reason)); err != nil {
-		return fmt.Errorf("send kick frame: %w", err)
+	sent, errs := s.backend.Broadcast(kickFrame(playerID, reason))
+	if sent == 0 {
+		if len(errs) > 0 {
+			return fmt.Errorf("broadcast kick: %w", errs[0])
+		}
+		return fmt.Errorf("no game backend connected")
 	}
-	s.logger.Info("kick frame sent", "session_id", sessionID, "reason", reason)
+	s.logger.Info("kick frame broadcast", "player_id", playerID, "reason", reason, "nodes", sent)
 	return nil
 }
 
 // kickFrame 构造踢人控制帧。
 //
-// 抽成纯函数是为了能测：帧内容错了（类型写成 UNBIND、Payload 丢了）
+// 抽成纯函数是为了能测：帧内容错了（类型写成 UNBIND、player_id 漏填）
 // 的表现是「游戏服收到后什么都不做」，线上只能从「踢了没反应」发现。
-func kickFrame(sessionID uint64, reason string) *internalv2.StreamFrame {
+// SessionId 刻意留空——这条指令不针对某个会话，由游戏服按角色号自己定位。
+func kickFrame(playerID int64, reason string) *internalv2.StreamFrame {
 	return &internalv2.StreamFrame{
 		Data: &internalv2.StreamFrame_Ctrl{Ctrl: &internalv2.CtrlMsg{
-			Type:      internalv2.CtrlMsg_KICK,
-			SessionId: sessionID,
-			Payload:   []byte(reason),
+			Type:     internalv2.CtrlMsg_KICK,
+			PlayerId: playerID,
+			Payload:  []byte(reason),
 		}},
 	}
 }
@@ -503,18 +510,21 @@ func (s *Server) handleAdminKick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		SessionID uint64 `json:"session_id"`
-		Reason    string `json:"reason"`
+		PlayerID int64  `json:"player_id"`
+		Reason   string `json:"reason"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	if req.SessionID == 0 {
-		http.Error(w, "session_id required", http.StatusBadRequest)
+	if req.PlayerID <= 0 {
+		http.Error(w, "player_id required", http.StatusBadRequest)
 		return
 	}
-	if err := s.KickSession(req.SessionID, req.Reason); err != nil {
+
+	// 广播成功即返回 200：本实例没有该玩家的会话是正常情况
+	// （他可能连在别的网关），踢人指令已经交给游戏服判断。
+	if err := s.KickPlayer(req.PlayerID, req.Reason); err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}

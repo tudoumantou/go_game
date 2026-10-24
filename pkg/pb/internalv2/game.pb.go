@@ -230,6 +230,10 @@ func (x *CtrlMsg) GetAccountId() int64 {
 	return 0
 }
 
+// 说明：曾经加过 BindAck（游戏服回传「会话→角色」，供网关维护 player 索引）。
+// 已删除——会话↔角色的映射属于游戏服（players2sess 是唯一权威），
+// 网关保一份副本只会产生两份真相。按角色踢人改为：网关照传 player_id，
+// 由游戏服自己查表定位会话。
 type StreamFrame struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

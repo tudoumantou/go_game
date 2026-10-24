@@ -36,8 +36,11 @@ type StreamHandler interface {
 	OnUnbind(ctx context.Context, sessionID uint64) error
 	OnClientPacket(ctx context.Context, sessionID uint64, msgID uint32, seq uint32, body []byte) error
 	// OnKick 网关要求强制下线（GM 踢人/封禁生效）。
+	//
+	// 参数是**角色 ID** 而不是会话号：网关不知道「玩家在哪个会话」，
+	// 那份映射属于游戏服（players2sess 是唯一权威）。
 	// reason 是给客户端看的文案（KickNotify.Reason），可为空。
-	OnKick(ctx context.Context, sessionID uint64, reason string) error
+	OnKick(ctx context.Context, playerID int64, reason string) error
 }
 
 // GameServer GameService 实现。
@@ -119,8 +122,15 @@ func (s *GameServer) handleCtrl(ctx context.Context, ctrl *internalv2.CtrlMsg) {
 	case internalv2.CtrlMsg_KICK:
 		// 强制下线：GM 踢人、封禁生效。与玩家主动登出/掉线不同，
 		// 这里由服务端发起，客户端收到 KickNotify 后断开。
-		if err := s.handler.OnKick(ctx, ctrl.SessionId, string(ctrl.Payload)); err != nil {
-			s.logger.Warn("handle kick", "session_id", ctrl.SessionId, "err", err)
+		//
+		// 按角色号路由：网关只知道 player_id，会话由游戏服自己查
+		// （广播给所有节点，只有持有该玩家的那份会命中）。
+		if ctrl.PlayerId == 0 {
+			s.logger.Warn("kick without player_id ignored", "session_id", ctrl.SessionId)
+			return
+		}
+		if err := s.handler.OnKick(ctx, ctrl.PlayerId, string(ctrl.Payload)); err != nil {
+			s.logger.Warn("handle kick", "player_id", ctrl.PlayerId, "err", err)
 		}
 	}
 }

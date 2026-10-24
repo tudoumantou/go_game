@@ -19,8 +19,8 @@ type fakeHandler struct {
 	binds   []uint64
 	unbinds []uint64
 	kicks   []struct {
-		SessionID uint64
-		Reason    string
+		PlayerID int64
+		Reason   string
 	}
 }
 
@@ -38,29 +38,50 @@ func (f *fakeHandler) OnClientPacket(context.Context, uint64, uint32, uint32, []
 	return nil
 }
 
-func (f *fakeHandler) OnKick(_ context.Context, sessionID uint64, reason string) error {
+func (f *fakeHandler) OnKick(_ context.Context, playerID int64, reason string) error {
 	f.kicks = append(f.kicks, struct {
-		SessionID uint64
-		Reason    string
-	}{sessionID, reason})
+		PlayerID int64
+		Reason   string
+	}{playerID, reason})
 	return nil
 }
 
-// TestHandleCtrlKick KICK 帧必须分发到 OnKick，带上会话号与原因。
+// TestHandleCtrlKick KICK 帧必须分发到 OnKick，带上角色号与原因。
+//
+// 传的是 PlayerId 而不是 SessionId：网关不知道玩家的会话号（也不需要知道），
+// 会话由游戏服自己查。把 SessionId 当角色号传会踢错人。
 func TestHandleCtrlKick(t *testing.T) {
 	h := &fakeHandler{}
 	s := NewGameServer(h, log.New("rpc-test", log.WithLevel("error")))
 
 	s.handleCtrl(context.Background(), &internalv2.CtrlMsg{
 		Type:      internalv2.CtrlMsg_KICK,
-		SessionId: 77,
+		SessionId: 77, // 故意给一个会话号，确认它不被当成目标
+		PlayerId:  42,
 		Payload:   []byte("banned"),
 	})
 
 	require.Empty(t, h.unbinds, "KICK 不能被当成 UNBIND")
 	require.Len(t, h.kicks, 1)
-	require.EqualValues(t, 77, h.kicks[0].SessionID)
+	require.EqualValues(t, 42, h.kicks[0].PlayerID)
 	require.Equal(t, "banned", h.kicks[0].Reason)
+}
+
+// TestHandleCtrlKickWithoutPlayerID 没带角色号的 KICK 直接忽略。
+//
+// 忽略而不是回退用 SessionId：那条回退路径会把「会话号」当角色号去查表，
+// 查不到就静默失败，查到了就是踢错人——两种都比丢弃更糟。
+func TestHandleCtrlKickWithoutPlayerID(t *testing.T) {
+	h := &fakeHandler{}
+	s := NewGameServer(h, log.New("rpc-test", log.WithLevel("error")))
+
+	s.handleCtrl(context.Background(), &internalv2.CtrlMsg{
+		Type:      internalv2.CtrlMsg_KICK,
+		SessionId: 77,
+	})
+
+	require.Empty(t, h.kicks, "没有角色号时不能动任何会话")
+	require.Empty(t, h.unbinds)
 }
 
 // TestHandleCtrlUnbind UNBIND 仍然走解绑，不能被 KICK 分支抢走。
@@ -84,8 +105,8 @@ func TestHandleCtrlKickWithoutPayload(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		s.handleCtrl(context.Background(), &internalv2.CtrlMsg{
-			Type:      internalv2.CtrlMsg_KICK,
-			SessionId: 9,
+			Type:     internalv2.CtrlMsg_KICK,
+			PlayerId: 9,
 		})
 	})
 	require.Len(t, h.kicks, 1)

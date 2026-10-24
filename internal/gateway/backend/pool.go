@@ -59,8 +59,9 @@ type Pool struct {
 // streamConn 一条会话级 gRPC 流的句柄。
 type streamConn struct {
 	// client 双向流对象。gRPC 保证同一流上 Send 与 Recv 可并发，
-	// 但多个 Send 并发调用不安全；现状同一会话的上行只有一个写方
-	// （router 读循环），因此未再加写锁
+	// 但多个 Send 并发调用不安全：上行有 router 读循环这一个写方，
+	// 而 Broadcast（GM 踢人）会借用别的会话的流下发——必须加锁。
+	sendMu sync.Mutex
 	client internalv2.GameService_ChannelClient
 	// cancel 注销流的 context func：调用后 stream 的 Recv 立即返回
 	// 错误、recvLoop 退出，是防止 goroutine 泄漏的收尾手段
@@ -79,6 +80,49 @@ func NewPool(clientPool *rpcpkg.ClientPool, logger *log.Logger, onFrame FrameHan
 		onFrame:    onFrame,
 		streams:    make(map[uint64]*streamConn),
 	}
+}
+
+// send 串行化对同一条流的写。
+//
+// gRPC 的 Send 不保证并发安全，而这条流有两个写方：router 读循环（业务
+// 上行）与 Broadcast（GM 踢人借道下发）。不加锁时并发写会让 HTTP/2 帧
+// 交错，对端直接断流。
+func (sc *streamConn) send(frame *internalv2.StreamFrame) error {
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
+	return sc.client.Send(frame)
+}
+
+// Broadcast 向每个后端节点各发一帧（同一节点的多条会话流只发一次）。
+//
+// 用途：管理端只知道 player_id、不知道会话号——会话映射属于游戏服
+// （players2sess 是唯一权威），网关保一份副本只会产生两份真相。
+// 因此这里广播，由持有该玩家的节点命中并处理，其余节点忽略即可。
+//
+// 取舍：节点数通常个位数，广播成本可接受；换来的是「网关不需要知道
+// 谁在线」。返回成功投递的节点数与各节点的错误。
+func (p *Pool) Broadcast(frame *internalv2.StreamFrame) (int, []error) {
+	p.mu.RLock()
+	// 同一 target 只取一条流：一个节点上可能有很多会话流，
+	// 逐条发会让同一节点收到 N 份同样的踢人指令。
+	byTarget := make(map[string]*streamConn, len(p.streams))
+	for _, sc := range p.streams {
+		if _, ok := byTarget[sc.target]; !ok {
+			byTarget[sc.target] = sc
+		}
+	}
+	p.mu.RUnlock()
+
+	var errs []error
+	sent := 0
+	for target, sc := range byTarget {
+		if err := sc.send(frame); err != nil {
+			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
+			continue
+		}
+		sent++
+	}
+	return sent, errs
 }
 
 // GetOrConnect 获取或创建指定会话的 stream（firstFrame 通常为 BIND）。
@@ -150,11 +194,7 @@ func (p *Pool) Send(sessionID uint64, frame *internalv2.StreamFrame) error {
 		metrics.ChannelError("send_no_stream")
 		return fmt.Errorf("session %d stream not found", sessionID)
 	}
-	if err := sc.client.Send(frame); err != nil {
-		metrics.ChannelError("send")
-		return err
-	}
-	return nil
+	return sc.send(frame)
 }
 
 // recvLoop 会话级下行接收循环（goroutine per stream）。
