@@ -54,6 +54,14 @@ type Pool struct {
 	// Send/Recv 等可能阻塞的 IO，否则读锁会被长时间占死
 	mu      sync.RWMutex
 	streams map[uint64]*streamConn // session_id -> stream
+
+	// adminMu 保护 admin：target -> 管理流。
+	//
+	// 管理流是「不属于任何玩家会话」的常驻下行通道，用于 GM 踢人这类
+	// 只知道角色号、不知道会话号的指令。它不能复用 streams——那份表的
+	// key 是会话号，而管理指令没有会话。
+	adminMu sync.Mutex
+	admin   map[string]*adminStream
 }
 
 // streamConn 一条会话级 gRPC 流的句柄。
@@ -79,6 +87,7 @@ func NewPool(clientPool *rpcpkg.ClientPool, logger *log.Logger, onFrame FrameHan
 		logger:     logger,
 		onFrame:    onFrame,
 		streams:    make(map[uint64]*streamConn),
+		admin:      make(map[string]*adminStream),
 	}
 }
 
@@ -93,37 +102,95 @@ func (sc *streamConn) send(frame *internalv2.StreamFrame) error {
 	return sc.client.Send(frame)
 }
 
-// Broadcast 向每个后端节点各发一帧（同一节点的多条会话流只发一次）。
-//
-// 用途：管理端只知道 player_id、不知道会话号——会话映射属于游戏服
-// （players2sess 是唯一权威），网关保一份副本只会产生两份真相。
-// 因此这里广播，由持有该玩家的节点命中并处理，其余节点忽略即可。
-//
-// 取舍：节点数通常个位数，广播成本可接受；换来的是「网关不需要知道
-// 谁在线」。返回成功投递的节点数与各节点的错误。
-func (p *Pool) Broadcast(frame *internalv2.StreamFrame) (int, []error) {
-	p.mu.RLock()
-	// 同一 target 只取一条流：一个节点上可能有很多会话流，
-	// 逐条发会让同一节点收到 N 份同样的踢人指令。
-	byTarget := make(map[string]*streamConn, len(p.streams))
-	for _, sc := range p.streams {
-		if _, ok := byTarget[sc.target]; !ok {
-			byTarget[sc.target] = sc
-		}
-	}
-	p.mu.RUnlock()
-
-	var errs []error
-	sent := 0
-	for target, sc := range byTarget {
-		if err := sc.send(frame); err != nil {
-			errs = append(errs, fmt.Errorf("target %s: %w", target, err))
-			continue
-		}
-		sent++
-	}
-	return sent, errs
+// adminStream 一条到指定 game 节点的管理流。
+type adminStream struct {
+	sendMu sync.Mutex
+	stream internalv2.GameService_ChannelClient
+	cancel context.CancelFunc
+	target string
 }
+
+// AdminSend 向指定 game 节点发一帧管理指令（懒建并复用管理流）。
+//
+// 为什么需要独立的流：发「踢某个角色」时网关只知道 player_id，不知道会话号，
+// 因此没法用 streams（key 是会话号）挑一条流下发。原先的做法是「借任意一条
+// 会话流广播」，但网关空载（刚启动、玩家都在别的网关）时一条流都没有，
+// 踢人就会返回 502——管理动作不该依赖业务流量。
+//
+// 成本：每个网关对每个 game 节点保持一条空闲流，节点数通常个位数。
+// 发送失败时丢弃该流，下次调用重建（不做心跳，靠失败驱动自愈）。
+func (p *Pool) AdminSend(ctx context.Context, target string, frame *internalv2.StreamFrame) error {
+	st, err := p.adminStreamFor(ctx, target)
+	if err != nil {
+		return err
+	}
+
+	st.sendMu.Lock()
+	err = st.stream.Send(frame)
+	st.sendMu.Unlock()
+
+	if err != nil {
+		// 流可能已断（节点重启/网络切换）：丢掉缓存，下次重建。
+		p.dropAdmin(target, st)
+		return fmt.Errorf("admin send %s: %w", target, err)
+	}
+	return nil
+}
+
+// adminStreamFor 取或建管理流。
+func (p *Pool) adminStreamFor(ctx context.Context, target string) (*adminStream, error) {
+	p.adminMu.Lock()
+	defer p.adminMu.Unlock()
+
+	if st, ok := p.admin[target]; ok && st != nil {
+		return st, nil
+	}
+
+	cc, err := p.clientPool.Get(target)
+	if err != nil {
+		return nil, err
+	}
+	client := internalv2.NewGameServiceClient(cc)
+	// 流生命周期与会话无关：用 Background 派生，不跟随单次请求的 ctx
+	streamCtx, cancel := context.WithCancel(context.Background())
+	stream, err := client.Channel(streamCtx)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("admin channel %s: %w", target, err)
+	}
+
+	// 首帧必须是 BIND（游戏服据此建立流），会话号用哨兵 0 表示「管理流」
+	if err := stream.Send(&internalv2.StreamFrame{
+		Data: &internalv2.StreamFrame_Ctrl{Ctrl: &internalv2.CtrlMsg{
+			Type:      internalv2.CtrlMsg_BIND,
+			SessionId: adminSessionID,
+		}},
+	}); err != nil {
+		cancel()
+		return nil, fmt.Errorf("admin bind %s: %w", target, err)
+	}
+
+	st := &adminStream{stream: stream, cancel: cancel, target: target}
+	p.admin[target] = st
+	p.logger.Info("admin stream established", "target", target)
+	return st, nil
+}
+
+// dropAdmin 丢弃某节点的管理流缓存（仅当缓存仍是这一条时）。
+func (p *Pool) dropAdmin(target string, st *adminStream) {
+	p.adminMu.Lock()
+	defer p.adminMu.Unlock()
+	if cur, ok := p.admin[target]; ok && cur == st {
+		delete(p.admin, target)
+	}
+	st.cancel()
+}
+
+// adminSessionID 与 rpc.AdminSessionID 必须一致。
+//
+// 不直接引用 rpc 包是为了不让 gateway/backend 依赖 game/rpc（两者是
+// 平级的传输层）；一致性由单测断言（TestAdminSessionIDMatchesRPC）。
+const adminSessionID uint64 = 0
 
 // GetOrConnect 获取或创建指定会话的 stream（firstFrame 通常为 BIND）。
 //
@@ -244,5 +311,12 @@ func (p *Pool) Close() error {
 		sc.cancel()
 		delete(p.streams, id)
 	}
+
+	p.adminMu.Lock()
+	for target, st := range p.admin {
+		st.cancel()
+		delete(p.admin, target)
+	}
+	p.adminMu.Unlock()
 	return nil
 }

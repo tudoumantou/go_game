@@ -1,99 +1,133 @@
-// internal/gateway/backend/pool_test.go —— 广播下发
+// internal/gateway/backend/pool_test.go —— 管理流
 //
-// GM 踢人只知道角色号，不知道会话语义上的「发到哪条流」，因此按节点广播：
-// 每个 target 只发一帧（同一节点上有很多会话流，逐条发会让该节点收到 N 份）。
+// 管理流是「不属于任何玩家会话」的下行通道：GM 踢人只知道角色号，
+// 挑不出一条会话流来发。用 bufconn 跑真实 gRPC，验证首帧 BIND（会话号 0）
+// 与后续控制帧确实到达游戏服——这两步任何一步错了，表现都是「踢了没反应」。
 package backend
 
 import (
-	"errors"
+	"context"
+	"net"
 	"testing"
+	"time"
 
+	"game_study/internal/game/rpc"
 	"game_study/pkg/log"
 	internalv2 "game_study/pkg/pb/internalv2"
+	rpcpkg "game_study/pkg/rpc"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/test/bufconn"
 )
 
-// fakeStream 只实现 Send：广播路径不发 Recv。
-type fakeStream struct {
-	internalv2.GameService_ChannelClient
-	sent []*internalv2.StreamFrame
-	err  error
+// kickRecorder 记录游戏服收到的踢人指令。
+type kickRecorder struct {
+	binds []uint64
+	kicks []int64
+	got   chan int64
 }
 
-func (f *fakeStream) Send(fr *internalv2.StreamFrame) error {
-	if f.err != nil {
-		return f.err
-	}
-	f.sent = append(f.sent, fr)
+func (k *kickRecorder) OnBind(_ context.Context, sessionID uint64, _, _ int64) error {
+	k.binds = append(k.binds, sessionID)
 	return nil
 }
 
-// TestBroadcastOncePerTarget 同节点多条会话流只发一次；不同节点各发一次。
-func TestBroadcastOncePerTarget(t *testing.T) {
-	logger := log.New("pool-test", log.WithLevel("error"))
-	p := NewPool(nil, logger, nil)
+func (k *kickRecorder) OnUnbind(context.Context, uint64) error { return nil }
 
-	a1 := &fakeStream{}
-	a2 := &fakeStream{} // 同属 game-01 的另一个会话
-	b1 := &fakeStream{}
-	p.streams[1] = &streamConn{client: a1, target: "game-01", cancel: func() {}}
-	p.streams[2] = &streamConn{client: a2, target: "game-01", cancel: func() {}}
-	p.streams[3] = &streamConn{client: b1, target: "game-02", cancel: func() {}}
+func (k *kickRecorder) OnClientPacket(context.Context, uint64, uint32, uint32, []byte) error {
+	return nil
+}
 
-	sent, errs := p.Broadcast(kickFrameForTest(42))
-
-	require.Empty(t, errs)
-	require.Equal(t, 2, sent, "两个节点各一次")
-	// 同 target 下选中哪条流是不确定的（map 遍历），只要求合计恰好一条
-	require.Equal(t, 1, len(a1.sent)+len(a2.sent), "同一节点不能重复下发")
-	require.Len(t, b1.sent, 1)
-
-	var delivered *internalv2.StreamFrame
-	if len(a1.sent) > 0 {
-		delivered = a1.sent[0]
-	} else {
-		delivered = a2.sent[0]
+func (k *kickRecorder) OnKick(_ context.Context, playerID int64, _ string) error {
+	k.kicks = append(k.kicks, playerID)
+	select {
+	case k.got <- playerID:
+	default:
 	}
-	require.EqualValues(t, 42, delivered.GetCtrl().GetPlayerId())
+	return nil
 }
 
-// TestBroadcastReportsPartialFailure 部分节点发失败：成功的照发，失败的要报出来。
+// TestAdminSessionIDMatchesRPC 两个包各自定义了管理会话号，必须一致。
 //
-// 静默忽略失败会让「踢了没反应」无从排查——运营需要一个明确的错误。
-func TestBroadcastReportsPartialFailure(t *testing.T) {
-	logger := log.New("pool-test", log.WithLevel("error"))
-	p := NewPool(nil, logger, nil)
-
-	ok := &fakeStream{}
-	bad := &fakeStream{err: errors.New("stream broken")}
-	p.streams[1] = &streamConn{client: ok, target: "game-01", cancel: func() {}}
-	p.streams[2] = &streamConn{client: bad, target: "game-02", cancel: func() {}}
-
-	sent, errs := p.Broadcast(kickFrameForTest(42))
-
-	require.Equal(t, 1, sent)
-	require.Len(t, errs, 1)
-	require.Contains(t, errs[0].Error(), "game-02")
+// 不一致的表现：网关发的首帧被游戏服当成真实会话绑定（或反过来被拒），
+// 踢人指令永远到不了。
+func TestAdminSessionIDMatchesRPC(t *testing.T) {
+	require.EqualValues(t, rpc.AdminSessionID, adminSessionID)
 }
 
-// TestBroadcastNoStreams 一个节点都没连：返回 0 与空错误，由上层决定怎么报。
-func TestBroadcastNoStreams(t *testing.T) {
-	p := NewPool(nil, log.New("pool-test", log.WithLevel("error")), nil)
+// TestAdminSendDeliversKick 管理流能建立并送达 KICK，且不产生玩家绑定。
+func TestAdminSendDeliversKick(t *testing.T) {
+	logger := log.New("admin-test", log.WithLevel("error"))
 
-	sent, errs := p.Broadcast(kickFrameForTest(42))
+	rec := &kickRecorder{got: make(chan int64, 1)}
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	internalv2.RegisterGameServiceServer(srv, rpc.NewGameServer(rec, logger))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
 
-	require.Equal(t, 0, sent)
-	require.Empty(t, errs)
-}
+	// 用 bufconn 的 dialer 建连接；target 走 passthrough（默认 scheme）
+	pool := NewPool(
+		rpcpkg.NewClientPool(grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		})),
+		logger, nil,
+	)
+	t.Cleanup(func() { _ = pool.Close() })
 
-// kickFrameForTest 构造一帧带角色号的 KICK（真实构造在 gateway 包，这里只需形状）。
-func kickFrameForTest(playerID int64) *internalv2.StreamFrame {
-	return &internalv2.StreamFrame{
+	frame := &internalv2.StreamFrame{
 		Data: &internalv2.StreamFrame_Ctrl{Ctrl: &internalv2.CtrlMsg{
 			Type:     internalv2.CtrlMsg_KICK,
-			PlayerId: playerID,
+			PlayerId: 42,
 			Payload:  []byte("banned"),
 		}},
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	require.NoError(t, pool.AdminSend(ctx, "passthrough:///bufnet", frame))
+
+	select {
+	case pid := <-rec.got:
+		require.EqualValues(t, 42, pid)
+	case <-time.After(3 * time.Second):
+		t.Fatal("KICK 帧没有送达游戏服")
+	}
+
+	require.Empty(t, rec.binds, "管理流不能触发 OnBind（它不绑定任何玩家）")
+}
+
+// TestAdminSendReusesStream 第二次发送复用同一条管理流（不重复建连）。
+func TestAdminSendReusesStream(t *testing.T) {
+	logger := log.New("admin-test", log.WithLevel("error"))
+
+	rec := &kickRecorder{got: make(chan int64, 4)}
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	internalv2.RegisterGameServiceServer(srv, rpc.NewGameServer(rec, logger))
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	pool := NewPool(
+		rpcpkg.NewClientPool(grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return lis.Dial()
+		})),
+		logger, nil,
+	)
+	t.Cleanup(func() { _ = pool.Close() })
+
+	ctx := context.Background()
+	mk := func(pid int64) *internalv2.StreamFrame {
+		return &internalv2.StreamFrame{Data: &internalv2.StreamFrame_Ctrl{Ctrl: &internalv2.CtrlMsg{
+			Type: internalv2.CtrlMsg_KICK, PlayerId: pid,
+		}}}
+	}
+
+	require.NoError(t, pool.AdminSend(ctx, "passthrough:///bufnet", mk(1)))
+	first := pool.admin["passthrough:///bufnet"]
+	require.NotNil(t, first)
+
+	require.NoError(t, pool.AdminSend(ctx, "passthrough:///bufnet", mk(2)))
+	require.Same(t, first, pool.admin["passthrough:///bufnet"], "必须复用同一条流")
 }

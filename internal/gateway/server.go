@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -461,22 +462,52 @@ func (s *Server) httpHandler() http.Handler {
 // 参数是角色 ID，不是会话号：会话↔角色的映射是游戏服的事
 // （players2sess 是唯一权威），网关不该再存一份。
 //
-// 帧怎么送到「持有该玩家的那个节点」：广播。网关手里只有「本实例到各
-// game 节点的会话流」，没有 player→node（那份在 presence），而为了踢一个
-// 人先去查 presence 再建连接并不划算。节点通常个位数，广播成本可接受；
-// 非持有者收到后查不到会话，静默忽略。
+// 下发方式：按 etcd 里的 game 节点列表，对每个节点各发一帧管理指令。
+// 用的是「管理流」（不属于任何玩家会话），因此不依赖本网关是否有业务流量——
+// 刚启动、空载的网关也能踢人。非持有该玩家的节点收到后查不到会话，静默忽略。
 func (s *Server) KickPlayer(playerID int64, reason string) error {
 	if s.backend == nil {
 		return fmt.Errorf("gateway: backend pool not ready")
 	}
-	sent, errs := s.backend.Broadcast(kickFrame(playerID, reason))
-	if sent == 0 {
-		if len(errs) > 0 {
-			return fmt.Errorf("broadcast kick: %w", errs[0])
-		}
-		return fmt.Errorf("no game backend connected")
+	if s.etcdReg == nil {
+		return fmt.Errorf("gateway: game registry not ready")
 	}
-	s.logger.Info("kick frame broadcast", "player_id", playerID, "reason", reason, "nodes", sent)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	nodes, err := s.etcdReg.List(ctx, "game")
+	if err != nil {
+		return fmt.Errorf("list game nodes: %w", err)
+	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("no game node registered")
+	}
+
+	frame := kickFrame(playerID, reason)
+	sent := 0
+	var errs []error
+	for _, n := range nodes {
+		if n.Addr == "" {
+			continue
+		}
+		if err := s.backend.AdminSend(ctx, n.Addr, frame); err != nil {
+			errs = append(errs, fmt.Errorf("node %s: %w", n.ID, err))
+			continue
+		}
+		sent++
+	}
+
+	if sent == 0 {
+		return fmt.Errorf("kick broadcast failed: %w", errors.Join(errs...))
+	}
+	if len(errs) > 0 {
+		// 部分节点失败不算致命：踢人指令是幂等的，持有该玩家的节点若在
+		// 失败集合里，运营重试一次即可；这里只记日志，不回滚已成功的部分。
+		s.logger.Warn("kick partially delivered",
+			"player_id", playerID, "sent", sent, "failed", len(errs), "err", errors.Join(errs...))
+	}
+	s.logger.Info("kick delivered", "player_id", playerID, "reason", reason, "nodes", sent)
 	return nil
 }
 

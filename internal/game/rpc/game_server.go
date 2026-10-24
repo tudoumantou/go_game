@@ -27,6 +27,14 @@ import (
 	internalv2 "game_study/pkg/pb/internalv2"
 )
 
+// AdminSessionID 管理流专用的会话号。
+//
+// 网关除了「每个玩家一条流」之外，还需要一条「谁来都行、只用来下指令」的
+// 通道（GM 踢人、广播）。这条流不绑定任何玩家，因此不能占用真实会话号——
+// 真实会话号来自网关侧连接 ID，必然 > 0，用 0 做哨兵不会冲突，
+// 也不会被误当成某个玩家。
+const AdminSessionID uint64 = 0
+
 // StreamHandler 处理 stream 上的数据。
 //
 // 三个方法的错误只记日志不中断流（见 Channel）：单包处理失败不该掐掉
@@ -81,6 +89,12 @@ func (s *GameServer) Channel(stream internalv2.GameService_ChannelServer) error 
 		return fmt.Errorf("first frame must be BIND")
 	}
 	sessionID := ctrl.SessionId
+	if sessionID == AdminSessionID {
+		// 管理流：不绑定玩家、不进 streams 表（它没有下行需求）。
+		// 多个网关实例可以各建一条，彼此不覆盖——这正是「管理流不注册到
+		// streams」的原因：用 sessionID=0 当 key 会互相顶掉。
+		return s.serveAdminStream(ctx, stream)
+	}
 	s.bindStream(sessionID, stream)
 	// defer 保证任何返回路径（EOF/错误/panic 后的正常返回）都摘掉映射，
 	// 否则已断开的流会留在 streams 里，下行持续静默失败
@@ -111,6 +125,27 @@ func (s *GameServer) Channel(stream internalv2.GameService_ChannelServer) error 
 		case *internalv2.StreamFrame_Ctrl:
 			s.handleCtrl(ctx, d.Ctrl)
 		}
+	}
+}
+
+// serveAdminStream 处理管理流：只接受控制帧，忽略业务包。
+//
+// 管理流没有玩家上下文，收到 ClientPacket 说明对端用错了流，丢弃即可
+// （不能走 OnClientPacket——那需要 sessionID 对应的会话）。
+func (s *GameServer) serveAdminStream(ctx context.Context, stream internalv2.GameService_ChannelServer) error {
+	for {
+		frame, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if d, ok := frame.Data.(*internalv2.StreamFrame_Ctrl); ok {
+			s.handleCtrl(ctx, d.Ctrl)
+			continue
+		}
+		s.logger.Warn("unexpected frame on admin stream")
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"game_study/internal/gateway/backend"
 	"game_study/pkg/config"
 	"game_study/pkg/log"
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -122,4 +123,16 @@ func TestAdminKickHTTP(t *testing.T) {
 	req.RemoteAddr = "127.0.0.1:1"
 	h.ServeHTTP(w, req)
 	require.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+// TestKickPlayerWithoutRegistry 有连接池但拿不到节点列表时报错。
+//
+// 静默成功是最坏的结果：运营以为封禁生效了，玩家其实还在线上。
+func TestKickPlayerWithoutRegistry(t *testing.T) {
+	s := newTestServer("")
+	s.backend = backend.NewPool(nil, s.logger, nil)
+
+	err := s.KickPlayer(42, "banned")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "registry")
 }
