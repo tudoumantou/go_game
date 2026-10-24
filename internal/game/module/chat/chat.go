@@ -158,6 +158,15 @@ func (r *Repo) ListRecent(ctx context.Context, ownerID, peerID int64, limit int)
 	return out, rows.Err()
 }
 
+// chatRepo 是模块对历史仓储的全部依赖（接口隔离）。
+//
+// 抽成接口只为一件事：让「频道校验」「三路投递」「方向还原」这些纯编排逻辑
+// 能在内存里测，不必为一条断言拉起 MySQL。*Repo 隐式实现它，装配层不变。
+type chatRepo interface {
+	Insert(ctx context.Context, ownerID, peerID, msgID int64, direction int32, channel int32, content string) error
+	ListRecent(ctx context.Context, ownerID, peerID int64, limit int) ([]ChatLine, error)
+}
+
 // Module 聊天模块。
 //
 // 无玩家态：所有状态在 MySQL（历史）与 Redis（在线/暂存），模块只做编排，
@@ -166,13 +175,13 @@ type Module struct {
 	*module.Thin
 
 	// repo 历史仓储；nil 表示无 DB 环境（降级：只校验 + 投递，不留历史）
-	repo      *Repo
+	repo      chatRepo
 	messenger Messenger
 	logger    *log.Logger
 }
 
 // New 创建聊天模块（messenger 可为 nil：单机降级为只落库）。
-func New(repo *Repo, messenger Messenger, logger *log.Logger) *Module {
+func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
 	m := &Module{repo: repo, messenger: messenger, logger: logger}
 	m.Thin = module.NewThin("chat",
 		module.ThinLogger(logger),
@@ -334,16 +343,6 @@ func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp
 	// 私聊翻页场景用「取满」近似足够（客户端可再拉一页确认）
 	resp.HasMore = len(lines) >= int(req.Limit)
 	return nil
-}
-
-// reply 统一序列化并回包（与战斗模块同一约定：
-// 可预期失败走业务码，error 只留给序列化/发送真故障）。
-func (m *Module) reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
 }
 
 // nextMsgID 生成全局消息 ID（时间戳毫秒 << 20 | 20 位随机）。

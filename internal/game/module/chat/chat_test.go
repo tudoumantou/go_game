@@ -1,0 +1,389 @@
+// internal/game/module/chat/chat_test.go —— 聊天模块单测
+//
+// 私聊是「发送 → 三路投递 → 历史」的编排：任何一路走错，
+// 表现都是「消息发出去对方收不到」或「收到了但历史里没有」。
+// 这里用 fake messenger 把三路互斥关系钉死，用 fake repo 盯住落库方向与次数。
+package chat
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"game_study/internal/game/module"
+	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/log"
+	pkgmq "game_study/pkg/mq"
+	gamev1 "game_study/pkg/pb/game/v1"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+)
+
+// ============================================================================
+// 测试替身
+// ============================================================================
+
+type insertCall struct {
+	OwnerID, PeerID, MsgID int64
+	Direction, Channel     int32
+	Content                string
+}
+
+type fakeRepo struct {
+	inserts []insertCall
+	lines   []ChatLine
+	insErr  error
+	listErr error
+}
+
+func (f *fakeRepo) Insert(_ context.Context, ownerID, peerID, msgID int64, direction, channel int32, content string) error {
+	f.inserts = append(f.inserts, insertCall{ownerID, peerID, msgID, direction, channel, content})
+	return f.insErr
+}
+
+func (f *fakeRepo) ListRecent(_ context.Context, _, _ int64, _ int) ([]ChatLine, error) {
+	return f.lines, f.listErr
+}
+
+type pushCall struct {
+	PlayerID int64
+	MsgID    uint32
+	Body     []byte
+}
+
+type fakeMessenger struct {
+	self   string
+	node   string
+	online bool
+
+	pushed     []pushCall
+	crossed    []*pkgmq.ChatCrossMsg
+	pended     []*pkgmq.ChatCrossMsg
+	pushOK     bool
+	produceErr error
+	pendErr    error
+}
+
+func (f *fakeMessenger) SelfNode() string { return f.self }
+
+func (f *fakeMessenger) OnlineNode(context.Context, int64) (string, bool) {
+	return f.node, f.online
+}
+
+func (f *fakeMessenger) Push(_ context.Context, playerID int64, msgID uint32, body []byte) bool {
+	f.pushed = append(f.pushed, pushCall{playerID, msgID, append([]byte(nil), body...)})
+	return f.pushOK
+}
+
+func (f *fakeMessenger) ProduceCross(_ context.Context, msg *pkgmq.ChatCrossMsg) error {
+	f.crossed = append(f.crossed, msg)
+	return f.produceErr
+}
+
+func (f *fakeMessenger) PendOffline(_ context.Context, _ int64, msg *pkgmq.ChatCrossMsg) error {
+	f.pended = append(f.pended, msg)
+	return f.pendErr
+}
+
+// ============================================================================
+// 装配
+// ============================================================================
+
+func newTestModule(repo chatRepo, msg Messenger) (*Module, *moduletest.State, *moduletest.Recorder, *module.Context) {
+	st := moduletest.NewState(100)
+	st.SetProfile(module.Profile{Name: "阿甲"})
+	rec := moduletest.NewRecorder()
+	m := New(repo, msg, log.New("chat-test", log.WithLevel("error")))
+	return m, st, rec, moduletest.NewContext(st, rec)
+}
+
+func send(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, req *gamev1.ChatSendReq) *gamev1.ChatSendResp {
+	t.Helper()
+	raw, err := moduletest.Call(m, ctx, rec, msgIDSendReq, msgIDSendResp, req)
+	require.NoError(t, err)
+	require.NotNil(t, raw, "发送没有回包")
+	resp := &gamev1.ChatSendResp{}
+	require.NoError(t, proto.Unmarshal(raw, resp))
+	return resp
+}
+
+func history(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, req *gamev1.ChatHistoryReq) *gamev1.ChatHistoryResp {
+	t.Helper()
+	raw, err := moduletest.Call(m, ctx, rec, msgIDHistoryReq, msgIDHistoryResp, req)
+	require.NoError(t, err)
+	require.NotNil(t, raw, "历史没有回包")
+	resp := &gamev1.ChatHistoryResp{}
+	require.NoError(t, proto.Unmarshal(raw, resp))
+	return resp
+}
+
+// ============================================================================
+// 发送校验
+// ============================================================================
+
+// TestSendRejectsClosedChannel P6 只开放私聊；其他频道明确回 4001，
+// 且不能落库、不能投递。
+func TestSendRejectsClosedChannel(t *testing.T) {
+	repo := &fakeRepo{}
+	msg := &fakeMessenger{self: "game-01"}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: 1, PeerId: 200, Content: "hi"})
+	require.EqualValues(t, codeChannelClosed, resp.Code)
+	require.Empty(t, repo.inserts, "频道关闭不能落历史")
+	require.Empty(t, msg.pushed)
+	require.Empty(t, msg.crossed)
+	require.Empty(t, msg.pended)
+}
+
+// TestSendAllowsZeroChannelAsPrivate 老客户端不传 channel，0 按私聊兼容。
+func TestSendAllowsZeroChannelAsPrivate(t *testing.T) {
+	repo := &fakeRepo{}
+	msg := &fakeMessenger{self: "game-01", online: false}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: 0, PeerId: 200, Content: "hi"})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.Len(t, repo.inserts, 1, "channel=0 应走私聊并落 out 历史")
+}
+
+// TestSendRejectsEmptyContentAndBadPeer 空内容与非正对端都回 4005。
+func TestSendRejectsEmptyContentAndBadPeer(t *testing.T) {
+	for _, c := range []*gamev1.ChatSendReq{
+		{Channel: channelPrivate, PeerId: 200, Content: ""},
+		{Channel: channelPrivate, PeerId: 0, Content: "hi"},
+		{Channel: channelPrivate, PeerId: -5, Content: "hi"},
+	} {
+		repo := &fakeRepo{}
+		m, _, rec, ctx := newTestModule(repo, &fakeMessenger{self: "game-01"})
+		resp := send(t, m, ctx, rec, c)
+		require.EqualValues(t, codeContentEmpty, resp.Code, fmt.Sprintf("req=%+v", c))
+		require.Empty(t, repo.inserts, "校验失败不能落库")
+	}
+}
+
+// ============================================================================
+// 三路投递（互斥）
+// ============================================================================
+
+// TestSendOfflinePends 对端离线：只暂存，不落 in、不推送、不走 Kafka。
+func TestSendOfflinePends(t *testing.T) {
+	repo := &fakeRepo{}
+	msg := &fakeMessenger{self: "game-01", online: false}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "在吗"})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.Len(t, msg.pended, 1, "离线必须暂存")
+	require.EqualValues(t, 200, msg.pended[0].ToID)
+	require.EqualValues(t, "在吗", msg.pended[0].Content)
+	require.Empty(t, msg.pushed)
+	require.Empty(t, msg.crossed)
+
+	// 只落发送方 out 那一行
+	require.Len(t, repo.inserts, 1)
+	require.EqualValues(t, DirectionOut, repo.inserts[0].Direction)
+	require.EqualValues(t, 100, repo.inserts[0].OwnerID)
+	require.EqualValues(t, 200, repo.inserts[0].PeerID)
+}
+
+// TestSendLocalOnlinePushes 对端在本服：落 in 历史 + 推送，不走 Kafka/暂存。
+func TestSendLocalOnlinePushes(t *testing.T) {
+	repo := &fakeRepo{}
+	msg := &fakeMessenger{self: "game-01", node: "game-01", online: true, pushOK: true}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "在吗"})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.NotEmpty(t, resp.MsgId, "回包要带 msgID，客户端据此回显")
+	require.NotZero(t, resp.SentAt)
+
+	require.Len(t, msg.pushed, 1, "本服在线必须直推")
+	require.EqualValues(t, 200, msg.pushed[0].PlayerID)
+	require.EqualValues(t, msgIDNotify, msg.pushed[0].MsgID)
+	require.Empty(t, msg.crossed)
+	require.Empty(t, msg.pended)
+
+	// 两条历史：发送方 out + 接收方 in，共用同一个 msgID
+	require.Len(t, repo.inserts, 2)
+	require.EqualValues(t, DirectionOut, repo.inserts[0].Direction)
+	require.EqualValues(t, DirectionIn, repo.inserts[1].Direction)
+	require.EqualValues(t, 200, repo.inserts[1].OwnerID, "in 历史归属接收方")
+	require.EqualValues(t, repo.inserts[0].MsgID, repo.inserts[1].MsgID, "两行必须同一个 msgID")
+
+	var notify gamev1.ChatMessageNotify
+	require.NoError(t, proto.Unmarshal(msg.pushed[0].Body, &notify))
+	require.EqualValues(t, 100, notify.SenderId, "身份取会话，不信协议体")
+	require.EqualValues(t, "阿甲", notify.SenderName)
+	require.EqualValues(t, "在吗", notify.Content)
+}
+
+// TestSendCrossNodeProducesKafka 对端在别的节点：走 Kafka，且毫秒换算只此一处。
+func TestSendCrossNodeProducesKafka(t *testing.T) {
+	repo := &fakeRepo{}
+	msg := &fakeMessenger{self: "game-01", node: "game-02", online: true}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "跨服"})
+	require.EqualValues(t, codeOK, resp.Code)
+
+	require.Len(t, msg.crossed, 1, "跨节点必须走 Kafka")
+	require.EqualValues(t, 200, msg.crossed[0].ToID)
+	require.EqualValues(t, "game-02", msg.node)
+	require.EqualValues(t, resp.SentAt*1000, msg.crossed[0].SendTime, "MQ 用毫秒，协议用秒")
+	require.Empty(t, msg.pushed, "跨节点不能直接推本地会话")
+	require.Empty(t, msg.pended)
+	require.Len(t, repo.inserts, 1, "跨服时本地只落 out，in 由对端节点落")
+}
+
+// TestSendNoMessengerDegrades messenger 为 nil（单机降级）时只落库，不 panic。
+func TestSendNoMessengerDegrades(t *testing.T) {
+	repo := &fakeRepo{}
+	m, _, rec, ctx := newTestModule(repo, nil)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.Len(t, repo.inserts, 1)
+}
+
+// TestSendNoRepoDegrades repo 为 nil（无库环境）时仍要投递，只是不留历史。
+func TestSendNoRepoDegrades(t *testing.T) {
+	msg := &fakeMessenger{self: "game-01", node: "game-01", online: true, pushOK: true}
+	m, _, rec, ctx := newTestModule(nil, msg)
+
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.Len(t, msg.pushed, 1, "没库也要推送")
+}
+
+// TestSendSurvivesDeliveryFailures 落库/暂存/生产失败都不影响回包。
+//
+// 私聊是尽力而为链路：回包只表示「服务端已受理」，失败的那一路由
+// 后续补投（离线队列）或 broker 重试兜底。
+func TestSendSurvivesDeliveryFailures(t *testing.T) {
+	repo := &fakeRepo{insErr: context.DeadlineExceeded}
+	msg := &fakeMessenger{
+		self: "game-01", online: false,
+		pendErr: context.DeadlineExceeded, produceErr: context.DeadlineExceeded,
+	}
+	m, _, rec, ctx := newTestModule(repo, msg)
+
+	require.EqualValues(t, codeOK, send(t, m, ctx, rec, &gamev1.ChatSendReq{
+		Channel: channelPrivate, PeerId: 200, Content: "hi",
+	}).Code, "落库/暂存失败不能把发送判失败")
+
+	require.Equal(t, 1, rec.Count(msgIDSendResp), "一次请求只能回一个包")
+}
+
+// ============================================================================
+// 历史
+// ============================================================================
+
+// TestHistoryReversesAndRestoresSides 倒序查出、正序回包，并按 direction 还原收发方。
+func TestHistoryReversesAndRestoresSides(t *testing.T) {
+	repo := &fakeRepo{lines: []ChatLine{
+		{MsgID: 3, Direction: DirectionIn, Content: "第三条"},
+		{MsgID: 2, Direction: DirectionOut, Content: "第二条"},
+		{MsgID: 1, Direction: DirectionIn, Content: "第一条"},
+	}}
+	m, _, rec, ctx := newTestModule(repo, nil)
+
+	resp := history(t, m, ctx, rec, &gamev1.ChatHistoryReq{PeerId: 200, Limit: 10})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.Len(t, resp.Messages, 3)
+	require.EqualValues(t, "1", resp.Messages[0].MsgId, "回包必须按时间正序")
+	require.EqualValues(t, "3", resp.Messages[2].MsgId)
+
+	// in：发送方是对端，接收方是自己
+	require.EqualValues(t, 200, resp.Messages[0].SenderId)
+	require.EqualValues(t, 100, resp.Messages[0].PeerId)
+	// out：发送方是自己，接收方是对端
+	require.EqualValues(t, 100, resp.Messages[1].SenderId)
+	require.EqualValues(t, 200, resp.Messages[1].PeerId)
+
+	require.False(t, resp.HasMore, "3 条 < 10，不该提示还有更多")
+}
+
+// TestHistoryHasMoreWhenPageFull 取满一页即提示可能还有更多。
+func TestHistoryHasMoreWhenPageFull(t *testing.T) {
+	repo := &fakeRepo{lines: []ChatLine{
+		{MsgID: 2, Direction: DirectionOut, Content: "b"},
+		{MsgID: 1, Direction: DirectionOut, Content: "a"},
+	}}
+	m, _, rec, ctx := newTestModule(repo, nil)
+
+	resp := history(t, m, ctx, rec, &gamev1.ChatHistoryReq{PeerId: 200, Limit: 2})
+	require.True(t, resp.HasMore)
+}
+
+// TestHistoryNoRepoDegrades 无库环境回空列表而不是报错。
+func TestHistoryNoRepoDegrades(t *testing.T) {
+	m, _, rec, ctx := newTestModule(nil, nil)
+	resp := history(t, m, ctx, rec, &gamev1.ChatHistoryReq{PeerId: 200, Limit: 10})
+	require.EqualValues(t, codeOK, resp.Code)
+	require.Empty(t, resp.Messages)
+}
+
+// TestHistoryRepoErrorPropagates 查库真故障要上抛（不能让客户端以为「没有历史」）。
+func TestHistoryRepoErrorPropagates(t *testing.T) {
+	repo := &fakeRepo{listErr: context.DeadlineExceeded}
+	m, _, rec, ctx := newTestModule(repo, nil)
+
+	_, err := moduletest.Call(m, ctx, rec, msgIDHistoryReq, msgIDHistoryResp,
+		&gamev1.ChatHistoryReq{PeerId: 200, Limit: 10})
+	require.Error(t, err)
+}
+
+// ============================================================================
+// 跨服来讯
+// ============================================================================
+
+// TestDeliverInboundWritesInDirection 跨服消费落地时只写 in 方向。
+func TestDeliverInboundWritesInDirection(t *testing.T) {
+	repo := &fakeRepo{}
+	m, _, _, _ := newTestModule(repo, nil)
+
+	err := m.DeliverInbound(context.Background(), &pkgmq.ChatCrossMsg{
+		MsgID: 9, FromID: 200, ToID: 100, Channel: channelPrivate, Content: "来了",
+	})
+	require.NoError(t, err)
+	require.Len(t, repo.inserts, 1)
+	require.EqualValues(t, 100, repo.inserts[0].OwnerID, "落地归属接收方")
+	require.EqualValues(t, 200, repo.inserts[0].PeerID)
+	require.EqualValues(t, DirectionIn, repo.inserts[0].Direction)
+	require.EqualValues(t, 9, repo.inserts[0].MsgID)
+}
+
+// TestDeliverInboundNoRepoIsNoop 无库环境静默跳过，不能阻断 Kafka 消费。
+func TestDeliverInboundNoRepoIsNoop(t *testing.T) {
+	m, _, _, _ := newTestModule(nil, nil)
+	require.NoError(t, m.DeliverInbound(context.Background(), &pkgmq.ChatCrossMsg{MsgID: 1}))
+}
+
+// ============================================================================
+// 其他
+// ============================================================================
+
+// TestNextMsgIDUniqueAndMonotonic 同毫秒大量发号不重复，且整体随时间递增。
+//
+// 只断言「这批 ID 互不相同」和「高位是毫秒时间戳」——随机段碰撞在
+// 1000 次里几乎不可能，真撞了说明位域写错（随机段侵占时间戳）。
+func TestNextMsgIDUniqueAndMonotonic(t *testing.T) {
+	seen := make(map[int64]bool, 1000)
+	var prev int64
+	for i := 0; i < 1000; i++ {
+		id := nextMsgID()
+		require.False(t, seen[id], "msgID 重复: %d", id)
+		seen[id] = true
+		require.Greater(t, id, int64(0), "不能溢出成负数")
+		require.GreaterOrEqual(t, id>>20, prev, "高位必须是单调不减的毫秒时间戳")
+		prev = id >> 20
+	}
+}
+
+// TestOnLogoutMarksDirty 下线标脏（保持与其他模块一致的生命周期行为）。
+func TestOnLogoutMarksDirty(t *testing.T) {
+	m, st, _, ctx := newTestModule(nil, nil)
+	require.NoError(t, m.OnLogout(ctx))
+	require.Contains(t, st.DirtyModules(), "chat")
+}
