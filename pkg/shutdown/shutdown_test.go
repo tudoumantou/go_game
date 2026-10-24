@@ -95,37 +95,61 @@ func TestRunAggregatesErrors(t *testing.T) {
 }
 
 // TestRunStopsWhenBudgetExhausted 总预算耗尽后不再启动新步骤，并报告从哪一步中断。
+//
+// 用手动 cancel + 显式放行代替「20ms 超时 vs 80ms 阻塞」：
+// 原写法在全量并行跑时偶发失败——负载高时 context 的定时器会延迟触发，
+// 两个 timer 可能同时到期，select 随机选中 time.After 分支，步骤就"正常完成"了，
+// 于是 Run 返回 nil。时间竞争测不出确定的行为。
 func TestRunStopsWhenBudgetExhausted(t *testing.T) {
 	rec := newRecorder()
-	rec.block["drain-inflight"] = 80 * time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
 
 	m := NewManager(nil)
-	m.Register("drain-inflight", PhaseDraining, rec.step("drain-inflight"))
+	m.Register("drain-inflight", PhaseDraining, func(context.Context) error {
+		close(started)
+		<-release
+		return nil // 故意不响应 ctx：真实步骤可能已经跑完，而预算恰好用尽
+	})
 	m.Register("flush", PhaseFlush, rec.step("flush"))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	err := m.Run(ctx)
-	require.Error(t, err, "expected budget error")
-	require.Contains(t, err.Error(), "budget", fmt.Sprintf("unexpected error: %v", err))
-	for _, name := range rec.got() {
-		require.NotEqualValues(t, "flush", name, "flush must not run after budget exhaustion")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+
+	<-started
+	cancel() // 预算耗尽（生产里是 WithTimeout 到期）
+	close(release)
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "预算耗尽必须报错，不能静默跳过剩余步骤")
+		require.Contains(t, err.Error(), "budget", fmt.Sprintf("unexpected error: %v", err))
+		require.Contains(t, err.Error(), "flush", "要告诉运维是从哪一步开始被放弃")
+		require.Empty(t, rec.got(), "预算耗尽后不能再执行后续步骤")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run 未在预期时间内返回")
 	}
 }
 
 // TestRunStepTimeout 单步超过 stepTimeout 时按失败返回，不拖死整个关闭流程。
+//
+// 步骤只等 ctx.Done()、不等 time.After：原写法（100ms 阻塞 vs 20ms 超时）
+// 在高负载下两个 timer 会同时到期，select 随机选中「睡够」分支返回 nil，
+// 用例偶发失败。只等待一个信号才能确定地测到超时。
 func TestRunStepTimeout(t *testing.T) {
 	rec := newRecorder()
-	rec.block["stop-rpc"] = 100 * time.Millisecond
 
 	m := NewManager(nil).WithStepTimeout(20 * time.Millisecond)
-	m.Register("stop-rpc", PhaseDraining, rec.step("stop-rpc"))
+	m.Register("stop-rpc", PhaseDraining, func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
 	m.Register("flush", PhaseFlush, rec.step("flush"))
 
 	err := m.Run(context.Background())
 	require.Error(t, err, fmt.Sprintf("expected step timeout error, got %v", err))
 	require.Contains(t, err.Error(), "stop-rpc")
-	got := rec.got()
-	require.Len(t, got, 2, fmt.Sprintf("flush skipped after step timeout: %v", got))
-	require.EqualValues(t, "flush", got[1])
+	// 超时的步骤不影响后续步骤：flush 仍然要跑（停机不能因为一步慢就全放弃）
+	require.Equal(t, []string{"flush"}, rec.got(), "后续步骤必须继续执行")
 }
