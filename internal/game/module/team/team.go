@@ -276,6 +276,19 @@ var (
 	ErrNotInTeam    = errors.New("not in team")
 )
 
+// teamRepo 是模块对组队仓储的全部依赖（接口隔离）。
+//
+// 队伍的业务规则大多在 SQL 事务里（人数上限、队长解散），但「谁在队里
+// 决定能不能创建」「仓储错误怎么翻译成业务码」这些编排逻辑在模块层，
+// 需要能脱离 MySQL 验证。*Repo 隐式实现它，装配层不变。
+type teamRepo interface {
+	FindByPlayer(ctx context.Context, playerID int64) (*Team, error)
+	Create(ctx context.Context, leaderID int64, copyID int32) (int64, error)
+	Join(ctx context.Context, teamID, playerID int64) error
+	Leave(ctx context.Context, playerID int64) error
+	Members(ctx context.Context, teamID int64) ([]Member, error)
+}
+
 // Module 组队模块。
 //
 // 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
@@ -284,12 +297,12 @@ type Module struct {
 	*module.Thin
 
 	// repo 仓储；nil 表示无 DB 环境，入口降级为「直接成功/不在队」回包
-	repo   *Repo
+	repo   teamRepo
 	logger *log.Logger
 }
 
 // New 创建组队模块。
-func New(repo *Repo, logger *log.Logger) *Module {
+func New(repo teamRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
 	m.Thin = module.NewThin("team",
 		module.ThinLogger(logger),
