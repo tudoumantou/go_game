@@ -40,7 +40,7 @@ import (
 //   - 空账号进游戏 2003、创角后 role_id 非 0、重名 2004；
 //   - 领附件后钻石恰好 +50（以登录礼包基线做增量，避免绝对值抖动）；
 //   - 重复领取 5002（幂等）；使用道具受配置单次上限钳制；
-//   - 越界坐标钳到地图上界(99)、跨图瞬移 4004 并回权威坐标、离开后同步 4005；
+//   - 越界坐标钳到地图上界(99)、跨图瞬移 4004 并回权威坐标、离开后同步 4105；
 //   - 未起中心服时榜单回 6702 且 entries 为空 —— 必须区分「暂不可用」与「空榜」，
 //     否则玩家会误以为自己没有成绩（R8.1/R11.1）。
 func TestP6GameplayFlow(t *testing.T) {
@@ -284,7 +284,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	require.NoError(t, err, fmt.Sprintf("scene leave: %v", err))
 	syncResp, err := r.SceneSync(1)
 	require.NoError(t, err, "scene sync after leave")
-	require.EqualValues(t, 4005, syncResp.Code)
+	require.EqualValues(t, 4105, syncResp.Code)
 
 	// ⑫ 榜单查询：本用例没有启动中心服，必须回「暂不可用」（6702）而不是空榜。
 	// 空榜会让玩家误以为自己没有成绩，是列表类协议最容易做错的语义（R8.1/R11.1）。
