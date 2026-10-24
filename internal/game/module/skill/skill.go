@@ -43,6 +43,7 @@ const (
 	codeLearned    int32 = 3203
 	codeNotLearned int32 = 3204
 	codeNoResource int32 = 3205
+	codeMaxLevel   int32 = 3206 // 已达最高等级
 )
 
 // 升级消耗道具（钻石）。
@@ -156,8 +157,7 @@ func (m *Module) onLearn(ctx *module.Context, req *gamev1.SkillLearnReq, resp *g
 // 不会「扣了钻石没升级」。
 func (m *Module) onUpgrade(ctx *module.Context, req *gamev1.SkillUpgradeReq, resp *gamev1.SkillUpgradeResp) error {
 	*resp = gamev1.SkillUpgradeResp{}
-	cfg, ok := gamedata.GetSkillCfg(int64(req.SkillId))
-	if !ok {
+	if _, ok := gamedata.GetSkillCfg(int64(req.SkillId)); !ok {
 		resp.Code = codeNotExist
 		return nil
 	}
@@ -167,8 +167,14 @@ func (m *Module) onUpgrade(ctx *module.Context, req *gamev1.SkillUpgradeReq, res
 			resp.Code = codeNotLearned
 			return false
 		}
-		// 升级消耗：Col3 * 当前等级 钻石（Col3=0 表示免费，Spend 内部放行）。
-		cost := int64(cfg.Col3) * int64(level)
+		// 消耗读 skill_upgrade 表（Col1=当前等级，Col2=升到下一级的消耗）。
+		// 查不到该等级的行即已满级——旧实现是 skill.Col3 * level，没有上限，
+		// 技能可以无限升级；运营也没有任何可调的地方（那张表纯摆设）。
+		cost, up := skillUpgradeCost(level)
+		if !up {
+			resp.Code = codeMaxLevel
+			return false
+		}
 		if err := module.Spend(ctx.State, upgradeItemID, cost); err != nil {
 			resp.Code = codeNoResource
 			return false
@@ -179,6 +185,19 @@ func (m *Module) onUpgrade(ctx *module.Context, req *gamev1.SkillUpgradeReq, res
 		resp.Level = next
 		return true
 	})
+}
+
+// skillUpgradeCost 返回「从 level 升到 level+1」的消耗；没有该行表示已满级。
+//
+// 表结构：Col1 = 当前等级，Col2 = 消耗。用「当前等级」而不是「目标等级」，
+// 是因为满级判定需要「查不到」这个信号——最高等级没有对应的行。
+func skillUpgradeCost(level int32) (int64, bool) {
+	for _, row := range gamedata.SkillUpgradeCfgList() {
+		if int32(row.Col1) == level {
+			return row.Col2, true
+		}
+	}
+	return 0, false
 }
 
 // reply 序列化 proto 并经 ctx.Reply 下发。

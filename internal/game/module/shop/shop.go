@@ -49,8 +49,14 @@ const (
 // itemDiamond 商店结算货币（钻石）。与 quest/skill/activity 共用 1001。
 const itemDiamond int32 = 1001
 
-// defaultShopID 默认商店（P6 单商店：shop.xml 仅一条，P7 支持多商店页签）。
-const defaultShopID int32 = 1
+// shopExists 商店配置是否存在（shop 表是商品归属的权威）。
+//
+// 商品行第一列是 shop_id：归属到不存在的商店说明配置被改坏，
+// 这种商品既不展示也不能买——否则玩家能绕过「商店下架」直接购买。
+func shopExists(shopID int32) bool {
+	_, ok := gamedata.GetShopCfg(int64(shopID))
+	return ok
+}
 
 // Data 是商店模块的私有状态： "shopID:goodsID" -> 本周期已购次数。
 //
@@ -94,13 +100,17 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 		// 只读路径上的跨天重置不写回：下次读会重算，行为一致（原实现同）。
 		normalize(d, today)
 		for _, cfg := range gamedata.ShopGoodsCfgList() {
+			shopID := int32(cfg.Col1) // 商品归属的商店
+			if !shopExists(shopID) {
+				continue // 归属商店已下架/配置错：不展示也不允许购买
+			}
 			resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
 				GoodsId: int32(cfg.Id),
 				ItemId:  int32(cfg.Col2),
 				Price:   int32(cfg.Col3),
 				Count:   int32(cfg.Col4),
-				Bought:  d.Bought[goodsKey(defaultShopID, int32(cfg.Id))],
-				Limit:   0, // P6 不限购，P7 接 shop.xml 限购列
+				Bought:  d.Bought[goodsKey(shopID, int32(cfg.Id))],
+				Limit:   0, // 配置表暂无「周期限购」列，接上后按列填
 			})
 		}
 	}); err != nil {
@@ -125,6 +135,12 @@ func (m *Module) onBuy(ctx *module.Context, req *gamev1.ShopBuyReq, resp *gamev1
 	}
 	if count > 999 {
 		count = 999
+	}
+
+	if shopID := int32(cfg.Col1); !shopExists(shopID) {
+		// 与列表同一条规则：归属商店不存在就不能买（防绕过下架）
+		resp.Code = codeGoodsNotExist
+		return nil
 	}
 
 	itemID := int32(cfg.Col2)
@@ -158,7 +174,7 @@ func (m *Module) onBuy(ctx *module.Context, req *gamev1.ShopBuyReq, resp *gamev1
 		changes = c
 
 		normalize(d, today)
-		key := goodsKey(defaultShopID, req.GoodsId)
+		key := goodsKey(int32(cfg.Col1), req.GoodsId)
 		d.Bought[key] += int32(count)
 		bought = d.Bought[key]
 		applied = true

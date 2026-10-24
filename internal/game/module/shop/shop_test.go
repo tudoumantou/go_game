@@ -6,6 +6,7 @@
 package shop
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -136,4 +137,80 @@ func TestNormalizeResetsAcrossDays(t *testing.T) {
 
 	// 同一天重复 normalize 不应再改。
 	require.False(t, normalize(d, today))
+}
+
+// swapConfig 临时替换 shop / shop_goods 两张表，测试结束恢复。
+//
+// 只动这两张表：其他包不读它们，跨包并行跑测试时不会互相干扰
+// （gamedata 是全局快照，动别的表就有风险）。
+func swapConfig(t *testing.T, shopJSON, goodsJSON string) {
+	t.Helper()
+
+	origShop, err := json.Marshal(gamedata.ShopCfgList())
+	require.NoError(t, err)
+	origGoods, err := json.Marshal(gamedata.ShopGoodsCfgList())
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_, err := gamedata.Replace(map[string][]byte{"shop": origShop, "shop_goods": origGoods})
+		require.NoError(t, err, "恢复出厂配置失败")
+	})
+
+	_, err = gamedata.Replace(map[string][]byte{
+		"shop":       []byte(shopJSON),
+		"shop_goods": []byte(goodsJSON),
+	})
+	require.NoError(t, err, "热更配置失败")
+}
+
+// TestBuyKeyUsesConfiguredShopID 购买计数记在「商品归属的商店」下，而不是硬编码 1。
+//
+// 旧实现用 const defaultShopID = 1：把商品挂到别的商店（shop_goods.Col1）
+// 后，计数还是记在 1 号商店的键上——运营配了归属却没效果，同一商品在
+// 两个商店的限购也会串在一起。
+//
+// 默认配置里商品恰好挂在 1 号店，硬编码和查表结果一样，测不出区别；
+// 这里热更一份「商品挂 2 号店」的配置。
+func TestBuyKeyUsesConfiguredShopID(t *testing.T) {
+	swapConfig(t,
+		`[{"id":1,"col1":"道具商店"},{"id":2,"col1":"二号店"}]`,
+		`[{"id":9,"col1":2,"col2":1002,"col3":5,"col4":1}]`)
+
+	m, st, rec, ctx := newTestModule()
+	st.AddItem(itemDiamond, 10000)
+
+	resp := buy(t, m, ctx, rec, 9, 1)
+	require.EqualValues(t, codeOK, resp.Code)
+
+	d, err := m.State(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, d.Bought["2:9"], "计数必须挂在商品归属的 2 号商店下")
+	require.NotContains(t, d.Bought, "1:9", "不能再用硬编码的 1 号商店")
+}
+
+// TestGoodsInMissingShopHiddenAndUnbuyable 商品归属的商店不存在：不展示、不能买。
+//
+// 这是「下架」的实现方式：运营从 shop 表删掉一个商店，挂在它下面的商品
+// 必须同时消失——否则玩家能看到列表、也能绕过列表直接发购买请求。
+func TestGoodsInMissingShopHiddenAndUnbuyable(t *testing.T) {
+	swapConfig(t,
+		`[{"id":1,"col1":"道具商店"}]`,
+		`[{"id":9,"col1":99,"col2":1002,"col3":5,"col4":1}]`)
+
+	m, st, rec, ctx := newTestModule()
+	st.AddItem(itemDiamond, 10000)
+
+	// 列表不展示
+	raw, err := moduletest.Call(m, ctx, rec, msgIDListReq, msgIDListResp, &gamev1.ShopListReq{})
+	require.NoError(t, err)
+	listResp := &gamev1.ShopListResp{}
+	require.NoError(t, proto.Unmarshal(raw, listResp))
+	for _, g := range listResp.Goods {
+		require.NotEqualValues(t, 9, g.GoodsId, "归属商店不存在的商品不能被展示")
+	}
+
+	// 直接买也不行
+	resp := buy(t, m, ctx, rec, 9, 1)
+	require.EqualValues(t, codeGoodsNotExist, resp.Code)
+	require.EqualValues(t, 10000, st.GetItemCount(itemDiamond), "拒绝时不能扣钱")
 }

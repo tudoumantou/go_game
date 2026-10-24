@@ -60,12 +60,50 @@ func (f *fakeState) ClaimBiz(key string) bool {
 }
 func (f *fakeState) HasBiz(key string) bool { return f.biz[key] }
 
+// replies 记录下行包（按消息号），用于断言业务码。
+type replies map[uint32][]byte
+
 func newCtx(st *fakeState) *module.Context {
+	return newCtxRec(st, nil)
+}
+
+func newCtxRec(st *fakeState, rec replies) *module.Context {
 	return &module.Context{
 		State:        st,
 		CacheEnabled: true,
-		Send:         func(uint32, []byte) error { return nil },
+		Send: func(id uint32, body []byte) error {
+			if rec != nil {
+				rec[id] = append([]byte(nil), body...)
+			}
+			return nil
+		},
 	}
+}
+
+// upgradeCost 从配置查「从 level 升到 level+1」的消耗；ok=false 表示满级。
+func upgradeCost(level int32) (int64, bool) {
+	for _, row := range gamedata.SkillUpgradeCfgList() {
+		if int32(row.Col1) == level {
+			return row.Col2, true
+		}
+	}
+	return 0, false
+}
+
+// maxConfiguredLevel 表里配置的最高「当前等级」。
+//
+// 注意它本身还能升级（该行就是「从这个等级再升一级」的消耗）；
+// 真正的满级是 maxConfiguredLevel+1——那时表里已经没有对应的行了。
+func maxConfiguredLevel(t *testing.T) int32 {
+	t.Helper()
+	var max int32
+	for _, row := range gamedata.SkillUpgradeCfgList() {
+		if int32(row.Col1) > max {
+			max = int32(row.Col1)
+		}
+	}
+	require.Greater(t, max, int32(0), "skill_upgrade 配置为空，测试前提不成立")
+	return max
 }
 
 func firstSkill(t *testing.T) gamedata.SkillCfg {
@@ -98,8 +136,10 @@ func TestLearnAndUpgrade(t *testing.T) {
 	require.NoError(t, err)
 	d, _ = m.State(ctx)
 	require.EqualValues(t, 2, d.Levels[int32(cfg.Id)])
-	want := 1000 - int64(cfg.Col3)
-	require.EqualValues(t, want, st.GetItemCount(upgradeItemID))
+	cost, ok := upgradeCost(1)
+	require.True(t, ok, "1 级必须有升级配置")
+	require.EqualValues(t, 1000-cost, st.GetItemCount(upgradeItemID),
+		"消耗必须来自 skill_upgrade 表，而不是 skill.Col3 * level")
 }
 
 // TestLearnDuplicate 重复学习不重置等级。
@@ -131,6 +171,65 @@ func TestUpgradeWithoutResource(t *testing.T) {
 	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)], "level changed without resource")
 	require.EqualValues(t, 0, st.GetItemCount(upgradeItemID), "item deducted on failed upgrade")
+}
+
+// TestUpgradeStopsAtMaxLevel 配置里没有「当前等级」的行 = 已满级。
+//
+// 旧实现是 cost = skill.Col3 * level，永远算得出钱，也永远没有上限——
+// 技能能无限升，运营改 skill_upgrade 表毫无效果。
+func TestUpgradeStopsAtMaxLevel(t *testing.T) {
+	cfg := firstSkill(t)
+	// 满级 = 配置里最高等级的下一级：那一级没有「升到再下一级」的行
+	top := maxConfiguredLevel(t) + 1
+
+	st := newFakeState(1)
+	rec := replies{}
+	ctx := newCtxRec(st, rec)
+	m := New(nil)
+
+	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool {
+		*dst = Data{Levels: map[int32]int32{int32(cfg.Id): top}}
+		return true
+	}))
+	st.items[upgradeItemID] = 100000
+
+	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
+	require.NoError(t, m.OnMessage(ctx, msgIDUpgradeReq, upgrade))
+
+	d, _ := m.State(ctx)
+	require.EqualValues(t, top, d.Levels[int32(cfg.Id)], "满级后等级不能再涨")
+	require.EqualValues(t, 100000, st.GetItemCount(upgradeItemID), "满级不能扣钱")
+
+	resp := &gamev1.SkillUpgradeResp{}
+	require.NoError(t, proto.Unmarshal(rec[msgIDUpgradeResp], resp))
+	require.EqualValues(t, codeMaxLevel, resp.Code, "必须明确告诉客户端已满级")
+}
+
+// TestUpgradeCostComesFromTable 消耗按表逐级递增，不再线性乘算。
+func TestUpgradeCostComesFromTable(t *testing.T) {
+	cfg := firstSkill(t)
+
+	// 1 级升 2 级
+	st := newFakeState(1)
+	ctx := newCtx(st)
+	m := New(nil)
+	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool {
+		*dst = Data{Levels: map[int32]int32{int32(cfg.Id): 1}}
+		return true
+	}))
+	st.items[upgradeItemID] = 10000
+	up, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
+	require.NoError(t, m.OnMessage(ctx, msgIDUpgradeReq, up))
+
+	cost1, ok := upgradeCost(1)
+	require.True(t, ok)
+	require.EqualValues(t, 10000-cost1, st.GetItemCount(upgradeItemID))
+
+	// 2 级升 3 级：表里是 300 而不是 100*2 的巧合值，能区分「查表」与「线性」
+	if cost2, ok := upgradeCost(2); ok {
+		require.NoError(t, m.OnMessage(ctx, msgIDUpgradeReq, up))
+		require.EqualValues(t, 10000-cost1-cost2, st.GetItemCount(upgradeItemID))
+	}
 }
 
 // TestSnapshotShape Ext 槽位存的是业务结构（Data），表行转换在 persist.go。

@@ -16,6 +16,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
@@ -38,16 +39,18 @@ type fakeRepo struct {
 	findHits int
 	insertID int64
 	insAtts  []Attachment
+	inserted *model.Mail // 最后一次插入的主邮件（断言模板填充用）
 }
 
 func (f *fakeRepo) UnreadCount(context.Context, int64) (int64, error) {
 	return int64(len(f.rows)), f.unreadErr
 }
 
-func (f *fakeRepo) Insert(context.Context, *model.Mail) (int64, error) {
+func (f *fakeRepo) Insert(_ context.Context, m *model.Mail) (int64, error) {
 	if f.insertErr != nil {
 		return 0, f.insertErr
 	}
+	f.inserted = m
 	return f.insertID, nil
 }
 
@@ -290,4 +293,66 @@ func TestDeliverFailsWhenMailInsertFails(t *testing.T) {
 	_, err := m.Deliver(context.Background(), &pkgmq.MailMsg{PlayerID: 1})
 	require.Error(t, err, "主邮件插入失败必须上抛")
 	require.Empty(t, repo.insAtts, "主邮件没建成时不该插附件")
+}
+
+// TestDeliverUsesTemplate 只给模板号时，标题/正文来自 mail_template 表。
+//
+// 旧实现忽略这张表：运营改模板不生效，改文案必须改发送端代码。
+func TestDeliverUsesTemplate(t *testing.T) {
+	var tpl *gamedata.MailTemplateCfg
+	for _, cfg := range gamedata.MailTemplateCfgList() {
+		c := cfg
+		tpl = &c
+		break
+	}
+	require.NotNil(t, tpl, "mail_template 配置为空，测试前提不成立")
+
+	repo := &fakeRepo{}
+	m, _, _, _ := newTestModule(repo)
+
+	_, err := m.Deliver(context.Background(), &pkgmq.MailMsg{
+		PlayerID:   1,
+		TemplateID: int32(tpl.Id),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, repo.inserted)
+	require.Equal(t, tpl.Col1, repo.inserted.Title, "标题必须来自模板")
+	require.Equal(t, tpl.Col2, repo.inserted.Content, "正文必须来自模板")
+}
+
+// TestDeliverMessageOverridesTemplate 消息里写了就用消息的（个性化文案）。
+func TestDeliverMessageOverridesTemplate(t *testing.T) {
+	var tplID int32
+	for _, cfg := range gamedata.MailTemplateCfgList() {
+		tplID = int32(cfg.Id)
+		break
+	}
+
+	repo := &fakeRepo{}
+	m, _, _, _ := newTestModule(repo)
+
+	_, err := m.Deliver(context.Background(), &pkgmq.MailMsg{
+		PlayerID:   1,
+		TemplateID: tplID,
+		Title:      "工单已处理",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "工单已处理", repo.inserted.Title, "消息里的标题优先")
+	require.NotEmpty(t, repo.inserted.Content, "正文没覆盖，应回落到模板")
+}
+
+// TestDeliverUnknownTemplateKeepsMessage 模板号查不到时不能清空文案。
+func TestDeliverUnknownTemplateKeepsMessage(t *testing.T) {
+	repo := &fakeRepo{}
+	m, _, _, _ := newTestModule(repo)
+
+	_, err := m.Deliver(context.Background(), &pkgmq.MailMsg{
+		PlayerID:   1,
+		TemplateID: 999999,
+		Title:      "补偿",
+		Content:    "请查收",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "补偿", repo.inserted.Title)
+	require.Equal(t, "请查收", repo.inserted.Content)
 }

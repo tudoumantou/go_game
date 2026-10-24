@@ -30,6 +30,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/db"
+	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
@@ -388,11 +389,26 @@ func (m *Module) onLogout(ctx *module.Context) error {
 // 客服可按 mail_id 补发；若整封报错重投，Kafka 侧重试又会建一封新邮件，
 // 玩家看到两封同名邮件反而更糟。
 func (m *Module) Deliver(ctx context.Context, msg *pkgmq.MailMsg) (int64, error) {
+	// 标题/正文优先用 mail_template 的配置，消息里非空则覆盖。
+	//
+	// 这样补偿邮件只需要下发「模板号 + 附件」，文案集中在配置表（运营可改）；
+	// 需要个性化（如「您反馈的问题已处理」）时仍可在消息里写死。
+	// 旧实现完全忽略模板表：改文案必须改发送端代码。
+	title, content := msg.Title, msg.Content
+	if cfg, ok := gamedata.GetMailTemplateCfg(int64(msg.TemplateID)); ok {
+		if title == "" {
+			title = cfg.Col1
+		}
+		if content == "" {
+			content = cfg.Col2
+		}
+	}
+
 	mailModel := &model.Mail{
 		PlayerId:   msg.PlayerID,
 		TemplateId: msg.TemplateID,
-		Title:      msg.Title,
-		Content:    msg.Content,
+		Title:      title,
+		Content:    content,
 		Channel:    msg.Channel,
 		Status:     0,
 	}
