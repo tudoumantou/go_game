@@ -253,6 +253,18 @@ func (r *Repo) Quit(ctx context.Context, playerID int64) error {
 // ErrNotInGuild 未加入公会。
 var ErrNotInGuild = errors.New("not in guild")
 
+// guildRepo 是模块对公会仓储的全部依赖（接口隔离）。
+//
+// 人数上限、会长解散的原子性在 SQL 事务里（归集成测试），但名字校验、
+// 「一人一会」的前置判断、哨兵错误到业务码的翻译都在模块层，需要能
+// 脱离 MySQL 验证。*Repo 隐式实现它，装配层不变。
+type guildRepo interface {
+	FindByPlayer(ctx context.Context, playerID int64) (*Guild, error)
+	Create(ctx context.Context, name string, leaderID int64) (int64, error)
+	Join(ctx context.Context, guildID, playerID int64) error
+	Quit(ctx context.Context, playerID int64) error
+}
+
 // Module 公会模块。
 //
 // 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
@@ -261,12 +273,12 @@ type Module struct {
 	*module.Thin
 
 	// repo 仓储；nil 表示无 DB 环境，各入口降级为「直接成功」回包
-	repo   *Repo
+	repo   guildRepo
 	logger *log.Logger
 }
 
 // New 创建公会模块。
-func New(repo *Repo, logger *log.Logger) *Module {
+func New(repo guildRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
 	m.Thin = module.NewThin("guild", module.ThinLogger(logger))
 	m.HandleR(msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoResp{},
