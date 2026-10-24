@@ -29,7 +29,6 @@ import (
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
-	"game_study/pkg/writebehind"
 	"github.com/samber/lo"
 )
 
@@ -72,12 +71,6 @@ type Data struct {
 	Days    []int32
 	Rewards map[int32]int64
 }
-
-// Reset 清空签到状态，供周期回调模块在周切换时调用；本模块自身不触发重置。
-//
-// SetExt(key, nil) 是「删除槽位」语义：下次 load 会走 row == nil 分支
-// 返回空 Data，等价于重新初始化，但不需要写一行空记录。
-func Reset(state writebehind.ExtState) { state.SetExt(stateKey, nil) }
 
 // Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
 //

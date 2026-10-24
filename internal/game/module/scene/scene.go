@@ -36,11 +36,14 @@ import (
 // 业务码（0 成功；4001 场景不存在；4003 场景 Actor 信箱满；
 // 4005 玩家当前不在场景；4006 场景存在但同步请求投递失败）。
 const (
+	// 码值统一用 41xx：proto 的 4xxx 段已定义 4001 CHANNEL_CLOSED、
+	// 4003 CHAT_TOO_FAST（社交/聊天），直接占用会让客户端把「你不在场景里」
+	// 显示成「频道未开放」。41xx 与 4001-4004 不重叠，也不与任何模块冲突。
 	codeOK       int32 = 0
-	codeNoScene  int32 = 4001 // 场景不存在
-	codeBusy     int32 = 4003 // 场景繁忙（Actor 信箱满）
-	codeNotIn    int32 = 4005 // 不在场景中
-	codeNotReady int32 = 4006 // 场景未就绪
+	codeNoScene  int32 = 4101 // 场景不存在
+	codeBusy     int32 = 4103 // 场景繁忙（Actor 信箱满）
+	codeNotIn    int32 = 4105 // 不在场景中
+	codeNotReady int32 = 4106 // 场景未就绪
 )
 
 // Module 场景模块。

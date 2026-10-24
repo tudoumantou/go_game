@@ -10,14 +10,13 @@
 // Ext 槽位：无（进程级状态，不属于任何玩家）。
 // 事件订阅：无（由调度消费者直接调 Apply）。
 // 懒初始化：允许为空表——中心服消息未到或未部署调度时，
-// 读取方降级为按配置周期自算（见 ActiveWindow/openNow）。
+// 读取方降级为「视为开放」（见 openNow）。
 package activity
 
 import (
 	"sync"
 
 	"game_study/pkg/activity"
-	"game_study/pkg/gamedata"
 )
 
 // Window 一个活动实例的时间窗（由中心服下发）。
@@ -91,29 +90,11 @@ var defaultRegistry = NewRegistry()
 // DefaultRegistry 返回进程级注册表。
 func DefaultRegistry() *Registry { return defaultRegistry }
 
-// ActiveWindow 返回活动在 now 时是否开放，以及当前窗口。
-//
-// 优先用中心服下发的实例；没有下发时按配置周期计算。
-// 两条路径都不依赖「消息恰好到达」，这是 R7.2 的核心要求。
-func ActiveWindow(reg *Registry, activityID int32, now int64) (start, end int64, ok bool) {
-	if reg != nil {
-		if w, found := reg.Get(activityID); found {
-			return w.StartAt, w.EndAt, activity.Active(w.StartAt, w.EndAt, now)
-		}
-	}
-	cfg, found := gamedata.GetActivityPeriodCfg(int64(activityID))
-	if !found {
-		// 没有周期配置 = 不限制时间（配置未定义，不臆造窗口）。
-		return 0, 0, true
-	}
-	start, end, _ = activity.Window(int32(cfg.Col1), now)
-	return start, end, true // 自算窗口必然包含 now
-}
-
 // openNow 活动当前是否开放。
 //
-// 未下发实例时返回 true：此时按配置周期计算窗口，当前时刻必然落在某个周期内。
-// 已下发且窗口过期才返回 false——这是「活动结束」的唯一判定来源。
+// 未下发实例时返回 true：配置里的周期是「每天重复」的语义（如每天 20:00-21:00），
+// 任何时刻都落在某个周期窗口内，不存在「今天整天不开」的状态。真正的「已结束」
+// 只来自中心服下发的具体实例（EndAt 过后即关闭）——这是唯一的关闭判定来源。
 func openNow(activityID int32, now int64) bool {
 	w, ok := defaultRegistry.Get(activityID)
 	if !ok {

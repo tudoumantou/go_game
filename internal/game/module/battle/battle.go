@@ -37,11 +37,14 @@ const (
 // 业务码（沿用全项目约定：0 恒为成功，非 0 为可预期失败，客户端按码直接弹提示，
 // 不占 error 通道——error 只留给「真故障」如解码失败）。
 const (
+	// 与 proto 对齐的部分：6002 TOKEN_INVALID、6003 RESULT_REPORTED。
+	// 6001 在 proto 里是 BATTLE_NOT_FOUND、6004 是 BATTLE_FULL，语义不同，
+	// 所以「已在队列」「玩法未开放」另起 6006/6007，避免客户端显示错文案。
 	codeOK           int32 = 0    // 成功
-	codeAlreadyIn    int32 = 6001 // 已在队列/战斗中
-	codeTokenInvalid int32 = 6002 // 令牌无效
-	codeAlreadyDone  int32 = 6003 // 已上报过
-	codeModeClosed   int32 = 6004 // 玩法未开放（跨服不可用）
+	codeAlreadyIn    int32 = 6006 // 已在队列/战斗中
+	codeTokenInvalid int32 = 6002 // 令牌无效（proto 同名）
+	codeAlreadyDone  int32 = 6003 // 已上报过（proto 同名）
+	codeModeClosed   int32 = 6007 // 玩法未开放（跨服不可用）
 )
 
 // 战斗时限（超时服务端平局兜底，见 4.8 第 5 条）。

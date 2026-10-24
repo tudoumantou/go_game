@@ -21,7 +21,6 @@ package rank
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -375,13 +374,6 @@ func parseMember(member string) (int64, string) {
 		return pid, ""
 	}
 	return pid, parts[1]
-}
-
-// SortEntries 按名次升序排序（归档/展示统一用）。
-// SliceStable 而非 Slice：名次理论上已唯一，但稳定排序在输入脏数据
-// （重号）时保持原相对顺序，结果可复现——归档写库对顺序敏感。
-func SortEntries(list []*internalv2.RankEntry) {
-	sort.SliceStable(list, func(i, j int) bool { return list[i].Rank < list[j].Rank })
 }
 
 // dedupTTL 业务键与更新时间键的保留期：覆盖一次赛季周期即可。

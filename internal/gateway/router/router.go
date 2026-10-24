@@ -165,6 +165,16 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 		return
 	}
 
+	// 内部号段（9000+）只能走 gRPC，绝不允许来自客户端 socket。
+	// 注册表恰好没注册这些号（所以下面会走透传分支），但那是「碰巧」
+	// 而非契约：靠注册表兜底时，将来谁把一个内部号注册进客户端表，
+	// 客户端就能直接触发它。这里显式挡一次，把协议隔离写成代码。
+	if !constant.IsClientMsgID(uint32(msgID)) {
+		h.logger.Warn("reject internal msg id from client", "conn_id", c.ID(), "msg_id", msgID)
+		_ = c.Close(fmt.Errorf("internal msg id %d not allowed", msgID))
+		return
+	}
+
 	// 业务消息：网关不解析，透传给游戏服（4.5 客户端上行透传）
 	// forward 未注入（单测/无 etcd 环境）时丢弃并告警，不崩服务
 	if !h.msgRegistry.Has(msgID) {

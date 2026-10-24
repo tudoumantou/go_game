@@ -330,7 +330,7 @@ func mustNotify(t *testing.T, raw []byte) *gamev1.BattleStartNotify {
 	return n
 }
 
-// TestMatchRejectsDuplicateQueue 已在队列再匹配 → 6001，队列不能重复计数。
+// TestMatchRejectsDuplicateQueue 已在队列再匹配 → 6006，队列不能重复计数。
 func TestMatchRejectsDuplicateQueue(t *testing.T) {
 	r := newRig()
 	r.match(t, 1, "arena")
@@ -340,7 +340,7 @@ func TestMatchRejectsDuplicateQueue(t *testing.T) {
 	require.EqualValues(t, 1, r.m.QueueLen("arena"), "重复入队必须被挡住")
 }
 
-// TestMatchRejectsWhileInBattle 战斗中再匹配 → 6001。
+// TestMatchRejectsWhileInBattle 战斗中再匹配 → 6006。
 func TestMatchRejectsWhileInBattle(t *testing.T) {
 	r := newRig()
 	r.match(t, 1, "arena")

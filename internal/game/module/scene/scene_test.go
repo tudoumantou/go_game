@@ -249,7 +249,7 @@ func sceneIDs(resp *gamev1.SceneEnterResp) map[int64]bool {
 	return out
 }
 
-// TestEnterUnknownScene 未知场景直接回 4001。
+// TestEnterUnknownScene 未知场景直接回 4101。
 func TestEnterUnknownScene(t *testing.T) {
 	r := newRig(t)
 	p, pid := r.player(1)

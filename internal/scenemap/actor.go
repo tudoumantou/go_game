@@ -101,49 +101,6 @@ func (m *Mailbox[T]) Close() {
 // Len 返回排队数量（监控/测试用）。
 func (m *Mailbox[T]) Len() int { return len(m.ch) }
 
-// Registry 是"逻辑名 → Actor 句柄"的全局注册表（对应 参考实现 的注册名）。
-//
-// 并发安全：多个玩家 Actor 会同时查同一个 MGR/AOI 的名字。
-// 用 sync.Map 而不是 map+RWMutex：读远多于写（每个操作都查名字，
-// 只有开/关图才写），sync.Map 在只读路径上没有锁竞争。
-//
-// 注意：Registry 只存句柄不存状态。句柄本身必须并发安全
-// （典型实现是"邮箱 + 可原子读的快照"），否则查到了也没用。
-type Registry struct {
-	m sync.Map // name -> any
-}
-
-// NewRegistry 创建空注册表。
-func NewRegistry() *Registry { return &Registry{} }
-
-// Put 注册名字。重复注册返回 ErrAlreadyExists——静默覆盖会让
-// "关图后新开同名房间"与"旧实例还没退"互相踩，必须显式处理。
-func (r *Registry) Put(name string, handle any) error {
-	if name == "" {
-		return fmt.Errorf("%w: 注册名为空", ErrInvalidArgument)
-	}
-	if _, loaded := r.m.LoadOrStore(name, handle); loaded {
-		return fmt.Errorf("%w: %s", ErrAlreadyExists, name)
-	}
-	return nil
-}
-
-// Get 查询名字。
-func (r *Registry) Get(name string) (any, bool) { return r.m.Load(name) }
-
-// Delete 注销名字（关图时调用）。
-func (r *Registry) Delete(name string) { r.m.Delete(name) }
-
-// Len 返回注册数量（监控用）。
-func (r *Registry) Len() int {
-	n := 0
-	r.m.Range(func(_, _ any) bool {
-		n++
-		return true
-	})
-	return n
-}
-
 // Call 是"带超时的同步调用"辅助（对应 参考实现 的 call）。
 //
 // 契约：fn 负责把结果写入 reply（容量必须 >= 1），Call 只等结果。

@@ -176,8 +176,3 @@ func toProto(entries []Entry) []*gamev1.RankEntry {
 		}
 	})
 }
-
-// reply 序列化并回包（marshal 失败用 %w 包装，保留错误链）。
-func (m *Module) reply(ctx *module.Context, resp *gamev1.RankListResp) error {
-	return m.Plain.Reply(ctx, msgIDListResp, resp)
-}
