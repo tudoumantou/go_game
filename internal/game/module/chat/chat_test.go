@@ -8,8 +8,10 @@ package chat
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
@@ -398,4 +400,49 @@ func TestOnLogoutMarksDirty(t *testing.T) {
 	m, st, _, ctx := newTestModule(nil, nil)
 	require.NoError(t, m.OnLogout(ctx))
 	require.Contains(t, st.DirtyModules(), "chat")
+}
+
+// TestSendRejectsTooLongContent 内容超长直接拒绝，不落库不投递。
+//
+// 两条上限分开测：中文按「字符」算（200 字中文 = 600 字节，合法的），
+// 而极端 emoji 组合按「字节」兜底（视觉上很短但字节数超线）。
+func TestSendRejectsTooLongContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"201 个中文字符", strings.Repeat("龙", maxContentRunes+1)},
+		{"超长 ASCII", strings.Repeat("a", maxContentBytes+1)},
+		{"emoji 组合撑爆字节", strings.Repeat("👨‍👩‍👧‍👦", 40)}, // 每个约 25 字节
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			msg := &fakeMessenger{self: "game-01", online: false}
+			m, _, rec, ctx := newTestModule(repo, msg)
+
+			resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{
+				Channel: channelPrivate, PeerId: 200, Content: c.content,
+			})
+			require.EqualValues(t, codeContentTooLong, resp.Code,
+				fmt.Sprintf("len=%d runes=%d", len(c.content), utf8.RuneCountInString(c.content)))
+			require.Empty(t, repo.inserts, "超长内容不能落库")
+			require.Empty(t, msg.pended, "超长内容不能投递")
+		})
+	}
+}
+
+// TestSendAcceptsBoundaryContent 边界值必须放行：正好 200 字中文合法。
+//
+// 上限写错一个等号（> 写成 >=）会让玩家在最常见的长度上突然发不出去。
+func TestSendAcceptsBoundaryContent(t *testing.T) {
+	content := strings.Repeat("龙", maxContentRunes) // 600 字节，200 字符
+
+	repo := &fakeRepo{}
+	m, _, rec, ctx := newTestModule(repo, &fakeMessenger{self: "game-01"})
+	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{
+		Channel: channelPrivate, PeerId: 200, Content: content,
+	})
+	require.EqualValues(t, codeOK, resp.Code, "正好 200 字必须允许")
+	require.Len(t, repo.inserts, 1)
 }

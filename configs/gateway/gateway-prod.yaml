@@ -12,6 +12,9 @@ server:
   write_queue_size: 1024       # 单连接写队列深度
   session_reconnect_ttl: 90s   # 断线会话保留期
 
+admin:                         # 管理接口（POST /admin/kick）；token 为空时只接受本机 127.0.0.1
+  token: ${ADMIN_TOKEN}        # 未设置则展开为空 → 只接受本机来源（os.ExpandEnv 不支持 :- 默认值写法）
+
 crypto:                        # RSA+AES 配置
   enabled: true
   rsa_private_key: "/etc/game_study/gateway_rsa.pem"

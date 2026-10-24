@@ -19,6 +19,7 @@ package gateway
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -450,7 +451,87 @@ func (s *Server) httpHandler() http.Handler {
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "conns=%d sessions=%d", s.connMgr.Count(), s.sessMgr.Count())
 	})
+	mux.HandleFunc("/admin/kick", s.handleAdminKick)
 	return mux
+}
+
+// KickSession 让游戏服踢掉某个会话（GM 踢人 / 封禁生效）。
+//
+// 走 CtrlMsg_KICK 控制帧而不是直接断 TCP：断 socket 只会触发 UNBIND，
+// 客户端看到的是「连接异常」；控制帧让游戏服发 KickNotify，客户端能显示
+// 具体原因并做「被踢下线」的 UI 处理。
+//
+// 帧经 backend.Pool 复用会话已有的 gRPC 流——不需要另建连接，也不需要
+// 知道目标节点地址（流本身就绑着目标节点）。
+func (s *Server) KickSession(sessionID uint64, reason string) error {
+	if s.backend == nil {
+		return fmt.Errorf("gateway: backend pool not ready")
+	}
+	if err := s.backend.Send(sessionID, kickFrame(sessionID, reason)); err != nil {
+		return fmt.Errorf("send kick frame: %w", err)
+	}
+	s.logger.Info("kick frame sent", "session_id", sessionID, "reason", reason)
+	return nil
+}
+
+// kickFrame 构造踢人控制帧。
+//
+// 抽成纯函数是为了能测：帧内容错了（类型写成 UNBIND、Payload 丢了）
+// 的表现是「游戏服收到后什么都不做」，线上只能从「踢了没反应」发现。
+func kickFrame(sessionID uint64, reason string) *internalv2.StreamFrame {
+	return &internalv2.StreamFrame{
+		Data: &internalv2.StreamFrame_Ctrl{Ctrl: &internalv2.CtrlMsg{
+			Type:      internalv2.CtrlMsg_KICK,
+			SessionId: sessionID,
+			Payload:   []byte(reason),
+		}},
+	}
+}
+
+// handleAdminKick POST /admin/kick {"session_id":123,"reason":"banned"}
+//
+// 鉴权：配置 admin_token 时校验 Authorization: Bearer <token>；
+// 未配置时只接受本机来源（127.0.0.1/::1）。这样默认部署不必新增配置
+// 也能给运维用 curl 执行，但外部网络打不进来。
+func (s *Server) handleAdminKick(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.adminAllowed(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var req struct {
+		SessionID uint64 `json:"session_id"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if req.SessionID == 0 {
+		http.Error(w, "session_id required", http.StatusBadRequest)
+		return
+	}
+	if err := s.KickSession(req.SessionID, req.Reason); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// adminAllowed 管理接口鉴权（token 优先，否则只允许本机）。
+func (s *Server) adminAllowed(r *http.Request) bool {
+	if s.cfg.Admin.Token != "" {
+		return r.Header.Get("Authorization") == "Bearer "+s.cfg.Admin.Token
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	return host == "127.0.0.1" || host == "::1"
 }
 
 // Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，pkg/shutdown 编排）。

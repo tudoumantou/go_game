@@ -43,6 +43,7 @@ type PayConfig struct {
 type Config struct {
 	// 公共段：五个进程都可能用到
 	Server   ServerConfig   `yaml:"server"`
+	Admin    AdminConfig    `yaml:"admin"`
 	Crypto   CryptoConfig   `yaml:"crypto"`
 	RPC      RPCConfig      `yaml:"rpc"`
 	Redis    RedisConfig    `yaml:"redis"`
@@ -90,6 +91,14 @@ type ServerConfig struct {
 	ReadTimeout      string `yaml:"read_timeout"`          // 空闲读超时（心跳保活依据）
 	WriteQueueSize   int    `yaml:"write_queue_size"`      // 每连接写队列；满则背压/断连
 	SessionReconnTTL string `yaml:"session_reconnect_ttl"` // 断线重连会话保留窗
+}
+
+// AdminConfig 管理接口（GM 操作）鉴权。
+//
+// Token 为空时管理接口只接受本机来源（127.0.0.1/::1）：默认部署不必
+// 额外配置也能给运维用 curl；一旦暴露到内网/公网就必须配 Token。
+type AdminConfig struct {
+	Token string `yaml:"token"`
 }
 
 type CryptoConfig struct {

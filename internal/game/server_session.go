@@ -330,6 +330,20 @@ func (s *Server) markOnline(ctx context.Context, playerID int64) {
 // 三段式：摘本地映射 → 判定是否被顶号 → 权威会话才解 Actor + 清在线归属。
 // 「被顶号的旧会话」是最容易写错的分支：它的一切副作用都必须跳过，
 // 否则会把仍在线的权威会话打成离线（见下方 stale 注释）。
+// OnKick 实现 rpc.StreamHandler：网关要求强制下线（GM 踢人 / 封禁生效）。
+//
+// 与顶号、掉线的区别：这是服务端主动发起。动作只是发 KickNotify——
+// 客户端收到后自行断开，随后的 UNBIND 走标准下线（模块 OnLogout + 落库），
+// 不在这一层直接清会话状态：那条路径会跳过模块的下线钩子。
+func (s *Server) OnKick(_ context.Context, sessionID uint64, reason string) error {
+	if reason == "" {
+		reason = "kicked_by_admin"
+	}
+	s.kickSession(sessionID, reason)
+	s.logger.Info("session kicked by admin", "session_id", sessionID, "reason", reason)
+	return nil
+}
+
 func (s *Server) OnUnbind(ctx context.Context, sessionID uint64) error {
 	s.mu.Lock()
 	playerID := s.sessions[sessionID]

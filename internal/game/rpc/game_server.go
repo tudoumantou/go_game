@@ -35,6 +35,9 @@ type StreamHandler interface {
 	OnBind(ctx context.Context, sessionID uint64, accountID, playerID int64) error
 	OnUnbind(ctx context.Context, sessionID uint64) error
 	OnClientPacket(ctx context.Context, sessionID uint64, msgID uint32, seq uint32, body []byte) error
+	// OnKick 网关要求强制下线（GM 踢人/封禁生效）。
+	// reason 是给客户端看的文案（KickNotify.Reason），可为空。
+	OnKick(ctx context.Context, sessionID uint64, reason string) error
 }
 
 // GameServer GameService 实现。
@@ -114,7 +117,11 @@ func (s *GameServer) handleCtrl(ctx context.Context, ctrl *internalv2.CtrlMsg) {
 	case internalv2.CtrlMsg_UNBIND:
 		_ = s.handler.OnUnbind(ctx, ctrl.SessionId)
 	case internalv2.CtrlMsg_KICK:
-		// TODO(P3): 踢掉本地玩家
+		// 强制下线：GM 踢人、封禁生效。与玩家主动登出/掉线不同，
+		// 这里由服务端发起，客户端收到 KickNotify 后断开。
+		if err := s.handler.OnKick(ctx, ctrl.SessionId, string(ctrl.Payload)); err != nil {
+			s.logger.Warn("handle kick", "session_id", ctrl.SessionId, "err", err)
+		}
 	}
 }
 

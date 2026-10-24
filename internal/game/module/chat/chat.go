@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
@@ -43,9 +44,23 @@ const (
 
 // 业务码（4.10：与战斗等模块一致的约定——0 成功，非 0 为可预期失败）。
 const (
-	codeOK            int32 = 0
-	codeChannelClosed int32 = 4001 // 频道未开放（P6 仅私聊）
-	codeContentEmpty  int32 = 4005 // 内容为空 / 对端 id 非法
+	codeOK             int32 = 0
+	codeChannelClosed  int32 = 4001 // 频道未开放（P6 仅私聊）
+	codeContentEmpty   int32 = 4005 // 内容为空 / 对端 id 非法
+	codeContentTooLong int32 = 4006 // 内容超长
+)
+
+// 消息内容上限。
+//
+// 按「字符」限制而不是字节：中文一个字 3 字节，只数字节会把 200 字的中文
+// 拦成 66 字。同时再卡一道字节上限——极端 emoji 组合（一个视觉字符可占
+// 十几字节）能把 rune 数压得很低、字节数很大，两条一起卡才拦得住。
+//
+// 为什么必须有：包大小上限（64KB）只拦单包，一条 64KB 的私聊照样会写进
+// MySQL、推给对手（客户端渲染卡死）、作为 Kafka 消息撑大分区。
+const (
+	maxContentRunes = 200
+	maxContentBytes = 900 // 200 字中文 = 600 字节，留余量给 emoji
 )
 
 // 私聊频道。
@@ -224,6 +239,10 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	}
 	if req.Content == "" || req.PeerId <= 0 {
 		resp.Code = codeContentEmpty
+		return nil
+	}
+	if len(req.Content) > maxContentBytes || utf8.RuneCountInString(req.Content) > maxContentRunes {
+		resp.Code = codeContentTooLong
 		return nil
 	}
 
