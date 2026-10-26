@@ -387,3 +387,28 @@ func mustZAddMember(t *testing.T, mr *miniredis.Miniredis, score float64, member
 	_, err := mr.ZAdd(OwnerIndexKey("mail"), score, strconv.FormatInt(member, 10))
 	require.NoError(t, err)
 }
+
+// TestDropEntityKeepsIndex 丢弃缓存行但不摘索引。
+//
+// 两者语义不同：DropEntity 是「行还在、字段变了」（领取邮件附件），
+// RemoveEntity 是「行没了」。混用会让还在的邮件从列表里消失。
+func TestDropEntityKeepsIndex(t *testing.T) {
+	oi, mr, _, cleanup := newTestOwnerIndex(t, 0)
+	defer cleanup()
+	ctx := context.Background()
+
+	mustZAddMember(t, mr, 7, 601)
+	mr.HSet(EntityKey("mail", 601), "id", "601", "status", "0")
+
+	require.NoError(t, oi.DropEntity(ctx, 601))
+	require.False(t, mr.Exists(EntityKey("mail", 601)), "缓存行应被删掉")
+
+	// 索引还在：下次展开会回源 MySQL 拿最新值
+	members, err := mr.ZMembers(OwnerIndexKey("mail"))
+	require.NoError(t, err)
+	require.Contains(t, members, "601", "索引不能一起删——邮件本身还在")
+
+	// 空入参与非法 id 都是 no-op
+	require.NoError(t, oi.DropEntity(ctx))
+	require.NoError(t, oi.DropEntity(ctx, 0, -1))
+}

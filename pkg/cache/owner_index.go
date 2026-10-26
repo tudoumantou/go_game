@@ -485,3 +485,30 @@ func placeholders(n int) string {
 	}
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
+
+// DropEntity 丢弃实体缓存行（DEL e:{table}:{id}），索引与 key 保留。
+//
+// 用于「行还在、但字段变了」的场合：领取邮件附件后 status 从 0 变 2，
+// 缓存里的旧行必须作废，否则下次列表读到的是领取前的状态。
+//
+// 为什么删而不是 HSET 新值：删除让下次读回源 MySQL，拿到的一定是库里
+// 的当前值；HSET 只覆盖调用方知道的那几个字段，多一处「改了缓存忘了改
+// 某个字段」的漏点，而那种漏点不会报错，只会显示错。
+//
+// 失败只影响「下次多打一次库」（缓存未命中），不影响正确性——所以调用
+// 方不必处理错误。
+func (x *OwnerIndex) DropEntity(ctx context.Context, entityIDs ...int64) error {
+	if x.idx.rdb == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(entityIDs))
+	for _, id := range entityIDs {
+		if id > 0 {
+			keys = append(keys, EntityKey(x.table, id))
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	return x.idx.rdb.Del(ctx, keys...).Err()
+}

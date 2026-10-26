@@ -412,6 +412,18 @@ type Module struct {
 // 在模块侧的体现。
 func (m *Module) SetOwnerIndex(oi *cache.OwnerIndex) { m.index = oi }
 
+// dropEntity 丢弃缓存里的实体行（领取后状态变了）。
+//
+// 失败只影响下次多打一次库，不让领取失败——与 indexAdd 同一取舍。
+func (m *Module) dropEntity(mailID int64) {
+	if m.index == nil || mailID <= 0 {
+		return
+	}
+	if err := m.index.DropEntity(context.Background(), mailID); err != nil {
+		m.logger.Warn("mail cache drop failed", "mail_id", mailID, "err", err)
+	}
+}
+
 // indexAdd 尽力登记新邮件。
 //
 // 失败只记日志：索引漏了这一条，下次 Reconcile（10 分钟）会重建补上，
@@ -767,6 +779,11 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 		// 不是错误：快照才是权威，标记只影响列表展示。
 		m.logger.Warn("mail mark taken failed", "mail_id", req.MailId, "err", err)
 	}
+	// 缓存里的这封邮件必须作废：它的 status 还是领取前的 0。
+	// 不删的话下次 onList 从缓存读到旧 status，玩家会看到「已领到东西
+	// 但列表仍显示未读 + 有附件」，而且缓存条目没有 TTL，不会自己好。
+	// 与 MarkTaken 成败无关：只要领奖成功（applied），展示态就该刷新。
+	m.dropEntity(req.MailId)
 
 	changes := lo.Map(atts, func(a Attachment, _ int) *gamev1.ItemChange {
 		return &gamev1.ItemChange{

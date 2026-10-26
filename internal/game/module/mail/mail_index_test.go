@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/cache"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
@@ -158,4 +159,37 @@ func mustZAdd(t *testing.T, mr *miniredis.Miniredis, score float64, member strin
 	t.Helper()
 	_, err := mr.ZAdd(cache.OwnerIndexKey("mail"), score, member)
 	require.NoError(t, err)
+}
+
+// TestTakeInvalidatesCachedRow 领取附件后必须作废缓存里的这一行。
+//
+// 这是接入缓存读取之后新增的一致性要求：onTake 只改 MySQL（status 0→2），
+// 缓存里的 e:mail:{id} 还是领取前的状态，而且没有 TTL——不删的话玩家
+// 领到东西后列表仍显示「未读 + 有附件」，且不会自己恢复。
+func TestTakeInvalidatesCachedRow(t *testing.T) {
+	repo := &fakeRepo{atts: map[int64][]Attachment{7: {{ItemID: 1001, Count: 5}}}}
+	m, _, mr := newIndexedModule(t, repo)
+
+	st := moduletest.NewState(1)
+	rec := moduletest.NewRecorder()
+	ctx := moduletest.NewContext(st, rec)
+
+	// 预置：之前 onList 回填过这封邮件（未读、有附件）
+	mr.HSet(cache.EntityKey("mail", 7), "id", "7", "title", "t", "status", "0")
+	require.True(t, mr.Exists(cache.EntityKey("mail", 7)))
+
+	resp := take(t, m, ctx, rec, 7)
+	require.EqualValues(t, 0, resp.Code, "领取应成功")
+	require.False(t, mr.Exists(cache.EntityKey("mail", 7)),
+		"领取后缓存行必须失效，否则列表读到领取前的 status")
+}
+
+// TestTakeWithoutIndexStillWorks 未注入索引时领取照常（不依赖缓存）。
+func TestTakeWithoutIndexStillWorks(t *testing.T) {
+	repo := &fakeRepo{atts: map[int64][]Attachment{8: {{ItemID: 1001, Count: 1}}}}
+	m, st, rec, ctx := newTestModule(repo)
+	_ = st
+
+	resp := take(t, m, ctx, rec, 8)
+	require.EqualValues(t, 0, resp.Code)
 }

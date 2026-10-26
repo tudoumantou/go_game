@@ -212,7 +212,30 @@ func TestMailIndexThroughModule(t *testing.T) {
 	require.True(t, fromDB.Equal(got),
 		"缓存往返不能改变时刻：db=%v cache=%v（若差 8 小时，检查 DSN 的 loc 参数）", fromDB, got)
 
-	// ④ 回填生效：清掉 ready 后 Members 回落库仍一致，说明数据表与库同源
+	// ④ 行还在但字段变了：DropEntity 后重新展开必须拿到库里的新值。
+	//
+	// 这是「领取邮件附件」的模型——status 由 0 变 2。不删缓存的话下次
+	// 列表读到的是领取前的状态，而缓存条目没有 TTL，不会自己恢复。
+	_, err = database.ExecContext(ctx, `UPDATE mail SET status = 2 WHERE id = ?`, id1)
+	require.NoError(t, err)
+	require.NoError(t, oi.DropEntity(ctx, id1))
+
+	refreshed, _, err := oi.Expand(ctx, playerID)
+	require.NoError(t, err)
+	byID = make(map[int64]cache.EntityRow, len(refreshed))
+	for _, r := range refreshed {
+		byID[r.ID] = r
+	}
+	require.Equal(t, "2", byID[id1].Fields["status"],
+		"Drop 之后必须回源拿到最新 status（0→2）")
+
+	// 索引没被一起删掉：邮件还在，只是内容刷新了
+	stillIndexed, err := oi.Members(ctx, playerID)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []int64{id1, id2}, stillIndexed,
+		"DropEntity 只丢缓存行，不能摘索引")
+
+	// ⑤ 回填生效：清掉 ready 后 Members 回落库仍一致，说明数据表与库同源
 	require.NoError(t, rdb.Del(ctx, cache.OwnerIndexReadyKey("mail")).Err())
 	fallback, err := oi.Members(ctx, playerID)
 	require.NoError(t, err)
