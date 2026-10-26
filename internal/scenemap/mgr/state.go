@@ -131,8 +131,8 @@ type State struct {
 	// Revision 每次状态变更 +1（规格 11.2 的 Go 落地方式）。
 	//
 	// 用途：命令执行完比对前后 revision，判断"这条命令到底改没改状态"。
-	// 参考实现 版 rely on "回调函数 返回新状态"，漏返回时只打 warning，
-	// 表现为状态静默不更新；Go 用 revision 把它变成可断言的错误 ErrNoEffect。
+	// 依赖"返回新状态"来提交变更的方案，漏产出时容易被忽略，
+	// 表现为状态静默不更新；这里用 revision 把它变成可断言的错误 ErrNoEffect。
 	//
 	// 纪律：任何改变可观察状态的代码路径都必须调用 Touch()。
 	Revision uint64

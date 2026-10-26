@@ -10,8 +10,8 @@ import (
 //
 // # 为什么是 "Apply(s)" 而不是 "Apply(s) (newState, err)"
 //
-// 参考实现 版靠函数返回新 state 来"提交"变更；Go 的 map 是指针语义，就地
-// 修改更自然，但也带来"改了却没人知道"的风险。所以用 State.Revision 做
+// 返回新 state 再替换的做法在不可变语境下自然，但 Go 的 map 是指针语义，
+// 就地修改更自然，但也带来"改了却没人知道"的风险。所以用 State.Revision 做
 // 副作用检测（见 Mgr.applyOne）：Apply 返回后比对 revision，没变就说明
 // 这条命令什么都没做——不是错误就是 bug，必须显式声明。
 //

@@ -101,7 +101,7 @@ func (m *Mailbox[T]) Close() {
 // Len 返回排队数量（监控/测试用）。
 func (m *Mailbox[T]) Len() int { return len(m.ch) }
 
-// Call 是"带超时的同步调用"辅助（对应 参考实现 的 call）。
+// Call 是"带超时的同步调用"辅助。
 //
 // 契约：fn 负责把结果写入 reply（容量必须 >= 1），Call 只等结果。
 // 超时返回 ErrTimeout —— **结果未知**，调用方不能当失败重试。

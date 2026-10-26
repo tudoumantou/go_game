@@ -40,7 +40,7 @@ func (p TroopPhase) Terminal() bool { return p == TroopPhaseClosed }
 
 // BusyReason 描述“暂时不允许并发转换”的原因。文档 6.1：
 // Phase 表达活动，Busy 表达临时阻塞，二者正交。
-// 不照搬 参考实现 的位组合锁：任意位组合无法校验，Go 版用显式枚举。
+// 不用位组合表示占用原因：任意位组合无法校验，用显式枚举。
 type BusyReason int32
 
 const (

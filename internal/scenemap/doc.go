@@ -1,5 +1,4 @@
-// Package scenemap 是 RPG 场景（地图）框架，复刻自 参考实现 版 scene 框架，
-// 规格见 docs/场景大地图设计.md。
+// Package scenemap 是 RPG 场景（地图）框架，规格见 docs/场景大地图设计.md。
 //
 // 它与 internal/worldmap（SLG 大地图）是两套完全独立的子系统：
 //

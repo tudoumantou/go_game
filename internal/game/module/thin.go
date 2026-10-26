@@ -1,4 +1,4 @@
-// internal/game/module/thin.go —— 薄模块基座（参考 框架 AutoCacheBuilder 的「预装配」思路）
+// internal/game/module/thin.go —— 薄模块基座（框架预装配接口样板，业务只写处理器）
 //
 // 解决什么问题：一个只有增删改查的业务模块（签到/玩家信息/属性占位…），
 // 为了满足 module.Module 接口要写 7 个方法，其中大部分是样板：
@@ -6,8 +6,8 @@
 // CacheFailureReply 里按 msgID  switch 构造错误回包、failure() 再 switch 一次。
 // 620 行的签到里，业务其实只占三分之一。
 //
-// Thin 把这些样板收敛到一处（仿 框架的泛型 AutoCacheBuilder：框架预装配
-// 三级缓存管线，业务只配置 Key/Val 与读写函数）。业务模块嵌入 *Thin 后
+// Thin 把这些样板收敛到一处（框架预装配整条接口管线，业务只写处理器）。
+// 业务模块嵌入 *Thin 后
 // 只剩三件事：声明协议、写处理器、按需挂 Init/Login/Logout 钩子。
 //
 // 适用边界（重要）：
