@@ -72,9 +72,17 @@ func TestEveryPersistPackageImported(t *testing.T) {
 		if !e.IsDir() {
 			continue
 		}
-		// 只检查「按约定把持久化放在 persist.go」的模块；
-		// loginreward 的注册写在自己文件里，由上面的显式列表兜底。
-		if _, err := os.Stat(filepath.Join("..", e.Name(), "persist.go")); err != nil {
+		// 只检查「按约定把持久化放在 persist.go / persist_gen.go」的模块；
+		// 前者手写、后者由 tools/gencodec 生成。loginreward 的注册写在自己
+		// 文件里，由上面的显式列表兜底。
+		hasPersist := false
+		for _, f := range []string{"persist.go", "persist_gen.go"} {
+			if _, err := os.Stat(filepath.Join("..", e.Name(), f)); err == nil {
+				hasPersist = true
+				break
+			}
+		}
+		if !hasPersist {
 			continue
 		}
 		checked++
@@ -84,13 +92,13 @@ func TestEveryPersistPackageImported(t *testing.T) {
 			want = alt
 		}
 		require.True(t, got[want],
-			"模块目录 %q 有 persist.go 却没在 register.go 导入，flusher 会拒绝落库；"+
+			"模块目录 %q 有持久化文件却没在 register.go 导入，flusher 会拒绝落库；"+
 				"若它的 Ext 槽位名与目录名不同，请把例外登记到 nameExceptions", e.Name())
 	}
 
 	// 防止「扫空目录导致永远通过」：模块数只会增加，少于 8 说明路径或判断失效了
 	require.GreaterOrEqual(t, checked, 8,
-		"只扫到 %d 个带 persist.go 的模块，预期至少 8 个——扫描逻辑可能失效", checked)
+		"只扫到 %d 个带持久化文件的模块，预期至少 8 个——扫描逻辑可能失效", checked)
 }
 
 // TestNoDuplicateSlotNames 槽位名必须唯一（RegisterPersister 会 panic，

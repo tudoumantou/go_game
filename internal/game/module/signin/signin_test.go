@@ -107,7 +107,7 @@ func TestSignInAdd(t *testing.T) {
 
 // TestStateRoundTrip 验证两段编解码：
 //   - 业务结构 ↔ Ext（基座负责，存的是 SignIn 的 JSON）；
-//   - 业务结构 ↔ 表行（persist.go 的 toRow/fromRow）。
+//   - 业务结构 ↔ 表行（persist_gen.go 生成的 SignInToRow/SignInFromRow）。
 func TestStateRoundTrip(t *testing.T) {
 	st := newFakeState(7)
 	ctx, _ := newCtx(st)
@@ -130,12 +130,12 @@ func TestStateRoundTrip(t *testing.T) {
 	require.EqualValues(t, 20, decoded.Rewards[1001])
 
 	// 落库：业务结构 → 表行 → 业务结构。
-	row, err := toRow(7, &decoded)
+	row, err := SignInToRow(7, &decoded)
 	require.NoError(t, err)
 	require.EqualValues(t, 7, row.PlayerId, fmt.Sprintf("行结构与表不符: %+v", row))
 	require.EqualValues(t, "[2]", row.ClaimedDays)
 	require.EqualValues(t, `{"1001":20}`, row.ClaimedRewards)
-	back, err := fromRow(row)
+	back, err := SignInFromRow(row)
 	require.NoError(t, err, fmt.Sprintf("行回读失败: %+v %v", back, err))
 	require.Len(t, back.Days, 1)
 	require.EqualValues(t, 20, back.Rewards[1001])

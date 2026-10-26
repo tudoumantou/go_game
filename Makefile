@@ -5,13 +5,13 @@ BIN     := bin
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
-.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db new-module keygen db-init db-migrate db-seed build test test-race test-integration lint fmt vet dev run-all \
+.PHONY: help gen gen-proto gen-msgid gen-check gen-data gen-db gen-codec new-module keygen db-init db-migrate db-seed build test test-race test-integration lint fmt vet dev run-all \
         monitoring smoke loadtest bench drill-crash drill-suite clean
 
 help: ## 查看全部命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[32m%-12s\033[0m %s\n", $$1, $$2}'
 
-gen: gen-proto gen-msgid gen-data gen-db ## 一键生成全部代码
+gen: gen-proto gen-msgid gen-data gen-db gen-codec ## 一键生成全部代码
 
 gen-proto: ## proto → pkg/pb（buf，需先安装 buf）
 	cd api/proto && buf generate
@@ -21,6 +21,7 @@ gen-msgid: ## proto 注解 // @msg → pkg/codec/msgids_gen.go（消息号注册
 
 gen-check: ## 校验生成物与源码一致（生成到临时目录逐文件比对，与工作区状态无关）
 	@$(GO) run ./tools/genmsgid -check
+	@$(GO) run ./tools/gencodec -check
 	@set -e; tmp=$$(mktemp -d); trap 'rm -rf $$tmp' EXIT; \
 	 $(GO) run ./tools/gendata -in configs/gamedata/xml -out $$tmp/gamedata >/dev/null; \
 	 $(GO) run ./tools/gendb -in sql/schema -out $$tmp/model >/dev/null; \
@@ -37,6 +38,9 @@ gen-data: ## XML 游戏数据 → pkg/gamedata（全量覆盖 *_gen.go）
 
 gen-db: ## DDL → pkg/model（覆盖 *_gen.go，仅新建 *_model.go）
 	$(GO) run ./tools/gendb -in sql/schema -out pkg/model
+
+gen-codec: ## DDL + 业务结构 db tag → <模块>/persist_gen.go（列↔字段双向校验）
+	$(GO) run ./tools/gencodec -schema sql/schema -model pkg/model -modules internal/game/module
 
 keygen: ## 生成网关握手 RSA 密钥对（输出 deploy/keys，私钥不入库）
 	$(GO) run ./tools/keygen -out deploy/keys

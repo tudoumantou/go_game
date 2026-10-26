@@ -45,9 +45,10 @@ const (
 // Go 知识点：两个字段都没有 json tag，序列化用 Go 字段名（"Days"/"Rewards"）。
 // 这是历史契约（表里已存的数据按这个键名），补 tag 会让旧快照读不出来，
 // 所以注释里显式记录「无 tag 是故意的」。
+// @codec table=player_signin validate=validate
 type SignIn struct {
-	Days    []int32
-	Rewards map[int32]int64
+	Days    []int32         `db:"claimed_days"`
+	Rewards map[int32]int64 `db:"claimed_rewards"`
 }
 
 // M 是签到模块的唯一实例：声明在包级，路由在 init 注册。
@@ -217,4 +218,22 @@ func rewardsForDay(day int32) ([]module.ItemGrant, error) {
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].ItemID < out[j].ItemID })
 	return out, nil
+}
+
+// validate 落库前校验：天数在 1-7，奖励数量为正，坏数据整批回滚。
+//
+// 这类校验属于业务语义（周序号 1..7），不交给生成器：生成器只管
+// 「字段 ↔ 列」的结构映射。
+func validate(d *SignIn) error {
+	for _, day := range d.Days {
+		if day < 1 || day > timeutil.DaysPerWeek {
+			return fmt.Errorf("invalid signin day %d", day)
+		}
+	}
+	for id, count := range d.Rewards {
+		if id <= 0 || count <= 0 {
+			return fmt.Errorf("invalid signin reward %d x %d", id, count)
+		}
+	}
+	return nil
 }
