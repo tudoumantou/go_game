@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/db"
@@ -33,26 +34,6 @@ import (
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
-)
-
-// 协议号（4.9：6001/6002 发送，6010 推送，6020/6021 历史）。
-const (
-	msgIDSendReq     = codec.MsgChatSendReq
-	msgIDSendResp    = codec.MsgChatSendResp
-	msgIDNotify      = codec.MsgChatMessageNotify
-	msgIDHistoryReq  = codec.MsgChatHistoryReq
-	msgIDHistoryResp = codec.MsgChatHistoryResp
-)
-
-// 业务码（4.10：与战斗等模块一致的约定——0 成功，非 0 为可预期失败）。
-const (
-	codeOK             int32 = 0
-	codeChannelClosed  int32 = 4001 // 频道未开放（P6 仅私聊）
-	codeContentEmpty   int32 = 4005 // 内容为空 / 对端 id 非法
-	codeContentTooLong int32 = 4006 // 内容超长
-	// codeTooFast 发言过快（与 proto 的 ERR_CODE_CHAT_TOO_FAST 同义，
-	// 已在 errcheck_test 的白名单登记）。
-	codeTooFast int32 = 4003
 )
 
 // 消息内容上限。
@@ -224,8 +205,8 @@ func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
-	m.HandleR(msgIDSendReq, msgIDSendResp, &gamev1.ChatSendResp{}, module.Typed(msgIDSendResp, m.onSend))
-	m.HandleR(msgIDHistoryReq, msgIDHistoryResp, &gamev1.ChatHistoryResp{}, module.Typed(msgIDHistoryResp, m.onHistory))
+	module.Handle(m.Thin, m.onSend)
+	module.Handle(m.Thin, m.onHistory)
 	return m
 }
 
@@ -256,21 +237,21 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	*resp = gamev1.ChatSendResp{}
 	// channel=0 按私聊兼容（老客户端不传频道字段），其余频道 P6 未开放
 	if req.Channel != channelPrivate && req.Channel != 0 {
-		resp.Code = codeChannelClosed // P6 仅开放私聊
+		resp.Code = int32(errcode.ErrChannelClosed) // P6 仅开放私聊
 		return nil
 	}
 	if req.Content == "" || req.PeerId <= 0 {
-		resp.Code = codeContentEmpty
+		resp.Code = int32(errcode.ErrContentEmpty)
 		return nil
 	}
 	if len(req.Content) > maxContentBytes || utf8.RuneCountInString(req.Content) > maxContentRunes {
-		resp.Code = codeContentTooLong
+		resp.Code = int32(errcode.ErrContentTooLong)
 		return nil
 	}
 	// 频控放在内容校验之后：被拒绝的脏请求不占用额度（否则玩家打字打错
 	// 一次就要等一秒），只有真正要发出去的才计数。
 	if m.chatLimiter != nil && !m.chatLimiter.Allow(strconv.FormatInt(ctx.State.PlayerID(), 10)) {
-		resp.Code = codeTooFast
+		resp.Code = int32(errcode.ErrChatTooFast)
 		return nil
 	}
 
@@ -312,7 +293,7 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	// 投递失败不影响回包：私聊是尽力而为链路，回包只表示「服务端已受理」
 	m.deliver(req.PeerId, raw, crossMsg)
 
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.MsgId = fmt.Sprintf("%d", msgID)
 	resp.SentAt = now
 	return nil
@@ -346,7 +327,7 @@ func (m *Module) deliver(toID int64, raw []byte, crossMsg *pkgmq.ChatCrossMsg) {
 			}
 		}
 		// Push 返回 false 是掉线竞态（判定在线与推送之间掉线），静默丢弃
-		m.messenger.Push(bg, toID, msgIDNotify, raw)
+		m.messenger.Push(bg, toID, codec.MsgChatMessageNotify, raw)
 	default:
 		// 跨服：生产失败只 Warn——Kafka 侧重投由 broker/生产者重试兜底
 		if err := m.messenger.ProduceCross(bg, crossMsg); err != nil {
@@ -357,7 +338,7 @@ func (m *Module) deliver(toID int64, raw []byte, crossMsg *pkgmq.ChatCrossMsg) {
 
 // onHistory 拉取与某好友的聊天历史。
 func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp *gamev1.ChatHistoryResp) error {
-	*resp = gamev1.ChatHistoryResp{Code: codeOK}
+	*resp = gamev1.ChatHistoryResp{Code: int32(errcode.OK)}
 	if m.repo == nil {
 		return nil
 	}

@@ -25,25 +25,13 @@ package scenemod
 import (
 	"fmt"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	scn "game_study/internal/game/scene"
 	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	"game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
-)
-
-// 业务码（0 成功；4001 场景不存在；4003 场景 Actor 信箱满；
-// 4005 玩家当前不在场景；4006 场景存在但同步请求投递失败）。
-const (
-	// 码值统一用 41xx：proto 的 4xxx 段已定义 4001 CHANNEL_CLOSED、
-	// 4003 CHAT_TOO_FAST（社交/聊天），直接占用会让客户端把「你不在场景里」
-	// 显示成「频道未开放」。41xx 与 4001-4004 不重叠，也不与任何模块冲突。
-	codeOK       int32 = 0
-	codeNoScene  int32 = 4101 // 场景不存在
-	codeBusy     int32 = 4103 // 场景繁忙（Actor 信箱满）
-	codeNotIn    int32 = 4105 // 不在场景中
-	codeNotReady int32 = 4106 // 场景未就绪
 )
 
 // Module 场景模块。
@@ -73,8 +61,7 @@ func New(mgr *scn.Manager, logger *log.Logger) *Module {
 	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
 	m.Handle(codec.MsgSceneMoveReq, m.onMove)
 	m.HandleR(codec.MsgSceneLeaveReq, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{}, m.onLeave)
-	m.HandleR(codec.MsgSceneSyncReq, codec.MsgSceneSyncResp, &gamev1.SceneSyncResp{},
-		module.Typed(codec.MsgSceneSyncResp, m.onSync))
+	module.Handle(m.Thin, m.onSync)
 	return m
 }
 
@@ -117,7 +104,7 @@ func (m *Module) onEnter(ctx *module.Context, _ uint32, body []byte) error {
 
 	pid := m.mgr.PID(req.SceneId)
 	if pid == nil {
-		return m.replyEnter(ctx, codeNoScene, req.SceneId)
+		return m.replyEnter(ctx, int32(errcode.ErrSceneNotExist), req.SceneId)
 	}
 
 	// 切场景：先让旧场景移除实体，再进新场景。
@@ -144,7 +131,7 @@ func (m *Module) onEnter(ctx *module.Context, _ uint32, body []byte) error {
 	if err := ctx.Actor.Send(pid, msg); err != nil {
 		// 信箱满：场景正在被大量请求打，回「繁忙」而不是静默丢弃。
 		m.logger.Warn("scene enter rejected", "scene_id", req.SceneId, "err", err)
-		return m.replyEnter(ctx, codeBusy, req.SceneId)
+		return m.replyEnter(ctx, int32(errcode.ErrSceneBusy), req.SceneId)
 	}
 	return nil
 }
@@ -153,7 +140,7 @@ func (m *Module) onEnter(ctx *module.Context, _ uint32, body []byte) error {
 //
 // 目标场景一律取 Profile.SceneID（服务端权威的当前归属），不信协议
 // 携带的场景参数——防玩家把移动包打到别处的场景 Actor。
-// 两种失败（PID 解析不到 / 投递被拒）都回 codeNotIn：对客户端是同一种
+// 两种失败（PID 解析不到 / 投递被拒）都回 int32(errcode.ErrNotInScene)：对客户端是同一种
 // 恢复动作——「你不在场景里，重新进」。
 func (m *Module) onMove(ctx *module.Context, _ uint32, body []byte) error {
 	var req gamev1.SceneMoveReq
@@ -164,7 +151,7 @@ func (m *Module) onMove(ctx *module.Context, _ uint32, body []byte) error {
 	sceneID := ctx.State.Profile().SceneID
 	pid := m.mgr.PID(sceneID)
 	if pid == nil {
-		return m.replyMove(ctx, codeNotIn, 0, 0, req.Seq) // 不在场景中
+		return m.replyMove(ctx, int32(errcode.ErrNotInScene), 0, 0, req.Seq) // 不在场景中
 	}
 	// Seq 回传：客户端用序列号对齐「请求-校正」配对，防旧包乱序生效
 	if err := ctx.Actor.Send(pid, &scn.MoveMsg{
@@ -173,20 +160,20 @@ func (m *Module) onMove(ctx *module.Context, _ uint32, body []byte) error {
 		Y:        req.Y,
 		Seq:      req.Seq,
 	}); err != nil {
-		return m.replyMove(ctx, codeNotIn, 0, 0, req.Seq)
+		return m.replyMove(ctx, int32(errcode.ErrNotInScene), 0, 0, req.Seq)
 	}
 	return nil
 }
 
 // onLeave 主动离场：本地清籍 + 回包。
 //
-// leaveScene 先执行再回包：本地归属已清、场景已通知，此时回 codeOK
+// leaveScene 先执行再回包：本地归属已清、场景已通知，此时回 int32(errcode.OK)
 // 不会出现「客户端以为出了场景、服务端还认为在场景里」的中间态。
 func (m *Module) onLeave(ctx *module.Context, _ uint32, _ []byte) error {
 	if err := m.leaveScene(ctx); err != nil {
 		return err
 	}
-	return m.reply(ctx, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{Code: codeOK})
+	return m.reply(ctx, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{Code: int32(errcode.OK)})
 }
 
 // leaveScene 通知当前场景移除实体，并清空场景归属。
@@ -212,7 +199,7 @@ func (m *Module) leaveScene(ctx *module.Context) error {
 // onSync 请求场景状态同步（重连/纠偏后客户端拉当前视野）。
 //
 // SyncMsg 带 PID：场景要把视野内实体快照推回该玩家 Actor。
-// 投递失败回 codeNotReady：与 onMove 的 codeNotIn 区分——同步请求
+// 投递失败回 int32(errcode.ErrSceneNotReady)：与 onMove 的 int32(errcode.ErrNotInScene) 区分——同步请求
 // 语义上更偏「场景存在但没就绪」，客户端可稍后重试。
 func (m *Module) onSync(ctx *module.Context, _ *gamev1.SceneSyncReq, resp *gamev1.SceneSyncResp) error {
 	sceneID := ctx.State.Profile().SceneID
@@ -221,7 +208,7 @@ func (m *Module) onSync(ctx *module.Context, _ *gamev1.SceneSyncReq, resp *gamev
 		// 离开场景后 SceneID 已被清成 0，这里必须明确回 4005：
 		// 直接 return nil 会让 Typed 用零值回包，客户端读到的 code=0
 		// 与「同步成功」无法区分。
-		resp.Code = codeNotIn
+		resp.Code = int32(errcode.ErrNotInScene)
 		return nil
 	}
 	if err := ctx.Actor.Send(pid, &scn.SyncMsg{PlayerID: ctx.State.PlayerID(), PID: ctx.Actor.PID()}); err != nil {

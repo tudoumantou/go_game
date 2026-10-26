@@ -23,39 +23,13 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-)
-
-const (
-	msgIDListReq    = codec.MsgFriendListReq
-	msgIDListResp   = codec.MsgFriendListResp
-	msgIDApplyReq   = codec.MsgFriendApplyReq
-	msgIDApplyResp  = codec.MsgFriendApplyResp
-	msgIDHandleReq  = codec.MsgFriendHandleReq
-	msgIDHandleResp = codec.MsgFriendHandleResp
-	msgIDDeleteReq  = codec.MsgFriendDeleteReq
-	msgIDDeleteResp = codec.MsgFriendDeleteResp
-)
-
-// 业务码。
-//
-// 好友段从 6801 起：与背包/装备等错开，客户端按号段定位玩法。
-const (
-	codeOK             int32 = 0
-	codeSelf           int32 = 6801 // 不能加自己
-	codeTargetNotFound int32 = 6802 // 目标玩家不存在
-	codeAlreadyFriend  int32 = 6803 // 已是好友
-	codeFriendFull     int32 = 6804 // 好友已满
-	codeApplyExists    int32 = 6805 // 已申请，等待对方处理
-	codeApplyNotFound  int32 = 6806 // 申请不存在/已处理/已过期
-	codeApplyFull      int32 = 6807 // 待处理申请过多
-	codeApplyExpired   int32 = 6808 // 申请已过期
 )
 
 // applyTTL 申请有效期：超过后同意会被拒绝，需重新申请。
@@ -88,14 +62,10 @@ type Module struct {
 func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
 	m := &Module{repo: NewRepo(database), online: online, logger: logger}
 	m.Thin = module.NewThin("friend", module.ThinLogger(logger))
-	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.FriendListResp{},
-		module.Typed(msgIDListResp, m.onList))
-	m.HandleR(msgIDApplyReq, msgIDApplyResp, &gamev1.FriendApplyResp{},
-		module.Typed(msgIDApplyResp, m.onApply))
-	m.HandleR(msgIDHandleReq, msgIDHandleResp, &gamev1.FriendHandleResp{},
-		module.Typed(msgIDHandleResp, m.onHandle))
-	m.HandleR(msgIDDeleteReq, msgIDDeleteResp, &gamev1.FriendDeleteResp{},
-		module.Typed(msgIDDeleteResp, m.onDelete))
+	module.Handle(m.Thin, m.onList)
+	module.Handle(m.Thin, m.onApply)
+	module.Handle(m.Thin, m.onHandle)
+	module.Handle(m.Thin, m.onDelete)
 	return m
 }
 
@@ -112,7 +82,7 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *game
 		return fmt.Errorf("list friends: %w", err)
 	}
 
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.Limit = friendLimit()
 	for _, f := range friends {
 		online := false
@@ -146,11 +116,11 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *game
 // 既省一次往返，也避免把无意义查询打到 DB。
 func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *gamev1.FriendApplyResp) error {
 	if req.PlayerId <= 0 {
-		resp.Code = codeTargetNotFound
+		resp.Code = int32(errcode.ErrFriendTargetNotFound)
 		return nil
 	}
 	if req.PlayerId == ctx.State.PlayerID() {
-		resp.Code = codeSelf
+		resp.Code = int32(errcode.ErrFriendSelf)
 		return nil
 	}
 
@@ -167,7 +137,7 @@ func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *
 // onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
 func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp *gamev1.FriendHandleResp) error {
 	if req.PlayerId <= 0 || req.PlayerId == ctx.State.PlayerID() {
-		resp.Code = codeApplyNotFound
+		resp.Code = int32(errcode.ErrFriendApplyNotFound)
 		return nil
 	}
 
@@ -184,7 +154,7 @@ func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp
 // onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
 func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp *gamev1.FriendDeleteResp) error {
 	if req.PlayerId <= 0 {
-		resp.Code = codeTargetNotFound
+		resp.Code = int32(errcode.ErrFriendTargetNotFound)
 		return nil
 	}
 
@@ -193,7 +163,7 @@ func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp
 	if err := m.repo.Delete(ctxDB, ctx.State.PlayerID(), req.PlayerId); err != nil {
 		return fmt.Errorf("delete friend: %w", err)
 	}
-	resp.Code = codeOK // 删除幂等：本来不是好友也视为成功
+	resp.Code = int32(errcode.OK) // 删除幂等：本来不是好友也视为成功
 	return nil
 }
 
@@ -298,13 +268,13 @@ func (r *Repo) List(ctx context.Context, playerID int64) ([]FriendRow, []ApplyRo
 // （error 保留给真失败），而是通过闭包捕获的外部变量 code 回传，
 // 这样「拒绝」与「出错」不会混在一个返回值里。
 func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
-	var code = codeOK
+	var code = int32(errcode.OK)
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		// 目标必须存在（好友列表要 JOIN player 取名，悬空 ID 会让列表丢行）。
 		var exists int64
 		if err := tx.QueryRowContext(ctx, `SELECT id FROM player WHERE id = ?`, to).Scan(&exists); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				code = codeTargetNotFound
+				code = int32(errcode.ErrFriendTargetNotFound)
 				return nil
 			}
 			return err
@@ -314,7 +284,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 		err := tx.QueryRowContext(ctx,
 			`SELECT 1 FROM friend WHERE player_id = ? AND friend_id = ?`, from, to).Scan(&one)
 		if err == nil {
-			code = codeAlreadyFriend
+			code = int32(errcode.ErrFriendAlready)
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -328,12 +298,12 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 		if err == nil && reverseStatus == 0 {
 			if err := r.becomeFriends(ctx, tx, from, to); err != nil {
 				if errors.Is(err, errFriendFull) {
-					code = codeFriendFull
+					code = int32(errcode.ErrFriendFull)
 					return nil
 				}
 				return err
 			}
-			code = codeOK
+			code = int32(errcode.OK)
 			return nil
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -345,7 +315,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 		err = tx.QueryRowContext(ctx,
 			`SELECT status FROM friend_apply WHERE from_id = ? AND to_id = ? FOR UPDATE`, from, to).Scan(&myStatus)
 		if err == nil && myStatus == 0 {
-			code = codeApplyExists
+			code = int32(errcode.ErrFriendApplyExists)
 			return nil
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -358,7 +328,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 			return err
 		}
 		if count >= int(friendLimit()) {
-			code = codeFriendFull
+			code = int32(errcode.ErrFriendFull)
 			return nil
 		}
 
@@ -369,7 +339,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 			return err
 		}
 		if pending >= applyLimit() {
-			code = codeApplyFull
+			code = int32(errcode.ErrFriendApplyFull)
 			return nil
 		}
 
@@ -387,7 +357,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 // 状态机：0=待处理 → 1=已同意 / 2=已拒绝。status=1 再点是幂等成功，
 // status=2 需要重新申请——与 onAccept 的「已领任务可重接」同思路。
 func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time.Duration) (int32, error) {
-	var code = codeOK
+	var code = int32(errcode.OK)
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		var status int32
 		var createdAt time.Time
@@ -395,7 +365,7 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 			`SELECT status, created_at FROM friend_apply WHERE from_id = ? AND to_id = ? FOR UPDATE`,
 			from, to).Scan(&status, &createdAt)
 		if errors.Is(err, sql.ErrNoRows) {
-			code = codeApplyNotFound
+			code = int32(errcode.ErrFriendApplyNotFound)
 			return nil
 		}
 		if err != nil {
@@ -404,10 +374,10 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 
 		switch status {
 		case 1:
-			code = codeAlreadyFriend // 已同意过：幂等
+			code = int32(errcode.ErrFriendAlready) // 已同意过：幂等
 			return nil
 		case 2:
-			code = codeApplyNotFound // 已拒绝：需要重新申请
+			code = int32(errcode.ErrFriendApplyNotFound) // 已拒绝：需要重新申请
 			return nil
 		}
 
@@ -417,7 +387,7 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 				`UPDATE friend_apply SET status = 2 WHERE from_id = ? AND to_id = ?`, from, to); err != nil {
 				return err
 			}
-			code = codeApplyExpired
+			code = int32(errcode.ErrFriendApplyExpired)
 			return nil
 		}
 
@@ -429,7 +399,7 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 
 		if err := r.becomeFriends(ctx, tx, from, to); err != nil {
 			if errors.Is(err, errFriendFull) {
-				code = codeFriendFull
+				code = int32(errcode.ErrFriendFull)
 				return nil
 			}
 			return err

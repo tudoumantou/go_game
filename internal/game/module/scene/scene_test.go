@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/player"
 	scn "game_study/internal/game/scene"
@@ -255,7 +256,7 @@ func TestEnterUnknownScene(t *testing.T) {
 		var resp gamev1.SceneEnterResp
 		err := proto.Unmarshal(pkt.body, &resp)
 		require.NoError(t, err)
-		require.EqualValues(t, codeNoScene, resp.Code)
+		require.EqualValues(t, int32(errcode.ErrSceneNotExist), resp.Code)
 	case <-time.After(3 * time.Second):
 		t.Fatalf("timeout waiting for reply (errs=%v)", p.errors())
 	}

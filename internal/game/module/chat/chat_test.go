@@ -14,8 +14,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -103,7 +105,7 @@ func newTestModule(repo chatRepo, msg Messenger) (*Module, *moduletest.State, *m
 
 func send(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, req *gamev1.ChatSendReq) *gamev1.ChatSendResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDSendReq, msgIDSendResp, req)
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgChatSendReq, codec.MsgChatSendResp, req)
 	require.NoError(t, err)
 	require.NotNil(t, raw, "发送没有回包")
 	resp := &gamev1.ChatSendResp{}
@@ -113,7 +115,7 @@ func send(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder
 
 func history(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, req *gamev1.ChatHistoryReq) *gamev1.ChatHistoryResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDHistoryReq, msgIDHistoryResp, req)
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgChatHistoryReq, codec.MsgChatHistoryResp, req)
 	require.NoError(t, err)
 	require.NotNil(t, raw, "历史没有回包")
 	resp := &gamev1.ChatHistoryResp{}
@@ -133,7 +135,7 @@ func TestSendRejectsClosedChannel(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, msg)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: 1, PeerId: 200, Content: "hi"})
-	require.EqualValues(t, codeChannelClosed, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrChannelClosed), resp.Code)
 	require.Empty(t, repo.inserts, "频道关闭不能落历史")
 	require.Empty(t, msg.pushed)
 	require.Empty(t, msg.crossed)
@@ -147,7 +149,7 @@ func TestSendAllowsZeroChannelAsPrivate(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, msg)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: 0, PeerId: 200, Content: "hi"})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, repo.inserts, 1, "channel=0 应走私聊并落 out 历史")
 }
 
@@ -161,7 +163,7 @@ func TestSendRejectsEmptyContentAndBadPeer(t *testing.T) {
 		repo := &fakeRepo{}
 		m, _, rec, ctx := newTestModule(repo, &fakeMessenger{self: "game-01"})
 		resp := send(t, m, ctx, rec, c)
-		require.EqualValues(t, codeContentEmpty, resp.Code, fmt.Sprintf("req=%+v", c))
+		require.EqualValues(t, int32(errcode.ErrContentEmpty), resp.Code, fmt.Sprintf("req=%+v", c))
 		require.Empty(t, repo.inserts, "校验失败不能落库")
 	}
 }
@@ -177,7 +179,7 @@ func TestSendOfflinePends(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, msg)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "在吗"})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, msg.pended, 1, "离线必须暂存")
 	require.EqualValues(t, 200, msg.pended[0].ToID)
 	require.EqualValues(t, "在吗", msg.pended[0].Content)
@@ -198,13 +200,13 @@ func TestSendLocalOnlinePushes(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, msg)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "在吗"})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.NotEmpty(t, resp.MsgId, "回包要带 msgID，客户端据此回显")
 	require.NotZero(t, resp.SentAt)
 
 	require.Len(t, msg.pushed, 1, "本服在线必须直推")
 	require.EqualValues(t, 200, msg.pushed[0].PlayerID)
-	require.EqualValues(t, msgIDNotify, msg.pushed[0].MsgID)
+	require.EqualValues(t, codec.MsgChatMessageNotify, msg.pushed[0].MsgID)
 	require.Empty(t, msg.crossed)
 	require.Empty(t, msg.pended)
 
@@ -229,7 +231,7 @@ func TestSendCrossNodeProducesKafka(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, msg)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "跨服"})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 
 	require.Len(t, msg.crossed, 1, "跨节点必须走 Kafka")
 	require.EqualValues(t, 200, msg.crossed[0].ToID)
@@ -246,7 +248,7 @@ func TestSendNoMessengerDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, nil)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, repo.inserts, 1)
 }
 
@@ -256,7 +258,7 @@ func TestSendNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil, msg)
 
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, msg.pushed, 1, "没库也要推送")
 }
 
@@ -272,11 +274,11 @@ func TestSendSurvivesDeliveryFailures(t *testing.T) {
 	}
 	m, _, rec, ctx := newTestModule(repo, msg)
 
-	require.EqualValues(t, codeOK, send(t, m, ctx, rec, &gamev1.ChatSendReq{
+	require.EqualValues(t, int32(errcode.OK), send(t, m, ctx, rec, &gamev1.ChatSendReq{
 		Channel: channelPrivate, PeerId: 200, Content: "hi",
 	}).Code, "落库/暂存失败不能把发送判失败")
 
-	require.Equal(t, 1, rec.Count(msgIDSendResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgChatSendResp), "一次请求只能回一个包")
 }
 
 // ============================================================================
@@ -293,7 +295,7 @@ func TestHistoryReversesAndRestoresSides(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo, nil)
 
 	resp := history(t, m, ctx, rec, &gamev1.ChatHistoryReq{PeerId: 200, Limit: 10})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, resp.Messages, 3)
 	require.EqualValues(t, "1", resp.Messages[0].MsgId, "回包必须按时间正序")
 	require.EqualValues(t, "3", resp.Messages[2].MsgId)
@@ -324,7 +326,7 @@ func TestHistoryHasMoreWhenPageFull(t *testing.T) {
 func TestHistoryNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil, nil)
 	resp := history(t, m, ctx, rec, &gamev1.ChatHistoryReq{PeerId: 200, Limit: 10})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Empty(t, resp.Messages)
 }
 
@@ -333,7 +335,7 @@ func TestHistoryRepoErrorPropagates(t *testing.T) {
 	repo := &fakeRepo{listErr: context.DeadlineExceeded}
 	m, _, rec, ctx := newTestModule(repo, nil)
 
-	_, err := moduletest.Call(m, ctx, rec, msgIDHistoryReq, msgIDHistoryResp,
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgChatHistoryReq, codec.MsgChatHistoryResp,
 		&gamev1.ChatHistoryReq{PeerId: 200, Limit: 10})
 	require.Error(t, err)
 }
@@ -425,7 +427,7 @@ func TestSendRejectsTooLongContent(t *testing.T) {
 			resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{
 				Channel: channelPrivate, PeerId: 200, Content: c.content,
 			})
-			require.EqualValues(t, codeContentTooLong, resp.Code,
+			require.EqualValues(t, int32(errcode.ErrContentTooLong), resp.Code,
 				fmt.Sprintf("len=%d runes=%d", len(c.content), utf8.RuneCountInString(c.content)))
 			require.Empty(t, repo.inserts, "超长内容不能落库")
 			require.Empty(t, msg.pended, "超长内容不能投递")
@@ -444,7 +446,7 @@ func TestSendAcceptsBoundaryContent(t *testing.T) {
 	resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{
 		Channel: channelPrivate, PeerId: 200, Content: content,
 	})
-	require.EqualValues(t, codeOK, resp.Code, "正好 200 字必须允许")
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "正好 200 字必须允许")
 	require.Len(t, repo.inserts, 1)
 }
 
@@ -483,18 +485,18 @@ func TestSendRateLimited(t *testing.T) {
 	req := &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"}
 	for i := 0; i < 3; i++ { // 默认突发 3
 		resp := send(t, m, ctx, rec, req)
-		require.EqualValues(t, codeOK, resp.Code, "第 %d 条应放行", i+1)
+		require.EqualValues(t, int32(errcode.OK), resp.Code, "第 %d 条应放行", i+1)
 	}
 
 	resp := send(t, m, ctx, rec, req)
-	require.EqualValues(t, codeTooFast, resp.Code, "超过突发额度必须回 4003")
+	require.EqualValues(t, int32(errcode.ErrChatTooFast), resp.Code, "超过突发额度必须回 4003")
 	require.Len(t, repo.inserts, 3, "被限流的消息不能落库")
 	require.Len(t, msg.pended, 3, "被限流的消息不能投递")
 
 	// 过一秒：补一个令牌
 	clk.Advance(1100 * time.Millisecond)
 	resp = send(t, m, ctx, rec, req)
-	require.EqualValues(t, codeOK, resp.Code, "间隔够了应恢复发送")
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "间隔够了应恢复发送")
 	require.Len(t, repo.inserts, 4)
 }
 
@@ -510,12 +512,12 @@ func TestSendBadContentDoesNotConsumeQuota(t *testing.T) {
 	// 先打 10 次空内容
 	for i := 0; i < 10; i++ {
 		resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200})
-		require.EqualValues(t, codeContentEmpty, resp.Code)
+		require.EqualValues(t, int32(errcode.ErrContentEmpty), resp.Code)
 	}
 
 	// 额度应该还在：连续 3 条正常消息全部放行
 	for i := 0; i < 3; i++ {
 		resp := send(t, m, ctx, rec, &gamev1.ChatSendReq{Channel: channelPrivate, PeerId: 200, Content: "hi"})
-		require.EqualValues(t, codeOK, resp.Code, "第 %d 条正常消息应放行（脏请求不该占额度）", i+1)
+		require.EqualValues(t, int32(errcode.OK), resp.Code, "第 %d 条正常消息应放行（脏请求不该占额度）", i+1)
 	}
 }

@@ -10,8 +10,10 @@ import (
 	"strings"
 	"testing"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -86,7 +88,7 @@ func call(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder
 func create(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, name string) *gamev1.GuildCreateResp {
 	t.Helper()
 	resp := &gamev1.GuildCreateResp{}
-	call(t, m, ctx, rec, msgIDCreateReq, msgIDCreateResp, &gamev1.GuildCreateReq{Name: name}, resp)
+	call(t, m, ctx, rec, codec.MsgGuildCreateReq, codec.MsgGuildCreateResp, &gamev1.GuildCreateReq{Name: name}, resp)
 	return resp
 }
 
@@ -98,13 +100,13 @@ func create(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Record
 func TestInfoNotInGuild(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{})
 	resp := &gamev1.GuildInfoResp{}
-	call(t, m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoReq{}, resp)
-	require.EqualValues(t, codeNotInGuild, resp.Code)
+	call(t, m, ctx, rec, codec.MsgGuildInfoReq, codec.MsgGuildInfoResp, &gamev1.GuildInfoReq{}, resp)
+	require.EqualValues(t, int32(errcode.ErrGuildNotIn), resp.Code)
 
 	m2, _, rec2, ctx2 := newTestModule(nil)
 	resp2 := &gamev1.GuildInfoResp{}
-	call(t, m2, ctx2, rec2, msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoReq{}, resp2)
-	require.EqualValues(t, codeNotInGuild, resp2.Code)
+	call(t, m2, ctx2, rec2, codec.MsgGuildInfoReq, codec.MsgGuildInfoResp, &gamev1.GuildInfoReq{}, resp2)
+	require.EqualValues(t, int32(errcode.ErrGuildNotIn), resp2.Code)
 }
 
 // TestInfoIsLeaderFromLeaderID 会长身份以 leader_id 为准：
@@ -114,8 +116,8 @@ func TestInfoIsLeaderFromLeaderID(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{guild: g})
 
 	resp := &gamev1.GuildInfoResp{}
-	call(t, m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoReq{}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgGuildInfoReq, codec.MsgGuildInfoResp, &gamev1.GuildInfoReq{}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 5, resp.GuildId)
 	require.EqualValues(t, "龙腾", resp.Name)
 	require.EqualValues(t, 2, resp.Level)
@@ -126,14 +128,14 @@ func TestInfoIsLeaderFromLeaderID(t *testing.T) {
 	m2, _, rec2, ctx2 := newTestModule(&fakeRepo{guild: g})
 	ctx2.State = moduletest.NewState(200)
 	resp2 := &gamev1.GuildInfoResp{}
-	call(t, m2, ctx2, rec2, msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoReq{}, resp2)
+	call(t, m2, ctx2, rec2, codec.MsgGuildInfoReq, codec.MsgGuildInfoResp, &gamev1.GuildInfoReq{}, resp2)
 	require.False(t, resp2.IsLeader, "不是 leader_id 就不是会长")
 }
 
 // TestInfoPropagatesError 查库真故障上抛（不能伪装成「未入会」）。
 func TestInfoPropagatesError(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{findErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoReq{})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgGuildInfoReq, codec.MsgGuildInfoResp, &gamev1.GuildInfoReq{})
 	require.Error(t, err)
 }
 
@@ -148,16 +150,16 @@ func TestCreateNameValidation(t *testing.T) {
 		input string
 		want  int32
 	}{
-		{"empty", "", codeNameIllegal},
-		{"one char", "龙", codeNameIllegal},
-		{"only spaces", "    ", codeNameIllegal},
-		{"spaces around one char", "  龙  ", codeNameIllegal},
-		{"two chinese chars", "龙腾", codeOK},
-		{"sixteen chinese chars", strings.Repeat("龙", 16), codeOK},
-		{"seventeen chinese chars", strings.Repeat("龙", 17), codeNameIllegal},
-		{"ascii two chars", "ab", codeOK},
-		{"sixteen ascii", "abcdefghijklmnop", codeOK},
-		{"seventeen ascii", "abcdefghijklmnopq", codeNameIllegal},
+		{"empty", "", int32(errcode.ErrGuildNameIllegal)},
+		{"one char", "龙", int32(errcode.ErrGuildNameIllegal)},
+		{"only spaces", "    ", int32(errcode.ErrGuildNameIllegal)},
+		{"spaces around one char", "  龙  ", int32(errcode.ErrGuildNameIllegal)},
+		{"two chinese chars", "龙腾", int32(errcode.OK)},
+		{"sixteen chinese chars", strings.Repeat("龙", 16), int32(errcode.OK)},
+		{"seventeen chinese chars", strings.Repeat("龙", 17), int32(errcode.ErrGuildNameIllegal)},
+		{"ascii two chars", "ab", int32(errcode.OK)},
+		{"sixteen ascii", "abcdefghijklmnop", int32(errcode.OK)},
+		{"seventeen ascii", "abcdefghijklmnopq", int32(errcode.ErrGuildNameIllegal)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -174,7 +176,7 @@ func TestCreateNameIsTrimmed(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := create(t, m, ctx, rec, "  龙腾  ")
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, "龙腾", repo.createdWith.name, "入库名字必须已去空白")
 }
 
@@ -184,7 +186,7 @@ func TestCreateRejectsWhenAlreadyIn(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := create(t, m, ctx, rec, "龙腾")
-	require.EqualValues(t, codeAlreadyIn, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrGuildAlreadyIn), resp.Code)
 	require.Zero(t, repo.createdWith.leaderID, "已在会时不能调 Create")
 }
 
@@ -194,7 +196,7 @@ func TestCreateNameUsed(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := create(t, m, ctx, rec, "龙腾")
-	require.EqualValues(t, codeNameUsed, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrGuildNameUsed), resp.Code)
 }
 
 // TestCreatePassesLeader 建会：会长取会话身份。
@@ -203,7 +205,7 @@ func TestCreatePassesLeader(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := create(t, m, ctx, rec, "龙腾")
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 42, resp.GuildId)
 	require.EqualValues(t, 100, repo.createdWith.leaderID)
 }
@@ -211,19 +213,19 @@ func TestCreatePassesLeader(t *testing.T) {
 // TestCreateNoRepoDegrades 无库环境：名字仍需校验，合法名字按成功降级。
 func TestCreateNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil)
-	require.EqualValues(t, codeOK, create(t, m, ctx, rec, "龙腾").Code)
-	require.EqualValues(t, codeNameIllegal, create(t, m, ctx, rec, "龙").Code,
+	require.EqualValues(t, int32(errcode.OK), create(t, m, ctx, rec, "龙腾").Code)
+	require.EqualValues(t, int32(errcode.ErrGuildNameIllegal), create(t, m, ctx, rec, "龙").Code,
 		"降级模式下名字校验不能一起被跳过")
 }
 
 // TestCreatePropagatesErrors 前置查询失败与建会失败都要上抛。
 func TestCreatePropagatesErrors(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{findErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m, ctx, rec, msgIDCreateReq, msgIDCreateResp, &gamev1.GuildCreateReq{Name: "龙腾"})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgGuildCreateReq, codec.MsgGuildCreateResp, &gamev1.GuildCreateReq{Name: "龙腾"})
 	require.Error(t, err)
 
 	m2, _, rec2, ctx2 := newTestModule(&fakeRepo{createErr: context.DeadlineExceeded})
-	_, err = moduletest.Call(m2, ctx2, rec2, msgIDCreateReq, msgIDCreateResp, &gamev1.GuildCreateReq{Name: "龙腾"})
+	_, err = moduletest.Call(m2, ctx2, rec2, codec.MsgGuildCreateReq, codec.MsgGuildCreateResp, &gamev1.GuildCreateReq{Name: "龙腾"})
 	require.Error(t, err)
 }
 
@@ -237,19 +239,19 @@ func TestJoinTranslatesRepoErrors(t *testing.T) {
 		err  error
 		want int32
 	}{
-		{ErrGuildNotExist, codeNotInGuild}, // 协议没给「目标不存在」单独码，复用 6101
-		{ErrGuildFull, codeGuildFull},
-		{ErrAlreadyIn, codeAlreadyIn},
+		{ErrGuildNotExist, int32(errcode.ErrGuildNotIn)}, // 协议没给「目标不存在」单独码，复用 6101
+		{ErrGuildFull, int32(errcode.ErrGuildFull)},
+		{ErrAlreadyIn, int32(errcode.ErrGuildAlreadyIn)},
 	}
 	for _, c := range cases {
 		m, _, rec, ctx := newTestModule(&fakeRepo{joinErr: c.err})
 		resp := &gamev1.GuildJoinResp{}
-		call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
+		call(t, m, ctx, rec, codec.MsgGuildJoinReq, codec.MsgGuildJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
 		require.EqualValues(t, c.want, resp.Code, "%v", c.err)
 	}
 
 	m, _, rec, ctx := newTestModule(&fakeRepo{joinErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.GuildJoinReq{GuildId: 7})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgGuildJoinReq, codec.MsgGuildJoinResp, &gamev1.GuildJoinReq{GuildId: 7})
 	require.Error(t, err)
 }
 
@@ -259,8 +261,8 @@ func TestJoinRejectsWhenAlreadyIn(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.GuildJoinResp{}
-	call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
-	require.EqualValues(t, codeAlreadyIn, resp.Code)
+	call(t, m, ctx, rec, codec.MsgGuildJoinReq, codec.MsgGuildJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
+	require.EqualValues(t, int32(errcode.ErrGuildAlreadyIn), resp.Code)
 	require.Zero(t, repo.joinedWith.guildID, "已在会时不能调 Join")
 }
 
@@ -270,8 +272,8 @@ func TestJoinSucceeds(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.GuildJoinResp{}
-	call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgGuildJoinReq, codec.MsgGuildJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 7, repo.joinedWith.guildID)
 	require.EqualValues(t, 100, repo.joinedWith.playerID)
 }
@@ -280,8 +282,8 @@ func TestJoinSucceeds(t *testing.T) {
 func TestJoinNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil)
 	resp := &gamev1.GuildJoinResp{}
-	call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgGuildJoinReq, codec.MsgGuildJoinResp, &gamev1.GuildJoinReq{GuildId: 7}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 }
 
 // ============================================================================
@@ -292,22 +294,22 @@ func TestJoinNoRepoDegrades(t *testing.T) {
 func TestQuit(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{})
 	resp := &gamev1.GuildQuitResp{}
-	call(t, m, ctx, rec, msgIDQuitReq, msgIDQuitResp, &gamev1.GuildQuitReq{}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgGuildQuitReq, codec.MsgGuildQuitResp, &gamev1.GuildQuitReq{}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 
 	m2, _, rec2, ctx2 := newTestModule(&fakeRepo{quitErr: ErrNotInGuild})
 	resp2 := &gamev1.GuildQuitResp{}
-	call(t, m2, ctx2, rec2, msgIDQuitReq, msgIDQuitResp, &gamev1.GuildQuitReq{}, resp2)
-	require.EqualValues(t, codeNotInGuild, resp2.Code)
+	call(t, m2, ctx2, rec2, codec.MsgGuildQuitReq, codec.MsgGuildQuitResp, &gamev1.GuildQuitReq{}, resp2)
+	require.EqualValues(t, int32(errcode.ErrGuildNotIn), resp2.Code)
 
 	m3, _, rec3, ctx3 := newTestModule(&fakeRepo{quitErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m3, ctx3, rec3, msgIDQuitReq, msgIDQuitResp, &gamev1.GuildQuitReq{})
+	_, err := moduletest.Call(m3, ctx3, rec3, codec.MsgGuildQuitReq, codec.MsgGuildQuitResp, &gamev1.GuildQuitReq{})
 	require.Error(t, err)
 
 	m4, _, rec4, ctx4 := newTestModule(nil)
 	resp4 := &gamev1.GuildQuitResp{}
-	call(t, m4, ctx4, rec4, msgIDQuitReq, msgIDQuitResp, &gamev1.GuildQuitReq{}, resp4)
-	require.EqualValues(t, codeOK, resp4.Code)
+	call(t, m4, ctx4, rec4, codec.MsgGuildQuitReq, codec.MsgGuildQuitResp, &gamev1.GuildQuitReq{}, resp4)
+	require.EqualValues(t, int32(errcode.OK), resp4.Code)
 }
 
 // ============================================================================

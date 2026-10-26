@@ -17,6 +17,7 @@ import (
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
@@ -115,7 +116,7 @@ func newTestModule(repo mailRepo) (*Module, *moduletest.State, *moduletest.Recor
 // take 发一次领取请求并解出响应。
 func take(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, mailID int64) *gamev1.MailTakeAttachmentResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDMailTakeReq, msgIDMailTakeResp, &gamev1.MailTakeAttachmentReq{MailId: mailID})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgMailTakeAttachmentReq, codec.MsgMailTakeAttachmentResp, &gamev1.MailTakeAttachmentReq{MailId: mailID})
 	require.NoError(t, err, "call take")
 	require.NotNil(t, raw, "没有回包")
 	resp := &gamev1.MailTakeAttachmentResp{}
@@ -147,12 +148,12 @@ func TestTakeIsIdempotent(t *testing.T) {
 
 	first := take(t, m, ctx, rec, 7)
 	require.EqualValues(t, int32(errcode.OK), first.Code)
-	require.EqualValues(t, 1, rec.Count(msgIDMailTakeResp), "一次请求只能回一个包")
+	require.EqualValues(t, 1, rec.Count(codec.MsgMailTakeAttachmentResp), "一次请求只能回一个包")
 
 	second := take(t, m, ctx, rec, 7)
 	require.EqualValues(t, int32(errcode.ErrMailTaken), second.Code, fmt.Sprintf("重复领取应回 ErrMailTaken, got %+v", second))
 	require.EqualValues(t, 5, st.GetItemCount(1001), "重复领取不能重复发奖")
-	require.Equal(t, 2, rec.Count(msgIDMailTakeResp), "第二次请求同样只回一个包")
+	require.Equal(t, 2, rec.Count(codec.MsgMailTakeAttachmentResp), "第二次请求同样只回一个包")
 	require.Equal(t, 1, repo.findHits, "命中业务键时不该再查附件表")
 }
 
@@ -228,7 +229,7 @@ func TestListProjectsRows(t *testing.T) {
 	}}
 	m, _, rec, ctx := newTestModule(repo)
 
-	raw, err := moduletest.Call(m, ctx, rec, msgIDMailListReq, msgIDMailListResp, &gamev1.MailListReq{})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgMailListReq, codec.MsgMailListResp, &gamev1.MailListReq{})
 	require.NoError(t, err)
 	resp := &gamev1.MailListResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
@@ -243,7 +244,7 @@ func TestListProjectsRows(t *testing.T) {
 	require.EqualValues(t, 2, resp.Mails[1].MailId)
 	require.True(t, resp.Mails[1].Read, "Status>=1 都算已读（含已领）")
 	require.False(t, resp.Mails[1].HasAttachment)
-	require.Equal(t, 1, rec.Count(msgIDMailListResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgMailListResp), "一次请求只能回一个包")
 }
 
 // TestListPropagatesRepoError 仓储错误向上抛，由框架记日志，不能假装空列表。
@@ -251,9 +252,9 @@ func TestListPropagatesRepoError(t *testing.T) {
 	repo := &fakeRepo{listErr: context.DeadlineExceeded}
 	m, _, rec, ctx := newTestModule(repo)
 
-	_, err := moduletest.Call(m, ctx, rec, msgIDMailListReq, msgIDMailListResp, &gamev1.MailListReq{})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgMailListReq, codec.MsgMailListResp, &gamev1.MailListReq{})
 	require.Error(t, err, "查库失败必须上抛")
-	require.Equal(t, 0, rec.Count(msgIDMailListResp), "失败请求不回业务包")
+	require.Equal(t, 0, rec.Count(codec.MsgMailListResp), "失败请求不回业务包")
 }
 
 // TestDeliverOfflineRequiresRepo 无 DB 环境时离线发放必须报错，不能假装成功。

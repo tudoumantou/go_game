@@ -15,6 +15,8 @@ package module
 import (
 	"fmt"
 
+	"game_study/pkg/codec"
+
 	"google.golang.org/protobuf/proto"
 )
 
@@ -72,4 +74,47 @@ func Typed[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
 		}
 		return ctx.Reply(respID, raw)
 	}
+}
+
+// Handle 注册一条「一问一答」路由：协议号由消息类型反查，响应由框架现造。
+//
+// 相比 HandleR + Typed 的写法：
+//
+//	// 旧（每个模块每个协议都要写一遍）
+//	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.BagListResp{},
+//		module.Typed(msgIDListResp, m.onList))
+//
+//	// 新
+//	module.Handle(m.Thin, m.onList)
+//
+// 少的三样东西都是重复信息：消息号（类型里已经有）、响应原型（new 出来的
+// 就是）、respID 的第二次出现（Typed 的第一个参数）。改协议号时只需要改
+// proto 注解，不会再出现「常量改了、注册处忘了改」。
+//
+// 反查失败会 panic（`codec.ProtoID` 对没有 `@msg` 注解的消息直接炸）——
+// 这是有意的：漏注解的协议永远收不到消息，启动期炸掉比线上静默不响应好。
+func Handle[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
+	t *Thin,
+	fn func(ctx *Context, req *TReq, resp *TResp) error,
+) {
+	reqID := codec.ProtoID(PReq(new(TReq)))
+	respID := codec.ProtoID(PResp(new(TResp)))
+	t.HandleR(reqID, respID, PResp(new(TResp)),
+		Typed[TReq, TResp, PReq, PResp](respID, fn))
+}
+
+// HandlePlain 与 Handle 相同，只是挂在 Plain 基座上。
+//
+// 为什么不能共用一个函数：ThinHandler 与 PlainHandler 底层签名一样、
+// 但类型不同，Go 的接口方法签名要求精确匹配。两个基座各留一个入口，
+// 比为了「省一个函数」把两个 handler 类型统一成别名要清楚——
+// 它们本来就是两套生命周期（Plain 没有 Actor 状态与登录钩子）。
+func HandlePlain[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
+	p *Plain,
+	fn func(ctx *Context, req *TReq, resp *TResp) error,
+) {
+	reqID := codec.ProtoID(PReq(new(TReq)))
+	respID := codec.ProtoID(PResp(new(TResp)))
+	p.HandleR(reqID, respID, PResp(new(TResp)),
+		PlainHandler(Typed[TReq, TResp, PReq, PResp](respID, fn)))
 }

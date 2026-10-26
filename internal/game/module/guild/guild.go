@@ -27,35 +27,13 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-)
-
-// 协议号（4.9：6101/6102 信息，6103/6104 创建，6105/6106 加入，6107/6108 退出）。
-const (
-	msgIDInfoReq    = codec.MsgGuildInfoReq
-	msgIDInfoResp   = codec.MsgGuildInfoResp
-	msgIDCreateReq  = codec.MsgGuildCreateReq
-	msgIDCreateResp = codec.MsgGuildCreateResp
-	msgIDJoinReq    = codec.MsgGuildJoinReq
-	msgIDJoinResp   = codec.MsgGuildJoinResp
-	msgIDQuitReq    = codec.MsgGuildQuitReq
-	msgIDQuitResp   = codec.MsgGuildQuitResp
-)
-
-// 业务码（4.10：0 成功，非 0 为可预期失败；6101 未入会被信息/加入/退出共用）。
-const (
-	codeOK          int32 = 0
-	codeNotInGuild  int32 = 6101
-	codeNameIllegal int32 = 6102
-	codeNameUsed    int32 = 6103
-	codeAlreadyIn   int32 = 6104
-	codeGuildFull   int32 = 6105
 )
 
 // maxMembers 公会人数上限：按 guild_level.xml（col1=人数上限, col2=等级）取当前等级；
@@ -281,14 +259,10 @@ type Module struct {
 func New(repo guildRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
 	m.Thin = module.NewThin("guild", module.ThinLogger(logger))
-	m.HandleR(msgIDInfoReq, msgIDInfoResp, &gamev1.GuildInfoResp{},
-		module.Typed(msgIDInfoResp, m.onInfo))
-	m.HandleR(msgIDCreateReq, msgIDCreateResp, &gamev1.GuildCreateResp{},
-		module.Typed(msgIDCreateResp, m.onCreate))
-	m.HandleR(msgIDJoinReq, msgIDJoinResp, &gamev1.GuildJoinResp{},
-		module.Typed(msgIDJoinResp, m.onJoin))
-	m.HandleR(msgIDQuitReq, msgIDQuitResp, &gamev1.GuildQuitResp{},
-		module.Typed(msgIDQuitResp, m.onQuit))
+	module.Handle(m.Thin, m.onInfo)
+	module.Handle(m.Thin, m.onCreate)
+	module.Handle(m.Thin, m.onJoin)
+	module.Handle(m.Thin, m.onQuit)
 	return m
 }
 
@@ -309,7 +283,7 @@ func (m *Module) OnLogout(ctx *module.Context) error { return nil }
 func (m *Module) onInfo(ctx *module.Context, _ *gamev1.GuildInfoReq, resp *gamev1.GuildInfoResp) error {
 	// 无 DB 环境按「未入会」回：与 (nil, nil) 同码，客户端行为一致
 	if m.repo == nil {
-		resp.Code = codeNotInGuild
+		resp.Code = int32(errcode.ErrGuildNotIn)
 		return nil
 	}
 	g, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID())
@@ -317,10 +291,10 @@ func (m *Module) onInfo(ctx *module.Context, _ *gamev1.GuildInfoReq, resp *gamev
 		return err
 	}
 	if g == nil {
-		resp.Code = codeNotInGuild
+		resp.Code = int32(errcode.ErrGuildNotIn)
 		return nil
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.GuildId = g.ID
 	resp.Name = g.Name
 	resp.Level = g.Level
@@ -337,31 +311,31 @@ func (m *Module) onInfo(ctx *module.Context, _ *gamev1.GuildInfoReq, resp *gamev
 func (m *Module) onCreate(ctx *module.Context, req *gamev1.GuildCreateReq, resp *gamev1.GuildCreateResp) error {
 	name := strings.TrimSpace(req.Name)
 	if utf8.RuneCountInString(name) < 2 || utf8.RuneCountInString(name) > 16 {
-		resp.Code = codeNameIllegal
+		resp.Code = int32(errcode.ErrGuildNameIllegal)
 		return nil
 	}
 	if m.repo == nil {
 		// 无 DB 环境：降级直接成功（演示模式，guild_id 留 0）
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		return nil
 	}
 	if g, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if g != nil {
-		// 已有公会再创建：codeAlreadyIn（一个人只能在一个公会）
-		resp.Code = codeAlreadyIn
+		// 已有公会再创建：int32(errcode.ErrGuildAlreadyIn)（一个人只能在一个公会）
+		resp.Code = int32(errcode.ErrGuildAlreadyIn)
 		return nil
 	}
 	guildID, err := m.repo.Create(context.Background(), name, ctx.State.PlayerID())
 	if err != nil {
 		// 哨兵错误转业务码；其余 err 是 DB 真故障，走 error 通道
 		if errors.Is(err, ErrNameUsed) {
-			resp.Code = codeNameUsed
+			resp.Code = int32(errcode.ErrGuildNameUsed)
 			return nil
 		}
 		return err
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.GuildId = guildID
 	return nil
 }
@@ -370,33 +344,33 @@ func (m *Module) onCreate(ctx *module.Context, req *gamev1.GuildCreateReq, resp 
 //
 // 前置 FindByPlayer 挡掉「已有公会」的常见情况；switch 把三种哨兵
 // 分别转码，default 是 DB 真故障走 error 通道。
-// ErrGuildNotExist 复用 codeNotInGuild：协议未给「目标公会不存在」
+// ErrGuildNotExist 复用 int32(errcode.ErrGuildNotIn)：协议未给「目标公会不存在」
 // 定义单独码，复用 6101 避免客户端遇到不认识的码。
 func (m *Module) onJoin(ctx *module.Context, req *gamev1.GuildJoinReq, resp *gamev1.GuildJoinResp) error {
 	if m.repo == nil {
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		return nil
 	}
 	if g, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if g != nil {
-		resp.Code = codeAlreadyIn
+		resp.Code = int32(errcode.ErrGuildAlreadyIn)
 		return nil
 	}
 	if err := m.repo.Join(context.Background(), req.GuildId, ctx.State.PlayerID()); err != nil {
 		switch {
 		case errors.Is(err, ErrGuildNotExist):
-			resp.Code = codeNotInGuild
+			resp.Code = int32(errcode.ErrGuildNotIn)
 		case errors.Is(err, ErrGuildFull):
-			resp.Code = codeGuildFull
+			resp.Code = int32(errcode.ErrGuildFull)
 		case errors.Is(err, ErrAlreadyIn):
-			resp.Code = codeAlreadyIn
+			resp.Code = int32(errcode.ErrGuildAlreadyIn)
 		default:
 			return err
 		}
 		return nil
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	return nil
 }
 
@@ -406,16 +380,16 @@ func (m *Module) onJoin(ctx *module.Context, req *gamev1.GuildJoinReq, resp *gam
 // 整个事务回滚，不会出现「会长退了、公会还在」的半解散状态。
 func (m *Module) onQuit(ctx *module.Context, _ *gamev1.GuildQuitReq, resp *gamev1.GuildQuitResp) error {
 	if m.repo == nil {
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		return nil
 	}
 	if err := m.repo.Quit(context.Background(), ctx.State.PlayerID()); err != nil {
 		if errors.Is(err, ErrNotInGuild) {
-			resp.Code = codeNotInGuild
+			resp.Code = int32(errcode.ErrGuildNotIn)
 			return nil
 		}
 		return err
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	return nil
 }

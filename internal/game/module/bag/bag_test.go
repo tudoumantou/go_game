@@ -11,8 +11,10 @@ import (
 	"sort"
 	"testing"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -33,7 +35,7 @@ func newTestModule() (*Module, *moduletest.State, *moduletest.Recorder, *module.
 
 func use(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, itemID, count int64) *gamev1.UseItemResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDUseItemReq, msgIDUseItemResp, &gamev1.UseItemReq{ItemUid: itemID, Count: int32(count)})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgUseItemReq, codec.MsgUseItemResp, &gamev1.UseItemReq{ItemUid: itemID, Count: int32(count)})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "没有回包")
 	resp := &gamev1.UseItemResp{}
@@ -50,14 +52,14 @@ func TestUseDeductsAndReportsRemain(t *testing.T) {
 	ctx.Emit = func(e module.Event) { events = append(events, e) }
 
 	resp := use(t, m, ctx, rec, int64(itemPotion), 3)
-	require.EqualValues(t, codeOK, resp.Code, fmt.Sprintf("use: %+v", resp))
+	require.EqualValues(t, int32(errcode.OK), resp.Code, fmt.Sprintf("use: %+v", resp))
 	require.EqualValues(t, 2, resp.RemainCount)
 	require.EqualValues(t, 2, st.GetItemCount(itemPotion), "库存必须真的扣掉")
 	require.Len(t, events, 1, "使用道具要发事件驱动任务/成就")
 	require.EqualValues(t, "use_item", events[0].Type)
 	require.EqualValues(t, fmt.Sprintf("%d", itemPotion), events[0].Key)
 	require.EqualValues(t, 3, events[0].Delta)
-	require.Equal(t, 1, rec.Count(msgIDUseItemResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgUseItemResp), "一次请求只能回一个包")
 }
 
 // TestUseClampsToConfigLimit 超过单次上限时截断而不是报错（与客户端批量使用体验一致）。
@@ -66,7 +68,7 @@ func TestUseClampsToConfigLimit(t *testing.T) {
 	st.AddItem(itemPotion, 20)
 
 	resp := use(t, m, ctx, rec, int64(itemPotion), 99) // 上限 10
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 10, resp.RemainCount, "应按上限扣 10 个")
 	require.EqualValues(t, 10, st.GetItemCount(itemPotion))
 }
@@ -77,7 +79,7 @@ func TestUseDefaultsToOne(t *testing.T) {
 	st.AddItem(itemCoin, 3)
 
 	resp := use(t, m, ctx, rec, int64(itemCoin), 0)
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 2, st.GetItemCount(itemCoin))
 	require.EqualValues(t, 2, resp.RemainCount)
 }
@@ -88,7 +90,7 @@ func TestUseNotEnough(t *testing.T) {
 	st.AddItem(itemPotion, 2)
 
 	resp := use(t, m, ctx, rec, int64(itemPotion), 5)
-	require.EqualValues(t, codeItemNotEnough, resp.Code, fmt.Sprintf("got %+v", resp))
+	require.EqualValues(t, int32(errcode.ErrItemNotEnough), resp.Code, fmt.Sprintf("got %+v", resp))
 	require.EqualValues(t, 2, st.GetItemCount(itemPotion), "失败请求不能部分扣减")
 }
 
@@ -98,7 +100,7 @@ func TestUseUnknownItem(t *testing.T) {
 	st.AddItem(itemPotion, 5)
 
 	resp := use(t, m, ctx, rec, 9999, 1)
-	require.EqualValues(t, codeItemNotExist, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrItemNotExist), resp.Code)
 	require.EqualValues(t, 5, st.GetItemCount(itemPotion))
 }
 
@@ -110,7 +112,7 @@ func TestUseWithoutSubscriber(t *testing.T) {
 
 	require.NotPanics(t, func() {
 		resp := use(t, m, ctx, rec, int64(itemCoin), 1)
-		require.EqualValues(t, codeOK, resp.Code)
+		require.EqualValues(t, int32(errcode.OK), resp.Code)
 	})
 }
 
@@ -122,11 +124,11 @@ func TestListSkipsNonPositive(t *testing.T) {
 	st.AddItem(2001, 0)  // 脏数据
 	st.AddItem(2002, -1) // 脏数据
 
-	raw, err := moduletest.Call(m, ctx, rec, msgIDBagListReq, msgIDBagListResp, &gamev1.BagListReq{})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgBagListReq, codec.MsgBagListResp, &gamev1.BagListReq{})
 	require.NoError(t, err)
 	resp := &gamev1.BagListResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, resp.Items, 2, fmt.Sprintf("items: %+v", resp.Items))
 
 	// map 遍历顺序不定，按 ItemId 排一下再断言。
@@ -135,5 +137,5 @@ func TestListSkipsNonPositive(t *testing.T) {
 	require.EqualValues(t, 10, resp.Items[0].Count)
 	require.EqualValues(t, itemPotion, resp.Items[1].ItemId)
 	require.EqualValues(t, 3, resp.Items[1].Count)
-	require.Equal(t, 1, rec.Count(msgIDBagListResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgBagListResp), "一次请求只能回一个包")
 }

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"testing"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -64,10 +66,10 @@ func TestApplySelfRejected(t *testing.T) {
 	ctx, raw := newCtx(7)
 
 	body, _ := proto.Marshal(&gamev1.FriendApplyReq{PlayerId: 7})
-	err := m.OnMessage(ctx, msgIDApplyReq, body)
+	err := m.OnMessage(ctx, codec.MsgFriendApplyReq, body)
 	require.NoError(t, err)
 	resp := decodeApply(t, *raw)
-	require.EqualValues(t, codeSelf, resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, codeSelf))
+	require.EqualValues(t, int32(errcode.ErrFriendSelf), resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, int32(errcode.ErrFriendSelf)))
 }
 
 // TestApplyInvalidTarget 非法目标直接拒绝，不触碰数据库。
@@ -76,10 +78,10 @@ func TestApplyInvalidTarget(t *testing.T) {
 	ctx, raw := newCtx(7)
 
 	body, _ := proto.Marshal(&gamev1.FriendApplyReq{PlayerId: 0})
-	err := m.OnMessage(ctx, msgIDApplyReq, body)
+	err := m.OnMessage(ctx, codec.MsgFriendApplyReq, body)
 	require.NoError(t, err)
 	resp := decodeApply(t, *raw)
-	require.EqualValues(t, codeTargetNotFound, resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, codeTargetNotFound))
+	require.EqualValues(t, int32(errcode.ErrFriendTargetNotFound), resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, int32(errcode.ErrFriendTargetNotFound)))
 }
 
 // TestLimitsHaveDefaults 配置缺失时上限有兜底，不返回 0（0 会让所有人立刻「好友已满」）。

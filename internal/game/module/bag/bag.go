@@ -14,6 +14,7 @@ package bag
 import (
 	"fmt"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
@@ -22,30 +23,6 @@ import (
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
-)
-
-// 协议号（4.9：3001/3002 使用，3003/3004 列表，3010 推送）。
-//
-// Go 知识点：const 块把相关常量分组，未指定类型的整型常量（这里显式 int）
-// 在传给 uint32 参数时需匹配；全部取自 pkg/codec 的单一来源，避免各模块
-// 各写一份魔数导致协议号漂移。
-const (
-	msgIDUseItemReq  = codec.MsgUseItemReq
-	msgIDUseItemResp = codec.MsgUseItemResp
-	msgIDBagListReq  = codec.MsgBagListReq
-	msgIDBagListResp = codec.MsgBagListResp
-	msgIDBagChange   = codec.MsgBagChangeNotify
-)
-
-// 业务码（4.10）。
-//
-// 4.10 的分配规则：每个模块一段号段（背包 3001-3004），客户端按号段
-// 直接定位是哪个玩法拒绝的请求，不需要解析消息体。
-const (
-	codeOK            int32 = 0
-	codeItemNotExist  int32 = 3001
-	codeItemNotEnough int32 = 3002
-	codeItemNotUsable int32 = 3004
 )
 
 // Module 背包模块。
@@ -59,9 +36,9 @@ type Module struct {
 
 // New 创建背包模块。
 //
-// 嵌入 Thin：接口七件套由基座提供；两个处理器经 module.Typed 拿到解包后的
-// 请求与待填的响应。Discardable 由本类型覆盖（见下），因为背包的写操作
-// 不能像只读模块那样「失败即丢弃」。
+// 两条路由经 module.Handle 注册：消息号由类型反查，解包与回包由基座负责。
+// Discardable 由本类型覆盖（见下），因为背包的写操作不能像只读模块那样
+// 「失败即丢弃」。
 func New(logger *log.Logger) *Module {
 	m := &Module{logger: logger}
 	m.Thin = module.NewThin("bag",
@@ -69,17 +46,15 @@ func New(logger *log.Logger) *Module {
 		module.ThinLogin(m.onLogin),
 		module.ThinLogout(m.onLogout),
 	)
-	m.HandleR(msgIDBagListReq, msgIDBagListResp, &gamev1.BagListResp{},
-		module.Typed(msgIDBagListResp, m.onList))
-	m.HandleR(msgIDUseItemReq, msgIDUseItemResp, &gamev1.UseItemResp{},
-		module.Typed(msgIDUseItemResp, m.onUse))
+	module.Handle(m.Thin, m.onList)
+	module.Handle(m.Thin, m.onUse)
 	return m
 }
 
 // Discardable 覆盖 Thin 的宽松默认：Thin 把「已注册协议」一律声明为可丢弃，
 // 但「使用道具」会改资产——提交失败时不能丢，必须保留待提交快照补提，
 // 否则会出现「道具扣了、奖励没发」且无从恢复。
-func (*Module) Discardable(msgID uint32) bool { return msgID == msgIDBagListReq }
+func (*Module) Discardable(msgID uint32) bool { return msgID == codec.MsgBagListReq }
 
 // onLogin 只记一条调试日志（背包不在登录时做任何预热）。
 func (m *Module) onLogin(ctx *module.Context) error {
@@ -113,7 +88,7 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.BagListReq, resp *gamev1.
 			Count:   int32(e.Value),
 		}, true
 	})
-	*resp = gamev1.BagListResp{Code: codeOK, Items: entries}
+	*resp = gamev1.BagListResp{Code: int32(errcode.OK), Items: entries}
 	return nil
 }
 
@@ -128,12 +103,12 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 
 	cfg, ok := gamedata.GetItemCfg(int64(itemID))
 	if !ok {
-		resp.Code = codeItemNotExist
+		resp.Code = int32(errcode.ErrItemNotExist)
 		return nil
 	}
 	// 配置约定：Col3 = 单次可使用数量上限，<=0 表示不可主动使用（P7 接 item_type.xml）
 	if cfg.Col3 <= 0 {
-		resp.Code = codeItemNotUsable
+		resp.Code = int32(errcode.ErrItemNotUsable)
 		return nil
 	}
 	// 请求数量超过单次上限时截断，而不是报错：与客户端的批量使用体验一致。
@@ -143,13 +118,13 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 
 	have := ctx.State.GetItemCount(itemID)
 	if have < int64(count) {
-		resp.Code = codeItemNotEnough
+		resp.Code = int32(errcode.ErrItemNotEnough)
 		return nil
 	}
 	// RemoveItem 自带原子性：数量不足返回 false 且不做部分扣减；
 	// Actor 单线程下上面的 have 检查已足够，这次是纵深防御。
 	if !ctx.State.RemoveItem(itemID, int64(count)) {
-		resp.Code = codeItemNotEnough
+		resp.Code = int32(errcode.ErrItemNotEnough)
 		return nil
 	}
 	ctx.State.MarkDirty(m.Name())
@@ -160,7 +135,7 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 		ctx.Emit(module.Event{Type: "use_item", Key: fmt.Sprintf("%d", itemID), Delta: int64(count)})
 	}
 
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.RemainCount = int32(ctx.State.GetItemCount(itemID))
 	// 回包由 module.Typed 统一完成；这里再回一次会多发一条响应。
 	// 增量推送
@@ -172,7 +147,7 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 		Change:  2,
 	}}}
 	if raw, err := proto.Marshal(notify); err == nil {
-		_ = ctx.Reply(msgIDBagChange, raw)
+		_ = ctx.Reply(codec.MsgBagChangeNotify, raw)
 	}
 	return nil
 }

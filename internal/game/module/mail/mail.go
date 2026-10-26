@@ -33,7 +33,6 @@ import (
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/cache"
-	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
@@ -43,16 +42,6 @@ import (
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/samber/lo"
 	"google.golang.org/protobuf/proto"
-)
-
-// 协议号（4.9：7001/7002 列表，7020/7021 领取）。
-const (
-	msgIDMailListReq  = codec.MsgMailListReq
-	msgIDMailListResp = codec.MsgMailListResp
-	msgIDMailTakeReq  = codec.MsgMailTakeAttachmentReq
-	msgIDMailTakeResp = codec.MsgMailTakeAttachmentResp
-	msgIDDeleteReq    = codec.MsgMailDeleteReq
-	msgIDDeleteResp   = codec.MsgMailDeleteResp
 )
 
 // mailListLimit 单页列表上限（产品约定，与聊天的 50 不同）。
@@ -478,9 +467,9 @@ func New(repo mailRepo, logger *log.Logger) *Module {
 		module.ThinLogin(m.onLogin),
 		module.ThinLogout(m.onLogout),
 	)
-	m.HandleR(msgIDMailListReq, msgIDMailListResp, &gamev1.MailListResp{}, m.onList)
-	m.HandleR(msgIDMailTakeReq, msgIDMailTakeResp, &gamev1.MailTakeAttachmentResp{}, module.Typed(msgIDMailTakeResp, m.onTake))
-	m.HandleR(msgIDDeleteReq, msgIDDeleteResp, &gamev1.MailDeleteResp{}, module.Typed(msgIDDeleteResp, m.onDelete))
+	module.Handle(m.Thin, m.onList)
+	module.Handle(m.Thin, m.onTake)
+	module.Handle(m.Thin, m.onDelete)
 	return m
 }
 
@@ -710,7 +699,7 @@ func parseTimeField(s string) (time.Time, bool) {
 // Read 按 Status>=1 折算：1=已读与 2=已领对「已读红点」是同义。
 // ExpireAt.Valid 先判再取：sql.NullTime 的可空语义，Valid=false 时
 // .Time 是零值，直接 Unix() 会回一个 1970 的过期时间骗客户端。
-func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
+func (m *Module) onList(ctx *module.Context, _ *gamev1.MailListReq, resp *gamev1.MailListResp) error {
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -718,7 +707,7 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	if err != nil {
 		return err
 	}
-	resp := &gamev1.MailListResp{Code: int32(errcode.OK), Mails: make([]*gamev1.MailSummary, 0, len(rows))}
+	*resp = gamev1.MailListResp{Code: int32(errcode.OK), Mails: make([]*gamev1.MailSummary, 0, len(rows))}
 	for _, r := range rows {
 		s := &gamev1.MailSummary{
 			MailId:        r.ID,
@@ -732,11 +721,7 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 		}
 		resp.Mails = append(resp.Mails, s)
 	}
-	body, err := proto.Marshal(resp)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgIDMailListResp, body)
+	return nil
 }
 
 // onTake 领取附件（幂等：重复领取回 5002）。

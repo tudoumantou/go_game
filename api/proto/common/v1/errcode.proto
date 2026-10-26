@@ -40,6 +40,14 @@ enum ErrCode {
   ERR_CODE_PEER_NOT_FOUND  = 4002; // 对方不在线或不存在
   ERR_CODE_CHAT_TOO_FAST   = 4003; // 发言过于频繁
   ERR_CODE_CHAT_MUTED      = 4004; // 你已被禁言
+  ERR_CODE_CONTENT_EMPTY    = 4005; // 内容为空或对端非法
+  ERR_CODE_CONTENT_TOO_LONG = 4006; // 内容超长
+
+  // ===== 41xx 场景 =====
+  ERR_CODE_SCENE_NOT_EXIST  = 4101; // 场景不存在
+  ERR_CODE_SCENE_BUSY       = 4103; // 场景繁忙（Actor 信箱满）
+  ERR_CODE_NOT_IN_SCENE     = 4105; // 不在场景中
+  ERR_CODE_SCENE_NOT_READY  = 4106; // 场景未就绪
 
   // ===== 5xxx 邮件 =====
   ERR_CODE_MAIL_NOT_FOUND  = 5001; // 邮件不存在
@@ -53,6 +61,21 @@ enum ErrCode {
   ERR_CODE_RESULT_REPORTED        = 6003; // 战斗结果已上报（幂等保护）
   ERR_CODE_BATTLE_FULL            = 6004; // 战斗房间已满
   ERR_CODE_RESULT_REWARD_INVALID  = 6005; // 上报的奖励不存在
+  ERR_CODE_BATTLE_ALREADY_IN      = 6006; // 已在队列或战斗中
+  ERR_CODE_BATTLE_MODE_CLOSED     = 6007; // 玩法未开放（跨服不可用）
+
+  // ===== 61xx 公会 =====
+  ERR_CODE_GUILD_NOT_IN       = 6101; // 尚未加入公会
+  ERR_CODE_GUILD_NAME_ILLEGAL = 6102; // 公会名不合法
+  ERR_CODE_GUILD_NAME_USED    = 6103; // 公会名已被占用
+  ERR_CODE_GUILD_ALREADY_IN   = 6104; // 已在公会中
+  ERR_CODE_GUILD_FULL         = 6105; // 公会人数已满
+
+  // ===== 62xx 队伍 =====
+  ERR_CODE_TEAM_NOT_IN     = 6201; // 不在队伍中
+  ERR_CODE_TEAM_ALREADY_IN = 6202; // 已在队伍中
+  ERR_CODE_TEAM_NOT_EXIST  = 6203; // 队伍不存在
+  ERR_CODE_TEAM_FULL       = 6204; // 队伍人数已满
 
   // ===== 65xx 活动 =====
   ERR_CODE_ACTIVITY_NOT_EXIST    = 6501; // 活动配置不存在
@@ -65,6 +88,20 @@ enum ErrCode {
   ERR_CODE_SIGNIN_CONFIG       = 6601; // 签到奖励配置错误
   ERR_CODE_SIGNIN_REWARD_LIMIT = 6602; // 签到奖励数量超出上限
   ERR_CODE_SIGNIN_BAG_FULL     = 6603; // 背包已满，无法领取签到奖励
+
+  // ===== 67xx 排行榜 =====
+  ERR_CODE_RANK_BAD_TYPE    = 6701; // 榜单类型非法
+  ERR_CODE_RANK_UNAVAILABLE = 6702; // 排行榜暂不可用
+
+  // ===== 68xx 好友 =====
+  ERR_CODE_FRIEND_SELF             = 6801; // 不能加自己
+  ERR_CODE_FRIEND_TARGET_NOT_FOUND = 6802; // 目标玩家不存在
+  ERR_CODE_FRIEND_ALREADY          = 6803; // 已是好友
+  ERR_CODE_FRIEND_FULL             = 6804; // 好友已满
+  ERR_CODE_FRIEND_APPLY_EXISTS     = 6805; // 已申请，等待对方处理
+  ERR_CODE_FRIEND_APPLY_NOT_FOUND  = 6806; // 申请不存在/已处理/已过期
+  ERR_CODE_FRIEND_APPLY_FULL       = 6807; // 待处理申请过多
+  ERR_CODE_FRIEND_APPLY_EXPIRED    = 6808; // 申请已过期
 
   // ===== 71xx 任务 =====
   ERR_CODE_QUEST_NOT_EXIST   = 7101; // 任务配置不存在

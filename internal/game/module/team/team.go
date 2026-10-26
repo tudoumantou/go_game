@@ -30,34 +30,13 @@ import (
 	"errors"
 	"strings"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-)
-
-// 协议号（4.9：6201/6202 信息，6203/6204 创建，6205/6206 加入，6207/6208 退出）。
-const (
-	msgIDInfoReq    = codec.MsgTeamInfoReq
-	msgIDInfoResp   = codec.MsgTeamInfoResp
-	msgIDCreateReq  = codec.MsgTeamCreateReq
-	msgIDCreateResp = codec.MsgTeamCreateResp
-	msgIDJoinReq    = codec.MsgTeamJoinReq
-	msgIDJoinResp   = codec.MsgTeamJoinResp
-	msgIDLeaveReq   = codec.MsgTeamLeaveReq
-	msgIDLeaveResp  = codec.MsgTeamLeaveResp
-)
-
-// 业务码（4.10：0 成功，非 0 为可预期失败）。
-const (
-	codeOK           int32 = 0
-	codeNotInTeam    int32 = 6201
-	codeAlreadyIn    int32 = 6202
-	codeTeamNotExist int32 = 6203
-	codeTeamFull     int32 = 6204
 )
 
 // maxMembers 队伍上限（team_limit.xml 第一行 col1；缺配置回退 5）。
@@ -308,14 +287,10 @@ func New(repo teamRepo, logger *log.Logger) *Module {
 		module.ThinLogger(logger),
 		module.ThinLogout(m.onLogout),
 	)
-	m.HandleR(msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoResp{},
-		module.Typed(msgIDInfoResp, m.onInfo))
-	m.HandleR(msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateResp{},
-		module.Typed(msgIDCreateResp, m.onCreate))
-	m.HandleR(msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinResp{},
-		module.Typed(msgIDJoinResp, m.onJoin))
-	m.HandleR(msgIDLeaveReq, msgIDLeaveResp, &gamev1.TeamLeaveResp{},
-		module.Typed(msgIDLeaveResp, m.onLeave))
+	module.Handle(m.Thin, m.onInfo)
+	module.Handle(m.Thin, m.onCreate)
+	module.Handle(m.Thin, m.onJoin)
+	module.Handle(m.Thin, m.onLeave)
 	return m
 }
 
@@ -334,7 +309,7 @@ func (m *Module) onLogout(ctx *module.Context) error {
 	return nil
 }
 
-// onInfo 查询当前队伍信息；不在队回 codeNotInTeam。
+// onInfo 查询当前队伍信息；不在队回 int32(errcode.ErrTeamNotIn)。
 //
 // 两次查询（队伍 → 成员）：先查队伍，t==nil 时省掉第二次；
 // 队伍上限 5 人，分两次查的代价可接受（合并成一条 JOIN 会把
@@ -342,7 +317,7 @@ func (m *Module) onLogout(ctx *module.Context) error {
 func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1.TeamInfoResp) error {
 	if m.repo == nil {
 		// 无 DB 环境按「不在队」回：与 (nil, nil) 同码
-		resp.Code = codeNotInTeam
+		resp.Code = int32(errcode.ErrTeamNotIn)
 		return nil
 	}
 	t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID())
@@ -350,14 +325,14 @@ func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1
 		return err
 	}
 	if t == nil {
-		resp.Code = codeNotInTeam
+		resp.Code = int32(errcode.ErrTeamNotIn)
 		return nil
 	}
 	members, err := m.repo.Members(context.Background(), t.ID)
 	if err != nil {
 		return err
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.TeamId = t.ID
 	resp.CopyId = t.CopyID
 	for _, mb := range members {
@@ -377,20 +352,20 @@ func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1
 // 「一个人只能在一队」的约束在模块层显式声明（与 guild 同构）。
 func (m *Module) onCreate(ctx *module.Context, req *gamev1.TeamCreateReq, resp *gamev1.TeamCreateResp) error {
 	if m.repo == nil {
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		return nil
 	}
 	if t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if t != nil {
-		resp.Code = codeAlreadyIn
+		resp.Code = int32(errcode.ErrTeamAlreadyIn)
 		return nil
 	}
 	teamID, err := m.repo.Create(context.Background(), ctx.State.PlayerID(), req.CopyId)
 	if err != nil {
 		return err
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.TeamId = teamID
 	return nil
 }
@@ -402,29 +377,29 @@ func (m *Module) onCreate(ctx *module.Context, req *gamev1.TeamCreateReq, resp *
 // demo 期不做自动换队（避免两个队伍的成员行竞态）。
 func (m *Module) onJoin(ctx *module.Context, req *gamev1.TeamJoinReq, resp *gamev1.TeamJoinResp) error {
 	if m.repo == nil {
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		return nil
 	}
 	if t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if t != nil {
-		resp.Code = codeAlreadyIn
+		resp.Code = int32(errcode.ErrTeamAlreadyIn)
 		return nil
 	}
 	if err := m.repo.Join(context.Background(), req.TeamId, ctx.State.PlayerID()); err != nil {
 		switch {
 		case errors.Is(err, ErrTeamNotExist):
-			resp.Code = codeTeamNotExist
+			resp.Code = int32(errcode.ErrTeamNotExist)
 		case errors.Is(err, ErrTeamFull):
-			resp.Code = codeTeamFull
+			resp.Code = int32(errcode.ErrTeamFull)
 		case errors.Is(err, ErrAlreadyIn):
-			resp.Code = codeAlreadyIn
+			resp.Code = int32(errcode.ErrTeamAlreadyIn)
 		default:
 			return err
 		}
 		return nil
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	return nil
 }
 
@@ -434,16 +409,16 @@ func (m *Module) onJoin(ctx *module.Context, req *gamev1.TeamJoinReq, resp *game
 // 任一步失败整体回滚，不会出现「队长退了、队伍还在」的半解散态。
 func (m *Module) onLeave(ctx *module.Context, _ *gamev1.TeamLeaveReq, resp *gamev1.TeamLeaveResp) error {
 	if m.repo == nil {
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		return nil
 	}
 	if err := m.repo.Leave(context.Background(), ctx.State.PlayerID()); err != nil {
 		if errors.Is(err, ErrNotInTeam) {
-			resp.Code = codeNotInTeam
+			resp.Code = int32(errcode.ErrTeamNotIn)
 			return nil
 		}
 		return err
 	}
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	return nil
 }

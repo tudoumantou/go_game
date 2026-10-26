@@ -72,6 +72,12 @@ const (
 	ErrPeerNotFound         = commonv1.ErrCode_ERR_CODE_PEER_NOT_FOUND
 	ErrChatTooFast          = commonv1.ErrCode_ERR_CODE_CHAT_TOO_FAST
 	ErrChatMuted            = commonv1.ErrCode_ERR_CODE_CHAT_MUTED
+	ErrContentEmpty         = commonv1.ErrCode_ERR_CODE_CONTENT_EMPTY
+	ErrContentTooLong       = commonv1.ErrCode_ERR_CODE_CONTENT_TOO_LONG
+	ErrSceneNotExist        = commonv1.ErrCode_ERR_CODE_SCENE_NOT_EXIST
+	ErrSceneBusy            = commonv1.ErrCode_ERR_CODE_SCENE_BUSY
+	ErrNotInScene           = commonv1.ErrCode_ERR_CODE_NOT_IN_SCENE
+	ErrSceneNotReady        = commonv1.ErrCode_ERR_CODE_SCENE_NOT_READY
 	ErrMailNotFound         = commonv1.ErrCode_ERR_CODE_MAIL_NOT_FOUND
 	ErrMailTaken            = commonv1.ErrCode_ERR_CODE_MAIL_TAKEN
 	ErrNoAttachment         = commonv1.ErrCode_ERR_CODE_NO_ATTACHMENT
@@ -81,6 +87,17 @@ const (
 	ErrResultReported       = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
 	ErrBattleFull           = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
 	ErrResultRewardInvalid  = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
+	ErrBattleAlreadyIn      = commonv1.ErrCode_ERR_CODE_BATTLE_ALREADY_IN
+	ErrBattleModeClosed     = commonv1.ErrCode_ERR_CODE_BATTLE_MODE_CLOSED
+	ErrGuildNotIn           = commonv1.ErrCode_ERR_CODE_GUILD_NOT_IN
+	ErrGuildNameIllegal     = commonv1.ErrCode_ERR_CODE_GUILD_NAME_ILLEGAL
+	ErrGuildNameUsed        = commonv1.ErrCode_ERR_CODE_GUILD_NAME_USED
+	ErrGuildAlreadyIn       = commonv1.ErrCode_ERR_CODE_GUILD_ALREADY_IN
+	ErrGuildFull            = commonv1.ErrCode_ERR_CODE_GUILD_FULL
+	ErrTeamNotIn            = commonv1.ErrCode_ERR_CODE_TEAM_NOT_IN
+	ErrTeamAlreadyIn        = commonv1.ErrCode_ERR_CODE_TEAM_ALREADY_IN
+	ErrTeamNotExist         = commonv1.ErrCode_ERR_CODE_TEAM_NOT_EXIST
+	ErrTeamFull             = commonv1.ErrCode_ERR_CODE_TEAM_FULL
 	ErrActivityNotExist     = commonv1.ErrCode_ERR_CODE_ACTIVITY_NOT_EXIST
 	ErrActivityNotFinish    = commonv1.ErrCode_ERR_CODE_ACTIVITY_NOT_FINISHED
 	ErrActivityClaimed      = commonv1.ErrCode_ERR_CODE_ACTIVITY_CLAIMED
@@ -111,6 +128,16 @@ const (
 	ErrSigninConfig         = commonv1.ErrCode_ERR_CODE_SIGNIN_CONFIG
 	ErrSigninRewardLimit    = commonv1.ErrCode_ERR_CODE_SIGNIN_REWARD_LIMIT
 	ErrSigninBagFull        = commonv1.ErrCode_ERR_CODE_SIGNIN_BAG_FULL
+	ErrRankBadType          = commonv1.ErrCode_ERR_CODE_RANK_BAD_TYPE
+	ErrRankUnavailable      = commonv1.ErrCode_ERR_CODE_RANK_UNAVAILABLE
+	ErrFriendSelf           = commonv1.ErrCode_ERR_CODE_FRIEND_SELF
+	ErrFriendTargetNotFound = commonv1.ErrCode_ERR_CODE_FRIEND_TARGET_NOT_FOUND
+	ErrFriendAlready        = commonv1.ErrCode_ERR_CODE_FRIEND_ALREADY
+	ErrFriendFull           = commonv1.ErrCode_ERR_CODE_FRIEND_FULL
+	ErrFriendApplyExists    = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_EXISTS
+	ErrFriendApplyNotFound  = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_NOT_FOUND
+	ErrFriendApplyFull      = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_FULL
+	ErrFriendApplyExpired   = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_EXPIRED
 	ErrPartnerNotFound      = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_FOUND
 	ErrPartnerOwned         = commonv1.ErrCode_ERR_CODE_PARTNER_OWNED
 	ErrPartnerNotOwned      = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_OWNED
@@ -145,6 +172,12 @@ var messages = map[Code]string{
 	ErrPeerNotFound:         "对方不在线或不存在",
 	ErrChatTooFast:          "发言过于频繁",
 	ErrChatMuted:            "你已被禁言",
+	ErrContentEmpty:         "内容为空或对端非法",
+	ErrContentTooLong:       "内容超长",
+	ErrSceneNotExist:        "场景不存在",
+	ErrSceneBusy:            "场景繁忙，请稍后再试",
+	ErrNotInScene:           "不在场景中",
+	ErrSceneNotReady:        "场景未就绪",
 	ErrMailNotFound:         "邮件不存在",
 	ErrMailTaken:            "附件已领取",
 	ErrNoAttachment:         "邮件没有附件",
@@ -154,6 +187,17 @@ var messages = map[Code]string{
 	ErrResultReported:       "战斗结果已上报",
 	ErrBattleFull:           "战斗房间已满",
 	ErrResultRewardInvalid:  "上报的奖励不存在",
+	ErrBattleAlreadyIn:      "已在队列或战斗中",
+	ErrBattleModeClosed:     "该玩法暂未开放",
+	ErrGuildNotIn:           "尚未加入公会",
+	ErrGuildNameIllegal:     "公会名不合法",
+	ErrGuildNameUsed:        "公会名已被占用",
+	ErrGuildAlreadyIn:       "已在公会中",
+	ErrGuildFull:            "公会人数已满",
+	ErrTeamNotIn:            "不在队伍中",
+	ErrTeamAlreadyIn:        "已在队伍中",
+	ErrTeamNotExist:         "队伍不存在",
+	ErrTeamFull:             "队伍人数已满",
 	ErrActivityNotExist:     "活动不存在",
 	ErrActivityNotFinish:    "活动进度未达标",
 	ErrActivityClaimed:      "奖励已领取",
@@ -184,6 +228,16 @@ var messages = map[Code]string{
 	ErrSigninConfig:         "签到奖励配置错误",
 	ErrSigninRewardLimit:    "签到奖励数量超出上限",
 	ErrSigninBagFull:        "背包已满，无法领取签到奖励",
+	ErrRankBadType:          "榜单类型非法",
+	ErrRankUnavailable:      "排行榜暂不可用",
+	ErrFriendSelf:           "不能加自己",
+	ErrFriendTargetNotFound: "目标玩家不存在",
+	ErrFriendAlready:        "已是好友",
+	ErrFriendFull:           "好友已满",
+	ErrFriendApplyExists:    "已申请，等待对方处理",
+	ErrFriendApplyNotFound:  "申请不存在或已处理",
+	ErrFriendApplyFull:      "待处理申请过多",
+	ErrFriendApplyExpired:   "申请已过期",
 	ErrPartnerNotFound:      "伙伴配置不存在",
 	ErrPartnerOwned:         "已拥有该伙伴",
 	ErrPartnerNotOwned:      "尚未拥有该伙伴",

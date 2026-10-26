@@ -11,6 +11,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -26,12 +27,12 @@ func newTestModule() (*Module, *moduletest.State, *moduletest.Recorder, *module.
 
 func playerInfo(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder) *gamev1.PlayerInfoResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDPlayerInfoReq, msgIDPlayerInfoResp, &gamev1.PlayerInfoReq{})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgPlayerInfoReq, codec.MsgPlayerInfoResp, &gamev1.PlayerInfoReq{})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "玩家信息没有回包")
 	resp := &gamev1.PlayerInfoResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
-	require.Equal(t, 1, rec.Count(msgIDPlayerInfoResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgPlayerInfoResp), "一次请求只能回一个包")
 	return resp
 }
 

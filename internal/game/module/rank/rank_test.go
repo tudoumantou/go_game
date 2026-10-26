@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"testing"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -87,11 +89,11 @@ func TestListReturnsTopAndMine(t *testing.T) {
 	ctx, raw, msgID := newCtx(t, 2)
 
 	body, _ := proto.Marshal(&gamev1.RankListReq{RankType: "arena_score"})
-	err := m.OnMessage(ctx, msgIDListReq, body)
+	err := m.OnMessage(ctx, codec.MsgRankListReq, body)
 	require.NoError(t, err)
-	require.EqualValues(t, msgIDListResp, *msgID)
+	require.EqualValues(t, codec.MsgRankListResp, *msgID)
 	resp := decodeResp(t, *raw)
-	require.False(t, resp.Code != codeOK || len(resp.Entries) != 2 || resp.MyRank != 2 || !resp.OnBoard, fmt.Sprintf("unexpected resp: %+v", resp))
+	require.False(t, resp.Code != int32(errcode.OK) || len(resp.Entries) != 2 || resp.MyRank != 2 || !resp.OnBoard, fmt.Sprintf("unexpected resp: %+v", resp))
 	require.EqualValues(t, 1700000000, resp.UpdatedAt, fmt.Sprintf("meta lost: %+v", resp))
 	require.EqualValues(t, "s1", resp.Season)
 	require.EqualValues(t, 2, q.gotPID, fmt.Sprintf("querier got pid=%d type=%q", q.gotPID, q.gotType))
@@ -104,7 +106,7 @@ func TestListDefaultsRankType(t *testing.T) {
 	ctx, raw, _ := newCtx(t, 7)
 
 	body, _ := proto.Marshal(&gamev1.RankListReq{})
-	err := m.OnMessage(ctx, msgIDListReq, body)
+	err := m.OnMessage(ctx, codec.MsgRankListReq, body)
 	require.NoError(t, err)
 	require.EqualValues(t, defaultRankType, q.gotType)
 	resp := decodeResp(t, *raw)
@@ -125,10 +127,10 @@ func TestListUnavailable(t *testing.T) {
 			m := New(c.q, log.New("test"))
 			ctx, raw, _ := newCtx(t, 1)
 			body, _ := proto.Marshal(&gamev1.RankListReq{RankType: "arena_score"})
-			err := m.OnMessage(ctx, msgIDListReq, body)
+			err := m.OnMessage(ctx, codec.MsgRankListReq, body)
 			require.NoError(t, err)
 			resp := decodeResp(t, *raw)
-			require.EqualValues(t, codeUnavailable, resp.Code)
+			require.EqualValues(t, int32(errcode.ErrRankUnavailable), resp.Code)
 			require.Len(t, resp.Entries, 0, "unavailable must not return fake entries")
 		})
 	}
@@ -142,8 +144,8 @@ func TestListRejectsLongRankType(t *testing.T) {
 		long[i] = 'a'
 	}
 	body, _ := proto.Marshal(&gamev1.RankListReq{RankType: string(long)})
-	err := m.OnMessage(ctx, msgIDListReq, body)
+	err := m.OnMessage(ctx, codec.MsgRankListReq, body)
 	require.NoError(t, err)
 	resp := decodeResp(t, *raw)
-	require.EqualValues(t, codeBadType, resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, codeBadType))
+	require.EqualValues(t, int32(errcode.ErrRankBadType), resp.Code, fmt.Sprintf("code = %d, want %d", resp.Code, int32(errcode.ErrRankBadType)))
 }

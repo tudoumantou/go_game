@@ -20,24 +20,16 @@ import (
 	"context"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/samber/lo"
 )
 
+// 查询参数与超时（与协议、错误码无关的业务常量）。
 const (
-	msgIDListReq  = codec.MsgRankListReq
-	msgIDListResp = codec.MsgRankListResp
-
-	// 业务码（0 成功；6701 输入非法；6702 中心服暂不可用——
-	// 刻意区别于 0 + 空 entries：让客户端能提示「稍后重试」）
-	codeOK          int32 = 0
-	codeBadType     int32 = 6701
-	codeUnavailable int32 = 6702
-
 	// defaultRankType 客户端不传榜单类型时的兜底（竞技场积分榜）
 	defaultRankType = "arena_score"
 	// defaultTopN Top-N 大小（我的名次与周边由中心服另算，不占 Top-N 配额）
@@ -104,9 +96,9 @@ func New(q Querier, logger *log.Logger) *Module {
 	m.Plain = module.NewPlain("rank",
 		module.PlainLogger(logger),
 		// 缓存不可用时回业务码（榜单本来就依赖中心服，客户端照常提示重试）
-		module.PlainErrCode(codeUnavailable),
+		module.PlainErrCode(int32(errcode.ErrRankUnavailable)),
 	)
-	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.RankListResp{}, module.Typed(msgIDListResp, m.onList))
+	module.HandlePlain(m.Plain, m.onList)
 	return m
 }
 
@@ -119,11 +111,11 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 	// 长度预检在打到中心服之前：超长 rankType 既是无效输入也是潜在滥用
 	// （会变成 Redis key 的一部分），本地挡掉最便宜
 	if len(rankType) > maxRankTypeLen {
-		resp.Code = codeBadType
+		resp.Code = int32(errcode.ErrRankBadType)
 		return nil
 	}
 	if m.q == nil {
-		resp.Code = codeUnavailable
+		resp.Code = int32(errcode.ErrRankUnavailable)
 		resp.RankType = rankType
 		return nil
 	}
@@ -139,13 +131,13 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 	if err != nil {
 		// 中心服断连/超时：明确告诉客户端稍后重试，不伪造空榜。
 		m.logger.Debug("rank query failed", "rank_type", rankType, "err", err)
-		resp.Code = codeUnavailable
+		resp.Code = int32(errcode.ErrRankUnavailable)
 		resp.RankType = rankType
 		return nil
 	}
 
 	*resp = gamev1.RankListResp{
-		Code:      codeOK,
+		Code:      int32(errcode.OK),
 		RankType:  rankType,
 		Season:    res.Season,
 		Entries:   toProto(res.Entries),

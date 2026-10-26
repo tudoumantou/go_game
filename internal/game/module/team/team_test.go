@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"testing"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -96,16 +98,16 @@ func call(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder
 func TestInfoNotInTeam(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{team: nil})
 	resp := &gamev1.TeamInfoResp{}
-	call(t, m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoReq{}, resp)
-	require.EqualValues(t, codeNotInTeam, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamInfoReq, codec.MsgTeamInfoResp, &gamev1.TeamInfoReq{}, resp)
+	require.EqualValues(t, int32(errcode.ErrTeamNotIn), resp.Code)
 }
 
 // TestInfoNoRepoDegrades 无库环境按「不在队」降级，不能报错。
 func TestInfoNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil)
 	resp := &gamev1.TeamInfoResp{}
-	call(t, m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoReq{}, resp)
-	require.EqualValues(t, codeNotInTeam, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamInfoReq, codec.MsgTeamInfoResp, &gamev1.TeamInfoReq{}, resp)
+	require.EqualValues(t, int32(errcode.ErrTeamNotIn), resp.Code)
 }
 
 // TestInfoReturnsTeamAndMembers 在队：下发队伍 ID、副本与成员（含队长标记）。
@@ -120,8 +122,8 @@ func TestInfoReturnsTeamAndMembers(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.TeamInfoResp{}
-	call(t, m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoReq{}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamInfoReq, codec.MsgTeamInfoResp, &gamev1.TeamInfoReq{}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 7, resp.TeamId)
 	require.EqualValues(t, 3, resp.CopyId)
 	require.Len(t, resp.Members, 2)
@@ -134,7 +136,7 @@ func TestInfoReturnsTeamAndMembers(t *testing.T) {
 // TestInfoPropagatesRepoErrors 查库真故障要上抛（不能让客户端以为「不在队」）。
 func TestInfoPropagatesRepoErrors(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{findErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m, ctx, rec, msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoReq{})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgTeamInfoReq, codec.MsgTeamInfoResp, &gamev1.TeamInfoReq{})
 	require.Error(t, err)
 
 	// 队伍查到了但成员查询失败，同样要上抛
@@ -142,7 +144,7 @@ func TestInfoPropagatesRepoErrors(t *testing.T) {
 		team:   &Team{ID: 7},
 		memErr: context.DeadlineExceeded,
 	})
-	_, err = moduletest.Call(m2, ctx2, rec2, msgIDInfoReq, msgIDInfoResp, &gamev1.TeamInfoReq{})
+	_, err = moduletest.Call(m2, ctx2, rec2, codec.MsgTeamInfoReq, codec.MsgTeamInfoResp, &gamev1.TeamInfoReq{})
 	require.Error(t, err)
 }
 
@@ -156,8 +158,8 @@ func TestCreateRejectsWhenAlreadyInTeam(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.TeamCreateResp{}
-	call(t, m, ctx, rec, msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateReq{CopyId: 3}, resp)
-	require.EqualValues(t, codeAlreadyIn, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamCreateReq, codec.MsgTeamCreateResp, &gamev1.TeamCreateReq{CopyId: 3}, resp)
+	require.EqualValues(t, int32(errcode.ErrTeamAlreadyIn), resp.Code)
 	require.Zero(t, repo.createdWith.leaderID, "已在队时不能调 Create")
 }
 
@@ -167,8 +169,8 @@ func TestCreatePassesLeaderAndCopy(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.TeamCreateResp{}
-	call(t, m, ctx, rec, msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateReq{CopyId: 3}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamCreateReq, codec.MsgTeamCreateResp, &gamev1.TeamCreateReq{CopyId: 3}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 88, resp.TeamId)
 	require.EqualValues(t, 100, repo.createdWith.leaderID, "队长必须是会话里的玩家，不取协议体")
 	require.EqualValues(t, 3, repo.createdWith.copyID)
@@ -178,18 +180,18 @@ func TestCreatePassesLeaderAndCopy(t *testing.T) {
 func TestCreateNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil)
 	resp := &gamev1.TeamCreateResp{}
-	call(t, m, ctx, rec, msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateReq{}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamCreateReq, codec.MsgTeamCreateResp, &gamev1.TeamCreateReq{}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 }
 
 // TestCreatePropagatesErrors 前置查询失败与建队失败都要上抛。
 func TestCreatePropagatesErrors(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{findErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m, ctx, rec, msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateReq{})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgTeamCreateReq, codec.MsgTeamCreateResp, &gamev1.TeamCreateReq{})
 	require.Error(t, err)
 
 	m2, _, rec2, ctx2 := newTestModule(&fakeRepo{createErr: context.DeadlineExceeded})
-	_, err = moduletest.Call(m2, ctx2, rec2, msgIDCreateReq, msgIDCreateResp, &gamev1.TeamCreateReq{})
+	_, err = moduletest.Call(m2, ctx2, rec2, codec.MsgTeamCreateReq, codec.MsgTeamCreateResp, &gamev1.TeamCreateReq{})
 	require.Error(t, err)
 }
 
@@ -203,15 +205,15 @@ func TestJoinTranslatesRepoErrors(t *testing.T) {
 		err  error
 		want int32
 	}{
-		{ErrTeamNotExist, codeTeamNotExist},
-		{ErrTeamFull, codeTeamFull},
-		{ErrAlreadyIn, codeAlreadyIn},
+		{ErrTeamNotExist, int32(errcode.ErrTeamNotExist)},
+		{ErrTeamFull, int32(errcode.ErrTeamFull)},
+		{ErrAlreadyIn, int32(errcode.ErrTeamAlreadyIn)},
 	}
 	for _, c := range cases {
 		repo := &fakeRepo{joinErr: c.err}
 		m, _, rec, ctx := newTestModule(repo)
 		resp := &gamev1.TeamJoinResp{}
-		call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinReq{TeamId: 7}, resp)
+		call(t, m, ctx, rec, codec.MsgTeamJoinReq, codec.MsgTeamJoinResp, &gamev1.TeamJoinReq{TeamId: 7}, resp)
 		require.EqualValues(t, c.want, resp.Code, fmt.Sprintf("err=%v", c.err))
 	}
 }
@@ -222,8 +224,8 @@ func TestJoinRejectsWhenAlreadyInTeam(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.TeamJoinResp{}
-	call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinReq{TeamId: 9}, resp)
-	require.EqualValues(t, codeAlreadyIn, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamJoinReq, codec.MsgTeamJoinResp, &gamev1.TeamJoinReq{TeamId: 9}, resp)
+	require.EqualValues(t, int32(errcode.ErrTeamAlreadyIn), resp.Code)
 	require.Zero(t, repo.joinedWith.teamID, "已在队时不能调 Join")
 }
 
@@ -233,8 +235,8 @@ func TestJoinSucceeds(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := &gamev1.TeamJoinResp{}
-	call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinReq{TeamId: 9}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamJoinReq, codec.MsgTeamJoinResp, &gamev1.TeamJoinReq{TeamId: 9}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 9, repo.joinedWith.teamID)
 	require.EqualValues(t, 100, repo.joinedWith.playerID)
 }
@@ -242,7 +244,7 @@ func TestJoinSucceeds(t *testing.T) {
 // TestJoinUnknownErrorPropagates 非哨兵错误（DB 挂了）必须上抛。
 func TestJoinUnknownErrorPropagates(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{joinErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinReq{TeamId: 7})
+	_, err := moduletest.Call(m, ctx, rec, codec.MsgTeamJoinReq, codec.MsgTeamJoinResp, &gamev1.TeamJoinReq{TeamId: 7})
 	require.Error(t, err)
 }
 
@@ -250,8 +252,8 @@ func TestJoinUnknownErrorPropagates(t *testing.T) {
 func TestJoinNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil)
 	resp := &gamev1.TeamJoinResp{}
-	call(t, m, ctx, rec, msgIDJoinReq, msgIDJoinResp, &gamev1.TeamJoinReq{TeamId: 7}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamJoinReq, codec.MsgTeamJoinResp, &gamev1.TeamJoinReq{TeamId: 7}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 }
 
 // ============================================================================
@@ -262,16 +264,16 @@ func TestJoinNoRepoDegrades(t *testing.T) {
 func TestLeave(t *testing.T) {
 	m, _, rec, ctx := newTestModule(&fakeRepo{})
 	resp := &gamev1.TeamLeaveResp{}
-	call(t, m, ctx, rec, msgIDLeaveReq, msgIDLeaveResp, &gamev1.TeamLeaveReq{}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamLeaveReq, codec.MsgTeamLeaveResp, &gamev1.TeamLeaveReq{}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 
 	m2, _, rec2, ctx2 := newTestModule(&fakeRepo{leaveErr: ErrNotInTeam})
 	resp2 := &gamev1.TeamLeaveResp{}
-	call(t, m2, ctx2, rec2, msgIDLeaveReq, msgIDLeaveResp, &gamev1.TeamLeaveReq{}, resp2)
-	require.EqualValues(t, codeNotInTeam, resp2.Code)
+	call(t, m2, ctx2, rec2, codec.MsgTeamLeaveReq, codec.MsgTeamLeaveResp, &gamev1.TeamLeaveReq{}, resp2)
+	require.EqualValues(t, int32(errcode.ErrTeamNotIn), resp2.Code)
 
 	m3, _, rec3, ctx3 := newTestModule(&fakeRepo{leaveErr: context.DeadlineExceeded})
-	_, err := moduletest.Call(m3, ctx3, rec3, msgIDLeaveReq, msgIDLeaveResp, &gamev1.TeamLeaveReq{})
+	_, err := moduletest.Call(m3, ctx3, rec3, codec.MsgTeamLeaveReq, codec.MsgTeamLeaveResp, &gamev1.TeamLeaveReq{})
 	require.Error(t, err)
 }
 
@@ -279,8 +281,8 @@ func TestLeave(t *testing.T) {
 func TestLeaveNoRepoDegrades(t *testing.T) {
 	m, _, rec, ctx := newTestModule(nil)
 	resp := &gamev1.TeamLeaveResp{}
-	call(t, m, ctx, rec, msgIDLeaveReq, msgIDLeaveResp, &gamev1.TeamLeaveReq{}, resp)
-	require.EqualValues(t, codeOK, resp.Code)
+	call(t, m, ctx, rec, codec.MsgTeamLeaveReq, codec.MsgTeamLeaveResp, &gamev1.TeamLeaveReq{}, resp)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 }
 
 // ============================================================================

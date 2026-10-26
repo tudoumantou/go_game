@@ -14,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -228,12 +230,12 @@ func (r *rig) match(t *testing.T, playerID int64, mode string) *gamev1.MatchResp
 	ctx := r.ctx(playerID)
 	rec := moduletest.NewRecorder()
 	ctx.Send = rec.Send
-	raw, err := moduletest.Call(r.m, ctx, rec, msgIDMatchReq, msgIDMatchResp, &gamev1.MatchReq{Mode: mode})
+	raw, err := moduletest.Call(r.m, ctx, rec, codec.MsgMatchReq, codec.MsgMatchResp, &gamev1.MatchReq{Mode: mode})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "匹配没有回包")
 	resp := &gamev1.MatchResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
-	require.Equal(t, 1, rec.Count(msgIDMatchResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgMatchResp), "一次请求只能回一个包")
 	return resp
 }
 
@@ -242,12 +244,12 @@ func (r *rig) reportResult(t *testing.T, playerID int64, req *gamev1.BattleResul
 	ctx := r.ctx(playerID)
 	rec := moduletest.NewRecorder()
 	ctx.Send = rec.Send
-	raw, err := moduletest.Call(r.m, ctx, rec, msgIDResultReport, msgIDSettleNotify, req)
+	raw, err := moduletest.Call(r.m, ctx, rec, codec.MsgBattleResultReport, codec.MsgBattleSettleNotify, req)
 	require.NoError(t, err)
 	require.NotNil(t, raw, "结算上报没有回包")
 	resp := &gamev1.BattleSettleNotify{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
-	require.Equal(t, 1, rec.Count(msgIDSettleNotify), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgBattleSettleNotify), "一次请求只能回一个包")
 	return resp
 }
 
@@ -262,7 +264,7 @@ func TestMatchRejectsWhenCrossUnavailable(t *testing.T) {
 	r.cross.available = false
 
 	resp := r.match(t, 1, "arena")
-	require.EqualValues(t, codeModeClosed, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleModeClosed), resp.Code)
 	require.Zero(t, r.m.QueueLen("arena"), "拒绝时不能入队")
 }
 
@@ -281,10 +283,10 @@ func TestMatchQueuesFirstPlayer(t *testing.T) {
 	r := newRig()
 
 	resp := r.match(t, 1, "arena")
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 1, resp.Queued, "要告诉客户端队列里已有人")
 	require.Empty(t, r.cross.creates, "人不齐不能建房")
-	require.Empty(t, r.push.byMsg(msgIDStartNotify))
+	require.Empty(t, r.push.byMsg(codec.MsgBattleStartNotify))
 }
 
 // TestMatchPairsTwoPlayers 第二个人凑满 → 出队 → 建房 → 双方收到开战通知。
@@ -293,7 +295,7 @@ func TestMatchPairsTwoPlayers(t *testing.T) {
 
 	r.match(t, 1, "arena")
 	resp := r.match(t, 2, "arena")
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 0, resp.Queued, "两人都出队后队列为空")
 
 	require.Len(t, r.cross.creates, 1, "凑满必须建房一次")
@@ -302,7 +304,7 @@ func TestMatchPairsTwoPlayers(t *testing.T) {
 	require.Zero(t, r.m.QueueLen("arena"), "出队后队列必须清空")
 
 	// 双方各收到一条开战通知，且对手信息是对方
-	notifies := r.push.byMsg(msgIDStartNotify)
+	notifies := r.push.byMsg(codec.MsgBattleStartNotify)
 	require.Len(t, notifies, 2)
 	for _, n := range notifies {
 		require.EqualValues(t, 1000, mustNotify(t, n.Body).RoomId)
@@ -336,7 +338,7 @@ func TestMatchRejectsDuplicateQueue(t *testing.T) {
 	r.match(t, 1, "arena")
 
 	resp := r.match(t, 1, "arena")
-	require.EqualValues(t, codeAlreadyIn, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleAlreadyIn), resp.Code)
 	require.EqualValues(t, 1, r.m.QueueLen("arena"), "重复入队必须被挡住")
 }
 
@@ -347,7 +349,7 @@ func TestMatchRejectsWhileInBattle(t *testing.T) {
 	r.match(t, 2, "arena")
 
 	resp := r.match(t, 1, "arena")
-	require.EqualValues(t, codeAlreadyIn, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleAlreadyIn), resp.Code)
 }
 
 // TestMatchClearsSettledSession 已结算但未回收的会话要立即清掉，
@@ -356,13 +358,13 @@ func TestMatchClearsSettledSession(t *testing.T) {
 	r := newRig()
 	r.match(t, 1, "arena")
 	r.match(t, 2, "arena")
-	require.NoError(t, r.m.OnMessage(r.ctx(1), msgIDResultReport, mustMarshal(t, &gamev1.BattleResultReport{
+	require.NoError(t, r.m.OnMessage(r.ctx(1), codec.MsgBattleResultReport, mustMarshal(t, &gamev1.BattleResultReport{
 		RoomId: 1000, BattleToken: "tok-1", Result: 0,
 	})))
 
 	require.False(t, r.m.InBattle(1), "已结算不再算战斗中")
 	resp := r.match(t, 1, "arena")
-	require.EqualValues(t, codeOK, resp.Code, "已结算会话应被清掉，允许重新匹配")
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "已结算会话应被清掉，允许重新匹配")
 }
 
 // TestMatchUsesCenterWhenAvailable 中心服可用时上报匹配，不进本地队列。
@@ -375,12 +377,12 @@ func TestMatchUsesCenterWhenAvailable(t *testing.T) {
 	rec := moduletest.NewRecorder()
 	ctx := moduletest.NewContext(st, rec)
 
-	raw, err := moduletest.Call(r.m, ctx, rec, msgIDMatchReq, msgIDMatchResp, &gamev1.MatchReq{Mode: "arena"})
+	raw, err := moduletest.Call(r.m, ctx, rec, codec.MsgMatchReq, codec.MsgMatchResp, &gamev1.MatchReq{Mode: "arena"})
 	require.NoError(t, err)
 	resp := &gamev1.MatchResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
 
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 1, resp.Queued, "中心服匹配池不回精确人数，按已入队处理")
 	require.Len(t, r.center.matches, 1)
 	require.EqualValues(t, 1, r.center.matches[0].PlayerID)
@@ -395,7 +397,7 @@ func TestMatchCenterFailure(t *testing.T) {
 	r.center.matchErr = context.DeadlineExceeded
 
 	resp := r.match(t, 1, "arena")
-	require.EqualValues(t, codeModeClosed, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleModeClosed), resp.Code)
 	require.Zero(t, r.m.QueueLen("arena"))
 }
 
@@ -409,7 +411,7 @@ func TestMatchReturnsPlayersToQueueOnCreateFailure(t *testing.T) {
 	r.match(t, 2, "arena")
 
 	require.EqualValues(t, 2, r.m.QueueLen("arena"), "建房失败必须回队")
-	require.Empty(t, r.push.byMsg(msgIDStartNotify), "没建成房不能通知开战")
+	require.Empty(t, r.push.byMsg(codec.MsgBattleStartNotify), "没建成房不能通知开战")
 	require.Nil(t, r.m.SessionOf(1))
 }
 
@@ -422,7 +424,7 @@ func TestMatchSnapshotSendFailureDoesNotBlock(t *testing.T) {
 	r.match(t, 1, "arena")
 	r.match(t, 2, "arena")
 
-	require.Len(t, r.push.byMsg(msgIDStartNotify), 2, "快照失败仍要下发开战通知")
+	require.Len(t, r.push.byMsg(codec.MsgBattleStartNotify), 2, "快照失败仍要下发开战通知")
 }
 
 // ============================================================================
@@ -437,7 +439,7 @@ func TestOpReportRelaysRawBody(t *testing.T) {
 
 	body := []byte{0x01, 0x02, 0x03}
 	raw := mustMarshal(t, &gamev1.BattleOpReport{RoomId: 1000, MsgId: 77, Body: body})
-	require.NoError(t, r.m.OnMessage(r.ctx(1), msgIDOpReport, raw))
+	require.NoError(t, r.m.OnMessage(r.ctx(1), codec.MsgBattleOpReport, raw))
 
 	require.Equal(t, 1, r.cross.opsCount())
 	require.EqualValues(t, 1000, r.cross.ops[0].RoomID)
@@ -452,29 +454,29 @@ func TestOpReportDropsForeignMessages(t *testing.T) {
 
 	// 无会话
 	raw := mustMarshal(t, &gamev1.BattleOpReport{RoomId: 1000, MsgId: 1})
-	require.NoError(t, r.m.OnMessage(r.ctx(9), msgIDOpReport, raw))
+	require.NoError(t, r.m.OnMessage(r.ctx(9), codec.MsgBattleOpReport, raw))
 	require.Zero(t, r.cross.opsCount())
 
 	// 房间号不匹配
 	r.match(t, 1, "arena")
 	r.match(t, 2, "arena")
 	raw = mustMarshal(t, &gamev1.BattleOpReport{RoomId: 999, MsgId: 1})
-	require.NoError(t, r.m.OnMessage(r.ctx(1), msgIDOpReport, raw))
+	require.NoError(t, r.m.OnMessage(r.ctx(1), codec.MsgBattleOpReport, raw))
 	require.Zero(t, r.cross.opsCount(), "别的房间的操作不能透传")
 
 	// 已结算
-	require.NoError(t, r.m.OnMessage(r.ctx(1), msgIDResultReport, mustMarshal(t, &gamev1.BattleResultReport{
+	require.NoError(t, r.m.OnMessage(r.ctx(1), codec.MsgBattleResultReport, mustMarshal(t, &gamev1.BattleResultReport{
 		RoomId: 1000, BattleToken: "tok-1", Result: 0,
 	})))
 	raw = mustMarshal(t, &gamev1.BattleOpReport{RoomId: 1000, MsgId: 2})
-	require.NoError(t, r.m.OnMessage(r.ctx(1), msgIDOpReport, raw))
+	require.NoError(t, r.m.OnMessage(r.ctx(1), codec.MsgBattleOpReport, raw))
 	require.Zero(t, r.cross.opsCount(), "结算后的操作必须丢弃")
 }
 
 // TestOpReportDecodeError 解不出协议体是真故障，要上抛（区别于业务丢弃）。
 func TestOpReportDecodeError(t *testing.T) {
 	r := newRig()
-	err := r.m.OnMessage(r.ctx(1), msgIDOpReport, []byte{0xFF, 0xFF, 0xFF})
+	err := r.m.OnMessage(r.ctx(1), codec.MsgBattleOpReport, []byte{0xFF, 0xFF, 0xFF})
 	require.Error(t, err)
 }
 
@@ -486,7 +488,7 @@ func TestOpReportRelayFailureSwallowed(t *testing.T) {
 	r.match(t, 2, "arena")
 
 	raw := mustMarshal(t, &gamev1.BattleOpReport{RoomId: 1000, MsgId: 1})
-	require.NoError(t, r.m.OnMessage(r.ctx(1), msgIDOpReport, raw))
+	require.NoError(t, r.m.OnMessage(r.ctx(1), codec.MsgBattleOpReport, raw))
 }
 
 // ============================================================================
@@ -501,16 +503,16 @@ func TestResultReportRejectsInvalidToken(t *testing.T) {
 
 	// 房间不匹配
 	resp := r.reportResult(t, 1, &gamev1.BattleResultReport{RoomId: 999, BattleToken: "tok-1"})
-	require.EqualValues(t, codeTokenInvalid, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleTokenInvalid), resp.Code)
 
 	// 令牌不对（拿别房/自造令牌冒领）
 	resp = r.reportResult(t, 1, &gamev1.BattleResultReport{RoomId: 1000, BattleToken: "wrong"})
-	require.EqualValues(t, codeTokenInvalid, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleTokenInvalid), resp.Code)
 	require.Empty(t, r.cross.results, "校验失败不能转发结算")
 
 	// 无会话
 	resp = r.reportResult(t, 9, &gamev1.BattleResultReport{RoomId: 1000, BattleToken: "tok-9"})
-	require.EqualValues(t, codeTokenInvalid, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrBattleTokenInvalid), resp.Code)
 }
 
 // TestResultReportSettlesAndIsIdempotent 正常结算：转发一次、回执带奖励；
@@ -524,7 +526,7 @@ func TestResultReportSettlesAndIsIdempotent(t *testing.T) {
 	resp := r.reportResult(t, 1, &gamev1.BattleResultReport{
 		RoomId: 1000, BattleToken: "tok-1", Result: 0, Rewards: rewards,
 	})
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Equal(t, rewards, resp.Rewards, "即时回执要带回奖励")
 	require.Len(t, r.cross.results, 1)
 	require.EqualValues(t, "tok-1", r.cross.results[0].Token)
@@ -533,7 +535,7 @@ func TestResultReportSettlesAndIsIdempotent(t *testing.T) {
 	resp = r.reportResult(t, 1, &gamev1.BattleResultReport{
 		RoomId: 1000, BattleToken: "tok-1", Result: 1,
 	})
-	require.EqualValues(t, codeAlreadyDone, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrResultReported), resp.Code)
 	require.Len(t, r.cross.results, 1, "重复上报不能再转发一次")
 }
 
@@ -546,7 +548,7 @@ func TestResultReportSurvivesCrossFailure(t *testing.T) {
 	r.match(t, 2, "arena")
 
 	resp := r.reportResult(t, 1, &gamev1.BattleResultReport{RoomId: 1000, BattleToken: "tok-1"})
-	require.EqualValues(t, codeOK, resp.Code, "转发失败不能让客户端以为上报失败")
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "转发失败不能让客户端以为上报失败")
 	require.False(t, r.m.InBattle(1), "仍要占住幂等位，不接受第二次上报")
 }
 
@@ -579,7 +581,7 @@ func TestOnMatchResultBuildsSession(t *testing.T) {
 	require.Equal(t, "center-tok", s.Token)
 	require.EqualValues(t, 99, s.PeerID)
 
-	require.Len(t, r.push.byMsg(msgIDStartNotify), 1)
+	require.Len(t, r.push.byMsg(codec.MsgBattleStartNotify), 1)
 }
 
 // TestOnMatchResultIgnoresInvalid 缺字段的结果直接丢弃（不能建出一个残缺会话）。
@@ -605,7 +607,7 @@ func TestOnMatchResultCreateFailureKeepsNoSession(t *testing.T) {
 	r.m.OnMatchResult(&internalv2.MatchResult{RoomId: 2000, BattleToken: "t", PlayerId: 1})
 
 	require.Nil(t, r.m.SessionOf(1))
-	require.Empty(t, r.push.byMsg(msgIDStartNotify))
+	require.Empty(t, r.push.byMsg(codec.MsgBattleStartNotify))
 }
 
 // ============================================================================
@@ -619,13 +621,13 @@ func TestOnBattleSyncPushesPeersOnly(t *testing.T) {
 	r.match(t, 2, "arena")
 
 	r.m.OnBattleSync(&internalv2.BattleMsg{RoomId: 1000, PlayerId: 1, MsgId: 5, Body: []byte("op")})
-	syncs := r.push.byMsg(msgIDSyncNotify)
+	syncs := r.push.byMsg(codec.MsgBattleSyncNotify)
 	require.Len(t, syncs, 1, "只推给对手")
 	require.EqualValues(t, 2, syncs[0].PlayerID)
 
 	// 别的房间不推
 	r.m.OnBattleSync(&internalv2.BattleMsg{RoomId: 4242, PlayerId: 1})
-	require.Len(t, r.push.byMsg(msgIDSyncNotify), 1)
+	require.Len(t, r.push.byMsg(codec.MsgBattleSyncNotify), 1)
 
 	// nil 不 panic
 	r.m.OnBattleSync(nil)
@@ -653,7 +655,7 @@ func TestOnBattleResultSettlesAndReportsRank(t *testing.T) {
 			r.m.OnBattleResult(&internalv2.BattleResult{RoomId: 1000, PlayerId: 1, Result: c.result})
 
 			require.False(t, r.m.InBattle(1), "结算后不再是战斗中")
-			require.Len(t, r.push.byMsg(msgIDSettleNotify), 1)
+			require.Len(t, r.push.byMsg(codec.MsgBattleSettleNotify), 1)
 			require.Equal(t, c.wantCount, r.rank.count())
 			if c.wantCount > 0 {
 				require.EqualValues(t, c.wantDelta, r.rank.reports[0].Score)
@@ -691,7 +693,7 @@ func TestOnBattleResultRankFailureSwallowed(t *testing.T) {
 	require.NotPanics(t, func() {
 		r.m.OnBattleResult(&internalv2.BattleResult{RoomId: 1000, PlayerId: 1, Result: 0})
 	})
-	require.Len(t, r.push.byMsg(msgIDSettleNotify), 1, "排行失败也要推结算")
+	require.Len(t, r.push.byMsg(codec.MsgBattleSettleNotify), 1, "排行失败也要推结算")
 }
 
 // ============================================================================

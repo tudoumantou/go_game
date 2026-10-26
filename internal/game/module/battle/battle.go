@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/log"
@@ -21,30 +22,6 @@ import (
 	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
 	"google.golang.org/protobuf/proto"
-)
-
-// 协议号（4.9：5001 开始通知，5010/5011 结算，5020/5021 透传，5002/5003 匹配）。
-const (
-	msgIDStartNotify  = codec.MsgBattleStartNotify
-	msgIDMatchReq     = codec.MsgMatchReq
-	msgIDMatchResp    = codec.MsgMatchResp
-	msgIDResultReport = codec.MsgBattleResultReport
-	msgIDSettleNotify = codec.MsgBattleSettleNotify
-	msgIDSyncNotify   = codec.MsgBattleSyncNotify
-	msgIDOpReport     = codec.MsgBattleOpReport
-)
-
-// 业务码（沿用全项目约定：0 恒为成功，非 0 为可预期失败，客户端按码直接弹提示，
-// 不占 error 通道——error 只留给「真故障」如解码失败）。
-const (
-	// 与 proto 对齐的部分：6002 TOKEN_INVALID、6003 RESULT_REPORTED。
-	// 6001 在 proto 里是 BATTLE_NOT_FOUND、6004 是 BATTLE_FULL，语义不同，
-	// 所以「已在队列」「玩法未开放」另起 6006/6007，避免客户端显示错文案。
-	codeOK           int32 = 0    // 成功
-	codeAlreadyIn    int32 = 6006 // 已在队列/战斗中
-	codeTokenInvalid int32 = 6002 // 令牌无效（proto 同名）
-	codeAlreadyDone  int32 = 6003 // 已上报过（proto 同名）
-	codeModeClosed   int32 = 6007 // 玩法未开放（跨服不可用）
 )
 
 // 战斗时限（超时服务端平局兜底，见 4.8 第 5 条）。
@@ -175,11 +152,11 @@ func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Log
 		queued:   make(map[int64]bool),
 	}
 	m.Thin = module.NewThin("battle", module.ThinLogger(logger))
-	m.HandleR(msgIDMatchReq, msgIDMatchResp, &gamev1.MatchResp{}, module.Typed(msgIDMatchResp, m.onMatch))
+	module.Handle(m.Thin, m.onMatch)
 	// 战报是单向上报：客户端不等回包，服务端也没有响应协议可回。
 	// 用 Handle 而不是 HandleR（后者要求声明响应）。
-	m.Handle(msgIDOpReport, m.onOpReport)
-	m.HandleR(msgIDResultReport, msgIDSettleNotify, &gamev1.BattleSettleNotify{}, module.Typed(msgIDSettleNotify, m.onResultReport))
+	m.Handle(codec.MsgBattleOpReport, m.onOpReport)
+	module.Handle(m.Thin, m.onResultReport)
 	return m
 }
 
@@ -197,20 +174,20 @@ func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1
 
 	// 跨服节点全挂时直接拒绝：不给玩家「进了队列却永远匹配不到」的希望
 	if !m.cross.Available() {
-		resp.Code = codeModeClosed
+		resp.Code = int32(errcode.ErrBattleModeClosed)
 		return nil
 	}
 
 	m.mu.Lock()
 	if m.queued[playerID] {
 		m.mu.Unlock()
-		resp.Code = codeAlreadyIn
+		resp.Code = int32(errcode.ErrBattleAlreadyIn)
 		return nil
 	}
 	if s, inBattle := m.sessions[playerID]; inBattle {
 		if !s.Settled {
 			m.mu.Unlock()
-			resp.Code = codeAlreadyIn
+			resp.Code = int32(errcode.ErrBattleAlreadyIn)
 			return nil
 		}
 		// 已结算但会话还未回收（结算到清理之间有短暂窗口）：
@@ -226,10 +203,10 @@ func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1
 		elo := ctx.State.Profile().Level * 100
 		if err := m.center.Match(playerID, mode, elo, m.buildSnapshot(playerID)); err != nil {
 			m.logger.Warn("center match failed", "player_id", playerID, "err", err)
-			resp.Code = codeModeClosed
+			resp.Code = int32(errcode.ErrBattleModeClosed)
 			return nil
 		}
-		resp.Code = codeOK
+		resp.Code = int32(errcode.OK)
 		resp.Queued = 1 // 中心服匹配池不回传精确人数，客户端按「已入队」处理
 		return nil
 	}
@@ -251,7 +228,7 @@ func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1
 	}
 	m.mu.Unlock()
 
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	// 凑满时两人出队后剩 0；未凑满则把当前排队人数透给客户端做「匹配中 n 人」
 	resp.Queued = int32(queued - len(pair))
 	// 回包由 module.Typed 统一完成（这里再回一次会多发一条响应，
@@ -338,7 +315,7 @@ func (m *Module) startMatch(mode string, players []int64) {
 			TimeoutSec:  int64(defaultBattleTimeout.Seconds()),
 		}
 		if raw, err := proto.Marshal(notify); err == nil {
-			m.pusher.Push(p, msgIDStartNotify, raw)
+			m.pusher.Push(p, codec.MsgBattleStartNotify, raw)
 		}
 	}
 
@@ -392,17 +369,17 @@ func (m *Module) onResultReport(ctx *module.Context, req *gamev1.BattleResultRep
 	// 房间不匹配视同令牌无效：会话里的 room 是建房时绑定的，
 	// 客户端改报别的房间，等价于拿着别房的信物来冒领
 	if s == nil || s.RoomID != req.RoomId {
-		resp.Code = codeTokenInvalid // 房间不匹配视同令牌无效
+		resp.Code = int32(errcode.ErrBattleTokenInvalid) // 房间不匹配视同令牌无效
 		return nil
 	}
 	// 令牌逐个比对：防玩家 A 用自己房间的令牌给 B 的房间冒领结算
 	if req.BattleToken != s.Token {
-		resp.Code = codeTokenInvalid
+		resp.Code = int32(errcode.ErrBattleTokenInvalid)
 		return nil
 	}
 	// 已结算 → 6003：客户端重发/双端重复上报的幂等回执
 	if s.Settled {
-		resp.Code = codeAlreadyDone
+		resp.Code = int32(errcode.ErrResultReported)
 		return nil
 	}
 
@@ -421,7 +398,7 @@ func (m *Module) onResultReport(ctx *module.Context, req *gamev1.BattleResultRep
 	}
 
 	// 即时回执（权威奖励由结算推送 5011 再下发一次）
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	resp.Rewards = req.Rewards
 	return nil
 }
@@ -477,7 +454,7 @@ func (m *Module) OnMatchResult(res *internalv2.MatchResult) {
 		TimeoutSec:  int64(m.battleTimeout().Seconds()),
 	}
 	if raw, err := proto.Marshal(notify); err == nil {
-		m.pusher.Push(playerID, msgIDStartNotify, raw)
+		m.pusher.Push(playerID, codec.MsgBattleStartNotify, raw)
 	}
 	m.logger.Info("battle started via center", "room_id", res.RoomId,
 		"player_id", playerID, "peer", res.PeerId, "cross", res.CrossAddr)
@@ -516,7 +493,7 @@ func (m *Module) OnBattleSync(msg *internalv2.BattleMsg) {
 	m.mu.Unlock()
 
 	for _, pid := range targets {
-		m.pusher.Push(pid, msgIDSyncNotify, raw)
+		m.pusher.Push(pid, codec.MsgBattleSyncNotify, raw)
 	}
 }
 
@@ -536,10 +513,10 @@ func (m *Module) OnBattleResult(res *internalv2.BattleResult) {
 
 	notify := &gamev1.BattleSettleNotify{
 		RoomId: res.RoomId,
-		Code:   codeOK,
+		Code:   int32(errcode.OK),
 	}
 	if raw, err := proto.Marshal(notify); err == nil {
-		m.pusher.Push(res.PlayerId, msgIDSettleNotify, raw)
+		m.pusher.Push(res.PlayerId, codec.MsgBattleSettleNotify, raw)
 	}
 
 	m.logger.Info("battle settled by cross", "room_id", res.RoomId,

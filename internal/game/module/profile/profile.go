@@ -15,16 +15,9 @@ package profile
 
 import (
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-)
-
-// 协议号（4.9：2001 拉取 / 2002 响应）。
-const (
-	msgIDPlayerInfoReq  = codec.MsgPlayerInfoReq
-	msgIDPlayerInfoResp = codec.MsgPlayerInfoResp
 )
 
 // 属性 ID（attr_formula.xml 约定，P6 内置）。
@@ -49,13 +42,13 @@ func New(logger *log.Logger) *Module {
 	m := &Module{}
 	m.Thin = module.NewThin("profile",
 		module.ThinLogger(logger),
-		module.ThinHandle(msgIDPlayerInfoReq, m.onPlayerInfo),
 		// 下线标脏只是提示 flusher 关注，权威提交仍是快照 CAS。
 		module.ThinLogout(func(ctx *module.Context) error {
 			ctx.State.MarkDirty("profile")
 			return nil
 		}),
 	)
+	module.Handle(m.Thin, m.onPlayerInfo)
 	return m
 }
 
@@ -65,9 +58,9 @@ func New(logger *log.Logger) *Module {
 // 维护在 bonus 上，最终值 = 基础值 + 加成，这里只取最终值下发。
 // 这样新增加成来源（坐骑、称号）不需要改本模块——只要那个模块
 // 在自己 OnLogin 里 AddBonus。
-func (m *Module) onPlayerInfo(ctx *module.Context, _ uint32, _ []byte) error {
+func (m *Module) onPlayerInfo(ctx *module.Context, _ *gamev1.PlayerInfoReq, resp *gamev1.PlayerInfoResp) error {
 	p := ctx.State.Profile()
-	return m.Reply(ctx, msgIDPlayerInfoResp, &gamev1.PlayerInfoResp{
+	*resp = gamev1.PlayerInfoResp{
 		Code:   0,
 		RoleId: ctx.State.PlayerID(),
 		Name:   p.Name,
@@ -82,7 +75,8 @@ func (m *Module) onPlayerInfo(ctx *module.Context, _ uint32, _ []byte) error {
 			{AttrId: attrDEF, Value: ctx.State.GetAttr("def")},
 			{AttrId: attrSPD, Value: ctx.State.GetAttr("spd")},
 		},
-	})
+	}
+	return nil
 }
 
 // 保证 Module 满足 module.Module（Thin 已预实现全部方法）。
