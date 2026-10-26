@@ -13,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"testing"
 	"time"
 
@@ -149,8 +148,7 @@ func TestP14RankAndLeader(t *testing.T) {
 	gameCfg.Cross.BattleTimeout = "60s"
 	gameCfg.Center.Addr = fmt.Sprintf("127.0.0.1:%d", centerGRPCPort)
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()

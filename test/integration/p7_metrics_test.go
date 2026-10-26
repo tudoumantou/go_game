@@ -19,7 +19,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -84,8 +83,7 @@ func TestP7MetricsEndpoints(t *testing.T) {
 
 	initSchema(t, mysqlDSN)
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	// ② 配置
 	loginHTTP := freePort(t)

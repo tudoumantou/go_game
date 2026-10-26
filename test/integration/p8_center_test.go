@@ -13,7 +13,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -148,8 +147,7 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	// 关键：配了中心服 → battle 走中心服匹配主路径
 	gameCfg.Center.Addr = fmt.Sprintf("127.0.0.1:%d", centerGRPCPort)
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()

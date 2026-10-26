@@ -16,7 +16,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -138,8 +137,7 @@ func TestP13CrossBattleFlow(t *testing.T) {
 	gameCfg.Cross.Nodes = []string{fmt.Sprintf("127.0.0.1:%d", crossGRPCPort)}
 	gameCfg.Cross.BattleTimeout = "60s"
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()

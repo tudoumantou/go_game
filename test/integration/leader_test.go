@@ -41,7 +41,11 @@ func startEtcd(t *testing.T) *clientv3.Client {
 				"--advertise-client-urls=http://0.0.0.0:2379",
 				"--listen-client-urls=http://0.0.0.0:2379",
 			},
-			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(60 * time.Second),
+			// 超时给足 3 分钟：`WithStartupTimeout` 把**镜像拉取**也算在内，
+			// 而 quay.io 在 CI 上首拉经常要一两分钟。原来写 60s，本地有镜像
+			// 缓存所以从没暴露，CI 上则是稳定失败（host port waiting failed）。
+			// 与 mysql 容器同一数量级，避免「同一套测试里两个超时标准」。
+			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(3 * time.Minute),
 		},
 		Started: true,
 	})

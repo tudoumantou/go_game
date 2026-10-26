@@ -148,8 +148,7 @@ func TestP6GameplayFlow(t *testing.T) {
 	gameCfg.Server.Name = "game-p6"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	// ③ 起服务
 	svcCtx, svcCancel := context.WithCancel(ctx)

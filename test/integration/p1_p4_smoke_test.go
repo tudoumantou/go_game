@@ -131,8 +131,7 @@ func TestP1toP4Smoke(t *testing.T) {
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
 	// 切到项目根目录（gateway 加载 keys/ 相对路径）
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	// ⑤ 启动三服务
 	svcCtx, svcCancel := context.WithCancel(ctx)

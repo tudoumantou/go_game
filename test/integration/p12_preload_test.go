@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -123,8 +122,7 @@ func TestP12LoginPreload(t *testing.T) {
 	gameCfg.Server.Name = "game-p12"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()

@@ -7,7 +7,6 @@ package integration
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -131,8 +130,7 @@ func TestP6BGameplayFlow(t *testing.T) {
 	gameCfg.Server.Name = "game-p6b"
 	gameCfg.Server.GRPCAddr = fmt.Sprintf("127.0.0.1:%d", gameGRPCPort)
 
-	err = os.Chdir(projectRoot(t))
-	require.NoError(t, err, fmt.Sprintf("chdir: %v", err))
+	chdirProjectRoot(t)
 
 	svcCtx, svcCancel := context.WithCancel(ctx)
 	defer svcCancel()
