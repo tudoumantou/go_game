@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -161,13 +162,13 @@ func TestClaimFlow(t *testing.T) {
 
 	// 信息：未领取，今天=3。
 	info := &gamev1.SigninInfoResp{}
-	err := proto.Unmarshal(call(t, m, ctx, rec, MsgInfoReq, &gamev1.SigninInfoReq{}), info)
+	err := proto.Unmarshal(call(t, m, ctx, rec, codec.MsgSigninInfoReq, &gamev1.SigninInfoReq{}), info)
 	require.NoError(t, err)
 	require.False(t, info.Code != 0 || info.Today != 3 || info.ClaimedToday || len(info.ClaimedDays) != 0, fmt.Sprintf("info: %+v", info))
 
 	// 首次领取：拿到第 3 天奖励，状态与背包同步更新。
 	resp := &gamev1.SigninClaimResp{}
-	err = proto.Unmarshal(call(t, m, ctx, rec, MsgClaimReq, &gamev1.SigninClaimReq{}), resp)
+	err = proto.Unmarshal(call(t, m, ctx, rec, codec.MsgSigninClaimReq, &gamev1.SigninClaimReq{}), resp)
 	require.NoError(t, err)
 	require.False(t, resp.Code != 0 || resp.Already || resp.Day != 3 || len(resp.Rewards) == 0, fmt.Sprintf("claim: %+v", resp))
 	require.Len(t, resp.ClaimedDays, 1, fmt.Sprintf("claim state: days=%v rewards=%v", resp.ClaimedDays, resp.ClaimedRewards))
@@ -177,7 +178,7 @@ func TestClaimFlow(t *testing.T) {
 
 	// 重复领取：幂等，不叠加奖励。
 	dup := &gamev1.SigninClaimResp{}
-	err = proto.Unmarshal(call(t, m, ctx, rec, MsgClaimReq, &gamev1.SigninClaimReq{}), dup)
+	err = proto.Unmarshal(call(t, m, ctx, rec, codec.MsgSigninClaimReq, &gamev1.SigninClaimReq{}), dup)
 	require.NoError(t, err)
 	require.False(t, !dup.Already || dup.ClaimedRewards[1001] != 300, fmt.Sprintf("duplicate claim: %+v", dup))
 	require.EqualValues(t, 300, st.GetItemCount(1001))

@@ -79,6 +79,9 @@ const (
 	ErrResultReported      = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
 	ErrBattleFull          = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
 	ErrResultRewardInvalid = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
+	ErrSigninConfig        = commonv1.ErrCode_ERR_CODE_SIGNIN_CONFIG
+	ErrSigninRewardLimit   = commonv1.ErrCode_ERR_CODE_SIGNIN_REWARD_LIMIT
+	ErrSigninBagFull       = commonv1.ErrCode_ERR_CODE_SIGNIN_BAG_FULL
 )
 
 // messages 中文文案表（可热更新；不进协议 wire）
@@ -114,6 +117,9 @@ var messages = map[Code]string{
 	ErrResultReported:      "战斗结果已上报",
 	ErrBattleFull:          "战斗房间已满",
 	ErrResultRewardInvalid: "上报的奖励不存在",
+	ErrSigninConfig:        "签到奖励配置错误",
+	ErrSigninRewardLimit:   "签到奖励数量超出上限",
+	ErrSigninBagFull:       "背包已满，无法领取签到奖励",
 }
 
 // Message 取中文文案（未登记返回通用文案）

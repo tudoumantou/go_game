@@ -16,8 +16,8 @@ import (
 	"sort"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -28,15 +28,12 @@ const (
 	// stateKey 同时是 Ext 槽位键与落库归属的模块名。
 	stateKey = "signin"
 
-	MsgInfoReq   = codec.MsgSigninInfoReq
-	MsgInfoResp  = codec.MsgSigninInfoResp
-	MsgClaimReq  = codec.MsgSigninClaimReq
-	MsgClaimResp = codec.MsgSigninClaimResp
-
-	codeSystem   int32 = 1
-	codeConfig   int32 = 6601
-	codeBagLimit int32 = 6602
-	codeBagFull  int32 = 6603
+	// 错误码：6601-6603 在 api/proto/common/v1/errcode.proto 统一登记，
+	// 由生成体系产出常量——模块不再手写数字。
+	codeSystem   int32 = 1 // 1 = 本地系统错误（历史契约，未进 proto 枚举）
+	codeConfig   int32 = int32(errcode.ErrSigninConfig)
+	codeBagLimit int32 = int32(errcode.ErrSigninRewardLimit)
+	codeBagFull  int32 = int32(errcode.ErrSigninBagFull)
 
 	weekDays int32 = 7
 )
@@ -90,8 +87,8 @@ func New(logger *log.Logger, clock ...func() time.Time) *module.Bound[Data] {
 	if len(clock) > 0 && clock[0] != nil {
 		m.SetClock(clock[0])
 	}
-	m.On(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, onInfo)
-	m.On(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, onClaim)
+	m.OnMsg(&gamev1.SigninInfoReq{}, &gamev1.SigninInfoResp{}, onInfo)
+	m.OnMsg(&gamev1.SigninClaimReq{}, &gamev1.SigninClaimResp{}, onClaim)
 	return m
 }
 
@@ -104,9 +101,9 @@ func onInfo(c *module.Ctx[Data]) error {
 
 	d, err := c.Repo.Get()
 	if err != nil {
-		return c.Fail(MsgInfoReq, codeSystem, err)
+		return c.Fail(codeSystem, err)
 	}
-	return c.Reply(MsgInfoResp, &gamev1.SigninInfoResp{
+	return c.Reply(&gamev1.SigninInfoResp{
 		Today:          today,
 		ClaimedToday:   d.has(today),
 		ClaimedDays:    d.Days,
@@ -123,7 +120,7 @@ func onClaim(c *module.Ctx[Data]) error {
 
 	d, err := c.Repo.Get()
 	if err != nil {
-		return c.Fail(MsgClaimReq, codeSystem, err)
+		return c.Fail(codeSystem, err)
 	}
 
 	// 四个分支共用一份回包：只有 Code/Already/Rewards 会变，
@@ -135,14 +132,14 @@ func onClaim(c *module.Ctx[Data]) error {
 	grants, cfgErr := rewardsForDay(today)
 	if cfgErr != nil {
 		resp.Code = codeConfig
-		return c.Reply(MsgClaimResp, resp)
+		return c.Reply(resp)
 	}
 	resp.Rewards = protoRewards(grants)
 
 	// 幂等：重复领取回「已领」状态，不再发奖。
 	if d.has(today) {
 		resp.Already = true
-		return c.Reply(MsgClaimResp, resp)
+		return c.Reply(resp)
 	}
 
 	// 发奖与登记在同一个提交窗口里：Grant 失败时不改任何状态，
@@ -150,20 +147,20 @@ func onClaim(c *module.Ctx[Data]) error {
 	changes, grantErr := module.Grant(c.State, grants)
 	if grantErr != nil {
 		resp.Code = grantCode(grantErr)
-		return c.Reply(MsgClaimResp, resp)
+		return c.Reply(resp)
 	}
 
 	d.add(today, grants)
 	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(MsgClaimReq, codeSystem, err)
+		return c.Fail(codeSystem, err)
 	}
 	resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
 
-	if err := c.Reply(MsgClaimResp, resp); err != nil {
+	if err := c.Reply(resp); err != nil {
 		return err
 	}
 	// 背包变更由 Grant 一并算出（含发放后存量），直接转协议下发。
-	return c.Reply(codec.MsgBagChangeNotify, &gamev1.BagChangeNotify{
+	return c.Reply(&gamev1.BagChangeNotify{
 		Changes: module.ToItemChanges(changes),
 	})
 }

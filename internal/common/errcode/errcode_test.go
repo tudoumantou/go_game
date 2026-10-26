@@ -25,6 +25,7 @@ func TestParityWithProto(t *testing.T) {
 		ErrChannelClosed, ErrPeerNotFound, ErrChatTooFast, ErrChatMuted,
 		ErrMailNotFound, ErrMailTaken, ErrNoAttachment,
 		ErrBattleNotFound, ErrBattleTokenInvalid, ErrResultReported, ErrBattleFull, ErrResultRewardInvalid,
+		ErrSigninConfig, ErrSigninRewardLimit, ErrSigninBagFull,
 	} {
 		goVals[v] = true
 	}

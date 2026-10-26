@@ -16,6 +16,7 @@ import (
 	"game_study/internal/game/module/signin"
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
+	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/writebehind"
@@ -77,7 +78,7 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 
 	// 投递后**不等待**处理完，直接进入关闭流程：这正是关服时的真实时序。
 	for _, pid := range pids {
-		err := sys.Send(pid, &player.PacketMsg{MsgID: signin.MsgClaimReq})
+		err := sys.Send(pid, &player.PacketMsg{MsgID: codec.MsgSigninClaimReq})
 		require.NoError(t, err)
 	}
 
@@ -136,7 +137,7 @@ func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
 	require.NoError(t, err)
 	err = sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)})
 	require.NoError(t, err)
-	err = sys.Send(pid, &player.PacketMsg{MsgID: signin.MsgClaimReq})
+	err = sys.Send(pid, &player.PacketMsg{MsgID: codec.MsgSigninClaimReq})
 	require.NoError(t, err)
 	drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

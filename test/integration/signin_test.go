@@ -23,6 +23,7 @@ import (
 	"game_study/internal/game/module/signin"
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
+	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -108,7 +109,7 @@ func TestSigninActorFlow(t *testing.T) {
 	claim := func(pid *actor.PID) *gamev1.SigninClaimResp {
 		t.Helper()
 		out := &gamev1.SigninClaimResp{}
-		call(pid, signin.MsgClaimReq, out)
+		call(pid, codec.MsgSigninClaimReq, out)
 		require.EqualValues(t, 0, out.Code)
 		return out
 	}
@@ -121,7 +122,7 @@ func TestSigninActorFlow(t *testing.T) {
 		return days, rewards
 	}
 	info := &gamev1.SigninInfoResp{}
-	call(p1, signin.MsgInfoReq, info)
+	call(p1, codec.MsgSigninInfoReq, info)
 	require.False(t, info.Code != 0 || info.Today != 3 || info.ClaimedToday)
 	first := claim(p1)
 	require.False(t, first.Already || first.Day != 3 || first.ClaimedRewards[1001] != 300, "claim must grant day 3")

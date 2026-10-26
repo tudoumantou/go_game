@@ -48,4 +48,9 @@ enum ErrCode {
   ERR_CODE_RESULT_REPORTED        = 6003; // 战斗结果已上报（幂等保护）
   ERR_CODE_BATTLE_FULL            = 6004; // 战斗房间已满
   ERR_CODE_RESULT_REWARD_INVALID  = 6005; // 上报的奖励不存在
+
+  // ===== 66xx 签到 =====
+  ERR_CODE_SIGNIN_CONFIG       = 6601; // 签到奖励配置错误
+  ERR_CODE_SIGNIN_REWARD_LIMIT = 6602; // 签到奖励数量超出上限
+  ERR_CODE_SIGNIN_BAG_FULL     = 6603; // 背包已满，无法领取签到奖励
 }

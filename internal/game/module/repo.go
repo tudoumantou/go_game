@@ -14,6 +14,7 @@ package module
 import (
 	"time"
 
+	"game_study/pkg/codec"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -42,22 +43,26 @@ func (r *Repo[D]) Delete() error {
 // Ctx 业务处理器上下文：在 module.Context 之上挂类型化的 Repo。
 //
 // 嵌入 *Context 后，State/Send/Prefetch/Now 等能力仍可直接用；
-// Reply/Fail 被重载为 proto 版本，业务不再自己 Marshal。
+// Reply/Fail 只收 proto 消息与错误码，协议号由基座按类型反查。
 type Ctx[D any] struct {
 	*Context
 	Repo *Repo[D]
 
+	msgID uint32 // 当前请求号（Fail 按它找失败回包模板）
 	bound *Bound[D]
 }
 
-// Reply 序列化并回包（业务只面对 proto.Message）。
-func (c *Ctx[D]) Reply(msgID uint32, msg proto.Message) error {
-	return c.bound.Stateful.Reply(c.Context, msgID, msg)
+// MsgID 当前请求的协议号。
+func (c *Ctx[D]) MsgID() uint32 { return c.msgID }
+
+// Reply 回包：协议号由消息类型反查（codec.ProtoID），业务不写数字。
+func (c *Ctx[D]) Reply(msg proto.Message) error {
+	return c.bound.Stateful.Reply(c.Context, codec.ProtoID(msg), msg)
 }
 
-// Fail 记录告警并按错误码回失败响应。
-func (c *Ctx[D]) Fail(msgID uint32, code int32, err error) error {
-	return c.bound.Stateful.Fail(c.Context, msgID, code, err)
+// Fail 记录告警并按错误码回失败响应（响应模板由注册时的 respID 决定）。
+func (c *Ctx[D]) Fail(code int32, err error) error {
+	return c.bound.Stateful.Fail(c.Context, c.msgID, code, err)
 }
 
 // Handler 业务处理器：只关心上下文，不看原始字节。
@@ -80,21 +85,33 @@ func Bind[D any](name string, newFn func() *D, opts ...ThinOption) *Bound[D] {
 // 注入后每个请求的 Context.Clock 为空时自动带上，业务用 c.Now() 取时间。
 func (b *Bound[D]) SetClock(fn func() time.Time) { b.clock = fn }
 
-// On 注册一个请求：respID + prototype 用于失败时自动回包。
+// On 按协议号注册处理器：respID + prototype 用于失败时自动回包。
 func (b *Bound[D]) On(reqID, respID uint32, prototype proto.Message, h Handler[D]) {
-	b.HandleR(reqID, respID, prototype, func(ctx *Context, _ uint32, _ []byte) error {
+	b.HandleR(reqID, respID, prototype, func(ctx *Context, msgID uint32, _ []byte) error {
 		if b.clock != nil && ctx.Clock == nil {
 			ctx.Clock = b.clock
 		}
-		return h(b.NewCtx(ctx))
+		return h(b.newCtx(ctx, msgID))
 	})
 }
 
+// OnMsg 按消息类型注册处理器：协议号从 proto 的 @msg 注解反查。
+//
+//	m.OnMsg(&gamev1.SigninInfoReq{}, &gamev1.SigninInfoResp{}, onInfo)
+//
+// 相比 On 不会写错号，也不会出现「请求/响应对不上」的拼写错误。
+func (b *Bound[D]) OnMsg(req, resp proto.Message, h Handler[D]) {
+	b.On(codec.ProtoID(req), codec.ProtoID(resp), resp, h)
+}
+
 // NewCtx 用给定上下文构造业务上下文（测试可直接调用处理器）。
-func (b *Bound[D]) NewCtx(ctx *Context) *Ctx[D] {
+func (b *Bound[D]) NewCtx(ctx *Context) *Ctx[D] { return b.newCtx(ctx, 0) }
+
+func (b *Bound[D]) newCtx(ctx *Context, msgID uint32) *Ctx[D] {
 	return &Ctx[D]{
 		Context: ctx,
 		Repo:    &Repo[D]{s: b.Stateful, ctx: ctx},
+		msgID:   msgID,
 		bound:   b,
 	}
 }
