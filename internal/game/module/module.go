@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"game_study/pkg/actor"
 	"game_study/pkg/writebehind"
@@ -150,6 +151,17 @@ type Context struct {
 	// CommitItems 在玩家 Actor 内将业务操作与背包奖励放入同一事务。
 	// 只有事务提交成功后才修改内存；业务操作必须仅通过传入的 tx 写库。
 	CommitItems func(context.Context, []ItemGrant, func(*sql.Tx) error) error
+	// Clock 取当前时间；nil 表示用系统时间。测试注入假时钟验证跨天/跨周边界，
+	// 业务不再各自持有一个 now 字段。
+	Clock func() time.Time
+}
+
+// Now 返回当前时间：优先注入的时钟，否则系统时间。
+func (c *Context) Now() time.Time {
+	if c.Clock != nil {
+		return c.Clock()
+	}
+	return time.Now()
 }
 
 // Reply 向客户端回包（Send 未注入时静默忽略，便于单测）。

@@ -1,20 +1,12 @@
 // Package signin 实现按北京时间自然周（周一至周日）循环的七日签到。
 //
-// 状态只有「已领取天数 + 已领取奖励汇总」，持久化由 FlatPersister 一行注册，
-// 不再有独立的仓储/持久化/日历文件。周切换的清零属于周期回调模块的职责，
-// 本模块不持有时钟锚点、不做定时重置；回调模块上线时调用 Reset 即可。
+// 业务只做三件事：取状态（Repo.Get）、按规则改（has/add）、存回去（Repo.Save）。
+// 编解码、标脏、Ext 槽位、落库时机全部由基座承担；持久化适配见 persist.go。
 //
-// 架构职责：签到信息查询 + 当日领取。与 loginreward 同为「协议少、
-// 规则强」的日历玩法，但周期单位是周（weekday 1-7）而非日。
+// 架构职责：签到信息查询 + 当日领取。与 loginreward 同为「协议少、规则强」
+// 的日历玩法，但周期单位是周（weekday 1-7）而非日。
 // Ext 槽位：player_signin（ClaimedDays + ClaimedRewards 两列 JSON）。
-// 事件订阅：无（签到不消费行为事件，也不产生）。
 // 配置表：signin_reward.xml（day=周几，item_id/count）。
-// 懒初始化：从未签到返回空 Data（Days 空切片）；跨周清零由外部
-// 调用 Reset 完成，读取路径不自动清——这是「模块不持时钟锚点」的取舍。
-//
-// 模块形态：嵌入 module.Thin 薄模块基座。接口样板（分发/失败响应/
-// 可回滚声明/生命周期空实现）由基座预装配，本文件只剩业务：
-// 周几口径、领取幂等、发奖预检。改造前 620 行里约三分之一是样板。
 package signin
 
 import (
@@ -72,25 +64,14 @@ type Data struct {
 	Rewards map[int32]int64
 }
 
-// Module 签到模块；now 可注入时钟（测试跨周边界），生产用 time.Now。
+// New 创建签到模块。
 //
-// 嵌入 *module.Thin：Name/MsgIDs/OnMessage 分发/OnSave/OnLogin/OnLogout/
-// Discardable/CacheFailureReply 全部由基座提供，本模块只注册处理器。
+// 可选时钟用于验证周几边界；生产默认使用服务器时间（c.Now()）。
 // 两个请求都满足「重放无第二次副作用」：Info 只读；Claim 按「今天已领」
-// 事实幂等（已领过直接回状态，不第二次发奖），所以注册进 Thin 即承诺
-// 可回滚——缓存提交失败时丢弃内存改动重放是安全的。
-type Module struct {
-	*module.Stateful[Data]
-	now func() time.Time
-}
-
-// New 的可选时钟用于验证周几边界；生产默认使用服务器时间。
-func New(logger *log.Logger, clock ...func() time.Time) *Module {
-	m := &Module{now: time.Now}
-	if len(clock) > 0 && clock[0] != nil {
-		m.now = clock[0]
-	}
-	m.Stateful = module.NewStateful(stateKey, newData,
+// 事实幂等（已领过直接回状态，不第二次发奖），因此可安全声明为可丢弃——
+// 缓存提交失败时丢弃内存改动重放是安全的。
+func New(logger *log.Logger, clock ...func() time.Time) *module.Bound[Data] {
+	m := module.Bind(stateKey, newData,
 		module.ThinLogger(logger),
 		module.ThinErrCode(codeSystem),
 		// 缓存权威路径未就绪一律拒绝：签到发奖必须走快照 CAS，
@@ -106,91 +87,83 @@ func New(logger *log.Logger, clock ...func() time.Time) *Module {
 			return nil
 		}),
 	)
-	// HandleR 顺带声明响应协议：错误回包由基座克隆零值原型并置 code，
-	// 模块不必再写「请求号 → 响应号 + 工厂」的 switch。
-	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
-	m.HandleR(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, m.onClaim)
+	if len(clock) > 0 && clock[0] != nil {
+		m.SetClock(clock[0])
+	}
+	m.On(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, onInfo)
+	m.On(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, onClaim)
 	return m
 }
 
 // onInfo 签到信息查询：今天周几、今天是否已领、本周领取全貌。
-func (m *Module) onInfo(ctx *module.Context, _ uint32, _ []byte) error {
+func onInfo(c *module.Ctx[Data]) error {
 	// 每个请求只采样一次时钟，防止处理途中跨过周零点：
 	// 若在 has() 判断后重新取时间，跨过周日 24 点的请求会出现
 	// 「按旧周几判定已领、按新周几发奖」的错位。
-	today := weekdayOf(m.now())
-	var resp *gamev1.SigninInfoResp
-	if err := m.Read(ctx, func(d *Data) {
-		resp = &gamev1.SigninInfoResp{
-			Today:          today,
-			ClaimedToday:   d.has(today),
-			ClaimedDays:    d.Days,
-			ClaimedRewards: d.Rewards,
-		}
-	}); err != nil {
-		return m.Fail(ctx, MsgInfoReq, codeSystem, err)
+	today := weekdayOf(c.Now())
+
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(MsgInfoReq, codeSystem, err)
 	}
-	return m.Reply(ctx, MsgInfoResp, resp)
+	return c.Reply(MsgInfoResp, &gamev1.SigninInfoResp{
+		Today:          today,
+		ClaimedToday:   d.has(today),
+		ClaimedDays:    d.Days,
+		ClaimedRewards: d.Rewards,
+	})
 }
 
 // onClaim 领取今天对应的奖励；已领过只回状态，不重复发奖。
 //
-// 一次 Mutate 走完「读状态 → 校验 → 登记领取事实」：闭包返回 false 表示
-// 没有改动，基座不会写回 Ext，也就不会产生一次无意义的提交。
-func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
-	today := weekdayOf(m.now())
+// 顺序固定为「取状态 → 校验配置 → 幂等判断 → 发奖 → 改状态 → 存回」，
+// 任何一步失败都不 Save，内存改动不会产生一次无意义的提交。
+func onClaim(c *module.Ctx[Data]) error {
+	today := weekdayOf(c.Now())
 
-	var (
-		code    int32
-		grants  []module.ItemGrant
-		changes []module.BagChange
-		already bool
-		snap    Data
-	)
-	err := m.Mutate(ctx, func(d *Data) bool {
-		// 无论走哪个分支，回包都要带当前状态，统一在这里取样。
-		defer func() { snap = *d }()
-
-		g, cfgErr := rewardsForDay(today)
-		if cfgErr != nil {
-			code = codeConfig
-			return false
-		}
-		grants = g
-		if d.has(today) {
-			already = true // 幂等：重复领取回「已领」状态，不再发奖
-			return false
-		}
-		// 发奖与登记在同一个提交窗口里：Grant 失败时不改任何状态，
-		// 领取位也就不会置上，玩家清包后可重新领。
-		c, grantErr := module.Grant(ctx.State, g)
-		if grantErr != nil {
-			code = grantCode(grantErr)
-			return false
-		}
-		changes = c
-		d.add(today, g)
-		return true
-	})
+	d, err := c.Repo.Get()
 	if err != nil {
-		return m.Fail(ctx, MsgClaimReq, codeSystem, err)
+		return c.Fail(MsgClaimReq, codeSystem, err)
 	}
 
+	// 四个分支共用一份回包：只有 Code/Already/Rewards 会变，
+	// 状态字段（Day/Days/Rewards 汇总）始终回当前值。
 	resp := &gamev1.SigninClaimResp{
-		Code: code, Day: today, Already: already,
-		Rewards:        protoRewards(grants),
-		ClaimedDays:    snap.Days,
-		ClaimedRewards: snap.Rewards,
-	}
-	if code != 0 || already {
-		return m.Reply(ctx, MsgClaimResp, resp)
+		Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
 	}
 
-	if err := m.Reply(ctx, MsgClaimResp, resp); err != nil {
+	grants, cfgErr := rewardsForDay(today)
+	if cfgErr != nil {
+		resp.Code = codeConfig
+		return c.Reply(MsgClaimResp, resp)
+	}
+	resp.Rewards = protoRewards(grants)
+
+	// 幂等：重复领取回「已领」状态，不再发奖。
+	if d.has(today) {
+		resp.Already = true
+		return c.Reply(MsgClaimResp, resp)
+	}
+
+	// 发奖与登记在同一个提交窗口里：Grant 失败时不改任何状态，
+	// 领取位也就不会置上，玩家清包后可重新领。
+	changes, grantErr := module.Grant(c.State, grants)
+	if grantErr != nil {
+		resp.Code = grantCode(grantErr)
+		return c.Reply(MsgClaimResp, resp)
+	}
+
+	d.add(today, grants)
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(MsgClaimReq, codeSystem, err)
+	}
+	resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
+
+	if err := c.Reply(MsgClaimResp, resp); err != nil {
 		return err
 	}
 	// 背包变更由 Grant 一并算出（含发放后存量），直接转协议下发。
-	return m.Reply(ctx, codec.MsgBagChangeNotify, &gamev1.BagChangeNotify{
+	return c.Reply(codec.MsgBagChangeNotify, &gamev1.BagChangeNotify{
 		Changes: module.ToItemChanges(changes),
 	})
 }
@@ -206,7 +179,7 @@ func grantCode(err error) int32 {
 	return codeBagFull
 }
 
-// newData 新玩家的空状态（空切片而非 nil，业务闭包里不必判空）。
+// newData 新玩家的空状态（空切片而非 nil，业务里不必判空）。
 func newData() *Data { return &Data{Days: []int32{}, Rewards: map[int32]int64{}} }
 
 // has 今天是否已领取。

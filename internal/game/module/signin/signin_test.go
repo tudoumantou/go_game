@@ -77,7 +77,7 @@ func newCtx(st module.PlayerState) (*module.Context, *recorder) {
 }
 
 // call 发送一次请求，返回 msgID+1 对应的回包。
-func call(t *testing.T, m *Module, ctx *module.Context, rec *recorder, msgID uint32, req proto.Message) []byte {
+func call(t *testing.T, m module.Module, ctx *module.Context, rec *recorder, msgID uint32, req proto.Message) []byte {
 	t.Helper()
 	body, err := proto.Marshal(req)
 	require.NoError(t, err)
@@ -125,17 +125,17 @@ func TestStateRoundTrip(t *testing.T) {
 	ctx, _ := newCtx(st)
 	m := New(nil)
 
-	if err := m.Mutate(ctx, func(d *Data) bool {
-		d.add(2, []module.ItemGrant{{ItemID: 1001, Count: 20}})
-		return true
-	}); err != nil {
-		t.Fatal(err)
-	}
+	// 业务只调 Repo：Get 解码 → 改 → Save 编码并标脏。
+	biz := m.NewCtx(ctx)
+	d, err := biz.Repo.Get()
+	require.NoError(t, err)
+	d.add(2, []module.ItemGrant{{ItemID: 1001, Count: 20}})
+	require.NoError(t, biz.Repo.Save(d))
 
 	// Ext 里存的是业务结构（而不是表行），业务不必知道表长什么样。
 	raw := st.Ext(stateKey)
 	var decoded Data
-	err := json.Unmarshal(raw, &decoded)
+	err = json.Unmarshal(raw, &decoded)
 	require.NoError(t, err, fmt.Sprintf("Ext 不是 Data 结构: %v (%s)", err, raw))
 	require.Len(t, decoded.Days, 1, fmt.Sprintf("Ext 内容不符: %+v", decoded))
 	require.EqualValues(t, 2, decoded.Days[0])
