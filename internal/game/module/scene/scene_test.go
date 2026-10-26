@@ -241,14 +241,6 @@ func enterResp(t *testing.T, res *player.SceneResult) *gamev1.SceneEnterResp {
 	return &resp
 }
 
-func sceneIDs(resp *gamev1.SceneEnterResp) map[int64]bool {
-	out := make(map[int64]bool, len(resp.Entities))
-	for _, e := range resp.Entities {
-		out[e.PlayerId] = true
-	}
-	return out
-}
-
 // TestEnterUnknownScene 未知场景直接回 4101。
 func TestEnterUnknownScene(t *testing.T) {
 	r := newRig(t)

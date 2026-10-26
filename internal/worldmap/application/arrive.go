@@ -18,15 +18,9 @@ import (
 	"game_study/internal/worldmap/domain"
 )
 
-// m1QueuedBattleMarker 是 M1 时期"排队成员"的兼容标记（写在
-// BattleRecord.AppliedOperationID 上）。
-//
-// 迁移期约定：新命令不再产生这个标记，队列改由 MutationPlan 的
-// QueueEnqueue/QueueDequeue 显式表达（对应 map_battle_queue 表）。
-// 但历史数据里仍有带该标记的 PENDING 记录，读取路径（runtime 的
-// rebuildQueues）必须继续认它，否则老世界恢复后队列会全部丢失。
-// 注释保留是为了让后来者明白：这个常量不是死代码，而是兼容开关。
-const m1QueuedBattleMarker = "m1:queued"
+// M1「排队成员」兼容标记统一收敛为 internal/worldmap/runtime/apply.go
+// 的 queuedMarker（曾在本包有一份同值副本 m1QueuedBattleMarker，因无人
+// 引用已删）；迁移期约定与存量数据说明见 queuedMarker 处注释。
 
 // PlanArrive 处理移动到达。
 func (p *DefaultPlanner) PlanArrive(snap *SceneSnapshot, env domain.CommandEnvelope, cmd Command, nowMS int64) (*domain.MutationPlan, error) {

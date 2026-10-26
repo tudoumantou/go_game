@@ -120,11 +120,6 @@ func isLeave(msg any) bool {
 	return ok
 }
 
-func isEnterView(msg any) bool {
-	_, ok := msg.(aoi.EnterViewMsg)
-	return ok
-}
-
 func isMove(msg any) bool {
 	_, ok := msg.(aoi.MoveMsg)
 	return ok

@@ -108,7 +108,7 @@ func (rt *Runtime) cast(s *mgr.State, in Cast) CastResult {
 	res.Accepted = true
 	res.Target = in.Target
 	// 表现：告诉客户端"开始前摇"（可选协议，不影响结算）。
-	s.Broadcast(CastStart{
+	_ = s.Broadcast(CastStart{
 		Caster: A.UUID, SkillID: cfg.ID, Target: in.Target,
 		TargetPos: in.TargetPos, PrefixMS: prefix,
 	}, mgr.BroadcastAround(A.Pos, 8))
@@ -213,7 +213,7 @@ func (rt *Runtime) runCast(s *mgr.State, plan castPlan) {
 		// 表现回路：飘字按"每个目标一条"广播（规格 §10.5 的 16000 S2C）。
 		if len(one.Harms) > 0 {
 			crit, bok := hasTag(one.Harms, HarmCrit), hasTag(one.Harms, HarmBok)
-			s.Broadcast(HarmBroadcast{
+			_ = s.Broadcast(HarmBroadcast{
 				SkillID: cfg.ID, Caster: A.UUID, Target: T.UUID,
 				HP: T.HP, MaxHP: T.MaxHP, Harms: one.Harms,
 				Crit: crit, Bok: bok, Aoe: cfg.Area != AreaSingle,
@@ -490,7 +490,7 @@ func (rt *Runtime) tickFirewells(s *mgr.State, now int64) {
 			if real <= 0 {
 				continue
 			}
-			s.Broadcast(HarmBroadcast{
+			_ = s.Broadcast(HarmBroadcast{
 				SkillID: 0, Caster: fw.Owner, Target: sp.UUID,
 				HP: sp.HP, MaxHP: sp.MaxHP,
 				Harms: []HarmEntry{{Tag: HarmAOE, Val: real}},
@@ -524,7 +524,7 @@ func (rt *Runtime) runSubSkill(s *mgr.State, caster scenemap.UUID, skillID int32
 			t := rt.now(st)
 			rt.calcSkill(st, A, T, cfg, one, t)
 			if len(one.Harms) > 0 {
-				st.Broadcast(HarmBroadcast{
+				_ = st.Broadcast(HarmBroadcast{
 					SkillID: cfg.ID, Caster: caster, Target: T.UUID,
 					HP: T.HP, MaxHP: T.MaxHP, Harms: one.Harms, Aoe: true,
 				}, mgr.BroadcastAround(T.Pos, 8))

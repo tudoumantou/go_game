@@ -35,9 +35,9 @@ func TestGateCommitFlushesInOrder(t *testing.T) {
 	var g commitGate
 	g.Begin()
 	var order []int
-	g.Send(func() error { order = append(order, 1); return nil })
-	g.Send(func() error { order = append(order, 2); return nil })
-	g.Send(func() error { order = append(order, 3); return nil })
+	_ = g.Send(func() error { order = append(order, 1); return nil })
+	_ = g.Send(func() error { order = append(order, 2); return nil })
+	_ = g.Send(func() error { order = append(order, 3); return nil })
 
 	errs := g.Commit()
 	require.Empty(t, errs)
@@ -51,9 +51,9 @@ func TestGateCommitCollectsErrors(t *testing.T) {
 	var g commitGate
 	g.Begin()
 	boom := errors.New("reply failed")
-	g.Send(func() error { return boom })
+	_ = g.Send(func() error { return boom })
 	ran := false
-	g.Send(func() error { ran = true; return nil })
+	_ = g.Send(func() error { ran = true; return nil })
 
 	errs := g.Commit()
 	require.Len(t, errs, 1)
@@ -66,7 +66,7 @@ func TestGateDiscardDropsActions(t *testing.T) {
 	var g commitGate
 	g.Begin()
 	ran := false
-	g.Send(func() error { ran = true; return nil })
+	_ = g.Send(func() error { ran = true; return nil })
 	g.Discard()
 	require.False(t, ran, "丢弃的动作不应执行")
 	require.False(t, g.Active())
@@ -77,7 +77,7 @@ func TestGateDiscardDropsActions(t *testing.T) {
 func TestGateBeginResetsStale(t *testing.T) {
 	var g commitGate
 	g.Begin()
-	g.Send(func() error { return nil })
+	_ = g.Send(func() error { return nil })
 	g.Begin() // 未 Commit/Discard 就重入
 	require.Zero(t, g.Pending(), "Begin 应清空上一轮暂存")
 }

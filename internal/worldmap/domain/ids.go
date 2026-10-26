@@ -181,54 +181,59 @@ func (t Topology) UnitsToCells(p Pos) (x, y int64) {
 	return p.X / t.PositionUnitsCell, p.Y / t.PositionUnitsCell
 }
 
-// SafeMulDiv 计算 a*b/c 并对中间乘积做溢出检查。
+// SafeMulDiv 计算 a*b/c，中间乘积按 128 位展开做范围检查。
 // 移动位置推导 (to-from)*elapsed/duration 的中间结果可能很大：
 // 5000 格 × 1000 units × 数小时毫秒数接近 2^53，虽然仍在 int64 内，
 // 但路径更长、时间更长的场景下不检查就是埋雷。c 必须为正。
+//
+// 做法：|a|、|b| 走 mul128 得到 128 位真实积（输入非负，高低位拼接就是
+// 数学真值，不涉及补码截断），再按符号定合法域——正积必须 < 2^63，
+// 负积可以取到 -2^63 故允许 <= 2^63。符号单独处理，不依赖旧实现
+// 「128 位无符号长除 + int64 截断」对负积的隐式还原（to-from 为负的
+// 向左移动依赖这条路径，必须显式正确）。
 func SafeMulDiv(a, b, c int64) (int64, error) {
 	if c <= 0 {
 		return 0, fmt.Errorf("%w: 除数必须为正, got %d", ErrInvalidArgument, c)
 	}
-	hi, lo := mul128(a, b)
-	if hi != 0 && (hi < 0 || lo == 0) {
-		// 粗略判定：结果超出 int64 可表示范围。
+	negative := (a < 0) != (b < 0)
+	hi, lo := mul128(absU64(a), absU64(b))
+	int64Limit := uint64(math.MaxInt64) + 1 // 2^63
+	if hi != 0 || lo > int64Limit || (lo == int64Limit && !negative) {
 		return 0, fmt.Errorf("%w: %d*%d 溢出 int64", ErrOverflow, a, b)
 	}
-	return div128(hi, lo, c), nil
+	uq := lo / uint64(c) // hi==0 且 lo <= 2^63、c>=1，故 uq <= 2^63
+	if !negative {
+		return int64(uq), nil // 正积 lo < 2^63，uq 必然在 int64 内
+	}
+	if uq == int64Limit {
+		return math.MinInt64, nil // 负积恰为 -2^63：唯一 uq==2^63 的合法情形
+	}
+	return -int64(uq), nil
 }
 
-// mul128 返回 128 位乘积的高低 64 位（基于 32 位分段，避免依赖 math/big）。
-func mul128(a, b int64) (hi, lo uint64) {
-	ua := uint64(a)
-	ub := uint64(b)
-	// 拆成 32 位小段，4 次乘法相加。负数转无符号数后按模 2^64 运算，
-	// 高低位的组合对最终除法仍然成立。
+// absU64 返回 v 的绝对值（uint64 域运算，MinInt64 取正不会溢出）。
+func absU64(v int64) uint64 {
+	if v < 0 {
+		return uint64(-(v + 1)) + 1
+	}
+	return uint64(v)
+}
+
+// mul128 返回两个非负 64 位数的 128 位乘积高低位（基于 32 位分段，
+// 避免依赖 math/big）。调用方保证入参非负——此时高低位拼接就是数学
+// 真值；若传入负值，(hi,lo) 是模 2^128 的截断表示而非补码，不可直接
+// 当作有符号积使用（SafeMulDiv 因此先取绝对值）。
+func mul128(a, b uint64) (hi, lo uint64) {
+	// 拆成 32 位小段，4 次乘法相加。
 	const mask = 0xFFFFFFFF
-	a0, a1 := ua&mask, ua>>32
-	b0, b1 := ub&mask, ub>>32
+	a0, a1 := a&mask, a>>32
+	b0, b1 := b&mask, b>>32
 	lo = a0 * b0
 	mid1 := a1*b0 + (lo >> 32)
 	mid2 := a0*b1 + (mid1 & mask)
 	hi = a1*b1 + (mid1 >> 32) + (mid2 >> 32)
 	lo = (mid2 << 32) | (lo & mask)
 	return hi, lo
-}
-
-// div128 把 128 位被除数除以正 64 位除数。借助大端分段逐位还原，
-// 调用方需保证商在 int64 范围内（由 SafeMulDiv 的溢出检查保证）。
-func div128(hi, lo uint64, c int64) int64 {
-	// 无符号 128 位除以无符号 64 位：把被除数按 32 位分 4 段，
-	// 每段用 64 位除法推进。c 已由调用方保证为正。
-	uc := uint64(c)
-	const mask = 0xFFFFFFFF
-	var rem uint64
-	var quo uint64
-	for _, part := range []uint64{hi >> 32, hi & mask, lo >> 32, lo & mask} {
-		cur := (rem << 32) | part
-		quo = (quo << 32) | (cur / uc)
-		rem = cur % uc
-	}
-	return int64(quo)
 }
 
 // ClampDurationMS 把 elapsed 夹到 [0, duration]，防止时钟跳变
@@ -274,12 +279,12 @@ func FloorDiv(a, b int64) (int64, error) {
 // Isqrt 返回非负整数的整数平方根（向下取整）。
 // 段长度用 sqrt(dx²+dy²) 并规定向上取整到 units，
 // 保证“速度为正时零长度段不出现、非零段至少 1 unit”。
+// 注意安全域：修正循环里的 (r+1)² 在 n > MaxInt64/2 时可能溢出，
+// 当前调用域（段长平方和，约 5e13）远小于此；将来若传入接近 MaxInt64
+// 的值，需先把初始值按位数折半再迭代。
 func Isqrt(n int64) (int64, error) {
 	if n < 0 {
 		return 0, fmt.Errorf("%w: Isqrt 参数不能为负, got %d", ErrInvalidArgument, n)
-	}
-	if n > math.MaxInt64/2 {
-		// 牛顿迭代初始值过大时会平方溢出，先用位数折半。
 	}
 	r := int64(math.Sqrt(float64(n)))
 	// 浮点 sqrt 在 2^53 附近可能偏差 1，用邻域修正。

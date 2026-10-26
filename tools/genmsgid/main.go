@@ -166,6 +166,7 @@ var (
 	reMsgAnno = regexp.MustCompile(`^\s*//\s*@msg\s+(\d+)\s*$`)
 	// reMessage 匹配 message 声明行（按文本扫描而非完整 proto 解析，不依赖 protoc/buf 版本）。
 	reMessage = regexp.MustCompile(`^\s*message\s+([A-Za-z_][A-Za-z0-9_]*)\b`)
+	//nolint:unused // 预留：按包分组的报告（见下方说明）
 	// rePackage 匹配 proto package 行；当前仅声明未使用（package 级变量不报编译错误），
 	// 留给将来按包分组的报告。
 	// Go 编译规则：包级变量声明后不使用不算错误（只有局部变量会报

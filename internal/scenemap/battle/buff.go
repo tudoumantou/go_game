@@ -71,6 +71,8 @@ func (rt *Runtime) applyBuff(target *Sprite, cfgID int32, from scenemap.UUID, sk
 }
 
 // removeBuff 移除指定 ID 的 Buff（全部层），返回是否真的移除。
+//
+//nolint:unused // P4 预留：Buff 按 ID 精确移除的接线入口（当前只整组重算）
 func (rt *Runtime) removeBuff(target *Sprite, cfgID int32) bool {
 	if target == nil {
 		return false
@@ -183,7 +185,7 @@ func (rt *Runtime) dotDamage(s *mgr.State, sp *Sprite, b *Buff, now int64) {
 		return
 	}
 	// 表现回路：Dot 也是"看得见的伤害"，客户端要飘字。
-	s.Broadcast(HarmBroadcast{
+	_ = s.Broadcast(HarmBroadcast{
 		SkillID: b.SkillID, Caster: b.From, Target: sp.UUID,
 		HP: sp.HP, MaxHP: sp.MaxHP,
 		Harms: []HarmEntry{{Tag: HarmNormal, Val: real}},
@@ -231,7 +233,7 @@ func (rt *Runtime) broadcastBuffSync(s *mgr.State, sp *Sprite, added, removed []
 	if s == nil || sp == nil || (len(added) == 0 && len(removed) == 0) {
 		return
 	}
-	s.Broadcast(BuffSync{UUID: sp.UUID, Added: added, Removed: removed},
+	_ = s.Broadcast(BuffSync{UUID: sp.UUID, Added: added, Removed: removed},
 		mgr.BroadcastAround(sp.Pos, 6))
 }
 

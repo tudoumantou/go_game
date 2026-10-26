@@ -426,6 +426,8 @@ func (rt *Runtime) setCooldown(uuid scenemap.UUID, skillID int32, now, cdMS int6
 }
 
 // passiveReady 检查并占用被动内部冷却。
+//
+//nolint:unused // P4 预留：被动技能逐条释放时启用（RPG战斗设计 §10「接口已留」）
 func (rt *Runtime) passiveReady(uuid scenemap.UUID, passiveID int32, now, cdMS int64) bool {
 	key := uuid.String() + ":" + itoa(passiveID)
 	if until := rt.passiveCD[key]; until > now {
@@ -470,6 +472,8 @@ func (rt *Runtime) tickFightState(s *mgr.State, now int64) {
 }
 
 // itoa 是包内小工具（避免为几个字符串拼接引入 strconv 的完整语义）。
+//
+//nolint:unused // 被动/伤害链调试输出的辅助转换，随 P4 接线一并启用
 func itoa(v int32) string {
 	if v == 0 {
 		return "0"

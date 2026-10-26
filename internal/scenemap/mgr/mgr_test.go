@@ -263,12 +263,11 @@ func (f *fakeTimer) tick(t *testing.T) {
 // ============================================================================
 
 type testEnv struct {
-	m        *Mgr
-	gp       *stubGameplay
-	aoi      *stubAOI
-	clock    *fakeClock
-	closed   *closeWatch
-	walkable atomic.Value // WalkableFunc 的间接层，便于中途改
+	m      *Mgr
+	gp     *stubGameplay
+	aoi    *stubAOI
+	clock  *fakeClock
+	closed *closeWatch
 }
 
 func baseConfig() Config {

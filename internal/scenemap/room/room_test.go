@@ -107,12 +107,6 @@ func (f *stubFactory) setErr(err error) {
 	f.mu.Unlock()
 }
 
-func (f *stubFactory) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.calls
-}
-
 func testConfig(sink aoi.Sink) room.OpenConfig {
 	return room.OpenConfig{
 		Sink:   sink,
