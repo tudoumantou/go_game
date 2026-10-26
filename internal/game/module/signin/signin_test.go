@@ -103,9 +103,9 @@ func TestWeekdayOf(t *testing.T) {
 	require.EqualValues(t, 1, got, fmt.Sprintf("utc boundary: got %d want 1", got))
 }
 
-// TestDataAdd 验证天数升序、奖励累加、同一天不重复登记。
-func TestDataAdd(t *testing.T) {
-	d := &Data{}
+// TestSignInAdd 验证天数升序、奖励累加、同一天不重复登记。
+func TestSignInAdd(t *testing.T) {
+	d := &SignIn{}
 	d.add(3, []module.ItemGrant{{ItemID: 1001, Count: 30}})
 	d.add(1, []module.ItemGrant{{ItemID: 1001, Count: 10}})
 	require.Len(t, d.Days, 2, fmt.Sprintf("days not sorted: %v", d.Days))
@@ -119,7 +119,7 @@ func TestDataAdd(t *testing.T) {
 }
 
 // TestStateRoundTrip 验证两段编解码：
-//   - 业务结构 ↔ Ext（基座负责，存的是 Data 的 JSON）；
+//   - 业务结构 ↔ Ext（基座负责，存的是 SignIn 的 JSON）；
 //   - 业务结构 ↔ 表行（persist.go 的 toRow/fromRow）。
 func TestStateRoundTrip(t *testing.T) {
 	st := newFakeState(7)
@@ -135,9 +135,9 @@ func TestStateRoundTrip(t *testing.T) {
 
 	// Ext 里存的是业务结构（而不是表行），业务不必知道表长什么样。
 	raw := st.Ext(stateKey)
-	var decoded Data
+	var decoded SignIn
 	err = json.Unmarshal(raw, &decoded)
-	require.NoError(t, err, fmt.Sprintf("Ext 不是 Data 结构: %v (%s)", err, raw))
+	require.NoError(t, err, fmt.Sprintf("Ext 不是 SignIn 结构: %v (%s)", err, raw))
 	require.Len(t, decoded.Days, 1, fmt.Sprintf("Ext 内容不符: %+v", decoded))
 	require.EqualValues(t, 2, decoded.Days[0])
 	require.EqualValues(t, 20, decoded.Rewards[1001])
@@ -186,6 +186,11 @@ func TestClaimFlow(t *testing.T) {
 }
 
 // TestRewardConfiguration 七天配置齐全，缺天在启动期暴露。
+// TestRewardConfiguration 是配置的「构建期」校验（CI 跑 make test 即拦截）。
+//
+// 刻意不放进模块 OnInit：gamedata 支持热更（每次读取取当前快照），
+// 运营中途只改某几天时，启动期硬校验会直接把进程挡在门外。运行期
+// 缺天由 onClaim 回 codeConfig 告知玩家，配置错误在发布前由本测试发现。
 func TestRewardConfiguration(t *testing.T) {
 	for day := int32(1); day <= 7; day++ {
 		items, err := rewardsForDay(day)

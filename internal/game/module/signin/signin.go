@@ -7,6 +7,11 @@
 // 的日历玩法，但周期单位是周（weekday 1-7）而非日。
 // Ext 槽位：player_signin（ClaimedDays + ClaimedRewards 两列 JSON）。
 // 配置表：signin_reward.xml（day=周几，item_id/count）。
+//
+// 配置热更：每次请求从 gamedata 当前快照读取（不缓存到模块），运营改数值
+// 后新请求立即生效；缺天/非法配置由 onClaim 回 codeConfig，启动期不做
+// 「七天必须齐全」的硬校验——那会把只改某几天的热更挡在门外。配置完整性
+// 由 TestRewardConfiguration 在构建期（CI）守住。
 package signin
 
 import (
@@ -36,7 +41,7 @@ const (
 // 「登录礼包按 UTC 已跨天、签到还没跨周」的错位。
 var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 
-// Data 是签到的业务视图：本周已领取天数（1=周一…7=周日）与已领取奖励汇总。
+// SignIn 是签到的业务视图：本周已领取天数（1=周一…7=周日）与已领取奖励汇总。
 //
 // 字段语义：
 //   - Days：本周已领取的星期几，落库保持升序（便于对账与 diff）；
@@ -48,7 +53,7 @@ var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 // Go 知识点：两个字段都没有 json tag，序列化用 Go 字段名（"Days"/"Rewards"）。
 // 这是历史契约（表里已存的数据按这个键名），补 tag 会让旧快照读不出来，
 // 所以注释里显式记录「无 tag 是故意的」。
-type Data struct {
+type SignIn struct {
 	Days    []int32
 	Rewards map[int32]int64
 }
@@ -59,27 +64,15 @@ type Data struct {
 // 组装一遍只是多一处漏配的机会。两个请求都满足「重放无第二次副作用」
 // （Info 只读；Claim 按「今天已领」事实幂等），因此可安全声明为可丢弃。
 // 测试要换时钟用 M.SetClock。
-var M = module.Define[Data](stateKey, newData).
-	Guard(module.RequireCache).
-	OnInit(validateRewards)
+var M = module.Define[SignIn](stateKey, newSignIn).Guard(module.RequireCache)
 
 func init() {
 	M.HandleRoute(&gamev1.SigninInfoReq{}, onInfo)
 	M.HandleRoute(&gamev1.SigninClaimReq{}, onClaim)
 }
 
-// validateRewards 启动期校验七天奖励配置齐全，配错不等到玩家点领取才暴露。
-func validateRewards(*module.Context) error {
-	for day := int32(1); day <= weekDays; day++ {
-		if _, err := rewardsForDay(day); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // onInfo 签到信息查询：今天周几、今天是否已领、本周领取全貌。
-func onInfo(c *module.Ctx[Data]) error {
+func onInfo(c *module.Ctx[SignIn]) error {
 	// 每个请求只采样一次时钟，防止处理途中跨过周零点：
 	// 若在 has() 判断后重新取时间，跨过周日 24 点的请求会出现
 	// 「按旧周几判定已领、按新周几发奖」的错位。
@@ -101,7 +94,7 @@ func onInfo(c *module.Ctx[Data]) error {
 //
 // 顺序固定为「取状态 → 校验配置 → 幂等判断 → 发奖 → 改状态 → 存回」，
 // 任何一步失败都不 Save，内存改动不会产生一次无意义的提交。
-func onClaim(c *module.Ctx[Data]) error {
+func onClaim(c *module.Ctx[SignIn]) error {
 	today := weekdayOf(c.Now())
 
 	d, err := c.Repo.Get()
@@ -162,11 +155,11 @@ func grantCode(err error) errcode.Code {
 	return errcode.ErrSigninBagFull
 }
 
-// newData 新玩家的空状态（空切片而非 nil，业务里不必判空）。
-func newData() *Data { return &Data{Days: []int32{}, Rewards: map[int32]int64{}} }
+// newSignIn 新玩家的空状态（空切片而非 nil，业务里不必判空）。
+func newSignIn() *SignIn { return &SignIn{Days: []int32{}, Rewards: map[int32]int64{}} }
 
 // has 今天是否已领取。
-func (d *Data) has(day int32) bool {
+func (d *SignIn) has(day int32) bool {
 	for _, v := range d.Days {
 		if v == day {
 			return true
@@ -179,7 +172,7 @@ func (d *Data) has(day int32) bool {
 //
 // Days 升序是落库契约：JSON diff 与人工对账时顺序稳定；
 // append 后 sort.Slice 保证这一点（天数最多 7 个，排序成本可忽略）。
-func (d *Data) add(day int32, grants []module.ItemGrant) {
+func (d *SignIn) add(day int32, grants []module.ItemGrant) {
 	if d.Rewards == nil {
 		d.Rewards = make(map[int32]int64, len(grants))
 	}
