@@ -6,14 +6,20 @@
 // 随后 equip.OnLogin 查 player_equip、activity.OnLogin 查 activity_record，再 2 次。
 // 合计 5 次串行往返，本地约 10ms+，跨机房可达 50ms+。
 //
-// P12 后：查询全部并行，耗时 ≈ 单次最慢查询；结果存入 Prefetch，模块 OnLogin 直接读。
-// v3.6 起多一路归属展开（Redis 命中时不碰库），见 ExpandOwners。
+// P12 后：三表并行，耗时 ≈ 单次最慢查询。
 //
-// 架构职责与协作：本文件主要服务**非缓存模式**（缓存模式的等价物是一次
-// LoadCached）；ExpandOwners 是例外——归属展开在两种模式下都走这里
-// （缓存模式由 actor.preload 直接调，非缓存模式并进 Load 的并行查询）。
-// 产物 Prefetch 经 module.Context.Prefetch 被各模块消费，框架不替模块
-// 解释数据格式。
+// 架构职责与协作：本文件只服务**非缓存模式**（缓存模式的等价物是一次
+// LoadCached）。产物 Prefetch 只在组装 State 时用一次，不对外暴露——
+// 「登录时把模块数据预取进 Actor，模块 OnLogin 直接读」这条链路
+// （v3.6 的 Prefetch.OwnerRows）已于 v3.9 删除：它没有消费者，而且与
+// 当前模块形态不匹配（见下）。
+//
+// 为什么删掉登录展开：现有有内存态的玩法（签到/装备/伙伴/任务/活动）
+// 全是「player_id 单行 JSON」，不需要按归属者展开多行；而一对多的模块
+// （邮件/好友/队伍/公会）都无内存态、直查 DB，登录展开的数据挂在
+// Actor 上只对「登录那一刻」有效，之后新数据不会反映。真出现「有内存态
+// + 一对多」的功能时，在它的 OnLogin 里调 OwnerIndex.Expand 即可（5 行），
+// 不需要框架先预取一份。
 //
 // 设计取舍：为什么创角后不立即预加载/建 Actor（延迟到首个业务包），
 // 见 server.go OnClientPacket 的懒加载注释——那是组装层的决策，这里只
@@ -28,7 +34,6 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
-	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
@@ -40,32 +45,16 @@ import (
 // DefaultPreloadTimeout 预加载超时（12.6.2 第 4 条：超时则登录失败，避免半成品 Actor 上线）。
 const DefaultPreloadTimeout = 5 * time.Second
 
-// Prefetch 预加载结果（一次并行拉取的全部数据）。
+// Prefetch 预加载结果（非缓存模式一次并行拉取的三表）。
 //
-// 字段分两组：Player/Attr/Items 由框架组装进 State；ownerRows 是归属展开
-// 的实体行，原样透传给模块——框架不解析模块私有结构。
-//
-// 为什么没有装备/活动快照：P12 设计里它们各占一个并行查询，改成「状态随
-// 玩家快照（Ext）加载」之后就没有第二个来源了，字段与 Equips/Activities
-// 接口一并删除（v3.6）。模块要预取一对多实体，走 OwnerRows。
+// 只是 Load 的中间产物：组装成 State 之后就丢弃，不跨消息存活。
+// 历史注记：v3.6 曾把归属展开的实体行也挂在这里（ownerRows + OwnerRows），
+// 供模块 OnLogin 消费；v3.9 删除——没有消费者，且与当前模块形态不匹配
+// （详见文件头的说明）。
 type Prefetch struct {
 	Player *model.Player
 	Attr   *model.PlayerAttr
 	Items  map[int32]int64
-
-	// ownerRows 归属展开的实体行（按表名分组，见 ExpandOwners）。
-	ownerRows map[string][]cache.EntityRow
-}
-
-// OwnerRows 实现 module.PrefetchSource：某表归属展开的实体行。
-//
-// 未展开的表返回 nil——模块必须同时支持自行查库的路径（预加载是优化，
-// 不是正确性前提）。返回的行按实体 id 升序（索引侧保证）。
-func (p *Prefetch) OwnerRows(table string) []cache.EntityRow {
-	if p == nil {
-		return nil
-	}
-	return p.ownerRows[table]
 }
 
 // Preloader 预加载器。
@@ -73,9 +62,6 @@ type Preloader struct {
 	db      *db.DB
 	logger  *log.Logger
 	timeout time.Duration
-	// owners 归属索引（缓存架构设计 §3）：一对多表登录时按角色展开。
-	// 空表示没有配 mappings，ExpandOwners 退化为空操作。
-	owners []*cache.OwnerIndex
 }
 
 // NewPreloader 创建预加载器。
@@ -84,13 +70,6 @@ func NewPreloader(database *db.DB, logger *log.Logger, timeout time.Duration) *P
 		timeout = DefaultPreloadTimeout
 	}
 	return &Preloader{db: database, logger: logger, timeout: timeout}
-}
-
-// SetOwnerIndexes 注入归属索引（由组装层按 idtab.mappings 配置注入）。
-//
-// 顺序即展开顺序：调用方按表名排序传入，保证日志与加载行为每次启动一致。
-func (p *Preloader) SetOwnerIndexes(indexes ...*cache.OwnerIndex) {
-	p.owners = indexes
 }
 
 // Load 并行拉取玩家全部登录数据并组装 State。
@@ -113,7 +92,7 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 	pf := &Prefetch{Items: make(map[int32]int64)}
 	g, gctx := errgroup.WithContext(ctx)
 
-	// 并行拉取：基础三表 + 归属展开共 4 路并发，耗时 ≈ max(单路耗时)
+	// 并行拉取：三表并发，耗时 ≈ max(单表耗时)
 	g.Go(func() error {
 		row, err := model.FindPlayerByPK(gctx, p.db.DB, playerID)
 		switch {
@@ -149,22 +128,11 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 		return nil
 	})
 
-	// 归属展开（缓存架构设计 §4.2）：一对多表的实体按角色 id 批量加载。
-	// 与另三个查询并行——它打的是 Redis（命中时完全不碰库）。
-	g.Go(func() error {
-		rows, err := p.ExpandOwners(gctx, playerID)
-		if err != nil {
-			return err
-		}
-		pf.ownerRows = rows
-		return nil
-	})
-
 	err := g.Wait()
 
 	// 记录耗时（20.1：登录 P99 < 2s）。
-	// 与原实现的一点差异：原代码的成功判定漏掉了 attr 错误，现在四路任一
-	// 失败即记失败——attr 失败本来就会让本次登录失败，指标应与真实结果一致。
+	// 与原实现的一点差异：原代码的成功判定漏掉了 attr 错误，现在任一失败
+	// 即记失败——attr 失败本来就会让本次登录失败，指标应与真实结果一致。
 	if metrics.Enabled() {
 		metrics.LoginPreloadObserve(time.Since(start), err == nil)
 	}
@@ -175,45 +143,6 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 	// 原 P12 的两个快照字段与 Equips/Activities 接口已于 v3.6 删除。
 
 	return assembleState(playerID, pf), pf, nil
-}
-
-// ExpandOwners 按归属索引展开登录实体（缓存架构设计 §4.2）。
-//
-// 对每个注入的索引：Members(playerID) 取 id 列表（索引未 ready 时自动
-// 回落 MySQL），LoadBatch 批量加载——Redis hash 命中的直接用，未命中的
-// 一次 SQL 捞回并回填数据表。
-//
-// 读时自愈（§4.3）：两处都没有的 id 是索引残留（删行时漏清索引），
-// Remove 掉。清理失败只告警——它是加分项，定时 Reconcile 还会兜底，
-// 不该让登录失败。
-//
-// 只收非空表：某表展开 0 行时不出现在 map 里——模块看到「没有这个表」
-// 与「这个表 0 行」的后续动作一致（自行查库/展示空列表），没必要占 key。
-//
-// 错误即登录失败：能走到这里说明 MySQL 也答不上来（Redis 故障已在
-// Members/LoadBatch 内部回落库）。实体数据缺失时放行等于「功能列表
-// 为空且不报错」，那是这套设计里最难查的事故形态。
-func (p *Preloader) ExpandOwners(ctx context.Context, playerID int64) (map[string][]cache.EntityRow, error) {
-	if len(p.owners) == 0 {
-		return nil, nil
-	}
-	out := make(map[string][]cache.EntityRow, len(p.owners))
-	for _, oi := range p.owners {
-		// Expand 内部做 Members → LoadBatch → 残留自愈，与「按需展开」
-		// （点开邮件等）走同一份实现。
-		rows, removed, err := oi.Expand(ctx, playerID)
-		if err != nil {
-			return nil, fmt.Errorf("expand %s: %w", oi.Table(), err)
-		}
-		if len(removed) > 0 {
-			p.logger.Info("owner index self-healed",
-				"table", oi.Table(), "player_id", playerID, "removed", len(removed))
-		}
-		if len(rows) > 0 {
-			out[oi.Table()] = rows
-		}
-	}
-	return out, nil
 }
 
 // assembleState 把预加载结果组装成 State。

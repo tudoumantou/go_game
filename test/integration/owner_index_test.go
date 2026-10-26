@@ -15,12 +15,17 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module/mail"
+	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/cache"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
+	gamev1 "game_study/pkg/pb/game/v1"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestOwnerIndexFullLoop 归属索引从构建到自愈的完整链路。
@@ -240,4 +245,27 @@ func TestMailIndexThroughModule(t *testing.T) {
 	fallback, err := oi.Members(ctx, playerID)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []int64{id1, id2}, fallback, "回落库结果应与索引一致")
+
+	// ⑥ 删除：走真实模块（事务 + 归属校验），库 / 索引 / 缓存三处一起清。
+	// 这是 RemoveEntity 的唯一真实调用方，必须验证「三处同时清」而不是只有库。
+	require.NoError(t, rdb.Set(ctx, cache.OwnerIndexReadyKey("mail"), "1", 0).Err())
+	st := moduletest.NewState(playerID)
+	rec := moduletest.NewRecorder()
+	mctx := moduletest.NewContext(st, rec)
+	delRaw, err := moduletest.Call(m, mctx, rec, codec.MsgMailDeleteReq, codec.MsgMailDeleteResp,
+		&gamev1.MailDeleteReq{MailId: id2})
+	require.NoError(t, err, "call mail delete")
+	delResp := &gamev1.MailDeleteResp{}
+	require.NoError(t, proto.Unmarshal(delRaw, delResp))
+	require.EqualValues(t, int32(errcode.OK), delResp.Code, "无附件应允许删除")
+
+	var left int
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mail WHERE id = ?`, id2).Scan(&left))
+	require.Zero(t, left, "库里必须删掉")
+
+	after, err := oi.Members(ctx, playerID)
+	require.NoError(t, err)
+	require.Equal(t, []int64{id1}, after, "索引必须摘掉")
+	require.Zero(t, rdb.Exists(ctx, cache.EntityKey("mail", id2)).Val(), "缓存行必须清掉")
 }

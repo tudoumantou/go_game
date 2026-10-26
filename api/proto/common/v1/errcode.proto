@@ -45,6 +45,7 @@ enum ErrCode {
   ERR_CODE_MAIL_NOT_FOUND  = 5001; // 邮件不存在
   ERR_CODE_MAIL_TAKEN      = 5002; // 附件已领取（幂等保护）
   ERR_CODE_NO_ATTACHMENT   = 5003; // 邮件没有附件
+  ERR_CODE_MAIL_HAS_UNCLAIMED = 5005; // 附件尚未领取，不能删除
 
   // ===== 6xxx 战斗 =====
   ERR_CODE_BATTLE_NOT_FOUND       = 6001; // 战斗不存在或已结束

@@ -112,6 +112,8 @@ var wireBaseline = map[string]uint32{
 	"MailListResp":           7002,
 	"MailTakeAttachmentReq":  7020,
 	"MailTakeAttachmentResp": 7021,
+	"MailDeleteReq":          7022,
+	"MailDeleteResp":         7023,
 	"QuestListReq":           7101,
 	"QuestListResp":          7102,
 	"QuestAcceptReq":         7103,

@@ -6868,6 +6868,103 @@ func (x *MailNewNotify) GetHasAttachment() bool {
 	return false
 }
 
+// 删除邮件（有未领附件时拒绝：删了就领不到了）
+// @msg 7022
+type MailDeleteReq struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	MailId int64 `protobuf:"varint,1,opt,name=mail_id,json=mailId,proto3" json:"mail_id,omitempty"`
+}
+
+func (x *MailDeleteReq) Reset() {
+	*x = MailDeleteReq{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_game_v1_game_proto_msgTypes[116]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *MailDeleteReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailDeleteReq) ProtoMessage() {}
+
+func (x *MailDeleteReq) ProtoReflect() protoreflect.Message {
+	mi := &file_game_v1_game_proto_msgTypes[116]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailDeleteReq.ProtoReflect.Descriptor instead.
+func (*MailDeleteReq) Descriptor() ([]byte, []int) {
+	return file_game_v1_game_proto_rawDescGZIP(), []int{116}
+}
+
+func (x *MailDeleteReq) GetMailId() int64 {
+	if x != nil {
+		return x.MailId
+	}
+	return 0
+}
+
+// @msg 7023
+type MailDeleteResp struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Code int32 `protobuf:"varint,1,opt,name=code,proto3" json:"code,omitempty"`
+}
+
+func (x *MailDeleteResp) Reset() {
+	*x = MailDeleteResp{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_game_v1_game_proto_msgTypes[117]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *MailDeleteResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MailDeleteResp) ProtoMessage() {}
+
+func (x *MailDeleteResp) ProtoReflect() protoreflect.Message {
+	mi := &file_game_v1_game_proto_msgTypes[117]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MailDeleteResp.ProtoReflect.Descriptor instead.
+func (*MailDeleteResp) Descriptor() ([]byte, []int) {
+	return file_game_v1_game_proto_rawDescGZIP(), []int{117}
+}
+
+func (x *MailDeleteResp) GetCode() int32 {
+	if x != nil {
+		return x.Code
+	}
+	return 0
+}
+
 // 领取附件（幂等：重复领取返回 5002）
 // @msg 7020
 type MailTakeAttachmentReq struct {
@@ -6881,7 +6978,7 @@ type MailTakeAttachmentReq struct {
 func (x *MailTakeAttachmentReq) Reset() {
 	*x = MailTakeAttachmentReq{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[116]
+		mi := &file_game_v1_game_proto_msgTypes[118]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -6894,7 +6991,7 @@ func (x *MailTakeAttachmentReq) String() string {
 func (*MailTakeAttachmentReq) ProtoMessage() {}
 
 func (x *MailTakeAttachmentReq) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[116]
+	mi := &file_game_v1_game_proto_msgTypes[118]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6907,7 +7004,7 @@ func (x *MailTakeAttachmentReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailTakeAttachmentReq.ProtoReflect.Descriptor instead.
 func (*MailTakeAttachmentReq) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{116}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *MailTakeAttachmentReq) GetMailId() int64 {
@@ -6930,7 +7027,7 @@ type MailTakeAttachmentResp struct {
 func (x *MailTakeAttachmentResp) Reset() {
 	*x = MailTakeAttachmentResp{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[117]
+		mi := &file_game_v1_game_proto_msgTypes[119]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -6943,7 +7040,7 @@ func (x *MailTakeAttachmentResp) String() string {
 func (*MailTakeAttachmentResp) ProtoMessage() {}
 
 func (x *MailTakeAttachmentResp) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[117]
+	mi := &file_game_v1_game_proto_msgTypes[119]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6956,7 +7053,7 @@ func (x *MailTakeAttachmentResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailTakeAttachmentResp.ProtoReflect.Descriptor instead.
 func (*MailTakeAttachmentResp) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{117}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *MailTakeAttachmentResp) GetCode() int32 {
@@ -6985,7 +7082,7 @@ type QuestListReq struct {
 func (x *QuestListReq) Reset() {
 	*x = QuestListReq{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[118]
+		mi := &file_game_v1_game_proto_msgTypes[120]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -6998,7 +7095,7 @@ func (x *QuestListReq) String() string {
 func (*QuestListReq) ProtoMessage() {}
 
 func (x *QuestListReq) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[118]
+	mi := &file_game_v1_game_proto_msgTypes[120]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7011,7 +7108,7 @@ func (x *QuestListReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestListReq.ProtoReflect.Descriptor instead.
 func (*QuestListReq) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{118}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{120}
 }
 
 // @msg 7102
@@ -7027,7 +7124,7 @@ type QuestListResp struct {
 func (x *QuestListResp) Reset() {
 	*x = QuestListResp{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[119]
+		mi := &file_game_v1_game_proto_msgTypes[121]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -7040,7 +7137,7 @@ func (x *QuestListResp) String() string {
 func (*QuestListResp) ProtoMessage() {}
 
 func (x *QuestListResp) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[119]
+	mi := &file_game_v1_game_proto_msgTypes[121]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7053,7 +7150,7 @@ func (x *QuestListResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestListResp.ProtoReflect.Descriptor instead.
 func (*QuestListResp) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{119}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *QuestListResp) GetCode() int32 {
@@ -7085,7 +7182,7 @@ type QuestEntry struct {
 func (x *QuestEntry) Reset() {
 	*x = QuestEntry{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[120]
+		mi := &file_game_v1_game_proto_msgTypes[122]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -7098,7 +7195,7 @@ func (x *QuestEntry) String() string {
 func (*QuestEntry) ProtoMessage() {}
 
 func (x *QuestEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[120]
+	mi := &file_game_v1_game_proto_msgTypes[122]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7111,7 +7208,7 @@ func (x *QuestEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestEntry.ProtoReflect.Descriptor instead.
 func (*QuestEntry) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{120}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *QuestEntry) GetQuestId() int32 {
@@ -7162,7 +7259,7 @@ type QuestAcceptReq struct {
 func (x *QuestAcceptReq) Reset() {
 	*x = QuestAcceptReq{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[121]
+		mi := &file_game_v1_game_proto_msgTypes[123]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -7175,7 +7272,7 @@ func (x *QuestAcceptReq) String() string {
 func (*QuestAcceptReq) ProtoMessage() {}
 
 func (x *QuestAcceptReq) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[121]
+	mi := &file_game_v1_game_proto_msgTypes[123]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7188,7 +7285,7 @@ func (x *QuestAcceptReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestAcceptReq.ProtoReflect.Descriptor instead.
 func (*QuestAcceptReq) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{121}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *QuestAcceptReq) GetQuestId() int32 {
@@ -7210,7 +7307,7 @@ type QuestAcceptResp struct {
 func (x *QuestAcceptResp) Reset() {
 	*x = QuestAcceptResp{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[122]
+		mi := &file_game_v1_game_proto_msgTypes[124]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -7223,7 +7320,7 @@ func (x *QuestAcceptResp) String() string {
 func (*QuestAcceptResp) ProtoMessage() {}
 
 func (x *QuestAcceptResp) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[122]
+	mi := &file_game_v1_game_proto_msgTypes[124]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7236,7 +7333,7 @@ func (x *QuestAcceptResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestAcceptResp.ProtoReflect.Descriptor instead.
 func (*QuestAcceptResp) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{122}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *QuestAcceptResp) GetCode() int32 {
@@ -7259,7 +7356,7 @@ type QuestClaimReq struct {
 func (x *QuestClaimReq) Reset() {
 	*x = QuestClaimReq{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[123]
+		mi := &file_game_v1_game_proto_msgTypes[125]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -7272,7 +7369,7 @@ func (x *QuestClaimReq) String() string {
 func (*QuestClaimReq) ProtoMessage() {}
 
 func (x *QuestClaimReq) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[123]
+	mi := &file_game_v1_game_proto_msgTypes[125]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7285,7 +7382,7 @@ func (x *QuestClaimReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestClaimReq.ProtoReflect.Descriptor instead.
 func (*QuestClaimReq) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{123}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *QuestClaimReq) GetQuestId() int32 {
@@ -7309,7 +7406,7 @@ type QuestClaimResp struct {
 func (x *QuestClaimResp) Reset() {
 	*x = QuestClaimResp{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_game_v1_game_proto_msgTypes[124]
+		mi := &file_game_v1_game_proto_msgTypes[126]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -7322,7 +7419,7 @@ func (x *QuestClaimResp) String() string {
 func (*QuestClaimResp) ProtoMessage() {}
 
 func (x *QuestClaimResp) ProtoReflect() protoreflect.Message {
-	mi := &file_game_v1_game_proto_msgTypes[124]
+	mi := &file_game_v1_game_proto_msgTypes[126]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7335,7 +7432,7 @@ func (x *QuestClaimResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestClaimResp.ProtoReflect.Descriptor instead.
 func (*QuestClaimResp) Descriptor() ([]byte, []int) {
-	return file_game_v1_game_proto_rawDescGZIP(), []int{124}
+	return file_game_v1_game_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *QuestClaimResp) GetCode() int32 {
@@ -7967,7 +8064,12 @@ var file_game_v1_game_proto_rawDesc = []byte{
 	0x12, 0x14, 0x0a, 0x05, 0x74, 0x69, 0x74, 0x6c, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52,
 	0x05, 0x74, 0x69, 0x74, 0x6c, 0x65, 0x12, 0x25, 0x0a, 0x0e, 0x68, 0x61, 0x73, 0x5f, 0x61, 0x74,
 	0x74, 0x61, 0x63, 0x68, 0x6d, 0x65, 0x6e, 0x74, 0x18, 0x03, 0x20, 0x01, 0x28, 0x08, 0x52, 0x0d,
-	0x68, 0x61, 0x73, 0x41, 0x74, 0x74, 0x61, 0x63, 0x68, 0x6d, 0x65, 0x6e, 0x74, 0x22, 0x30, 0x0a,
+	0x68, 0x61, 0x73, 0x41, 0x74, 0x74, 0x61, 0x63, 0x68, 0x6d, 0x65, 0x6e, 0x74, 0x22, 0x28, 0x0a,
+	0x0d, 0x4d, 0x61, 0x69, 0x6c, 0x44, 0x65, 0x6c, 0x65, 0x74, 0x65, 0x52, 0x65, 0x71, 0x12, 0x17,
+	0x0a, 0x07, 0x6d, 0x61, 0x69, 0x6c, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x03, 0x52,
+	0x06, 0x6d, 0x61, 0x69, 0x6c, 0x49, 0x64, 0x22, 0x24, 0x0a, 0x0e, 0x4d, 0x61, 0x69, 0x6c, 0x44,
+	0x65, 0x6c, 0x65, 0x74, 0x65, 0x52, 0x65, 0x73, 0x70, 0x12, 0x12, 0x0a, 0x04, 0x63, 0x6f, 0x64,
+	0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x05, 0x52, 0x04, 0x63, 0x6f, 0x64, 0x65, 0x22, 0x30, 0x0a,
 	0x15, 0x4d, 0x61, 0x69, 0x6c, 0x54, 0x61, 0x6b, 0x65, 0x41, 0x74, 0x74, 0x61, 0x63, 0x68, 0x6d,
 	0x65, 0x6e, 0x74, 0x52, 0x65, 0x71, 0x12, 0x17, 0x0a, 0x07, 0x6d, 0x61, 0x69, 0x6c, 0x5f, 0x69,
 	0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x03, 0x52, 0x06, 0x6d, 0x61, 0x69, 0x6c, 0x49, 0x64, 0x22,
@@ -8022,7 +8124,7 @@ func file_game_v1_game_proto_rawDescGZIP() []byte {
 	return file_game_v1_game_proto_rawDescData
 }
 
-var file_game_v1_game_proto_msgTypes = make([]protoimpl.MessageInfo, 127)
+var file_game_v1_game_proto_msgTypes = make([]protoimpl.MessageInfo, 129)
 var file_game_v1_game_proto_goTypes = []any{
 	(*EnterGameReq)(nil),           // 0: game_study.game.v1.EnterGameReq
 	(*EnterGameResp)(nil),          // 1: game_study.game.v1.EnterGameResp
@@ -8140,17 +8242,19 @@ var file_game_v1_game_proto_goTypes = []any{
 	(*MailListResp)(nil),           // 113: game_study.game.v1.MailListResp
 	(*MailSummary)(nil),            // 114: game_study.game.v1.MailSummary
 	(*MailNewNotify)(nil),          // 115: game_study.game.v1.MailNewNotify
-	(*MailTakeAttachmentReq)(nil),  // 116: game_study.game.v1.MailTakeAttachmentReq
-	(*MailTakeAttachmentResp)(nil), // 117: game_study.game.v1.MailTakeAttachmentResp
-	(*QuestListReq)(nil),           // 118: game_study.game.v1.QuestListReq
-	(*QuestListResp)(nil),          // 119: game_study.game.v1.QuestListResp
-	(*QuestEntry)(nil),             // 120: game_study.game.v1.QuestEntry
-	(*QuestAcceptReq)(nil),         // 121: game_study.game.v1.QuestAcceptReq
-	(*QuestAcceptResp)(nil),        // 122: game_study.game.v1.QuestAcceptResp
-	(*QuestClaimReq)(nil),          // 123: game_study.game.v1.QuestClaimReq
-	(*QuestClaimResp)(nil),         // 124: game_study.game.v1.QuestClaimResp
-	nil,                            // 125: game_study.game.v1.SigninInfoResp.ClaimedRewardsEntry
-	nil,                            // 126: game_study.game.v1.SigninClaimResp.ClaimedRewardsEntry
+	(*MailDeleteReq)(nil),          // 116: game_study.game.v1.MailDeleteReq
+	(*MailDeleteResp)(nil),         // 117: game_study.game.v1.MailDeleteResp
+	(*MailTakeAttachmentReq)(nil),  // 118: game_study.game.v1.MailTakeAttachmentReq
+	(*MailTakeAttachmentResp)(nil), // 119: game_study.game.v1.MailTakeAttachmentResp
+	(*QuestListReq)(nil),           // 120: game_study.game.v1.QuestListReq
+	(*QuestListResp)(nil),          // 121: game_study.game.v1.QuestListResp
+	(*QuestEntry)(nil),             // 122: game_study.game.v1.QuestEntry
+	(*QuestAcceptReq)(nil),         // 123: game_study.game.v1.QuestAcceptReq
+	(*QuestAcceptResp)(nil),        // 124: game_study.game.v1.QuestAcceptResp
+	(*QuestClaimReq)(nil),          // 125: game_study.game.v1.QuestClaimReq
+	(*QuestClaimResp)(nil),         // 126: game_study.game.v1.QuestClaimResp
+	nil,                            // 127: game_study.game.v1.SigninInfoResp.ClaimedRewardsEntry
+	nil,                            // 128: game_study.game.v1.SigninClaimResp.ClaimedRewardsEntry
 }
 var file_game_v1_game_proto_depIdxs = []int32{
 	6,   // 0: game_study.game.v1.PlayerInfoResp.attrs:type_name -> game_study.game.v1.AttrPair
@@ -8169,16 +8273,16 @@ var file_game_v1_game_proto_depIdxs = []int32{
 	70,  // 13: game_study.game.v1.CopyListResp.copies:type_name -> game_study.game.v1.CopyEntry
 	75,  // 14: game_study.game.v1.ShopListResp.goods:type_name -> game_study.game.v1.ShopGoods
 	80,  // 15: game_study.game.v1.ActivityListResp.activities:type_name -> game_study.game.v1.ActivityEntry
-	125, // 16: game_study.game.v1.SigninInfoResp.claimed_rewards:type_name -> game_study.game.v1.SigninInfoResp.ClaimedRewardsEntry
+	127, // 16: game_study.game.v1.SigninInfoResp.claimed_rewards:type_name -> game_study.game.v1.SigninInfoResp.ClaimedRewardsEntry
 	85,  // 17: game_study.game.v1.SigninClaimResp.rewards:type_name -> game_study.game.v1.SigninReward
-	126, // 18: game_study.game.v1.SigninClaimResp.claimed_rewards:type_name -> game_study.game.v1.SigninClaimResp.ClaimedRewardsEntry
+	128, // 18: game_study.game.v1.SigninClaimResp.claimed_rewards:type_name -> game_study.game.v1.SigninClaimResp.ClaimedRewardsEntry
 	90,  // 19: game_study.game.v1.RankListResp.entries:type_name -> game_study.game.v1.RankEntry
 	90,  // 20: game_study.game.v1.RankListResp.around:type_name -> game_study.game.v1.RankEntry
 	93,  // 21: game_study.game.v1.FriendListResp.friends:type_name -> game_study.game.v1.FriendEntry
 	94,  // 22: game_study.game.v1.FriendListResp.applies:type_name -> game_study.game.v1.FriendApplyEntry
 	103, // 23: game_study.game.v1.PartnerListResp.partners:type_name -> game_study.game.v1.PartnerEntry
 	114, // 24: game_study.game.v1.MailListResp.mails:type_name -> game_study.game.v1.MailSummary
-	120, // 25: game_study.game.v1.QuestListResp.quests:type_name -> game_study.game.v1.QuestEntry
+	122, // 25: game_study.game.v1.QuestListResp.quests:type_name -> game_study.game.v1.QuestEntry
 	26,  // [26:26] is the sub-list for method output_type
 	26,  // [26:26] is the sub-list for method input_type
 	26,  // [26:26] is the sub-list for extension type_name
@@ -9585,7 +9689,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[116].Exporter = func(v any, i int) any {
-			switch v := v.(*MailTakeAttachmentReq); i {
+			switch v := v.(*MailDeleteReq); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9597,7 +9701,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[117].Exporter = func(v any, i int) any {
-			switch v := v.(*MailTakeAttachmentResp); i {
+			switch v := v.(*MailDeleteResp); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9609,7 +9713,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[118].Exporter = func(v any, i int) any {
-			switch v := v.(*QuestListReq); i {
+			switch v := v.(*MailTakeAttachmentReq); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9621,7 +9725,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[119].Exporter = func(v any, i int) any {
-			switch v := v.(*QuestListResp); i {
+			switch v := v.(*MailTakeAttachmentResp); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9633,7 +9737,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[120].Exporter = func(v any, i int) any {
-			switch v := v.(*QuestEntry); i {
+			switch v := v.(*QuestListReq); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9645,7 +9749,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[121].Exporter = func(v any, i int) any {
-			switch v := v.(*QuestAcceptReq); i {
+			switch v := v.(*QuestListResp); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9657,7 +9761,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[122].Exporter = func(v any, i int) any {
-			switch v := v.(*QuestAcceptResp); i {
+			switch v := v.(*QuestEntry); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9669,7 +9773,7 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[123].Exporter = func(v any, i int) any {
-			switch v := v.(*QuestClaimReq); i {
+			switch v := v.(*QuestAcceptReq); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -9681,6 +9785,30 @@ func file_game_v1_game_proto_init() {
 			}
 		}
 		file_game_v1_game_proto_msgTypes[124].Exporter = func(v any, i int) any {
+			switch v := v.(*QuestAcceptResp); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_game_v1_game_proto_msgTypes[125].Exporter = func(v any, i int) any {
+			switch v := v.(*QuestClaimReq); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_game_v1_game_proto_msgTypes[126].Exporter = func(v any, i int) any {
 			switch v := v.(*QuestClaimResp); i {
 			case 0:
 				return &v.state
@@ -9699,7 +9827,7 @@ func file_game_v1_game_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_game_v1_game_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   127,
+			NumMessages:   129,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

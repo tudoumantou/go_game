@@ -52,7 +52,7 @@ func (r *Repo[D]) Delete() error {
 
 // Ctx 业务处理器上下文：在 module.Context 之上挂类型化的 Repo。
 //
-// 嵌入 *Context 后，State/Send/Prefetch/Now 等能力仍可直接用；
+// 嵌入 *Context 后，State/Send/Now 等能力仍可直接用；
 // Reply 只收 proto 消息，协议号由基座按类型反查。
 type Ctx[D any] struct {
 	*Context

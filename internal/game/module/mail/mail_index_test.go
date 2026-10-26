@@ -15,10 +15,15 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/common/errcode"
+	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/cache"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
+	gamev1 "game_study/pkg/pb/game/v1"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -192,4 +197,101 @@ func TestTakeWithoutIndexStillWorks(t *testing.T) {
 
 	resp := take(t, m, ctx, rec, 8)
 	require.EqualValues(t, 0, resp.Code)
+}
+
+// deleteMail 发一次删除请求并解出响应。
+func deleteMail(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, mailID int64) *gamev1.MailDeleteResp {
+	t.Helper()
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgMailDeleteReq, codec.MsgMailDeleteResp,
+		&gamev1.MailDeleteReq{MailId: mailID})
+	require.NoError(t, err, "call delete")
+	require.NotNil(t, raw, "没有回包")
+	resp := &gamev1.MailDeleteResp{}
+	require.NoError(t, proto.Unmarshal(raw, resp))
+	return resp
+}
+
+// TestDeleteRemovesRowIndexAndCache 删除成功：库、索引、缓存三处一起清。
+//
+// 这是 RemoveEntity 的第一个真实调用方——之前它只有单测，没有任何业务
+// 在调用（邮件没有删除协议）。三处必须同时清：只删库会留下「索引说存在、
+// 展开时查不到」的残留（靠读时自愈兜，但那是兜底不是主路径）。
+func TestDeleteRemovesRowIndexAndCache(t *testing.T) {
+	repo := &fakeRepo{atts: map[int64][]Attachment{}} // 无附件 → 可删
+	m, _, mr := newIndexedModule(t, repo)
+
+	st := moduletest.NewState(1)
+	rec := moduletest.NewRecorder()
+	ctx := moduletest.NewContext(st, rec)
+
+	mustZAdd(t, mr, 1, "77")
+	mr.HSet(cache.EntityKey("mail", 77), "id", "77", "status", "2")
+
+	resp := deleteMail(t, m, ctx, rec, 77)
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "无附件应允许删除")
+	require.Equal(t, []int64{77}, repo.deleted, "库里要删")
+
+	members, err := mr.ZMembers(cache.OwnerIndexKey("mail"))
+	if err == nil {
+		require.NotContains(t, members, "77", "索引必须摘掉")
+	}
+	require.False(t, mr.Exists(cache.EntityKey("mail", 77)), "缓存行必须清掉")
+}
+
+// TestDeleteRejectsUnclaimedAttachment 有未领附件时拒绝。
+//
+// 删了玩家就再也领不到——这是不可逆的损失，比「多一个错误提示」贵得多。
+func TestDeleteRejectsUnclaimedAttachment(t *testing.T) {
+	repo := &fakeRepo{atts: map[int64][]Attachment{78: {{ItemID: 1001, Count: 5}}}}
+	m, _, mr := newIndexedModule(t, repo)
+
+	st := moduletest.NewState(1)
+	rec := moduletest.NewRecorder()
+	ctx := moduletest.NewContext(st, rec)
+	mustZAdd(t, mr, 1, "78")
+
+	resp := deleteMail(t, m, ctx, rec, 78)
+	require.EqualValues(t, int32(errcode.ErrMailHasUnclaimed), resp.Code)
+	require.Empty(t, repo.deleted, "有未领附件时不能删库")
+	require.True(t, mr.Exists(cache.OwnerIndexKey("mail")), "索引也不能动")
+}
+
+// TestDeleteNotFound 邮件不存在（或不是自己的）→ 统一回「不存在」。
+func TestDeleteNotFound(t *testing.T) {
+	repo := &fakeRepo{findErr: ErrMailNotExist}
+	m, _, _ := newIndexedModule(t, repo)
+
+	st := moduletest.NewState(1)
+	rec := moduletest.NewRecorder()
+	ctx := moduletest.NewContext(st, rec)
+
+	resp := deleteMail(t, m, ctx, rec, 79)
+	require.EqualValues(t, int32(errcode.ErrMailNotFound), resp.Code)
+	require.Empty(t, repo.deleted)
+}
+
+// TestDeleteMalformedID 非正 id 在入口就挡掉，不打库。
+func TestDeleteMalformedID(t *testing.T) {
+	repo := &fakeRepo{}
+	m, _, _ := newIndexedModule(t, repo)
+
+	st := moduletest.NewState(1)
+	rec := moduletest.NewRecorder()
+	ctx := moduletest.NewContext(st, rec)
+
+	for _, id := range []int64{0, -1} {
+		resp := deleteMail(t, m, ctx, rec, id)
+		require.EqualValues(t, int32(errcode.ErrMailNotFound), resp.Code)
+	}
+	require.Zero(t, repo.findHits, "非正 id 不该触发任何查询")
+}
+
+// TestDeleteWithoutIndexStillWorks 未注入索引时删除照常（不依赖缓存）。
+func TestDeleteWithoutIndexStillWorks(t *testing.T) {
+	repo := &fakeRepo{}
+	m, _, rec, ctx := newTestModule(repo)
+
+	resp := deleteMail(t, m, ctx, rec, 80)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
+	require.Equal(t, []int64{80}, repo.deleted)
 }

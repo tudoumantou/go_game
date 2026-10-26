@@ -185,24 +185,6 @@ func anyPreloadAll(mappings []config.CacheMapping) bool {
 	return false
 }
 
-// ownerIndexes 返回登录时要展开的索引（只含 load_on_login 的映射）。
-//
-// 按表名排序：展开顺序会影响日志先后与加载时序，排序让每次启动一致。
-// load_on_login: false 的映射（懒加载）也建索引、也对账，但不在登录
-// 时展开——等接入方（如点开邮箱的按需读）自己用 Index 查。
-func (s *Server) ownerIndexes() []*cache.OwnerIndex {
-	out := make([]*cache.OwnerIndex, 0, len(s.ownerIdx))
-	for _, m := range s.cfg.IDTab.Mappings {
-		if !m.LoadOnLogin {
-			continue
-		}
-		if oi, ok := s.ownerIdx[m.Table]; ok {
-			out = append(out, oi)
-		}
-	}
-	return out
-}
-
 // initCenterClient 建中心服客户端（P8 匹配 + P0 跨节点投递）。
 //
 // 必须在 Actor 系统之前：actor.Config.Remote 引用它。
@@ -383,16 +365,10 @@ func (s *Server) initPlayerManager() {
 	if s.presence != nil {
 		s.players.SetPresence(s.presence)
 	}
-	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
+	// 登录预加载（12.6）：三表并行拉取 + 5s 超时保护
 	if s.database != nil {
 		preloadTimeout := player.DefaultPreloadTimeout
-		preloader := player.NewPreloader(s.database, s.logger, preloadTimeout)
-		// 归属展开（缓存架构设计 §4.2）：一对多表的实体按角色 id 批量加载。
-		// 没有 mappings 时是空列表，ExpandOwners 退化为空操作。
-		if idx := s.ownerIndexes(); len(idx) > 0 {
-			preloader.SetOwnerIndexes(idx...)
-		}
-		s.players.SetPreloader(preloader)
+		s.players.SetPreloader(player.NewPreloader(s.database, s.logger, preloadTimeout))
 	}
 }
 

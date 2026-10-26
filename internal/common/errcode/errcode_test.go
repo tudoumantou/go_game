@@ -23,7 +23,7 @@ func TestParityWithProto(t *testing.T) {
 		ErrAccountBanned, ErrKicked, ErrNoRole, ErrNameUsed, ErrNameIllegal,
 		ErrItemNotExist, ErrItemNotEnough, ErrBagFull, ErrItemNotUsable,
 		ErrChannelClosed, ErrPeerNotFound, ErrChatTooFast, ErrChatMuted,
-		ErrMailNotFound, ErrMailTaken, ErrNoAttachment,
+		ErrMailNotFound, ErrMailTaken, ErrNoAttachment, ErrMailHasUnclaimed,
 		ErrBattleNotFound, ErrBattleTokenInvalid, ErrResultReported, ErrBattleFull, ErrResultRewardInvalid,
 		ErrActivityNotExist, ErrActivityNotFinish, ErrActivityClaimed, ErrActivityBagFull, ErrActivityNotOpen,
 		ErrQuestNotExist, ErrQuestAccepted, ErrQuestUnfinished, ErrQuestClaimed, ErrQuestBagFull,

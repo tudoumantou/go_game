@@ -75,6 +75,7 @@ const (
 	ErrMailNotFound         = commonv1.ErrCode_ERR_CODE_MAIL_NOT_FOUND
 	ErrMailTaken            = commonv1.ErrCode_ERR_CODE_MAIL_TAKEN
 	ErrNoAttachment         = commonv1.ErrCode_ERR_CODE_NO_ATTACHMENT
+	ErrMailHasUnclaimed     = commonv1.ErrCode_ERR_CODE_MAIL_HAS_UNCLAIMED
 	ErrBattleNotFound       = commonv1.ErrCode_ERR_CODE_BATTLE_NOT_FOUND
 	ErrBattleTokenInvalid   = commonv1.ErrCode_ERR_CODE_BATTLE_TOKEN_INVALID
 	ErrResultReported       = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
@@ -147,6 +148,7 @@ var messages = map[Code]string{
 	ErrMailNotFound:         "邮件不存在",
 	ErrMailTaken:            "附件已领取",
 	ErrNoAttachment:         "邮件没有附件",
+	ErrMailHasUnclaimed:     "请先领取附件再删除邮件",
 	ErrBattleNotFound:       "战斗不存在或已结束",
 	ErrBattleTokenInvalid:   "战斗令牌无效",
 	ErrResultReported:       "战斗结果已上报",

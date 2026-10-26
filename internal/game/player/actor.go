@@ -196,10 +196,8 @@ type Actor struct {
 	registry *module.Registry
 	logger   *log.Logger
 	repo     *Repository
-	// preloader 非缓存模式的并行预加载器；prefetch 是它本次拉取的结果，
-	// 模块 OnLogin 经 module.Context.Prefetch 消费，避免二次查库。
+	// preloader 非缓存模式的并行预加载器（结果只在组装 State 时用一次）。
 	preloader *Preloader
-	prefetch  *Prefetch
 	// onDirty 任一数据变更 → 通知 flusher 排落库；缓存权威模式下为空
 	// （持久化由 Redis 脏队列 + writebehind worker 负责，不走 flusher）。
 	onDirty  func(playerID int64)
@@ -529,31 +527,14 @@ func (a *Actor) preload(ctx *actor.Context) error {
 		a.setState(state)
 		a.cacheVersion = version
 		a.loaded = true
-		// 归属展开（缓存架构设计 §4.2）：一对多功能的实体按角色 id 批量
-		// 加载，结果挂进 prefetch 供模块 OnLogin 消费（与 Prefetch 的
-		// Equips/Activities 同一机制）。未配 mappings 时是空操作。
-		//
-		// 失败即登录失败：实体数据缺失时放行等于「功能列表为空」——
-		// 不报错、只是没数据，是这套设计里最难查的事故形态。
-		// Redis 故障已在 ExpandOwners 内部回落 MySQL，能到这里说明库也答不上来。
-		if a.preloader != nil {
-			rows, err := a.preloader.ExpandOwners(loadCtx, a.playerID)
-			if err != nil {
-				return err
-			}
-			if len(rows) > 0 {
-				a.prefetch = &Prefetch{ownerRows: rows}
-			}
-		}
 		return nil
 	}
 	if a.preloader != nil {
-		state, pf, err := a.preloader.Load(context.Background(), a.playerID)
+		state, _, err := a.preloader.Load(context.Background(), a.playerID)
 		if err != nil {
 			return err
 		}
 		a.setState(state)
-		a.prefetch = pf
 		a.loaded = true
 		return nil
 	}
@@ -800,9 +781,6 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 		Actor: actx,
 		State: a.state,
 		Send:  a.send,
-	}
-	if a.prefetch != nil {
-		mctx.Prefetch = a.prefetch
 	}
 	mctx.AddExp = a.addExp
 	mctx.CacheEnabled = a.repo.CacheEnabled()

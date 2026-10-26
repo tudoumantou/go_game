@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"game_study/pkg/actor"
-	"game_study/pkg/cache"
 	"game_study/pkg/writebehind"
 )
 
@@ -108,19 +107,6 @@ type Event struct {
 	Delta int64  // 增量（数量）
 }
 
-// PrefetchSource 登录预加载结果（12.6：并行拉取，模块 OnLogin 直接读）。
-//
-// 实现方是 player.Prefetch。返回 nil 表示未预取（降级为模块自行查库），
-// 模块必须同时支持两条路径——预加载是优化，不是正确性前提。
-type PrefetchSource interface {
-	// OwnerRows 归属展开预加载的实体行（缓存架构设计 §4.2）。
-	//
-	// 入参是 idtab.mappings 里声明的表名（模块自己知道自己是哪张表）；
-	// 返回该玩家名下按 id 升序的实体行（列名 → 字符串值，动态列）。
-	// 未配 load_on_login 的表返回 nil，模块回落自行查库。
-	OwnerRows(table string) []cache.EntityRow
-}
-
 // Context 模块上下文：Actor 上下文 + 玩家状态 + 下行发送。
 //
 // 每条玩家消息都会新建一个 Context（轻量值对象），字段由玩家层注入：
@@ -128,7 +114,6 @@ type PrefetchSource interface {
 type Context struct {
 	Actor        *actor.Context  // 当前玩家 Actor 的上下文（Send 给其他 Actor）
 	State        PlayerState     // 玩家内存状态（模块的主读写面）
-	Prefetch     PrefetchSource  // 登录预加载结果（可能为 nil）
 	TraceID      string          // 链路追踪 ID（日志关联一次登录会话）
 	Send         Sender          // 下行发送（nil 时 Reply 静默丢弃，便于单测）
 	Emit         func(evt Event) // 事件广播（nil 表示无订阅方，产生方需判空）

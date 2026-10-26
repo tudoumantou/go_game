@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/gamedata"
@@ -35,11 +36,13 @@ type fakeRepo struct {
 	unreadErr error
 	insertErr error
 
-	marked   []int64
-	findHits int
-	insertID int64
-	insAtts  []Attachment
-	inserted *model.Mail // 最后一次插入的主邮件（断言模板填充用）
+	marked    []int64
+	deleted   []int64
+	deleteErr error
+	findHits  int
+	insertID  int64
+	insAtts   []Attachment
+	inserted  *model.Mail // 最后一次插入的主邮件（断言模板填充用）
 }
 
 func (f *fakeRepo) UnreadCount(context.Context, int64) (int64, error) {
@@ -69,6 +72,14 @@ func (f *fakeRepo) FindAttachments(_ context.Context, _, mailID int64) ([]Attach
 		return nil, f.findErr
 	}
 	return f.atts[mailID], nil
+}
+
+func (f *fakeRepo) Delete(_ context.Context, _, mailID int64) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deleted = append(f.deleted, mailID)
+	return nil
 }
 
 func (f *fakeRepo) MarkTaken(_ context.Context, mailID int64) error {
@@ -118,7 +129,7 @@ func TestTakeGrantsAndMarksTaken(t *testing.T) {
 	m, st, rec, ctx := newTestModule(repo)
 
 	resp := take(t, m, ctx, rec, 7)
-	require.EqualValues(t, codeOK, resp.Code, fmt.Sprintf("take: %+v", resp))
+	require.EqualValues(t, int32(errcode.OK), resp.Code, fmt.Sprintf("take: %+v", resp))
 	require.EqualValues(t, 5, st.GetItemCount(1001))
 	require.EqualValues(t, 3, st.GetItemCount(1002))
 	require.True(t, st.HasBiz("mail:7"), "领取事实必须落到业务键上")
@@ -135,11 +146,11 @@ func TestTakeIsIdempotent(t *testing.T) {
 	m, st, rec, ctx := newTestModule(repo)
 
 	first := take(t, m, ctx, rec, 7)
-	require.EqualValues(t, codeOK, first.Code)
+	require.EqualValues(t, int32(errcode.OK), first.Code)
 	require.EqualValues(t, 1, rec.Count(msgIDMailTakeResp), "一次请求只能回一个包")
 
 	second := take(t, m, ctx, rec, 7)
-	require.EqualValues(t, codeMailTaken, second.Code, fmt.Sprintf("重复领取应回 5002, got %+v", second))
+	require.EqualValues(t, int32(errcode.ErrMailTaken), second.Code, fmt.Sprintf("重复领取应回 ErrMailTaken, got %+v", second))
 	require.EqualValues(t, 5, st.GetItemCount(1001), "重复领取不能重复发奖")
 	require.Equal(t, 2, rec.Count(msgIDMailTakeResp), "第二次请求同样只回一个包")
 	require.Equal(t, 1, repo.findHits, "命中业务键时不该再查附件表")
@@ -152,14 +163,14 @@ func TestTakeBagFullKeepsClaimable(t *testing.T) {
 	st.SetCanHold(false)
 
 	resp := take(t, m, ctx, rec, 9)
-	require.EqualValues(t, codeBagFull, resp.Code, fmt.Sprintf("满包应回 5004, got %+v", resp))
+	require.EqualValues(t, int32(errcode.ErrBagFull), resp.Code, fmt.Sprintf("满包应回 ErrBagFull, got %+v", resp))
 	require.EqualValues(t, 0, st.GetItemCount(1001), "满包时一件都不该入包")
 	require.False(t, st.HasBiz("mail:9"), "发奖失败不能占业务键，否则清包后永远领不了")
 
 	// 清出空间后重领应当成功。
 	st.SetCanHold(true)
 	again := take(t, m, ctx, rec, 9)
-	require.EqualValues(t, codeOK, again.Code, fmt.Sprintf("清包后应能重领, got %+v", again))
+	require.EqualValues(t, int32(errcode.OK), again.Code, fmt.Sprintf("清包后应能重领, got %+v", again))
 	require.EqualValues(t, 1, st.GetItemCount(1001))
 }
 
@@ -170,8 +181,8 @@ func TestTakeErrorCodes(t *testing.T) {
 		err  error
 		want int32
 	}{
-		{"邮件不存在", ErrMailNotExist, codeMailNotExist},
-		{"没有附件", ErrNoAttachment, codeNoAttachment},
+		{"邮件不存在", ErrMailNotExist, int32(errcode.ErrMailNotFound)},
+		{"没有附件", ErrNoAttachment, int32(errcode.ErrNoAttachment)},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -190,7 +201,7 @@ func TestTakeRejectsNonPositiveID(t *testing.T) {
 	m, _, rec, ctx := newTestModule(repo)
 
 	resp := take(t, m, ctx, rec, 0)
-	require.EqualValues(t, codeMailNotExist, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrMailNotFound), resp.Code)
 	require.Equal(t, 0, repo.findHits, "非法 id 不该查附件表")
 }
 
@@ -203,7 +214,7 @@ func TestTakeSurvivesMarkFailure(t *testing.T) {
 	m, st, rec, ctx := newTestModule(repo)
 
 	resp := take(t, m, ctx, rec, 5)
-	require.EqualValues(t, codeOK, resp.Code, "标记失败只影响列表展示，不能让领取失败")
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "标记失败只影响列表展示，不能让领取失败")
 	require.EqualValues(t, 2, st.GetItemCount(1001))
 	require.True(t, st.HasBiz("mail:5"))
 }
@@ -221,7 +232,7 @@ func TestListProjectsRows(t *testing.T) {
 	require.NoError(t, err)
 	resp := &gamev1.MailListResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, resp.Mails, 2)
 
 	require.EqualValues(t, 1, resp.Mails[0].MailId)

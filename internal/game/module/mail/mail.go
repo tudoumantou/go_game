@@ -30,6 +30,7 @@ import (
 	"strings"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/cache"
 	"game_study/pkg/codec"
@@ -50,16 +51,8 @@ const (
 	msgIDMailListResp = codec.MsgMailListResp
 	msgIDMailTakeReq  = codec.MsgMailTakeAttachmentReq
 	msgIDMailTakeResp = codec.MsgMailTakeAttachmentResp
-)
-
-// 业务码（4.10：0 成功；5001-5004 是邮件/背包交界错误，5004 满包
-// 由 module.ErrBagFull 转来，客户端弹「背包已满」）。
-const (
-	codeOK           int32 = 0
-	codeMailNotExist int32 = 5001
-	codeMailTaken    int32 = 5002
-	codeNoAttachment int32 = 5003
-	codeBagFull      int32 = 5004
+	msgIDDeleteReq    = codec.MsgMailDeleteReq
+	msgIDDeleteResp   = codec.MsgMailDeleteResp
 )
 
 // mailListLimit 单页列表上限（产品约定，与聊天的 50 不同）。
@@ -317,6 +310,31 @@ func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
 	})
 }
 
+// Delete 删除一封邮件及其附件（同一事务两条 DELETE）。
+//
+// 归属校验放进 WHERE 而不是「先查再删」：一次往返、无竞态，且
+// RowsAffected=0 天然把「不存在」与「不是你的」合成一个结果——与
+// FindAttachments 同一口径，不向调用方泄露别人的邮件 id 是否存在。
+func (r *Repo) Delete(ctx context.Context, playerID, mailID int64) error {
+	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`DELETE FROM mail WHERE id = ? AND player_id = ?`, mailID, playerID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			// 主邮件没删到 → 整笔回滚，不留下孤儿附件
+			return ErrMailNotExist
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM mail_attachment WHERE mail_id = ?`, mailID)
+		return err
+	})
+}
+
 // DeliverOffline 离线发放：以 biz_id 幂等写一封带附件的系统邮件。
 //
 // 用于玩家不在线时的 Tier-1 发放（充值到账等）：邮件与附件在同一 SQL 事务里
@@ -382,6 +400,7 @@ type mailRepo interface {
 	ListByPlayer(ctx context.Context, playerID int64, limit int) ([]MailRow, error)
 	FindAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error)
 	MarkTaken(ctx context.Context, mailID int64) error
+	Delete(ctx context.Context, playerID, mailID int64) error
 	DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (int64, bool, error)
 }
 
@@ -411,6 +430,19 @@ type Module struct {
 // 行为与接入索引之前完全一致——这正是「索引是加速层，不是正确性前提」
 // 在模块侧的体现。
 func (m *Module) SetOwnerIndex(oi *cache.OwnerIndex) { m.index = oi }
+
+// removeIndex 摘除索引（邮件行已删除）。
+//
+// 与 dropEntity 的分工：这里行没了，索引也要没（否则展开时会走一遍
+// 「查不到 → 自愈 Remove」的弯路）；dropEntity 是行还在、内容变了。
+func (m *Module) removeIndex(mailID int64) {
+	if m.index == nil || mailID <= 0 {
+		return
+	}
+	if err := m.index.RemoveEntity(context.Background(), mailID); err != nil {
+		m.logger.Warn("mail index remove failed", "mail_id", mailID, "err", err)
+	}
+}
 
 // dropEntity 丢弃缓存里的实体行（领取后状态变了）。
 //
@@ -448,6 +480,7 @@ func New(repo mailRepo, logger *log.Logger) *Module {
 	)
 	m.HandleR(msgIDMailListReq, msgIDMailListResp, &gamev1.MailListResp{}, m.onList)
 	m.HandleR(msgIDMailTakeReq, msgIDMailTakeResp, &gamev1.MailTakeAttachmentResp{}, module.Typed(msgIDMailTakeResp, m.onTake))
+	m.HandleR(msgIDDeleteReq, msgIDDeleteResp, &gamev1.MailDeleteResp{}, module.Typed(msgIDDeleteResp, m.onDelete))
 	return m
 }
 
@@ -685,7 +718,7 @@ func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
 	if err != nil {
 		return err
 	}
-	resp := &gamev1.MailListResp{Code: codeOK, Mails: make([]*gamev1.MailSummary, 0, len(rows))}
+	resp := &gamev1.MailListResp{Code: int32(errcode.OK), Mails: make([]*gamev1.MailSummary, 0, len(rows))}
 	for _, r := range rows {
 		s := &gamev1.MailSummary{
 			MailId:        r.ID,
@@ -719,7 +752,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	*resp = gamev1.MailTakeAttachmentResp{}
 	// 前置挡掉非正 id：省一次 DB 往返，也防负 id 扫表
 	if req.MailId <= 0 {
-		resp.Code = codeMailNotExist
+		resp.Code = int32(errcode.ErrMailNotFound)
 		return nil
 	}
 
@@ -727,7 +760,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	// 先查键再查附件，否则 MarkTaken 生效后重复请求会拿到 5003（无附件）而不是 5002。
 	key := fmt.Sprintf("mail:%d", req.MailId)
 	if ctx.State.HasBiz(key) {
-		resp.Code = codeMailTaken
+		resp.Code = int32(errcode.ErrMailTaken)
 		return nil
 	}
 
@@ -735,9 +768,9 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrMailNotExist):
-			resp.Code = codeMailNotExist
+			resp.Code = int32(errcode.ErrMailNotFound)
 		case errors.Is(err, ErrNoAttachment):
-			resp.Code = codeNoAttachment
+			resp.Code = int32(errcode.ErrNoAttachment)
 		default:
 			return err
 		}
@@ -764,7 +797,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 		// 满包与数量超限都回「背包满」：玩家侧动作相同（清包再领），
 		// 区分两者只会让客户端多一个用不上的分支。
 		if errors.Is(err, module.ErrBagFull) || errors.Is(err, module.ErrItemLimit) {
-			resp.Code = codeBagFull
+			resp.Code = int32(errcode.ErrBagFull)
 			return nil
 		}
 		return err
@@ -772,7 +805,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	// !applied 是并发双端同时领取的第二道防线：HasBiz 与 CAS 之间被
 	// 抢跑的请求在这里被 ApplyOnce 的版本号判重挡下，同样回 5002
 	if !applied {
-		resp.Code = codeMailTaken
+		resp.Code = int32(errcode.ErrMailTaken)
 		return nil
 	}
 	if err := m.repo.MarkTaken(context.Background(), req.MailId); err != nil {
@@ -796,11 +829,56 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 		}
 	})
 
-	resp.Code = codeOK
+	resp.Code = int32(errcode.OK)
 	// 奖励复用 BagChangeNotify 格式塞进 Rewards：客户端一套道具变更
 	// 渲染逻辑同时处理邮件奖励和背包操作，省一个专用消息类型
 	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
 		resp.Rewards = raw
 	}
+	return nil
+}
+
+// onDelete 删除邮件。
+//
+// 有未领附件时拒绝（ErrMailHasUnclaimed）：删了就再也领不到，是不可逆的
+// 损失；让玩家先领再删，比事后补发便宜得多。
+//
+// 顺序：查未领附件 → 删库 → 摘索引 → 丢缓存。前三步任一失败都不动缓存，
+// 免得出现「缓存说没了、库里还在」。
+func (m *Module) onDelete(c *module.Context, req *gamev1.MailDeleteReq, resp *gamev1.MailDeleteResp) error {
+	if req.MailId <= 0 {
+		resp.Code = int32(errcode.ErrMailNotFound)
+		return nil
+	}
+	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	playerID := c.State.PlayerID()
+	// FindAttachments 只返回「未领」的附件：ErrNoAttachment 正好表示可以删。
+	atts, err := m.repo.FindAttachments(ctxDB, playerID, req.MailId)
+	switch {
+	case errors.Is(err, ErrMailNotExist):
+		resp.Code = int32(errcode.ErrMailNotFound)
+		return nil
+	case errors.Is(err, ErrNoAttachment):
+		// 没有未领附件 → 放行
+	case err != nil:
+		return err
+	case len(atts) > 0:
+		resp.Code = int32(errcode.ErrMailHasUnclaimed)
+		return nil
+	}
+
+	if err := m.repo.Delete(ctxDB, playerID, req.MailId); err != nil {
+		if errors.Is(err, ErrMailNotExist) {
+			resp.Code = int32(errcode.ErrMailNotFound)
+			return nil
+		}
+		return err
+	}
+	// 先删库再动缓存——与投递方向一致：索引与缓存永远跟着数据的真实变更走。
+	m.removeIndex(req.MailId)
+	m.dropEntity(req.MailId)
+	resp.Code = int32(errcode.OK)
 	return nil
 }
