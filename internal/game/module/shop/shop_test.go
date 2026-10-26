@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -26,16 +27,16 @@ func firstGoods(t *testing.T) gamedata.ShopGoodsCfg {
 	return gamedata.ShopGoodsCfgList()[0]
 }
 
-func newTestModule() (*Module, *moduletest.State, *moduletest.Recorder, *module.Context) {
+func newTestModule() (*module.Bound[Data], *moduletest.State, *moduletest.Recorder, *module.Context) {
 	st := moduletest.NewState(1)
 	rec := moduletest.NewRecorder()
-	m := New(log.New("shop-test", log.WithLevel("error")))
+	m := M
 	return m, st, rec, moduletest.NewContext(st, rec)
 }
 
-func buy(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, goodsID, count int64) *gamev1.ShopBuyResp {
+func buy(t *testing.T, m *module.Bound[Data], ctx *module.Context, rec *moduletest.Recorder, goodsID, count int64) *gamev1.ShopBuyResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDBuyReq, msgIDBuyResp, &gamev1.ShopBuyReq{GoodsId: int32(goodsID), Count: int32(count)})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgShopBuyReq, codec.MsgShopBuyResp, &gamev1.ShopBuyReq{GoodsId: int32(goodsID), Count: int32(count)})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "没有回包")
 	resp := &gamev1.ShopBuyResp{}
@@ -50,11 +51,11 @@ func TestBuyDeductsAndGrants(t *testing.T) {
 	st.AddItem(itemDiamond, 1000)
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 2)
-	require.EqualValues(t, codeOK, resp.Code, fmt.Sprintf("buy: %+v", resp))
+	require.EqualValues(t, int32(errcode.OK), resp.Code, fmt.Sprintf("buy: %+v", resp))
 	require.EqualValues(t, 2, resp.Bought)
 	require.EqualValues(t, 1000-2*cfg.Col3, st.GetItemCount(itemDiamond), "钻石必须按单价×数量扣")
 	require.EqualValues(t, 2*cfg.Col4, st.GetItemCount(int32(cfg.Col2)), "道具按数量发放")
-	require.Equal(t, 1, rec.Count(msgIDBuyResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgShopBuyResp), "一次请求只能回一个包")
 }
 
 // TestBuyNotEnoughDiamond 钻石不足：不发货、次数不变。
@@ -64,7 +65,7 @@ func TestBuyNotEnoughDiamond(t *testing.T) {
 	st.AddItem(itemDiamond, cfg.Col3-1) // 差一个
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 1)
-	require.EqualValues(t, codeDiamondNotEnough, resp.Code, fmt.Sprintf("got %+v", resp))
+	require.EqualValues(t, int32(errcode.ErrShopDiamondNotEnough), resp.Code, fmt.Sprintf("got %+v", resp))
 	require.EqualValues(t, 0, st.GetItemCount(int32(cfg.Col2)), "扣费失败不能发货")
 	require.EqualValues(t, cfg.Col3-1, st.GetItemCount(itemDiamond), "失败请求不能部分扣费")
 }
@@ -77,7 +78,7 @@ func TestBuyBagFullDoesNotCharge(t *testing.T) {
 	st.SetCanHold(false)
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 1)
-	require.EqualValues(t, codeBagFull, resp.Code, fmt.Sprintf("got %+v", resp))
+	require.EqualValues(t, int32(errcode.ErrShopBagFull), resp.Code, fmt.Sprintf("got %+v", resp))
 	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond), "满包时不能扣钱")
 	require.EqualValues(t, 0, st.GetItemCount(int32(cfg.Col2)))
 }
@@ -88,7 +89,7 @@ func TestBuyUnknownGoods(t *testing.T) {
 	st.AddItem(itemDiamond, 1000)
 
 	resp := buy(t, m, ctx, rec, 999999, 1)
-	require.EqualValues(t, codeGoodsNotExist, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrShopGoodsNotExist), resp.Code)
 	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond))
 }
 
@@ -99,7 +100,7 @@ func TestBuyClampsCount(t *testing.T) {
 	st.AddItem(itemDiamond, 100000)
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 0) // 按 1 个
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 100000-cfg.Col3, st.GetItemCount(itemDiamond), "应只扣 1 个的价钱")
 }
 
@@ -108,9 +109,9 @@ func TestListShowsBought(t *testing.T) {
 	cfg := firstGoods(t)
 	m, st, rec, ctx := newTestModule()
 	st.AddItem(itemDiamond, 1000)
-	require.EqualValues(t, codeOK, buy(t, m, ctx, rec, cfg.Id, 1).Code)
+	require.EqualValues(t, int32(errcode.OK), buy(t, m, ctx, rec, cfg.Id, 1).Code)
 
-	raw, err := moduletest.Call(m, ctx, rec, msgIDListReq, msgIDListResp, &gamev1.ShopListReq{})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgShopListReq, codec.MsgShopListResp, &gamev1.ShopListReq{})
 	require.NoError(t, err)
 	resp := &gamev1.ShopListResp{}
 	require.NoError(t, proto.Unmarshal(raw, resp))
@@ -180,7 +181,7 @@ func TestBuyKeyUsesConfiguredShopID(t *testing.T) {
 	st.AddItem(itemDiamond, 10000)
 
 	resp := buy(t, m, ctx, rec, 9, 1)
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 
 	d, err := m.State(ctx)
 	require.NoError(t, err)
@@ -201,7 +202,7 @@ func TestGoodsInMissingShopHiddenAndUnbuyable(t *testing.T) {
 	st.AddItem(itemDiamond, 10000)
 
 	// 列表不展示
-	raw, err := moduletest.Call(m, ctx, rec, msgIDListReq, msgIDListResp, &gamev1.ShopListReq{})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgShopListReq, codec.MsgShopListResp, &gamev1.ShopListReq{})
 	require.NoError(t, err)
 	listResp := &gamev1.ShopListResp{}
 	require.NoError(t, proto.Unmarshal(raw, listResp))
@@ -211,6 +212,6 @@ func TestGoodsInMissingShopHiddenAndUnbuyable(t *testing.T) {
 
 	// 直接买也不行
 	resp := buy(t, m, ctx, rec, 9, 1)
-	require.EqualValues(t, codeGoodsNotExist, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrShopGoodsNotExist), resp.Code)
 	require.EqualValues(t, 10000, st.GetItemCount(itemDiamond), "拒绝时不能扣钱")
 }

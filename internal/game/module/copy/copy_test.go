@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -81,10 +82,10 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 	cfg := firstCopy(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 	body, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 2})
 
-	err := m.OnMessage(ctx, msgIDSettleReq, body)
+	err := m.OnMessage(ctx, codec.MsgCopySettleReq, body)
 	require.NoError(t, err)
 	drops := 0
 	for _, drop := range gamedata.CopyDropCfgList() {
@@ -100,7 +101,7 @@ func TestSettleFirstPassGrantsOnce(t *testing.T) {
 	for id, n := range st.items {
 		before[id] = n
 	}
-	err = m.OnMessage(ctx, msgIDSettleReq, body)
+	err = m.OnMessage(ctx, codec.MsgCopySettleReq, body)
 	require.NoError(t, err)
 	for id, n := range st.items {
 		require.EqualValues(t, before[id], n)
@@ -115,12 +116,12 @@ func TestStarKeepsBest(t *testing.T) {
 	cfg := firstCopy(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 	high, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 3})
 	low, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 1})
-	err := m.OnMessage(ctx, msgIDSettleReq, high)
+	err := m.OnMessage(ctx, codec.MsgCopySettleReq, high)
 	require.NoError(t, err)
-	err = m.OnMessage(ctx, msgIDSettleReq, low)
+	err = m.OnMessage(ctx, codec.MsgCopySettleReq, low)
 	require.NoError(t, err)
 	d, _ := m.State(ctx)
 	got := d.Records[int32(cfg.Id)].Star
@@ -142,9 +143,9 @@ func TestLevelGate(t *testing.T) {
 	st := newFakeState(1)
 	st.level = 1
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 	body, _ := proto.Marshal(&gamev1.CopySettleReq{CopyId: int32(cfg.Id), Star: 3})
-	err := m.OnMessage(ctx, msgIDSettleReq, body)
+	err := m.OnMessage(ctx, codec.MsgCopySettleReq, body)
 	require.NoError(t, err)
 	d, _ := m.State(ctx)
 	_, ok := d.Records[int32(cfg.Id)]

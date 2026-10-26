@@ -5,9 +5,11 @@ package skill
 
 import (
 	"encoding/json"
+	"game_study/internal/common/errcode"
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -122,17 +124,17 @@ func TestLearnAndUpgrade(t *testing.T) {
 	cfg := firstSkill(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 
 	learn, _ := proto.Marshal(&gamev1.SkillLearnReq{SkillId: int32(cfg.Id)})
-	err := m.OnMessage(ctx, msgIDLearnReq, learn)
+	err := m.OnMessage(ctx, codec.MsgSkillLearnReq, learn)
 	require.NoError(t, err)
 	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)])
 
 	st.items[upgradeItemID] = 1000
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
-	err = m.OnMessage(ctx, msgIDUpgradeReq, upgrade)
+	err = m.OnMessage(ctx, codec.MsgSkillUpgradeReq, upgrade)
 	require.NoError(t, err)
 	d, _ = m.State(ctx)
 	require.EqualValues(t, 2, d.Levels[int32(cfg.Id)])
@@ -147,11 +149,11 @@ func TestLearnDuplicate(t *testing.T) {
 	cfg := firstSkill(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 	err := m.Mutate(ctx, func(dst *Data) bool { *dst = Data{Levels: map[int32]int32{int32(cfg.Id): 3}}; return true })
 	require.NoError(t, err)
 	learn, _ := proto.Marshal(&gamev1.SkillLearnReq{SkillId: int32(cfg.Id)})
-	err = m.OnMessage(ctx, msgIDLearnReq, learn)
+	err = m.OnMessage(ctx, codec.MsgSkillLearnReq, learn)
 	require.NoError(t, err)
 	d, _ := m.State(ctx)
 	require.EqualValues(t, 3, d.Levels[int32(cfg.Id)])
@@ -162,11 +164,11 @@ func TestUpgradeWithoutResource(t *testing.T) {
 	cfg := firstSkill(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 	err := m.Mutate(ctx, func(dst *Data) bool { *dst = Data{Levels: map[int32]int32{int32(cfg.Id): 1}}; return true })
 	require.NoError(t, err)
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
-	err = m.OnMessage(ctx, msgIDUpgradeReq, upgrade)
+	err = m.OnMessage(ctx, codec.MsgSkillUpgradeReq, upgrade)
 	require.NoError(t, err)
 	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)], "level changed without resource")
@@ -185,7 +187,7 @@ func TestUpgradeStopsAtMaxLevel(t *testing.T) {
 	st := newFakeState(1)
 	rec := replies{}
 	ctx := newCtxRec(st, rec)
-	m := New(nil)
+	m := M
 
 	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool {
 		*dst = Data{Levels: map[int32]int32{int32(cfg.Id): top}}
@@ -194,15 +196,15 @@ func TestUpgradeStopsAtMaxLevel(t *testing.T) {
 	st.items[upgradeItemID] = 100000
 
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
-	require.NoError(t, m.OnMessage(ctx, msgIDUpgradeReq, upgrade))
+	require.NoError(t, m.OnMessage(ctx, codec.MsgSkillUpgradeReq, upgrade))
 
 	d, _ := m.State(ctx)
 	require.EqualValues(t, top, d.Levels[int32(cfg.Id)], "满级后等级不能再涨")
 	require.EqualValues(t, 100000, st.GetItemCount(upgradeItemID), "满级不能扣钱")
 
 	resp := &gamev1.SkillUpgradeResp{}
-	require.NoError(t, proto.Unmarshal(rec[msgIDUpgradeResp], resp))
-	require.EqualValues(t, codeMaxLevel, resp.Code, "必须明确告诉客户端已满级")
+	require.NoError(t, proto.Unmarshal(rec[codec.MsgSkillUpgradeResp], resp))
+	require.EqualValues(t, int32(errcode.ErrSkillMaxLevel), resp.Code, "必须明确告诉客户端已满级")
 }
 
 // TestUpgradeCostComesFromTable 消耗按表逐级递增，不再线性乘算。
@@ -212,14 +214,14 @@ func TestUpgradeCostComesFromTable(t *testing.T) {
 	// 1 级升 2 级
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool {
 		*dst = Data{Levels: map[int32]int32{int32(cfg.Id): 1}}
 		return true
 	}))
 	st.items[upgradeItemID] = 10000
 	up, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
-	require.NoError(t, m.OnMessage(ctx, msgIDUpgradeReq, up))
+	require.NoError(t, m.OnMessage(ctx, codec.MsgSkillUpgradeReq, up))
 
 	cost1, ok := upgradeCost(1)
 	require.True(t, ok)
@@ -227,7 +229,7 @@ func TestUpgradeCostComesFromTable(t *testing.T) {
 
 	// 2 级升 3 级：表里是 300 而不是 100*2 的巧合值，能区分「查表」与「线性」
 	if cost2, ok := upgradeCost(2); ok {
-		require.NoError(t, m.OnMessage(ctx, msgIDUpgradeReq, up))
+		require.NoError(t, m.OnMessage(ctx, codec.MsgSkillUpgradeReq, up))
 		require.EqualValues(t, 10000-cost1-cost2, st.GetItemCount(upgradeItemID))
 	}
 }
@@ -236,7 +238,7 @@ func TestUpgradeCostComesFromTable(t *testing.T) {
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
 	ctx := newCtx(st)
-	m := New(nil)
+	m := M
 
 	err := m.Mutate(ctx, func(dst *Data) bool { *dst = Data{Levels: map[int32]int32{101: 4}}; return true })
 	require.NoError(t, err)

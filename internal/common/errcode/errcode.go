@@ -52,43 +52,56 @@ type Code = commonv1.ErrCode
 // 不与其他域争抢；客户端可按段做粗粒度分类（如 2xxx 一律弹回登录页）。
 // 段内留号（如 1006+ 空置）：同域新增错误向后追加，不打乱已有编号。
 const (
-	OK                     = commonv1.ErrCode_ERR_CODE_OK
-	ErrSystem              = commonv1.ErrCode_ERR_CODE_SYSTEM
-	ErrParam               = commonv1.ErrCode_ERR_CODE_PARAM
-	ErrTokenExpired        = commonv1.ErrCode_ERR_CODE_TOKEN_EXPIRED
-	ErrMaintenance         = commonv1.ErrCode_ERR_CODE_MAINTENANCE
-	ErrRateLimited         = commonv1.ErrCode_ERR_CODE_RATE_LIMITED
-	ErrServerBusy          = commonv1.ErrCode_ERR_CODE_SERVER_BUSY
-	ErrAccountBanned       = commonv1.ErrCode_ERR_CODE_ACCOUNT_BANNED
-	ErrKicked              = commonv1.ErrCode_ERR_CODE_KICKED
-	ErrNoRole              = commonv1.ErrCode_ERR_CODE_NO_ROLE
-	ErrNameUsed            = commonv1.ErrCode_ERR_CODE_NAME_USED
-	ErrNameIllegal         = commonv1.ErrCode_ERR_CODE_NAME_ILLEGAL
-	ErrItemNotExist        = commonv1.ErrCode_ERR_CODE_ITEM_NOT_EXIST
-	ErrItemNotEnough       = commonv1.ErrCode_ERR_CODE_ITEM_NOT_ENOUGH
-	ErrBagFull             = commonv1.ErrCode_ERR_CODE_BAG_FULL
-	ErrItemNotUsable       = commonv1.ErrCode_ERR_CODE_ITEM_NOT_USABLE
-	ErrChannelClosed       = commonv1.ErrCode_ERR_CODE_CHANNEL_CLOSED
-	ErrPeerNotFound        = commonv1.ErrCode_ERR_CODE_PEER_NOT_FOUND
-	ErrChatTooFast         = commonv1.ErrCode_ERR_CODE_CHAT_TOO_FAST
-	ErrChatMuted           = commonv1.ErrCode_ERR_CODE_CHAT_MUTED
-	ErrMailNotFound        = commonv1.ErrCode_ERR_CODE_MAIL_NOT_FOUND
-	ErrMailTaken           = commonv1.ErrCode_ERR_CODE_MAIL_TAKEN
-	ErrNoAttachment        = commonv1.ErrCode_ERR_CODE_NO_ATTACHMENT
-	ErrBattleNotFound      = commonv1.ErrCode_ERR_CODE_BATTLE_NOT_FOUND
-	ErrBattleTokenInvalid  = commonv1.ErrCode_ERR_CODE_BATTLE_TOKEN_INVALID
-	ErrResultReported      = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
-	ErrBattleFull          = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
-	ErrResultRewardInvalid = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
-	ErrSigninConfig        = commonv1.ErrCode_ERR_CODE_SIGNIN_CONFIG
-	ErrSigninRewardLimit   = commonv1.ErrCode_ERR_CODE_SIGNIN_REWARD_LIMIT
-	ErrSigninBagFull       = commonv1.ErrCode_ERR_CODE_SIGNIN_BAG_FULL
-	ErrPartnerNotFound     = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_FOUND
-	ErrPartnerOwned        = commonv1.ErrCode_ERR_CODE_PARTNER_OWNED
-	ErrPartnerNotOwned     = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_OWNED
-	ErrPartnerNoCoin       = commonv1.ErrCode_ERR_CODE_PARTNER_NO_COIN
-	ErrPartnerMaxStar      = commonv1.ErrCode_ERR_CODE_PARTNER_MAX_STAR
-	ErrPartnerFieldFull    = commonv1.ErrCode_ERR_CODE_PARTNER_FIELD_FULL
+	OK                      = commonv1.ErrCode_ERR_CODE_OK
+	ErrSystem               = commonv1.ErrCode_ERR_CODE_SYSTEM
+	ErrParam                = commonv1.ErrCode_ERR_CODE_PARAM
+	ErrTokenExpired         = commonv1.ErrCode_ERR_CODE_TOKEN_EXPIRED
+	ErrMaintenance          = commonv1.ErrCode_ERR_CODE_MAINTENANCE
+	ErrRateLimited          = commonv1.ErrCode_ERR_CODE_RATE_LIMITED
+	ErrServerBusy           = commonv1.ErrCode_ERR_CODE_SERVER_BUSY
+	ErrAccountBanned        = commonv1.ErrCode_ERR_CODE_ACCOUNT_BANNED
+	ErrKicked               = commonv1.ErrCode_ERR_CODE_KICKED
+	ErrNoRole               = commonv1.ErrCode_ERR_CODE_NO_ROLE
+	ErrNameUsed             = commonv1.ErrCode_ERR_CODE_NAME_USED
+	ErrNameIllegal          = commonv1.ErrCode_ERR_CODE_NAME_ILLEGAL
+	ErrItemNotExist         = commonv1.ErrCode_ERR_CODE_ITEM_NOT_EXIST
+	ErrItemNotEnough        = commonv1.ErrCode_ERR_CODE_ITEM_NOT_ENOUGH
+	ErrBagFull              = commonv1.ErrCode_ERR_CODE_BAG_FULL
+	ErrItemNotUsable        = commonv1.ErrCode_ERR_CODE_ITEM_NOT_USABLE
+	ErrChannelClosed        = commonv1.ErrCode_ERR_CODE_CHANNEL_CLOSED
+	ErrPeerNotFound         = commonv1.ErrCode_ERR_CODE_PEER_NOT_FOUND
+	ErrChatTooFast          = commonv1.ErrCode_ERR_CODE_CHAT_TOO_FAST
+	ErrChatMuted            = commonv1.ErrCode_ERR_CODE_CHAT_MUTED
+	ErrMailNotFound         = commonv1.ErrCode_ERR_CODE_MAIL_NOT_FOUND
+	ErrMailTaken            = commonv1.ErrCode_ERR_CODE_MAIL_TAKEN
+	ErrNoAttachment         = commonv1.ErrCode_ERR_CODE_NO_ATTACHMENT
+	ErrBattleNotFound       = commonv1.ErrCode_ERR_CODE_BATTLE_NOT_FOUND
+	ErrBattleTokenInvalid   = commonv1.ErrCode_ERR_CODE_BATTLE_TOKEN_INVALID
+	ErrResultReported       = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
+	ErrBattleFull           = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
+	ErrResultRewardInvalid  = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
+	ErrSkillNotExist        = commonv1.ErrCode_ERR_CODE_SKILL_NOT_EXIST
+	ErrSkillLevelLow        = commonv1.ErrCode_ERR_CODE_SKILL_LEVEL_LOW
+	ErrSkillLearned         = commonv1.ErrCode_ERR_CODE_SKILL_LEARNED
+	ErrSkillNotLearned      = commonv1.ErrCode_ERR_CODE_SKILL_NOT_LEARNED
+	ErrSkillNoResource      = commonv1.ErrCode_ERR_CODE_SKILL_NO_RESOURCE
+	ErrSkillMaxLevel        = commonv1.ErrCode_ERR_CODE_SKILL_MAX_LEVEL
+	ErrShopGoodsNotExist    = commonv1.ErrCode_ERR_CODE_SHOP_GOODS_NOT_EXIST
+	ErrShopDiamondNotEnough = commonv1.ErrCode_ERR_CODE_SHOP_DIAMOND_NOT_ENOUGH
+	ErrShopLimitExceeded    = commonv1.ErrCode_ERR_CODE_SHOP_LIMIT_EXCEEDED
+	ErrShopBagFull          = commonv1.ErrCode_ERR_CODE_SHOP_BAG_FULL
+	ErrCopyNotFound         = commonv1.ErrCode_ERR_CODE_COPY_NOT_FOUND
+	ErrCopyLevelNotEnough   = commonv1.ErrCode_ERR_CODE_COPY_LEVEL_NOT_ENOUGH
+	ErrCopyBagFull          = commonv1.ErrCode_ERR_CODE_COPY_BAG_FULL
+	ErrSigninConfig         = commonv1.ErrCode_ERR_CODE_SIGNIN_CONFIG
+	ErrSigninRewardLimit    = commonv1.ErrCode_ERR_CODE_SIGNIN_REWARD_LIMIT
+	ErrSigninBagFull        = commonv1.ErrCode_ERR_CODE_SIGNIN_BAG_FULL
+	ErrPartnerNotFound      = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_FOUND
+	ErrPartnerOwned         = commonv1.ErrCode_ERR_CODE_PARTNER_OWNED
+	ErrPartnerNotOwned      = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_OWNED
+	ErrPartnerNoCoin        = commonv1.ErrCode_ERR_CODE_PARTNER_NO_COIN
+	ErrPartnerMaxStar       = commonv1.ErrCode_ERR_CODE_PARTNER_MAX_STAR
+	ErrPartnerFieldFull     = commonv1.ErrCode_ERR_CODE_PARTNER_FIELD_FULL
 )
 
 // messages 中文文案表（可热更新；不进协议 wire）
@@ -97,43 +110,56 @@ const (
 // 与常量块同等重要：新增错误码必须同步登记文案，否则 Message 走
 // 「未知错误」兜底——客户端提示退化成数字，是可观测的故障信号。
 var messages = map[Code]string{
-	OK:                     "成功",
-	ErrSystem:              "服务器内部错误",
-	ErrParam:               "参数错误",
-	ErrTokenExpired:        "登录已过期，请重新登录",
-	ErrMaintenance:         "服务器维护中",
-	ErrRateLimited:         "操作过于频繁，请稍后再试",
-	ErrServerBusy:          "服务器繁忙",
-	ErrAccountBanned:       "账号已被封禁",
-	ErrKicked:              "账号在其他设备登录",
-	ErrNoRole:              "尚未创建角色",
-	ErrNameUsed:            "角色名已被占用",
-	ErrNameIllegal:         "角色名含非法字符",
-	ErrItemNotExist:        "道具不存在",
-	ErrItemNotEnough:       "道具数量不足",
-	ErrBagFull:             "背包已满",
-	ErrItemNotUsable:       "道具当前不可使用",
-	ErrChannelClosed:       "频道未开放",
-	ErrPeerNotFound:        "对方不在线或不存在",
-	ErrChatTooFast:         "发言过于频繁",
-	ErrChatMuted:           "你已被禁言",
-	ErrMailNotFound:        "邮件不存在",
-	ErrMailTaken:           "附件已领取",
-	ErrNoAttachment:        "邮件没有附件",
-	ErrBattleNotFound:      "战斗不存在或已结束",
-	ErrBattleTokenInvalid:  "战斗令牌无效",
-	ErrResultReported:      "战斗结果已上报",
-	ErrBattleFull:          "战斗房间已满",
-	ErrResultRewardInvalid: "上报的奖励不存在",
-	ErrSigninConfig:        "签到奖励配置错误",
-	ErrSigninRewardLimit:   "签到奖励数量超出上限",
-	ErrSigninBagFull:       "背包已满，无法领取签到奖励",
-	ErrPartnerNotFound:     "伙伴配置不存在",
-	ErrPartnerOwned:        "已拥有该伙伴",
-	ErrPartnerNotOwned:     "尚未拥有该伙伴",
-	ErrPartnerNoCoin:       "金币不足",
-	ErrPartnerMaxStar:      "已达最高星级",
-	ErrPartnerFieldFull:    "上阵位已满",
+	OK:                      "成功",
+	ErrSystem:               "服务器内部错误",
+	ErrParam:                "参数错误",
+	ErrTokenExpired:         "登录已过期，请重新登录",
+	ErrMaintenance:          "服务器维护中",
+	ErrRateLimited:          "操作过于频繁，请稍后再试",
+	ErrServerBusy:           "服务器繁忙",
+	ErrAccountBanned:        "账号已被封禁",
+	ErrKicked:               "账号在其他设备登录",
+	ErrNoRole:               "尚未创建角色",
+	ErrNameUsed:             "角色名已被占用",
+	ErrNameIllegal:          "角色名含非法字符",
+	ErrItemNotExist:         "道具不存在",
+	ErrItemNotEnough:        "道具数量不足",
+	ErrBagFull:              "背包已满",
+	ErrItemNotUsable:        "道具当前不可使用",
+	ErrChannelClosed:        "频道未开放",
+	ErrPeerNotFound:         "对方不在线或不存在",
+	ErrChatTooFast:          "发言过于频繁",
+	ErrChatMuted:            "你已被禁言",
+	ErrMailNotFound:         "邮件不存在",
+	ErrMailTaken:            "附件已领取",
+	ErrNoAttachment:         "邮件没有附件",
+	ErrBattleNotFound:       "战斗不存在或已结束",
+	ErrBattleTokenInvalid:   "战斗令牌无效",
+	ErrResultReported:       "战斗结果已上报",
+	ErrBattleFull:           "战斗房间已满",
+	ErrResultRewardInvalid:  "上报的奖励不存在",
+	ErrSkillNotExist:        "技能配置不存在",
+	ErrSkillLevelLow:        "等级不足，无法学习",
+	ErrSkillLearned:         "该技能已学习",
+	ErrSkillNotLearned:      "尚未学习该技能",
+	ErrSkillNoResource:      "升级材料不足",
+	ErrSkillMaxLevel:        "已达最高等级",
+	ErrShopGoodsNotExist:    "商品不存在或已下架",
+	ErrShopDiamondNotEnough: "钻石不足",
+	ErrShopLimitExceeded:    "超出限购次数",
+	ErrShopBagFull:          "背包已满",
+	ErrCopyNotFound:         "副本不存在",
+	ErrCopyLevelNotEnough:   "等级不足，未解锁该副本",
+	ErrCopyBagFull:          "背包已满，无法领取副本奖励",
+	ErrSigninConfig:         "签到奖励配置错误",
+	ErrSigninRewardLimit:    "签到奖励数量超出上限",
+	ErrSigninBagFull:        "背包已满，无法领取签到奖励",
+	ErrPartnerNotFound:      "伙伴配置不存在",
+	ErrPartnerOwned:         "已拥有该伙伴",
+	ErrPartnerNotOwned:      "尚未拥有该伙伴",
+	ErrPartnerNoCoin:        "金币不足",
+	ErrPartnerMaxStar:       "已达最高星级",
+	ErrPartnerFieldFull:     "上阵位已满",
 }
 
 // Message 取中文文案（未登记返回通用文案）

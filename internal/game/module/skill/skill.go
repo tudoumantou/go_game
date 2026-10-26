@@ -1,50 +1,22 @@
 // internal/game/module/skill/skill.go —— 技能模块（3201-3206）
 //
-// 技能等级放在玩家快照 Ext["skill"]：学习/升级只改内存，与消耗的材料一起提交，
-// Redis CAS 失败时整批回滚（契约见 docs/R2.1-缓存原子变更契约.md）。
+// 已学技能与等级放在玩家快照 Ext["skill"]：学习/升级与扣材料在同一次
+// Redis CAS 提交，失败整批回滚。
 //
-// 架构职责：已学技能及其等级的记录。技能定义（名字/门槛/消耗）全部来自
-// skill.xml，模块不存任何配置副本。
-// 事件订阅：无（技能不监听行为事件；P7 可加「释放技能」计数任务）。
-// 配置表：skill.xml（Col1=名称，Col2=学习等级门槛，Col3=每级消耗钻石）。
-// 懒初始化：从未学习返回空 Levels map，首次学习才建键；
-// 列表是「已学技能」而非配置全集——与任务/副本不同，这里刻意
-// 只展示玩家拥有的，避免几十个未解锁技能刷屏。
+// 写法（v3.6 迁移）：模块声明一行、路由若干行、业务只碰 Ctx.Repo；
+// 协议号由消息类型反查，错误码来自统一枚举。
 package skill
 
 import (
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-	"google.golang.org/protobuf/proto"
 )
 
 // stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "skill"
-
-// 协议号（4.9：3201/3202 列表，3203/3204 学习，3205/3206 升级）。
-const (
-	msgIDListReq     = codec.MsgSkillListReq
-	msgIDListResp    = codec.MsgSkillListResp
-	msgIDLearnReq    = codec.MsgSkillLearnReq
-	msgIDLearnResp   = codec.MsgSkillLearnResp
-	msgIDUpgradeReq  = codec.MsgSkillUpgradeReq
-	msgIDUpgradeResp = codec.MsgSkillUpgradeResp
-)
-
-// 业务码（4.10）：技能段 3201-3205。
-const (
-	codeOK         int32 = 0
-	codeNotExist   int32 = 3201
-	codeLevelLow   int32 = 3202
-	codeLearned    int32 = 3203
-	codeNotLearned int32 = 3204
-	codeNoResource int32 = 3205
-	codeMaxLevel   int32 = 3206 // 已达最高等级
-)
 
 // 升级消耗道具（钻石）。
 //
@@ -60,29 +32,18 @@ type Data struct {
 	Levels map[int32]int32 `json:"levels"`
 }
 
-// Module 技能模块。
-type Module struct {
-	// Stateful 内嵌 Thin：生命周期与消息注册仍由 Thin 提供。
-	*module.Stateful[Data]
-	logger *log.Logger
-}
+// M 技能模块的唯一实例。
+var M = module.Define[Data](stateKey, newData).WithLogout(onLogout)
 
-// New 创建技能模块。
-func New(logger *log.Logger) *Module {
-	m := &Module{logger: logger}
-	m.Stateful = module.NewStateful(stateKey, newData,
-		module.ThinLogger(logger),
-		module.ThinLogout(m.onLogout),
-	)
-	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.SkillListResp{}, m.onList)
-	m.HandleR(msgIDLearnReq, msgIDLearnResp, &gamev1.SkillLearnResp{}, module.Typed(msgIDLearnResp, m.onLearn))
-	m.HandleR(msgIDUpgradeReq, msgIDUpgradeResp, &gamev1.SkillUpgradeResp{}, module.Typed(msgIDUpgradeResp, m.onUpgrade))
-	return m
+func init() {
+	M.HandleRoute(&gamev1.SkillListReq{}, onList)
+	module.Route(M, &gamev1.SkillLearnReq{}, onLearn)
+	module.Route(M, &gamev1.SkillUpgradeReq{}, onUpgrade)
 }
 
 // onLogout 下线时标脏，确保最后一次学习的技能随快照落库。
-func (m *Module) onLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
+func onLogout(c *module.Ctx[Data]) error {
+	c.State.MarkDirty(stateKey)
 	return nil
 }
 
@@ -92,62 +53,62 @@ func (m *Module) onLogout(ctx *module.Context) error {
 // Go 知识点：map 的 range 顺序随机，所以必须先把 key 收集成切片再排序；
 // 这里用手写冒泡而非 sort.Ints——N 通常 <20，省一个 import，
 // 也顺带在注释里写明了「为什么不用标准库」。
-func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
-	resp := &gamev1.SkillListResp{Code: codeOK}
-	if err := m.Read(ctx, func(d *Data) {
-		ids := make([]int32, 0, len(d.Levels))
-		for id := range d.Levels {
-			ids = append(ids, id)
-		}
-		// 稳定顺序，客户端列表不抖动（N 通常 <20，冒泡足够）。
-		for i := 0; i < len(ids); i++ {
-			for j := i + 1; j < len(ids); j++ {
-				if ids[j] < ids[i] {
-					ids[i], ids[j] = ids[j], ids[i]
-				}
-			}
-		}
-		for _, id := range ids {
-			name := ""
-			if cfg, ok := gamedata.GetSkillCfg(int64(id)); ok {
-				name = cfg.Col1
-			}
-			resp.Skills = append(resp.Skills, &gamev1.SkillEntry{
-				SkillId: id,
-				Name:    name,
-				Level:   d.Levels[id],
-			})
-		}
-	}); err != nil {
-		return err
+func onList(c *module.Ctx[Data]) error {
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.SkillListResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	return reply(ctx, msgIDListResp, resp)
+	resp := &gamev1.SkillListResp{}
+	ids := make([]int32, 0, len(d.Levels))
+	for id := range d.Levels {
+		ids = append(ids, id)
+	}
+	// 稳定顺序，客户端列表不抖动（N 通常 <20，冒泡足够）。
+	for i := 0; i < len(ids); i++ {
+		for j := i + 1; j < len(ids); j++ {
+			if ids[j] < ids[i] {
+				ids[i], ids[j] = ids[j], ids[i]
+			}
+		}
+	}
+	for _, id := range ids {
+		name := ""
+		if cfg, ok := gamedata.GetSkillCfg(int64(id)); ok {
+			name = cfg.Col1
+		}
+		resp.Skills = append(resp.Skills, &gamev1.SkillEntry{
+			SkillId: id,
+			Name:    name,
+			Level:   d.Levels[id],
+		})
+	}
+	return c.Reply(resp)
 }
 
 // onLearn 学习技能：Col2 是学习等级门槛，未达到直接拒绝。
 //
 // 「已学」用键存在判定：学习即置 1 级，与升级路径共用同一张表。
-func (m *Module) onLearn(ctx *module.Context, req *gamev1.SkillLearnReq, resp *gamev1.SkillLearnResp) error {
-	*resp = gamev1.SkillLearnResp{}
+func onLearn(c *module.Ctx[Data], req *gamev1.SkillLearnReq) error {
 	cfg, ok := gamedata.GetSkillCfg(int64(req.SkillId))
 	if !ok {
-		resp.Code = codeNotExist
-		return nil
+		return c.Reply(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSkillNotExist)})
 	}
-	// 等级门槛是只读判断，放在闭包外，避免无改动也走一次解码。
-	if ctx.State.Profile().Level < int32(cfg.Col2) {
-		resp.Code = codeLevelLow
-		return nil
+	// 等级门槛是只读判断，放在读状态之前，省一次解码。
+	if c.State.Profile().Level < int32(cfg.Col2) {
+		return c.Reply(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSkillLevelLow)})
 	}
-	return m.Mutate(ctx, func(d *Data) bool {
-		if _, learned := d.Levels[req.SkillId]; learned {
-			resp.Code = codeLearned
-			return false
-		}
-		d.Levels[req.SkillId] = 1
-		resp.Code = codeOK
-		return true
-	})
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	if _, learned := d.Levels[req.SkillId]; learned {
+		return c.Reply(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSkillLearned)})
+	}
+	d.Levels[req.SkillId] = 1
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	return c.Reply(&gamev1.SkillLearnResp{})
 }
 
 // onUpgrade 升级：扣材料与等级变更在同一次快照提交。
@@ -155,36 +116,34 @@ func (m *Module) onLearn(ctx *module.Context, req *gamev1.SkillLearnReq, resp *g
 // 消耗 = Col3 × 当前等级（线性增长，Col3=0 表示免费）；
 // 扣费（RemoveItem）与升级（Levels+1）都在内存里，CAS 失败一起回滚，
 // 不会「扣了钻石没升级」。
-func (m *Module) onUpgrade(ctx *module.Context, req *gamev1.SkillUpgradeReq, resp *gamev1.SkillUpgradeResp) error {
-	*resp = gamev1.SkillUpgradeResp{}
+func onUpgrade(c *module.Ctx[Data], req *gamev1.SkillUpgradeReq) error {
 	if _, ok := gamedata.GetSkillCfg(int64(req.SkillId)); !ok {
-		resp.Code = codeNotExist
-		return nil
+		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillNotExist)})
 	}
-	return m.Mutate(ctx, func(d *Data) bool {
-		level, learned := d.Levels[req.SkillId]
-		if !learned {
-			resp.Code = codeNotLearned
-			return false
-		}
-		// 消耗读 skill_upgrade 表（Col1=当前等级，Col2=升到下一级的消耗）。
-		// 查不到该等级的行即已满级——旧实现是 skill.Col3 * level，没有上限，
-		// 技能可以无限升级；运营也没有任何可调的地方（那张表纯摆设）。
-		cost, up := skillUpgradeCost(level)
-		if !up {
-			resp.Code = codeMaxLevel
-			return false
-		}
-		if err := module.Spend(ctx.State, upgradeItemID, cost); err != nil {
-			resp.Code = codeNoResource
-			return false
-		}
-		next := level + 1
-		d.Levels[req.SkillId] = next
-		resp.Code = codeOK
-		resp.Level = next
-		return true
-	})
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	level, learned := d.Levels[req.SkillId]
+	if !learned {
+		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillNotLearned)})
+	}
+	// 消耗读 skill_upgrade 表（Col1=当前等级，Col2=升到下一级的消耗）。
+	// 查不到该等级的行即已满级——旧实现是 skill.Col3 * level，没有上限，
+	// 技能可以无限升级；运营也没有任何可调的地方（那张表纯摆设）。
+	cost, up := skillUpgradeCost(level)
+	if !up {
+		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillMaxLevel)})
+	}
+	if err := module.Spend(c.State, upgradeItemID, cost); err != nil {
+		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillNoResource)})
+	}
+	next := level + 1
+	d.Levels[req.SkillId] = next
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	return c.Reply(&gamev1.SkillUpgradeResp{Level: next})
 }
 
 // skillUpgradeCost 返回「从 level 升到 level+1」的消耗；没有该行表示已满级。
@@ -198,13 +157,4 @@ func skillUpgradeCost(level int32) (int64, bool) {
 		}
 	}
 	return 0, false
-}
-
-// reply 序列化 proto 并经 ctx.Reply 下发。
-func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
 }

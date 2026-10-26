@@ -58,6 +58,25 @@ enum ErrCode {
   ERR_CODE_SIGNIN_REWARD_LIMIT = 6602; // 签到奖励数量超出上限
   ERR_CODE_SIGNIN_BAG_FULL     = 6603; // 背包已满，无法领取签到奖励
 
+  // ===== 32xx 技能 =====
+  ERR_CODE_SKILL_NOT_EXIST    = 3201; // 技能配置不存在
+  ERR_CODE_SKILL_LEVEL_LOW    = 3202; // 等级不足，无法学习
+  ERR_CODE_SKILL_LEARNED      = 3203; // 该技能已学习（幂等保护）
+  ERR_CODE_SKILL_NOT_LEARNED  = 3204; // 尚未学习该技能
+  ERR_CODE_SKILL_NO_RESOURCE  = 3205; // 升级材料不足
+  ERR_CODE_SKILL_MAX_LEVEL    = 3206; // 已达最高等级
+
+  // ===== 63xx 副本 =====
+  ERR_CODE_COPY_NOT_FOUND       = 6301; // 副本配置不存在
+  ERR_CODE_COPY_LEVEL_NOT_ENOUGH = 6302; // 等级不足，未解锁该副本
+  ERR_CODE_COPY_BAG_FULL        = 6303; // 背包已满，无法领取首通奖励
+
+  // ===== 64xx 商店 =====
+  ERR_CODE_SHOP_GOODS_NOT_EXIST    = 6401; // 商品不存在或已下架
+  ERR_CODE_SHOP_DIAMOND_NOT_ENOUGH = 6402; // 钻石不足
+  ERR_CODE_SHOP_LIMIT_EXCEEDED     = 6403; // 超出限购次数
+  ERR_CODE_SHOP_BAG_FULL           = 6404; // 背包已满
+
   // ===== 69xx 伙伴 =====
   ERR_CODE_PARTNER_NOT_FOUND  = 6901; // 伙伴配置不存在
   ERR_CODE_PARTNER_OWNED      = 6902; // 已拥有该伙伴（幂等保护）

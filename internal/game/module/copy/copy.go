@@ -9,15 +9,17 @@
 // 配置表：copy.xml（Col1=名称，Col2=等级门槛）、copy_drop.xml（首通掉落）。
 // 懒初始化：进度按需写入——首次通关某副本才在 Records map 里出现该键，
 // 列表请求只是「配置 × 已有记录」的即时 join。
+//
+// 写法（v3.6 迁移）：模块声明一行、路由若干行、业务只碰 Ctx.Repo；
+// 协议号由消息类型反查，错误码来自统一枚举。
 package copy
 
 import (
 	"fmt"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -25,22 +27,6 @@ import (
 
 // stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "copy"
-
-// 协议号（4.9：6301/6302 列表，6303/6304 结算）。
-const (
-	msgIDListReq    = codec.MsgCopyListReq
-	msgIDListResp   = codec.MsgCopyListResp
-	msgIDSettleReq  = codec.MsgCopySettleReq
-	msgIDSettleResp = codec.MsgCopySettleResp
-)
-
-// 业务码（4.10）：副本段 6301-6303。
-const (
-	codeOK             int32 = 0
-	codeCopyNotExist   int32 = 6301
-	codeLevelNotEnough int32 = 6302
-	codeBagFull        int32 = 6303
-)
 
 // Record 单个副本的通关记录。
 //
@@ -65,63 +51,51 @@ type Data struct {
 	Records map[int32]Record `json:"records"`
 }
 
-// Module 副本模块。
-type Module struct {
-	// Stateful 内嵌 Thin：生命周期与消息注册仍由 Thin 提供。
-	*module.Stateful[Data]
-	logger *log.Logger
-}
-
-// New 创建副本模块。
+// M 副本模块的唯一实例。
 //
-// 登录不做事：进度在 Ext 里，列表/结算时按需 load——数据量小，
+// 登录不做事：进度在 Ext 里，列表/结算时按需 decode——数据量小，
 // 懒加载比登录时预解码更划算。
-func New(logger *log.Logger) *Module {
-	m := &Module{logger: logger}
-	m.Stateful = module.NewStateful(stateKey, newData, module.ThinLogger(logger))
-	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.CopyListResp{}, m.onList)
-	m.HandleR(msgIDSettleReq, msgIDSettleResp, &gamev1.CopySettleResp{}, module.Typed(msgIDSettleResp, m.onSettle))
-	return m
+var M = module.Define[Data](stateKey, newData)
+
+func init() {
+	M.HandleRoute(&gamev1.CopyListReq{}, onList)
+	module.Route(M, &gamev1.CopySettleReq{}, onSettle)
 }
 
 // onList 副本列表（等级不足仍下发，结算时强校验）。
 //
 // 列表 = 配置全集 LEFT JOIN 玩家进度：没打过的副本也在列表里
 // （BestStar=0/PassCount=0），这样客户端不需要再拉配置表。
-func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
-	resp := &gamev1.CopyListResp{Code: codeOK}
-	if err := m.Read(ctx, func(d *Data) {
-		for _, cfg := range gamedata.CopyCfgList() {
-			entry := &gamev1.CopyEntry{
-				CopyId:   int32(cfg.Id),
-				Name:     cfg.Col1,
-				MinLevel: int32(cfg.Col2),
-			}
-			if rec, ok := d.Records[int32(cfg.Id)]; ok {
-				entry.BestStar = rec.Star
-				entry.PassCount = rec.PassCount
-			}
-			resp.Copies = append(resp.Copies, entry)
-		}
-	}); err != nil {
-		return err
+func onList(c *module.Ctx[Data]) error {
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.CopyListResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	return reply(ctx, msgIDListResp, resp)
+	resp := &gamev1.CopyListResp{}
+	for _, cfg := range gamedata.CopyCfgList() {
+		entry := &gamev1.CopyEntry{
+			CopyId:   int32(cfg.Id),
+			Name:     cfg.Col1,
+			MinLevel: int32(cfg.Col2),
+		}
+		if rec, ok := d.Records[int32(cfg.Id)]; ok {
+			entry.BestStar = rec.Star
+			entry.PassCount = rec.PassCount
+		}
+		resp.Copies = append(resp.Copies, entry)
+	}
+	return c.Reply(resp)
 }
 
 // onSettle 通关结算：星级取历史最佳，首通发放掉落并写经验。
 // 结算事实、首通奖励与经验都在同一条消息内，随同一份快照提交。
-func (m *Module) onSettle(ctx *module.Context, req *gamev1.CopySettleReq, resp *gamev1.CopySettleResp) error {
-	*resp = gamev1.CopySettleResp{}
-
+func onSettle(c *module.Ctx[Data], req *gamev1.CopySettleReq) error {
 	cfg, ok := gamedata.GetCopyCfg(int64(req.CopyId))
 	if !ok {
-		resp.Code = codeCopyNotExist
-		return nil
+		return c.Reply(&gamev1.CopySettleResp{Code: int32(errcode.ErrCopyNotFound)})
 	}
-	if ctx.State.Profile().Level < int32(cfg.Col2) {
-		resp.Code = codeLevelNotEnough
-		return nil
+	if c.State.Profile().Level < int32(cfg.Col2) {
+		return c.Reply(&gamev1.CopySettleResp{Code: int32(errcode.ErrCopyLevelNotEnough)})
 	}
 	star := req.Star
 	// 客户端上报的星级裁剪到 1-3：0/负数按 1 星，超高按 3 星，防止脏数据落库。
@@ -132,79 +106,60 @@ func (m *Module) onSettle(ctx *module.Context, req *gamev1.CopySettleReq, resp *
 		star = 3
 	}
 
-	var (
-		applied   bool
-		firstPass bool
-		changes   []*gamev1.ItemChange
-	)
-	err := m.Mutate(ctx, func(d *Data) bool {
-		// rec 是值副本；FirstPass 先取反再置位——本次是否首通必须在改写之前判定。
-		rec := d.Records[req.CopyId]
-		firstPass = !rec.FirstPass
-		if rec.Star < star {
-			rec.Star = star // 历史最佳只升不降
-		}
-		rec.PassCount++
-		rec.FirstPass = true
-
-		// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
-		// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算。
-		if firstPass {
-			grants := make([]module.ItemGrant, 0, 4)
-			for _, drop := range gamedata.CopyDropCfgList() {
-				if drop.Col1 != cfg.Id {
-					continue
-				}
-				grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
-			}
-			bagChanges, grantErr := module.Grant(ctx.State, grants)
-			if grantErr != nil {
-				resp.Code = codeBagFull
-				return false
-			}
-			changes = module.ToItemChanges(bagChanges)
-		}
-		d.Records[req.CopyId] = rec
-		applied = true
-		return true
-	})
+	d, err := c.Repo.Get()
 	if err != nil {
-		return err
-	}
-	if !applied {
-		// 闭包里已设好拒绝码（6404 等），不能被下面的成功码覆盖。
-		return nil
+		return c.Fail(&gamev1.CopySettleResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 
-	resp.Code = codeOK
-	resp.FirstPass = firstPass
+	// rec 是值副本；FirstPass 先取反再置位——本次是否首通必须在改写之前判定。
+	rec := d.Records[req.CopyId]
+	firstPass := !rec.FirstPass
+	if rec.Star < star {
+		rec.Star = star // 历史最佳只升不降
+	}
+	rec.PassCount++
+	rec.FirstPass = true
+
+	// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
+	// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算。
+	var changes []*gamev1.ItemChange
+	if firstPass {
+		grants := make([]module.ItemGrant, 0, 4)
+		for _, drop := range gamedata.CopyDropCfgList() {
+			if drop.Col1 != cfg.Id {
+				continue
+			}
+			grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
+		}
+		bagChanges, grantErr := module.Grant(c.State, grants)
+		if grantErr != nil {
+			return c.Reply(&gamev1.CopySettleResp{Code: int32(errcode.ErrCopyBagFull)})
+		}
+		changes = module.ToItemChanges(bagChanges)
+	}
+	d.Records[req.CopyId] = rec
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(&gamev1.CopySettleResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+
 	// 通关经验：等级门槛 * 50（门槛缺失时给保底 50）。
 	expGain := cfg.Col2 * 50
 	if cfg.Col2 <= 0 {
 		expGain = 50
 	}
-	resp.ExpGain = expGain
+	resp := &gamev1.CopySettleResp{FirstPass: firstPass, ExpGain: expGain}
 	if len(changes) > 0 {
 		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
 			resp.Rewards = raw
 		}
 	}
 	// AddExp 是可选注入：nil 时跳过（测试/无等级系统环境）。
-	if ctx.AddExp != nil {
-		ctx.AddExp(expGain)
+	if c.AddExp != nil {
+		c.AddExp(expGain)
 	}
 	// 事件：驱动任务/活动（copy_pass）
-	if ctx.Emit != nil {
-		ctx.Emit(module.Event{Type: "copy_pass", Key: fmt.Sprintf("%d", cfg.Id), Delta: 1})
+	if c.Emit != nil {
+		c.Emit(module.Event{Type: "copy_pass", Key: fmt.Sprintf("%d", cfg.Id), Delta: 1})
 	}
-	return nil
-}
-
-// reply 序列化 proto 并经 ctx.Reply 下发。
-func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
+	return c.Reply(resp)
 }
