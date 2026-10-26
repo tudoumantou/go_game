@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 // Config MySQL 配置。
@@ -62,7 +62,7 @@ func New(cfg Config) (*DB, error) {
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("mysql dsn is empty")
 	}
-	sqlDB, err := sql.Open("mysql", cfg.DSN)
+	sqlDB, err := sql.Open("mysql", normalizeDSN(cfg.DSN))
 	if err != nil {
 		return nil, fmt.Errorf("open mysql: %w", err)
 	}
@@ -84,6 +84,39 @@ func New(cfg Config) (*DB, error) {
 		return nil, fmt.Errorf("ping mysql: %w", err)
 	}
 	return &DB{DB: sqlDB}, nil
+}
+
+// normalizeDSN 把会话时区钉死成 UTC，与驱动解析时间列时用的 loc 对齐。
+//
+// 背景：`parseTime=true` 时驱动按 DSN 的 `loc` 解析时间列（**默认 UTC**），
+// 而 MySQL 的 `CURRENT_TIMESTAMP`/`NOW()` 用的是**服务器/会话**的
+// `time_zone`。两者不一致时，所有时间戳整体偏移：
+//
+//	MySQL +08:00 存 22:00 → 驱动按 UTC 解析成 22:00Z
+//	                      → 比真实时刻晚 8 小时（而且不报错，只是错）
+//
+// 靠「服务器默认是 UTC」来对齐太脆弱——运维改一次 `my.cnf` 就全错。这里
+// 显式设会话时区，谁配的服务器都不影响。
+//
+// 为什么选 UTC 而不是 +08:00：驱动要认 `Asia/Shanghai` 必须靠 IANA 时区库，
+// 而运行时镜像（distroless）没有 tzdata；引 `time/tzdata` 又要为 8 小时偏移
+// 塞进 450KB。业务侧需要北京时间的地方已经有 `timeutil.BusinessZone`
+// （FixedZone，不依赖 tzdata），所以存储层用 UTC 是最省的组合。
+//
+// 显式写了 `time_zone` 的 DSN 不动——那是调用方的显式选择。解析失败原样
+// 返回，让 sql.Open/Ping 报出真实的 DSN 错误（不吞掉拼写问题）。
+func normalizeDSN(dsn string) string {
+	cfg, err := mysql.ParseDSN(dsn)
+	if err != nil {
+		return dsn
+	}
+	if cfg.Params == nil {
+		cfg.Params = make(map[string]string, 1)
+	}
+	if _, ok := cfg.Params["time_zone"]; !ok {
+		cfg.Params["time_zone"] = "'+00:00'"
+	}
+	return cfg.FormatDSN()
 }
 
 // Tx 事务辅助：fn 返回错误时回滚，否则提交。

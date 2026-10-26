@@ -58,7 +58,10 @@ func startStorage(t *testing.T) (*db.DB, *redis.Client, string) {
 	require.NoError(t, err, "start redis")
 	t.Cleanup(func() { _ = redisC.Terminate(context.Background()) })
 
-	dsn, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
+	// 不写 loc：让 pkg/db.normalizeDSN 补 time_zone='+00:00'，与驱动默认的
+	// loc=UTC 对齐。之前这里写 loc=Local，宿主是 +0800 而容器是 UTC，
+	// 读出来的时间整整早 8 小时——那是测试自己造的偏差，不是产品问题。
+	dsn, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true")
 	require.NoError(t, err, "mysql dsn")
 	initSchema(t, dsn)
 

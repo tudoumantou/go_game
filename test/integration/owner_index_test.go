@@ -200,22 +200,25 @@ func TestMailIndexThroughModule(t *testing.T) {
 	require.Equal(t, "first", byID[id1].Fields["title"])
 	require.Equal(t, "second", byID[id2].Fields["title"])
 
-	// ③ 时间列：RFC3339，且往返后与「直接查库读到的时刻」完全相同。
+	// ③ 时间列：RFC3339，往返无损，且**与真实时刻一致**。
 	//
-	// 断言对象刻意选 DB 的原值而不是 time.Now()：这里要验的是**缓存往返无损**，
-	// 而不是 DB 时区对不对。两者是两件事——DSN 没配 loc 时，驱动会把库里的
-	// 时间当本地时区解析，SQL 路径与缓存路径会一起偏（同一个偏差，不是缓存
-	// 引入的）。拿 time.Now() 比会把配置问题算到缓存头上。
+	// 三件事一起验：
+	//   - 缓存往返不改变时刻（cache == db）；
+	//   - DB 时刻就是刚才写入的真实时刻（db ≈ now）——这条以前会差 8 小时，
+	//     因为测试 DSN 写了 loc=Local（宿主 +0800）而容器是 UTC。现在
+	//     pkg/db.normalizeDSN 把会话时区钉成 UTC，两端对齐；
+	//   - 格式是 RFC3339（不是 "2026-10-26 22:00:00 +0800 CST" 那种解析不了的）。
 	raw := byID[id1].Fields["created_at"]
 	require.NotEmpty(t, raw, "created_at 必须被缓存")
 	got, err := time.Parse(time.RFC3339, raw)
 	require.NoError(t, err, "created_at 应是 RFC3339，实际 %q", raw)
+	require.WithinDuration(t, time.Now(), got, 10*time.Minute,
+		"缓存里的发送时间必须与真实时刻一致（差 8 小时 = 会话时区与驱动 loc 不一致）")
 
 	var fromDB time.Time
 	require.NoError(t, database.QueryRowContext(ctx,
 		`SELECT created_at FROM mail WHERE id = ?`, id1).Scan(&fromDB))
-	require.True(t, fromDB.Equal(got),
-		"缓存往返不能改变时刻：db=%v cache=%v（若差 8 小时，检查 DSN 的 loc 参数）", fromDB, got)
+	require.True(t, fromDB.Equal(got), "缓存往返不能改变时刻：db=%v cache=%v", fromDB, got)
 
 	// ④ 行还在但字段变了：DropEntity 后重新展开必须拿到库里的新值。
 	//
