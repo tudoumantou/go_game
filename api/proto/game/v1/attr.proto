@@ -1,7 +1,0 @@
-// 游戏业务协议：属性模块（attr_formula.xml 公式驱动；AttrChangeNotify 见 player.proto）
-// TODO(P6): 按设计文档 17.1 功能映射落地消息；号段分配见 4.3。
-syntax = "proto3";
-
-package game_study.game.v1;
-
-option go_package = "game_study/pkg/pb/game/v1;gamev1";

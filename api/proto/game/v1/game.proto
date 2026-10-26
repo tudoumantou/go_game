@@ -1,0 +1,849 @@
+// 客户端协议总表。按消息号段分区，段内按功能文件排列。
+// 消息号唯一声明点是 message 上方的 `// @msg <id>` 注解；
+// 号段边界见 internal/common/constant（MsgID*Min/Max）。
+// 由 21 个分文件合并而来，合并脚本见 tools/mergeproto（一次性）。
+
+syntax = "proto3";
+
+package game_study.game.v1;
+
+option go_package = "game_study/pkg/pb/game/v1;gamev1";
+
+// ============================================================================
+// 1000-1999  登录与创角
+// ============================================================================
+
+// ---------- player.proto ----------
+// 进入游戏：role_id=0 表示尚无角色，返回 2003 引导创角
+// @msg 1010
+message EnterGameReq { // MsgID: 1010
+  int64 role_id = 1;
+}
+
+message EnterGameResp { // MsgID: 1011
+  int32  code        = 1; // 0 成功；2003 无角色
+  int64  role_id     = 2;
+  string server_time = 3; // RFC3339，客户端校准时钟
+}
+
+// 创角（职业取 career.xml，随机名库 create_name.xml）
+// @msg 1020
+message CreateRoleReq { // MsgID: 1020
+  string name   = 1; // 角色名（唯一性 + 敏感词校验）
+  int32  career = 2; // 职业 ID
+}
+
+message CreateRoleResp { // MsgID: 1021
+  int32  code    = 1; // 2004 重名 / 2005 非法字符
+  int64  role_id = 2;
+}
+
+// 玩家信息（进游戏后主动拉一次全量）
+// @msg 2001
+message PlayerInfoReq {} // MsgID: 2001
+
+// @msg 2002
+message PlayerInfoResp { // MsgID: 2002
+  int32  code   = 1;
+  int64  role_id = 2;
+  string name   = 3;
+  int32  level  = 4;
+  int64  exp    = 5;
+  repeated AttrPair attrs = 6; // 属性全量（attr_id → value）
+  int64 exp_max = 7;           // 升到下一级所需经验（满级 0）
+  int64 coin    = 8;           // 金币
+}
+
+message AttrPair {
+  int32 attr_id = 1;
+  int64 value   = 2;
+}
+
+// 属性增量推送（升级/装备/称号等导致的变化）
+message AttrChangeNotify { // MsgID: 2010 [Push]
+  repeated AttrDiff diffs = 1;
+}
+
+message AttrDiff {
+  int32 attr_id = 1;
+  int64 old_val = 2;
+  int64 new_val = 3;
+}
+
+
+// ============================================================================
+// 2000-2999  玩家数据
+// ============================================================================
+
+// ---------- level.proto ----------
+// 等级变化推送（升级/获得经验后）
+message LevelInfoNotify { // MsgID: 2011 [Push]
+  int32 level    = 1; // 当前等级
+  int64 exp      = 2; // 当前经验
+  int64 exp_max  = 3; // 升到下一级所需经验（满级为 0）
+}
+
+
+// ============================================================================
+// 3000-3999  背包与养成
+// ============================================================================
+
+// ---------- item.proto ----------
+// 使用道具（消耗/装备/礼包，走 bag 模块）
+// @msg 3001
+message UseItemReq { // MsgID: 3001
+  int64 item_uid = 1; // 背包实例 UID（非模板 ID）
+  int32 count    = 2;
+}
+
+// @msg 3002
+message UseItemResp { // MsgID: 3002
+  int32 code         = 1; // 3001 不存在 / 3002 不足 / 3004 不可用
+  int32 remain_count = 2; // 使用后剩余数量
+}
+
+// 背包列表（P6：堆叠模式，item_uid 暂等于 item_id；P7 改实例 UID）
+// @msg 3003
+message BagListReq {} // MsgID: 3003
+
+// @msg 3004
+message BagListResp { // MsgID: 3004
+  int32 code = 1;
+  repeated ItemEntry items = 2;
+}
+
+message ItemEntry {
+  int64 item_uid = 1;
+  int32 item_id  = 2;
+  int32 count    = 3;
+}
+
+// 背包变动推送（任何增删改后推送，客户端增量刷新）
+// @msg 3010
+message BagChangeNotify { // MsgID: 3010 [Push]
+  repeated ItemChange changes = 1;
+}
+
+message ItemChange {
+  int64  item_uid = 1;
+  int32  item_id  = 2; // 模板 ID
+  int32  count    = 3; // 变动后数量
+  int32  change   = 4; // 1 新增 2 修改 3 删除
+}
+
+// ---------- equip.proto ----------
+message EquipEntry {
+  int64 uid           = 1; // 装备实例 ID
+  int32 equip_id      = 2; // 配置 ID（equip.xml）
+  int32 enhance_level = 3;
+  int32 quality       = 4;
+  bool  equipped      = 5;
+}
+
+// @msg 3101
+message EquipListReq {} // MsgID: 3101
+
+// @msg 3102
+message EquipListResp { // MsgID: 3102
+  int32 code = 1;
+  repeated EquipEntry equips = 2;
+}
+
+// @msg 3103
+message EquipWearReq { // MsgID: 3103
+  int64 uid = 1;
+}
+
+// @msg 3104
+message EquipWearResp { // MsgID: 3104
+  int32 code = 1; // 3101 不存在 / 3102 等级不足 / 3103 部位冲突
+  repeated AttrPair attrs = 2; // 穿戴后属性全量
+}
+
+// @msg 3105
+message EquipTakeOffReq { // MsgID: 3105
+  int64 uid = 1;
+}
+
+// @msg 3106
+message EquipTakeOffResp { // MsgID: 3106
+  int32 code = 1;
+  repeated AttrPair attrs = 2;
+}
+
+// ---------- skill.proto ----------
+message SkillEntry {
+  int32  skill_id = 1;
+  string name     = 2;
+  int32  level    = 3;
+}
+
+// @msg 3201
+message SkillListReq {} // MsgID: 3201
+
+// @msg 3202
+message SkillListResp { // MsgID: 3202
+  int32 code = 1;
+  repeated SkillEntry skills = 2;
+}
+
+// @msg 3203
+message SkillLearnReq { // MsgID: 3203
+  int32 skill_id = 1;
+}
+
+// @msg 3204
+message SkillLearnResp { // MsgID: 3204
+  int32 code = 1; // 3201 不存在 / 3202 等级不足 / 3203 已学习
+}
+
+// @msg 3205
+message SkillUpgradeReq { // MsgID: 3205
+  int32 skill_id = 1;
+}
+
+// @msg 3206
+message SkillUpgradeResp { // MsgID: 3206
+  int32 code  = 1; // 3201 不存在 / 3204 未学习 / 3205 资源不足
+  int32 level = 2;
+}
+
+
+// ============================================================================
+// 4000-4999  场景与地图
+// ============================================================================
+
+// ---------- scene.proto ----------
+// Entity 场景内实体快照。
+message SceneEntity {
+  int64 player_id = 1;
+  string name     = 2;
+  int32 level     = 3;
+  int32 x         = 4;
+  int32 y         = 5;
+}
+
+// @msg 4001
+message SceneEnterReq {
+  int32 scene_id = 1;
+  int32 x        = 2; // 可选：不填则由服务端选默认落点
+  int32 y        = 3;
+}
+
+// @msg 4002
+message SceneEnterResp {
+  int32 code     = 1; // 0 成功；4001 场景不存在；4002 人数已满；4003 场景繁忙
+  int32 scene_id = 2;
+  int32 x        = 3; // 服务端权威坐标（可能被钳制）
+  int32 y        = 4;
+  repeated SceneEntity entities = 5; // 进入时的全量视野快照
+  int32 width    = 6;
+  int32 height   = 7;
+}
+
+// @msg 4003
+message SceneMoveReq {
+  int32 x   = 1;
+  int32 y   = 2;
+  int32 seq = 3; // 客户端序号，回执带回，用于匹配预测
+}
+
+// @msg 4004
+message SceneMoveResp {
+  int32 code = 1; // 0 成功；4004 超速被钳制；4005 不在场景中
+  int32 x    = 2; // 服务端权威坐标
+  int32 y    = 3;
+  int32 seq  = 4;
+}
+
+// @msg 4005
+message SceneLeaveReq {}
+
+// @msg 4006
+message SceneLeaveResp {
+  int32 code = 1;
+}
+
+// @msg 4010
+// 实体变动通知：type 1=出现 2=移动 3=离开。
+// 移动只带坐标，出现带完整快照（客户端需要名字/等级才能显示）。
+message SceneEntityNotify {
+  int32 type = 1;
+  SceneEntity entity = 2;
+}
+
+// @msg 4020
+message SceneSyncReq {
+  int32 scene_id = 1;
+}
+
+// @msg 4021
+// 全量同步：客户端发现通知序号断档，或重连后主动拉一次。
+message SceneSyncResp {
+  int32 code     = 1;
+  int32 scene_id = 2;
+  int32 x        = 3;
+  int32 y        = 4;
+  repeated SceneEntity entities = 5;
+}
+
+
+// ============================================================================
+// 5000-5999  战斗
+// ============================================================================
+
+// ---------- battle.proto ----------
+// 发起匹配（进入跨服竞技场队列）
+// @msg 5002
+message MatchReq { // MsgID: 5002
+  string mode = 1; // 玩法模式（arena/guild_war/copy），空则默认 arena
+}
+
+// @msg 5003
+message MatchResp { // MsgID: 5003
+  int32  code   = 1; // 0 已入队；6001 已在队列/战斗中；6004 玩法未开放
+  string mode   = 2;
+  int32  queued = 3; // 当前队列人数（客户端展示用）
+}
+
+// 战斗发起通知（匹配完成后由服务端下发）
+// @msg 5001
+message BattleStartNotify { // MsgID: 5001 [Push]
+  uint64 room_id      = 1; // 房间号
+  string battle_token = 2; // 准入令牌（结果上报须回带）
+  bytes  opponent     = 3; // 对手快照（战力/阵容/段位，非完整状态）
+  int64  timeout_sec  = 4; // 战斗时限，超时服务端按平局兜底结算
+}
+
+// 客户端战斗操作上报（服务端原样透传给对手，不解析 body）
+// @msg 5021
+message BattleOpReport { // MsgID: 5021
+  uint64 room_id = 1;
+  uint32 msg_id  = 2; // 客户端自定义战斗消息号
+  bytes  body    = 3;
+}
+
+// 战斗事件透传推送（对手操作/房间事件，服务端不解析）
+// @msg 5020
+message BattleSyncNotify { // MsgID: 5020 [Push]
+  uint64 room_id   = 1;
+  int64  player_id = 2; // 事件来源玩家
+  uint32 msg_id    = 3;
+  bytes  body      = 4;
+}
+
+// 客户端上报战斗结论（服务端：令牌校验 + 幂等 + 奖励存在性复核）
+// @msg 5010
+message BattleResultReport { // MsgID: 5010
+  uint64 room_id      = 1;
+  string battle_token = 2;
+  int32  result       = 3; // 0 胜 1 负 2 平
+  bytes  rewards      = 4; // 客户端计算的奖励明细（服务端复核后应用）
+  int64  finished_at  = 5;
+}
+
+// 战斗结算回执（服务端实际下发奖励，权威）
+// @msg 5011
+message BattleSettleNotify { // MsgID: 5011 [Push]
+  uint64 room_id = 1;
+  int32  code    = 2; // 0 成功；6002 令牌无效；6003 已上报
+  bytes  rewards = 3;
+}
+
+
+// ============================================================================
+// 6000-6999  社交（聊天/公会/队伍/副本/商店/活动/签到/排行/好友/伙伴）
+// ============================================================================
+
+// ---------- chat.proto ----------
+// 发送聊天（私聊/世界聊；跨服私聊经 Kafka 扇出，见 17.3）
+// @msg 6001
+message ChatSendReq { // MsgID: 6001
+  int32  channel  = 1; // 频道（chat_channel.xml：1 世界 2 私聊 …）
+  int64  peer_id  = 2; // 私聊对端 player_id（其他频道忽略）
+  string content  = 3;
+  string local_id = 4; // 客户端本地 ID（本地回显 + 发送侧幂等）
+}
+
+// @msg 6002
+message ChatSendResp { // MsgID: 6002
+  int32  code    = 1; // 4001 频道未开放 / 4002 对方不在线 / 4003 太频繁 / 4004 禁言
+  string msg_id  = 2; // 服务端分配的消息 ID（全局唯一，幂等键）
+  int64  sent_at = 3;
+}
+
+// 收到消息（含跨服扇出投递）
+// @msg 6010
+message ChatMessageNotify { // MsgID: 6010 [Push]
+  string msg_id      = 1;
+  int32  channel     = 2;
+  int64  sender_id   = 3;
+  string sender_name = 4;
+  int64  peer_id     = 5; // 私聊对端
+  string content     = 6;
+  int64  sent_at     = 7;
+}
+
+// 拉聊天历史（近期 200 条以共享 Redis 双端历史为权威，更早读 MySQL 归档）
+// @msg 6020
+message ChatHistoryReq { // MsgID: 6020
+  int64  peer_id       = 1;
+  string before_msg_id = 2; // 游标：此消息之前（倒序分页）
+  int32  limit         = 3; // 单页条数（≤100）
+}
+
+// @msg 6021
+message ChatHistoryResp { // MsgID: 6021
+  int32                code   = 1;
+  repeated ChatMessageNotify messages = 2;
+  bool                 has_more = 3;
+}
+
+// ---------- guild.proto ----------
+// @msg 6101
+message GuildInfoReq {} // MsgID: 6101
+
+// @msg 6102
+message GuildInfoResp { // MsgID: 6102
+  int32  code         = 1; // 6101 未加入公会
+  int64  guild_id     = 2;
+  string name         = 3;
+  int32  level        = 4;
+  int32  member_count = 5;
+  bool   is_leader    = 6;
+}
+
+// @msg 6103
+message GuildCreateReq { // MsgID: 6103
+  string name = 1;
+}
+
+// @msg 6104
+message GuildCreateResp { // MsgID: 6104
+  int32 code     = 1; // 6102 名字非法 / 6103 重名 / 6104 已加入公会
+  int64 guild_id = 2;
+}
+
+// @msg 6105
+message GuildJoinReq { // MsgID: 6105
+  int64 guild_id = 1;
+}
+
+// @msg 6106
+message GuildJoinResp { // MsgID: 6106
+  int32 code = 1; // 6101 公会不存在 / 6105 人数已满
+}
+
+// @msg 6107
+message GuildQuitReq {} // MsgID: 6107
+
+// @msg 6108
+message GuildQuitResp { // MsgID: 6108
+  int32 code = 1;
+}
+
+// ---------- team.proto ----------
+message TeamMemberInfo {
+  int64 player_id = 1;
+  string name     = 2;
+  bool   ready    = 3;
+  bool   is_leader = 4;
+}
+
+// @msg 6201
+message TeamInfoReq {} // MsgID: 6201
+
+// @msg 6202
+message TeamInfoResp { // MsgID: 6202
+  int32 code    = 1; // 6201 未组队
+  int64 team_id = 2;
+  int32 copy_id = 3;
+  repeated TeamMemberInfo members = 4;
+}
+
+// @msg 6203
+message TeamCreateReq { // MsgID: 6203
+  int32 copy_id = 1;
+}
+
+// @msg 6204
+message TeamCreateResp { // MsgID: 6204
+  int32 code    = 1; // 6202 已在队伍中
+  int64 team_id = 2;
+}
+
+// @msg 6205
+message TeamJoinReq { // MsgID: 6205
+  int64 team_id = 1;
+}
+
+// @msg 6206
+message TeamJoinResp { // MsgID: 6206
+  int32 code = 1; // 6203 队伍不存在 / 6204 队伍已满
+}
+
+// @msg 6207
+message TeamLeaveReq {} // MsgID: 6207
+
+// @msg 6208
+message TeamLeaveResp { // MsgID: 6208
+  int32 code = 1;
+}
+
+// ---------- copy.proto ----------
+message CopyEntry {
+  int32  copy_id    = 1;
+  string name       = 2;
+  int32  min_level  = 3;
+  int32  best_star  = 4;
+  int32  pass_count = 5;
+}
+
+// @msg 6301
+message CopyListReq {} // MsgID: 6301
+
+// @msg 6302
+message CopyListResp { // MsgID: 6302
+  int32 code = 1;
+  repeated CopyEntry copies = 2;
+}
+
+// @msg 6303
+message CopySettleReq { // MsgID: 6303
+  int32 copy_id = 1;
+  int32 star    = 2; // 本次星级 1-3
+}
+
+// @msg 6304
+message CopySettleResp { // MsgID: 6304
+  int32 code       = 1; // 6301 不存在 / 6302 等级不足
+  bool  first_pass = 2; // 是否首通（首通发奖）
+  int64 exp_gain   = 3;
+  bytes rewards    = 4; // BagChangeNotify
+}
+
+// ---------- shop.proto ----------
+message ShopGoods {
+  int32 goods_id = 1;
+  int32 item_id  = 2;
+  int32 price    = 3; // 单价（钻石）
+  int32 count    = 4; // 单次获得数量
+  int32 bought   = 5; // 本周期已购
+  int32 limit    = 6; // 周期限购（0 不限）
+}
+
+// @msg 6401
+message ShopListReq {} // MsgID: 6401
+
+// @msg 6402
+message ShopListResp { // MsgID: 6402
+  int32 code = 1;
+  repeated ShopGoods goods = 2;
+}
+
+// @msg 6403
+message ShopBuyReq { // MsgID: 6403
+  int32 goods_id = 1;
+  int32 count    = 2;
+}
+
+// @msg 6404
+message ShopBuyResp { // MsgID: 6404
+  int32 code   = 1; // 6401 商品不存在 / 6402 钻石不足 / 6403 超限购
+  int32 bought = 2;
+}
+
+// ---------- activity.proto ----------
+message ActivityEntry {
+  int32  activity_id = 1;
+  string name        = 2;
+  string type        = 3;
+  int32  target      = 4;
+  int32  progress    = 5;
+  bool   claimed     = 6;
+}
+
+// @msg 6501
+message ActivityListReq {} // MsgID: 6501
+
+// @msg 6502
+message ActivityListResp { // MsgID: 6502
+  int32 code = 1;
+  repeated ActivityEntry activities = 2;
+}
+
+// @msg 6503
+message ActivityClaimReq { // MsgID: 6503
+  int32 activity_id = 1;
+}
+
+// @msg 6504
+message ActivityClaimResp { // MsgID: 6504
+  int32 code = 1; // 6501 不存在 / 6502 未完成 / 6503 已领
+  bytes rewards = 2;
+}
+
+// ---------- signin.proto ----------
+message SigninReward {
+  int32 item_id = 1;
+  int64 count = 2;
+}
+
+// @msg 6601
+message SigninInfoReq {} // MsgID: 6601
+// @msg 6602
+message SigninInfoResp { // MsgID: 6602
+  int32 code = 1; // 0 成功；1 系统错误。
+  int32 today = 2; // 今天周几，1=周一…7=周日。
+  bool claimed_today = 3;
+  repeated int32 claimed_days = 4; // 本周已领取天数，升序。
+  map<int32, int64> claimed_rewards = 5; // 本周已领取奖励汇总 {item_id:count}。
+}
+
+// @msg 6603
+message SigninClaimReq {} // MsgID: 6603
+// @msg 6604
+message SigninClaimResp { // MsgID: 6604
+  int32 code = 1; // 0 成功（重复请求也成功）；6601 配置错误；6602 背包数量超限；1 系统错误。
+  bool already = 2; // 今天已领过，不再发奖。
+  int32 day = 3; // 本次领取的天数，1=周一…7=周日。
+  repeated SigninReward rewards = 4; // 当天的奖励。
+  repeated int32 claimed_days = 5;
+  map<int32, int64> claimed_rewards = 6;
+}
+
+// ---------- rank.proto ----------
+message RankEntry {
+  int64  player_id = 1;
+  string name      = 2;
+  int64  score     = 3;
+  int64  rank      = 4;
+}
+
+// @msg 6701
+message RankListReq {
+  // 榜单类型，空 = arena_score。类型由配置/运营约定，客户端不臆造。
+  string rank_type = 1;
+}
+
+// @msg 6702
+message RankListResp {
+  int32  code      = 1; // 0 成功；6701 榜单不可用
+  string rank_type = 2;
+  string season    = 3;
+  repeated RankEntry entries = 4; // Top-N（默认 50，上限 100）
+  bool   on_board  = 5;           // false 表示未上榜（my_rank/my_score 无意义）
+  int64  my_rank   = 6;
+  int64  my_score  = 7;
+  repeated RankEntry around = 8;  // 我的周边（含自己，前后各 5 名）
+  int64  updated_at = 9;          // 榜单最近写入时间（unix 秒）；0 表示未写入过
+}
+
+// ---------- friend.proto ----------
+message FriendEntry {
+  int64  player_id  = 1;
+  string name       = 2;
+  int32  level      = 3;
+  bool   online     = 4; // 仅展示用；断线/查询失败一律 false，不影响关系
+  int64  created_at = 5;
+}
+
+message FriendApplyEntry {
+  int64  player_id  = 1; // 申请方
+  string name       = 2;
+  int32  level      = 3;
+  int64  created_at = 4;
+}
+
+// @msg 6801
+message FriendListReq {}
+
+// @msg 6802
+message FriendListResp {
+  int32  code = 1; // 0 成功
+  repeated FriendEntry friends = 2;
+  repeated FriendApplyEntry applies = 3; // 待我处理的申请
+  int32  limit = 4;                      // 好友上限（配置），客户端据此提示
+}
+
+// @msg 6803
+message FriendApplyReq {
+  int64 player_id = 1; // 目标玩家
+}
+
+// @msg 6804
+message FriendApplyResp {
+  int32 code = 1; // 0 成功
+}
+
+// @msg 6805
+message FriendHandleReq {
+  int64 player_id = 1; // 申请方
+  bool  accept    = 2; // true 同意，false 拒绝
+}
+
+// @msg 6806
+message FriendHandleResp {
+  int32 code = 1;
+}
+
+// @msg 6807
+message FriendDeleteReq {
+  int64 player_id = 1;
+}
+
+// @msg 6808
+message FriendDeleteResp {
+  int32 code = 1;
+}
+
+// ---------- partner.proto ----------
+message PartnerEntry {
+  int32 partner_id = 1;
+  string name      = 2;
+  int32 quality    = 3;
+  int32 star       = 4;  // 0 表示未拥有
+  bool  on_field   = 5;
+  int64 atk_bonus  = 6;  // 该伙伴上阵时提供的攻击加成（未拥有为 0）
+}
+
+// @msg 6901
+message PartnerListReq {}
+
+// @msg 6902
+message PartnerListResp {
+  int32 code = 1;
+  repeated PartnerEntry partners = 2;
+  int32 field_limit = 3; // 上阵位数
+}
+
+// @msg 6903
+message PartnerActivateReq {
+  int32 partner_id = 1;
+}
+
+// @msg 6904
+message PartnerActivateResp {
+  int32 code = 1;
+}
+
+// @msg 6905
+message PartnerStarUpReq {
+  int32 partner_id = 1;
+}
+
+// @msg 6906
+message PartnerStarUpResp {
+  int32 code = 1;
+  int32 star     = 2; // 升星后的星级
+}
+
+// @msg 6907
+message PartnerFieldReq {
+  int32 partner_id = 1;
+  bool  on         = 2; // true 上阵，false 下阵
+}
+
+// @msg 6908
+message PartnerFieldResp {
+  int32 code   = 1;
+  int64 atk_bonus = 2; // 变更后的总加成（客户端可直接刷新面板）
+}
+
+
+// ============================================================================
+// 7000-7999  邮件与任务
+// ============================================================================
+
+// ---------- mail.proto ----------
+// 邮件列表（摘要）
+// @msg 7001
+message MailListReq {} // MsgID: 7001
+
+// @msg 7002
+message MailListResp { // MsgID: 7002
+  int32        code   = 1;
+  repeated MailSummary mails = 2;
+}
+
+message MailSummary {
+  int64  mail_id     = 1;
+  string title       = 2;
+  int64  sender_id   = 3;
+  int64  sent_at     = 4;
+  int64  expire_at   = 5;
+  bool   has_attachment = 6;
+  bool   read        = 7;
+}
+
+// 新邮件到达推送（Kafka gs.mail 幂等投递）
+message MailNewNotify { // MsgID: 7010 [Push]
+  int64  mail_id       = 1;
+  string title         = 2;
+  bool   has_attachment = 3;
+}
+
+// 领取附件（幂等：重复领取返回 5002）
+// @msg 7020
+message MailTakeAttachmentReq { // MsgID: 7020
+  int64 mail_id = 1;
+}
+
+// @msg 7021
+message MailTakeAttachmentResp { // MsgID: 7021
+  int32 code    = 1; // 5001 不存在 / 5002 已领取 / 5003 无附件
+  bytes rewards = 2; // 奖励明细（道具/货币增量）
+}
+
+// ---------- quest.proto ----------
+// 任务列表
+// @msg 7101
+message QuestListReq {} // MsgID: 7101
+
+// @msg 7102
+message QuestListResp { // MsgID: 7102
+  int32 code = 1;
+  repeated QuestEntry quests = 2;
+}
+
+message QuestEntry {
+  int32  quest_id = 1;
+  string name     = 2;
+  int32  status   = 3; // 0 未接 1 进行中 2 可领奖 3 已领奖
+  int32  progress = 4; // 当前进度
+  int32  target   = 5; // 目标进度
+}
+
+// 接取任务
+// @msg 7103
+message QuestAcceptReq { // MsgID: 7103
+  int32 quest_id = 1;
+}
+
+// @msg 7104
+message QuestAcceptResp { // MsgID: 7104
+  int32 code = 1; // 7101 任务不存在 / 7102 已接取
+}
+
+// 领奖
+// @msg 7105
+message QuestClaimReq { // MsgID: 7105
+  int32 quest_id = 1;
+}
+
+// @msg 7106
+message QuestClaimResp { // MsgID: 7106
+  int32 code = 1; // 7101 不存在 / 7103 未完成 / 7104 已领奖
+  int64 exp_gain = 2;
+  bytes rewards  = 3; // BagChangeNotify 序列化
+}
+
+
+// ============================================================================
+// 9000-9999  内部 gRPC
+// ============================================================================
+
+// ---------- attr.proto ----------
+
+
+// ---------- recharge.proto ----------

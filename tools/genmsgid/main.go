@@ -135,9 +135,9 @@ func main() {
 
 // scanProtos 遍历目录下全部 .proto，收集 `// @msg` 声明。
 //
-// filepath.Walk 递归整个目录树：proto 按业务分子目录（bag/battle/...），
-// 新目录无需在工具里注册。收集完统一按 ID 排序，保证 generate 的输出稳定
-// （排序在 generate 里还会再做一次，见其注释）。
+// filepath.Walk 递归整个目录树：当前协议集中在 game/v1/game.proto 一个文件，
+// 将来若按子目录再拆也无需在工具里注册。收集完统一按 ID 排序，保证 generate
+// 的输出稳定（排序在 generate 里还会再做一次，见其注释）。
 func scanProtos(dir string) ([]decl, error) {
 	var decls []decl
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
