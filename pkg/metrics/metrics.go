@@ -103,6 +103,7 @@ func Init(service string) {
 		registerLogin()
 		registerIDTab()
 		registerOwnerIndex()
+		registerRedisBreaker()
 		registerCenter()
 		registerKafka()
 		// 开关最后置 true：见函数注释的竞态窗口说明
@@ -772,6 +773,59 @@ func OwnerIndexBuildObserve(table string, d time.Duration) {
 		return
 	}
 	ownerIndexBuildDur.WithLabelValues(Service(), table).Observe(d.Seconds())
+}
+
+// ============================ Redis 熔断 ============================
+
+var (
+	redisBreakerState    *prometheus.GaugeVec
+	redisBreakerOpened   *prometheus.CounterVec
+	redisBreakerRejected *prometheus.CounterVec
+)
+
+// registerRedisBreaker 注册熔断指标。
+//
+// state 是 0/1/2（closed/open/half_open），配一条 `state > 0` 的告警即可
+// 覆盖「Redis 不可用」；opened_total 与 rejected_total 的比值能看出
+// 熔断是否在频繁抖动（抖动说明阈值偏低或故障是间歇性的）。
+func registerRedisBreaker() {
+	redisBreakerState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "redis_breaker", Name: "state",
+		Help: "熔断状态：0=closed 1=open 2=half_open",
+	}, []string{"service"})
+	redisBreakerOpened = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "redis_breaker", Name: "opened_total",
+		Help: "熔断打开次数（频繁增长说明故障在抖动）",
+	}, []string{"service"})
+	redisBreakerRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "redis_breaker", Name: "rejected_total",
+		Help: "被熔断快速拒绝的命令数（这些请求没有发往 Redis）",
+	}, []string{"service"})
+	registry.MustRegister(redisBreakerState, redisBreakerOpened, redisBreakerRejected)
+}
+
+// RedisBreakerState 上报熔断状态（0=closed 1=open 2=half_open）。
+func RedisBreakerState(state int32) {
+	if !enabled.Load() {
+		return
+	}
+	redisBreakerState.WithLabelValues(Service()).Set(float64(state))
+}
+
+// RedisBreakerOpened 熔断打开一次。
+func RedisBreakerOpened() {
+	if !enabled.Load() {
+		return
+	}
+	redisBreakerOpened.WithLabelValues(Service()).Inc()
+}
+
+// RedisBreakerRejected 记一条被熔断拒绝的命令。
+func RedisBreakerRejected() {
+	if !enabled.Load() {
+		return
+	}
+	redisBreakerRejected.WithLabelValues(Service()).Inc()
 }
 
 // ============================ 中心服 ============================

@@ -188,6 +188,51 @@ type RedisConfig struct {
 	DB          int      `yaml:"db"`             // 仅单点模式有效
 	PoolSize    int      `yaml:"pool_size"`      // 连接池上限
 	MinIdleConn int      `yaml:"min_idle_conns"` // 必须 ≤ PoolSize（19.1）
+
+	// CircuitBreaker 熔断（docs/缓存架构设计.md §9）：Redis 故障时快速失败，
+	// 不让每条命令都等满超时再把降级路径拖死。
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+}
+
+// CircuitBreakerConfig 熔断参数。
+//
+// 三种配置形态（与 limit 段同一惯例）：
+//   - 不写或 0 值 = 默认开启（阈值 5、冷却 5s、探测 1）；
+//   - threshold 负数 = 关闭熔断（每条命令照旧等超时）；
+//   - 显式给值 = 按给定值。
+type CircuitBreakerConfig struct {
+	// Threshold 连续失败多少次打开熔断。
+	Threshold int `yaml:"threshold"`
+	// Cooldown 打开后多久进入半开（放行探测）。
+	Cooldown string `yaml:"cooldown"`
+	// Probes 半开状态放行的探测请求数。
+	Probes int `yaml:"probes"`
+}
+
+// CooldownDuration 冷却时长；空值返回 0（由 cache 侧补默认 5s）。
+func (c CircuitBreakerConfig) CooldownDuration() time.Duration {
+	d, _ := ParseDuration(c.Cooldown)
+	return d
+}
+
+// Validate 校验熔断段（配错要在启动第一秒炸，而不是等故障发生时才发现）。
+func (c CircuitBreakerConfig) Validate() error {
+	if c.Threshold < -1 {
+		return fmt.Errorf("redis.circuit_breaker.threshold: 只接受 0（默认）/正数/ -1（关闭），得到 %d", c.Threshold)
+	}
+	if c.Cooldown != "" {
+		d, err := ParseDuration(c.Cooldown)
+		if err != nil {
+			return fmt.Errorf("redis.circuit_breaker.cooldown: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("redis.circuit_breaker.cooldown: 必须为正，得到 %q", c.Cooldown)
+		}
+	}
+	if c.Probes < 0 {
+		return fmt.Errorf("redis.circuit_breaker.probes: 不能为负，得到 %d", c.Probes)
+	}
+	return nil
 }
 
 type KafkaConfig struct {
@@ -462,6 +507,9 @@ func (c *Config) Validate() error {
 		if err := c.Map.Validate(); err != nil {
 			return fmt.Errorf("map: %w", err)
 		}
+	}
+	if err := c.Redis.CircuitBreaker.Validate(); err != nil {
+		return err
 	}
 	// 一对多索引声明：配错会表现为「登录后功能列表为空」且不报错，
 	// 所以放在启动校验里，让配置错误第一秒就炸。

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql/driver"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
@@ -263,4 +264,40 @@ func TestOwnerIndexValidate(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, rows)
 	require.Equal(t, []int64{1}, missing, "两处都没有 → 全部 missing")
+}
+
+// TestOwnerIndexMembersFallbackWhenBreakerOpen 熔断打开后 Members 仍回落 MySQL。
+//
+// 这是熔断的核心承诺：故障确认后命令不再发出去，既有降级路径立刻生效——
+// 而不是「等 5s 超时之后才降级」。
+func TestOwnerIndexMembersFallbackWhenBreakerOpen(t *testing.T) {
+	ctx := context.Background()
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	sqlDB, mock, err := sqlmock.New()
+	require.NoError(t, err, "sqlmock")
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	b := newQuietBreaker(t, BreakerOptions{Threshold: 2, Cooldown: time.Minute})
+	rdb.AddHook(b)
+
+	oi := NewOwnerIndex(rdb, sqlDB, "mail", "player_id", "id")
+	mustSet(t, mr, OwnerIndexReadyKey("mail"), "1")
+
+	// 打穿熔断：Redis 宕机 + 两次失败
+	mr.Close()
+	_ = rdb.Get(ctx, "probe").Err()
+	_ = rdb.Get(ctx, "probe").Err()
+	require.Equal(t, BreakerOpen, b.State(), "应已熔断")
+
+	// 熔断期间：Ready 拿不到，Members 回落 MySQL 且成功
+	mock.ExpectQuery("SELECT id FROM mail WHERE player_id =").WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(101))
+	ids, err := oi.Members(ctx, 7)
+	require.NoError(t, err, "熔断不应让降级路径失败")
+	require.Equal(t, []int64{101}, ids)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

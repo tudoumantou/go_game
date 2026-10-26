@@ -23,6 +23,16 @@ redis:
   password: ""
   db: 0
 
+  # 熔断（docs/缓存架构设计.md §9）：Redis 故障时快速失败，不让每条命令
+  # 等满超时把降级路径拖死。连续 threshold 次失败后打开，cooldown 内所有
+  # 命令直接返回错误（读回落 MySQL / 写只告警照常工作），冷却后放 1 个
+  # 探测请求：成功关闭、失败重新打开。
+  # 不写或全 0 = 默认开启（阈值 5 / 冷却 5s / 探测 1）；threshold: -1 = 关闭。
+  circuit_breaker:
+    threshold: 5
+    cooldown: 5s
+    probes: 1
+
 kafka:
   brokers: ["kafka:9092"]
   producer_required_acks: all

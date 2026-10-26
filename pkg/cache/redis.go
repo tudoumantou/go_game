@@ -29,6 +29,8 @@ type RedisConfig struct {
 	DB       int
 	PoolSize int
 	MinIdle  int
+	// Breaker 熔断参数（见 breaker.go）；Threshold < 0 时关闭熔断。
+	Breaker BreakerOptions
 }
 
 // Client Redis 客户端封装。
@@ -37,7 +39,8 @@ type RedisConfig struct {
 // go-redis——未来换客户端/加埋点只改本文件。
 // 并发：创建后只读（内部 client 连接池自身并发安全），可作全局单例。
 type Client struct {
-	client redis.UniversalClient
+	client  redis.UniversalClient
+	breaker *Breaker // nil 表示熔断关闭
 }
 
 // New 根据配置创建 Redis 客户端（单点/哨兵/集群自动识别）。
@@ -65,12 +68,20 @@ func New(cfg RedisConfig) (*Client, error) {
 		client = redis.NewClient(opts.Simple())
 	}
 
+	// 熔断器挂在连接上（Hook）：所有命令都经过它，包括 pipeline 与 Lua。
+	// 必须在 Ping 之前装好——Ping 本身就是第一条探测命令。
+	var breaker *Breaker
+	if !cfg.Breaker.disabled() {
+		breaker = NewBreaker(cfg.Breaker)
+		client.AddHook(breaker)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("redis ping: %w", err)
 	}
-	return &Client{client: client}, nil
+	return &Client{client: client, breaker: breaker}, nil
 }
 
 // Close 关闭连接。
@@ -82,6 +93,14 @@ func (c *Client) Close() error {
 		return nil
 	}
 	return c.client.Close()
+}
+
+// Breaker 熔断器（未启用时为 nil，供监控/测试读取状态）。
+func (c *Client) Breaker() *Breaker {
+	if c == nil {
+		return nil
+	}
+	return c.breaker
 }
 
 // GetClient 暴露底层客户端（仅内部基础封装使用）。

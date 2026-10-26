@@ -91,6 +91,11 @@ func (s *Server) Start(ctx context.Context) error {
 		DB:       s.cfg.Redis.DB,
 		PoolSize: s.cfg.Redis.PoolSize,
 		MinIdle:  s.cfg.Redis.MinIdleConn,
+		Breaker: cache.BreakerOptions{
+			Threshold: s.cfg.Redis.CircuitBreaker.Threshold,
+			Cooldown:  s.cfg.Redis.CircuitBreaker.CooldownDuration(),
+			Probes:    s.cfg.Redis.CircuitBreaker.Probes,
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("connect redis: %w", err)
