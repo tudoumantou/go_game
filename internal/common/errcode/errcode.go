@@ -53,6 +53,7 @@ type Code = commonv1.ErrCode
 // 段内留号（如 1006+ 空置）：同域新增错误向后追加，不打乱已有编号。
 const (
 	OK                     = commonv1.ErrCode_ERR_CODE_OK
+	ErrSystem              = commonv1.ErrCode_ERR_CODE_SYSTEM
 	ErrParam               = commonv1.ErrCode_ERR_CODE_PARAM
 	ErrTokenExpired        = commonv1.ErrCode_ERR_CODE_TOKEN_EXPIRED
 	ErrMaintenance         = commonv1.ErrCode_ERR_CODE_MAINTENANCE
@@ -91,6 +92,7 @@ const (
 // 「未知错误」兜底——客户端提示退化成数字，是可观测的故障信号。
 var messages = map[Code]string{
 	OK:                     "成功",
+	ErrSystem:              "服务器内部错误",
 	ErrParam:               "参数错误",
 	ErrTokenExpired:        "登录已过期，请重新登录",
 	ErrMaintenance:         "服务器维护中",

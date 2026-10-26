@@ -19,7 +19,7 @@ func TestParityWithProto(t *testing.T) {
 	// Go 常量集合
 	goVals := map[Code]bool{}
 	for _, v := range []Code{
-		OK, ErrParam, ErrTokenExpired, ErrMaintenance, ErrRateLimited, ErrServerBusy,
+		OK, ErrSystem, ErrParam, ErrTokenExpired, ErrMaintenance, ErrRateLimited, ErrServerBusy,
 		ErrAccountBanned, ErrKicked, ErrNoRole, ErrNameUsed, ErrNameIllegal,
 		ErrItemNotExist, ErrItemNotEnough, ErrBagFull, ErrItemNotUsable,
 		ErrChannelClosed, ErrPeerNotFound, ErrChatTooFast, ErrChatMuted,

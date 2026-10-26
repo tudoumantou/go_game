@@ -11,6 +11,10 @@ option go_package = "game_study/pkg/pb/common/v1;commonv1";
 enum ErrCode {
   ERR_CODE_OK = 0; // 成功
 
+  // 历史值：早期模块用 1 表示「服务端内部错误」，wire 上已存在，
+  // 保持编号不变，仅纳入统一枚举管理（新代码请用 1006）。
+  ERR_CODE_SYSTEM = 1; // 服务器内部错误
+
   // ===== 1xxx 通用/系统 =====
   ERR_CODE_PARAM           = 1001; // 参数错误
   ERR_CODE_TOKEN_EXPIRED   = 1002; // 登录已过期，请重新登录

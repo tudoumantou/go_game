@@ -28,9 +28,9 @@ const (
 	// stateKey 同时是 Ext 槽位键与落库归属的模块名。
 	stateKey = "signin"
 
-	// 错误码：6601-6603 在 api/proto/common/v1/errcode.proto 统一登记，
-	// 由生成体系产出常量——模块不再手写数字。
-	codeSystem   int32 = 1 // 1 = 本地系统错误（历史契约，未进 proto 枚举）
+	// 错误码全部来自 errcode 枚举（api/proto/common/v1/errcode.proto），
+	// 模块不再手写数字：客户端与服务端从同一份定义生成文案。
+	codeSystem   int32 = int32(errcode.ErrSystem)
 	codeConfig   int32 = int32(errcode.ErrSigninConfig)
 	codeBagLimit int32 = int32(errcode.ErrSigninRewardLimit)
 	codeBagFull  int32 = int32(errcode.ErrSigninBagFull)
