@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"testing"
 
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 	"game_study/pkg/model"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -81,23 +82,23 @@ func TestActivateAndStarUp(t *testing.T) {
 	cfg := firstPartner(t)
 	st := newFakeState(1, 10_000)
 	ctx, raw := newCtx(st)
-	m := New(log.New("test"))
+	m := M
 
 	// 激活：扣配置里的 col3，星级 1。
 	body, _ := proto.Marshal(&gamev1.PartnerActivateReq{PartnerId: int32(cfg.Id)})
-	err := m.OnMessage(ctx, msgIDActivateReq, body)
+	err := m.OnMessage(ctx, codec.MsgPartnerActivateReq, body)
 	require.NoError(t, err)
 	var act gamev1.PartnerActivateResp
 	_ = proto.Unmarshal(*raw, &act)
-	require.EqualValues(t, codeOK, act.Code)
+	require.EqualValues(t, errcode.OK, act.Code)
 	got := st.items[itemCoin]
 	require.EqualValues(t, 10_000-cfg.Col3, got, fmt.Sprintf("coin = %d, want %d", got, 10_000-cfg.Col3))
 
 	// 重复激活：拒绝且不扣钱。
-	err = m.OnMessage(ctx, msgIDActivateReq, body)
+	err = m.OnMessage(ctx, codec.MsgPartnerActivateReq, body)
 	require.NoError(t, err)
 	_ = proto.Unmarshal(*raw, &act)
-	require.EqualValues(t, codeOwned, act.Code)
+	require.EqualValues(t, errcode.ErrPartnerOwned, act.Code)
 	got = st.items[itemCoin]
 	require.EqualValues(t, 10_000-cfg.Col3, got, fmt.Sprintf("duplicate activate must not charge: %d", got))
 
@@ -105,11 +106,11 @@ func TestActivateAndStarUp(t *testing.T) {
 	cost, ok := starCost(int32(cfg.Id), 1)
 	require.True(t, ok, "missing star cost config")
 	starBody, _ := proto.Marshal(&gamev1.PartnerStarUpReq{PartnerId: int32(cfg.Id)})
-	err = m.OnMessage(ctx, msgIDStarUpReq, starBody)
+	err = m.OnMessage(ctx, codec.MsgPartnerStarUpReq, starBody)
 	require.NoError(t, err)
 	var up gamev1.PartnerStarUpResp
 	_ = proto.Unmarshal(*raw, &up)
-	require.EqualValues(t, codeOK, up.Code, fmt.Sprintf("star up code=%d star=%d", up.Code, up.Star))
+	require.EqualValues(t, errcode.OK, up.Code, fmt.Sprintf("star up code=%d star=%d", up.Code, up.Star))
 	require.EqualValues(t, 2, up.Star)
 	got = st.items[itemCoin]
 	require.EqualValues(t, 10_000-cfg.Col3-cost, got, fmt.Sprintf("coin after star up = %d", got))
@@ -119,15 +120,15 @@ func TestFieldBonusAppliedOnce(t *testing.T) {
 	cfg := firstPartner(t)
 	st := newFakeState(1, 10_000)
 	ctx, raw := newCtx(st)
-	m := New(log.New("test"))
+	m := M
 
 	// 先激活。
 	body, _ := proto.Marshal(&gamev1.PartnerActivateReq{PartnerId: int32(cfg.Id)})
-	_ = m.OnMessage(ctx, msgIDActivateReq, body)
+	_ = m.OnMessage(ctx, codec.MsgPartnerActivateReq, body)
 
 	// 上阵：加成 = col3 × 1 星。
 	onBody, _ := proto.Marshal(&gamev1.PartnerFieldReq{PartnerId: int32(cfg.Id), On: true})
-	err := m.OnMessage(ctx, msgIDFieldReq, onBody)
+	err := m.OnMessage(ctx, codec.MsgPartnerFieldReq, onBody)
 	require.NoError(t, err)
 	var fr gamev1.PartnerFieldResp
 	_ = proto.Unmarshal(*raw, &fr)
@@ -135,15 +136,15 @@ func TestFieldBonusAppliedOnce(t *testing.T) {
 	require.EqualValues(t, cfg.Col3, st.bonus["atk"])
 
 	// 重复上阵：幂等，不能二次累加（R6.3）。
-	_ = m.OnMessage(ctx, msgIDFieldReq, onBody)
+	_ = m.OnMessage(ctx, codec.MsgPartnerFieldReq, onBody)
 	for i := 0; i < 3; i++ {
-		_ = m.OnMessage(ctx, msgIDFieldReq, onBody)
+		_ = m.OnMessage(ctx, codec.MsgPartnerFieldReq, onBody)
 	}
 	require.EqualValues(t, cfg.Col3, st.bonus["atk"])
 
 	// 下阵：加成归零。
 	offBody, _ := proto.Marshal(&gamev1.PartnerFieldReq{PartnerId: int32(cfg.Id), On: false})
-	_ = m.OnMessage(ctx, msgIDFieldReq, offBody)
+	_ = m.OnMessage(ctx, codec.MsgPartnerFieldReq, offBody)
 	require.EqualValues(t, 0, st.bonus["atk"])
 }
 
@@ -152,7 +153,7 @@ func TestOnLoginRestoresBonus(t *testing.T) {
 	cfg := firstPartner(t)
 	st := newFakeState(1, 0)
 	ctx, _ := newCtx(st)
-	m := New(log.New("test"))
+	m := M
 
 	d := &Data{Stars: map[int32]int32{int32(cfg.Id): 2}, Field: []int32{int32(cfg.Id)}}
 	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))

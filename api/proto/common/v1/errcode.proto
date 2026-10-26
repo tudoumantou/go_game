@@ -57,4 +57,12 @@ enum ErrCode {
   ERR_CODE_SIGNIN_CONFIG       = 6601; // 签到奖励配置错误
   ERR_CODE_SIGNIN_REWARD_LIMIT = 6602; // 签到奖励数量超出上限
   ERR_CODE_SIGNIN_BAG_FULL     = 6603; // 背包已满，无法领取签到奖励
+
+  // ===== 69xx 伙伴 =====
+  ERR_CODE_PARTNER_NOT_FOUND  = 6901; // 伙伴配置不存在
+  ERR_CODE_PARTNER_OWNED      = 6902; // 已拥有该伙伴（幂等保护）
+  ERR_CODE_PARTNER_NOT_OWNED  = 6903; // 尚未拥有该伙伴
+  ERR_CODE_PARTNER_NO_COIN    = 6904; // 金币不足
+  ERR_CODE_PARTNER_MAX_STAR   = 6905; // 已达最高星级
+  ERR_CODE_PARTNER_FIELD_FULL = 6906; // 上阵位已满
 }

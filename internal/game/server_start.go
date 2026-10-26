@@ -321,7 +321,7 @@ func (s *Server) initModules() {
 		// 好友：关系直写 MySQL 事务（双人状态不适合放单玩家快照），缓存只用于在线展示。
 		s.modules.Register(friend.New(s.database, s.presence, s.logger))
 		// 伙伴：状态进快照，激活/升星与金币消耗同一份 CAS 提交。
-		s.modules.Register(partner.New(s.logger))
+		s.modules.Register(partner.M)
 		// 场景：协议转发到场景 Actor，位置与视野由场景 Actor 独占。
 		s.modules.Register(scenemod.New(s.sceneMgr, s.logger))
 	}

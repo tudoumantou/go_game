@@ -20,6 +20,7 @@
 package module
 
 import (
+	"fmt"
 	"time"
 
 	"game_study/pkg/codec"
@@ -122,6 +123,9 @@ func (b *Bound[D]) SetClock(fn func() time.Time) *Bound[D] {
 //
 // 与旧 HandleR 的区别：不预先绑定响应协议，因此不限制「一问一答」——
 // 处理器可以回任意消息、回多条，或者不回。
+//
+// 适用无参协议：请求的语义完全由「谁在发 + 服务端状态」决定（查询、
+// 领取今天、上线下线这类）。需要请求参数的协议用 Route。
 func (b *Bound[D]) HandleRoute(req proto.Message, h Handler[D]) {
 	b.Handle(codec.ProtoID(req), func(ctx *Context, msgID uint32, _ []byte) error {
 		if b.clock != nil && ctx.Clock == nil {
@@ -130,6 +134,53 @@ func (b *Bound[D]) HandleRoute(req proto.Message, h Handler[D]) {
 		return h(b.newCtx(ctx, msgID))
 	})
 }
+
+// Route 注册带请求体的路由：解包交给基座，业务只写「拿到 req 之后做什么」。
+//
+// 为什么是包级泛型函数而不是 Bound 的方法：Go 的方法不能有自己的类型参数，
+// 「响应/请求类型随协议而变」只能靠包级函数推断（D 来自入参 b，R 来自 req）。
+//
+// 每次请求都新建一份消息实例再解包——直接解到 req 上会污染注册时传入的
+// 那份，并发请求共用同一个对象即是数据竞争。
+func Route[D any, R proto.Message](b *Bound[D], req R, h func(*Ctx[D], R) error) {
+	b.Handle(codec.ProtoID(req), func(ctx *Context, msgID uint32, body []byte) error {
+		if b.clock != nil && ctx.Clock == nil {
+			ctx.Clock = b.clock
+		}
+		msg, ok := req.ProtoReflect().New().Interface().(R)
+		if !ok {
+			return fmt.Errorf("module %s: request type mismatch", b.Name())
+		}
+		if err := proto.Unmarshal(body, msg); err != nil {
+			return fmt.Errorf("module %s: decode request: %w", b.Name(), err)
+		}
+		return h(b.newCtx(ctx, msgID), msg)
+	})
+}
+
+// WithLogin 设置玩家上线钩子（加成重算这类「登录时补一刀」的模块用）。
+//
+// 名字不带 On 前缀：OnLogin 已被 Module 接口占用（生命周期入口），
+// 这里是「注册钩子」而不是「实现接口方法」。
+func (b *Bound[D]) WithLogin(fn func(*Ctx[D]) error) *Bound[D] {
+	b.loginFn = func(ctx *Context) error { return fn(b.newCtx(ctx, 0)) }
+	return b
+}
+
+// WithLogout 设置玩家下线钩子。
+func (b *Bound[D]) WithLogout(fn func(*Ctx[D]) error) *Bound[D] {
+	b.logoutFn = func(ctx *Context) error { return fn(b.newCtx(ctx, 0)) }
+	return b
+}
+
+// WithEvent 设置事件消费钩子（任务/活动这类进度模块用）。
+func (b *Bound[D]) WithEvent(fn func(*Ctx[D], Event)) *Bound[D] {
+	b.eventFn = func(ctx *Context, evt Event) { fn(b.newCtx(ctx, 0), evt) }
+	return b
+}
+
+// Logger 模块日志器（名字已作为固定字段带上，业务不必再传 logger）。
+func (b *Bound[D]) Logger() *log.Logger { return b.logger }
 
 // NewCtx 用给定上下文构造业务上下文（测试可直接调用处理器）。
 func (b *Bound[D]) NewCtx(ctx *Context) *Ctx[D] { return b.newCtx(ctx, 0) }

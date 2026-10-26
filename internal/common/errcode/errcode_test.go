@@ -26,6 +26,8 @@ func TestParityWithProto(t *testing.T) {
 		ErrMailNotFound, ErrMailTaken, ErrNoAttachment,
 		ErrBattleNotFound, ErrBattleTokenInvalid, ErrResultReported, ErrBattleFull, ErrResultRewardInvalid,
 		ErrSigninConfig, ErrSigninRewardLimit, ErrSigninBagFull,
+		ErrPartnerNotFound, ErrPartnerOwned, ErrPartnerNotOwned,
+		ErrPartnerNoCoin, ErrPartnerMaxStar, ErrPartnerFieldFull,
 	} {
 		goVals[v] = true
 	}

@@ -83,6 +83,12 @@ const (
 	ErrSigninConfig        = commonv1.ErrCode_ERR_CODE_SIGNIN_CONFIG
 	ErrSigninRewardLimit   = commonv1.ErrCode_ERR_CODE_SIGNIN_REWARD_LIMIT
 	ErrSigninBagFull       = commonv1.ErrCode_ERR_CODE_SIGNIN_BAG_FULL
+	ErrPartnerNotFound     = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_FOUND
+	ErrPartnerOwned        = commonv1.ErrCode_ERR_CODE_PARTNER_OWNED
+	ErrPartnerNotOwned     = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_OWNED
+	ErrPartnerNoCoin       = commonv1.ErrCode_ERR_CODE_PARTNER_NO_COIN
+	ErrPartnerMaxStar      = commonv1.ErrCode_ERR_CODE_PARTNER_MAX_STAR
+	ErrPartnerFieldFull    = commonv1.ErrCode_ERR_CODE_PARTNER_FIELD_FULL
 )
 
 // messages 中文文案表（可热更新；不进协议 wire）
@@ -122,6 +128,12 @@ var messages = map[Code]string{
 	ErrSigninConfig:        "签到奖励配置错误",
 	ErrSigninRewardLimit:   "签到奖励数量超出上限",
 	ErrSigninBagFull:       "背包已满，无法领取签到奖励",
+	ErrPartnerNotFound:     "伙伴配置不存在",
+	ErrPartnerOwned:        "已拥有该伙伴",
+	ErrPartnerNotOwned:     "尚未拥有该伙伴",
+	ErrPartnerNoCoin:       "金币不足",
+	ErrPartnerMaxStar:      "已达最高星级",
+	ErrPartnerFieldFull:    "上阵位已满",
 }
 
 // Message 取中文文案（未登记返回通用文案）
