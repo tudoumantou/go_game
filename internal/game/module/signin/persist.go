@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"game_study/pkg/model"
+	"game_study/pkg/timeutil"
 	"game_study/pkg/writebehind"
 )
 
@@ -63,10 +64,10 @@ func fromRow(row *model.PlayerSignin) (*SignIn, error) {
 
 // validate 落库前校验：天数在 1-7，奖励数量为正，坏数据整批回滚。
 //
-// 天数上界 weekDays 同时约束「周序号」语义——8 号不存在于任何一周。
+// 天数上界 timeutil.DaysPerWeek 同时约束「周序号」语义——8 号不存在于任何一周。
 func validate(d *SignIn) error {
 	for _, day := range d.Days {
-		if day < 1 || day > weekDays {
+		if day < 1 || day > timeutil.DaysPerWeek {
 			return fmt.Errorf("invalid signin day %d", day)
 		}
 	}

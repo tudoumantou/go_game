@@ -12,7 +12,11 @@
 // FixedZone 固定 +8 让计算结果在任何机器上确定。
 package activity
 
-import "time"
+import (
+	"time"
+
+	"game_study/pkg/timeutil"
+)
 
 // daySeconds 一天的秒数（86400）。
 //
@@ -25,7 +29,7 @@ const daySeconds int64 = 86400
 // 选 2020：保证任意生产时刻减 epoch 都是正数且量级适中，给「基准之前」
 // 的哨兵判断（见 Window）留出空间。FixedZone 而非 LoadLocation：
 // 不依赖系统 tzdata，跨机器结果确定；8*3600 秒 = +08:00，无 DST。
-var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, time.FixedZone("CST", 8*3600)).Unix()
+var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, timeutil.BusinessZone).Unix()
 
 // Window 返回 now 所在周期的起止与周期序号。
 //

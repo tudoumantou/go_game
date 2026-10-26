@@ -13,6 +13,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"game_study/pkg/timeutil"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -89,20 +90,6 @@ func call(t *testing.T, m module.Module, ctx *module.Context, rec *recorder, msg
 	return raw
 }
 
-// TestWeekdayOf 验证北京时间下的周一至周日映射，与进程时区无关。
-func TestWeekdayOf(t *testing.T) {
-	// 2026-10-19 是周一，2026-10-25 是周日。
-	monday := time.Date(2026, 10, 19, 10, 0, 0, 0, businessZone)
-	for i := 0; i < 7; i++ {
-		got, want := weekdayOf(monday.Add(time.Duration(i)*24*time.Hour)), int32(i+1)
-		require.EqualValues(t, want, got, fmt.Sprintf("day +%d: got %d want %d", i, got, want))
-	}
-	// 北京周一 00:30 在 UTC 仍是周日 16:30，必须按北京时间算周一。
-	utc := time.Date(2026, 10, 18, 16, 30, 0, 0, time.UTC)
-	got := weekdayOf(utc)
-	require.EqualValues(t, 1, got, fmt.Sprintf("utc boundary: got %d want 1", got))
-}
-
 // TestSignInAdd 验证天数升序、奖励累加、同一天不重复登记。
 func TestSignInAdd(t *testing.T) {
 	d := &SignIn{}
@@ -158,7 +145,7 @@ func TestStateRoundTrip(t *testing.T) {
 func TestClaimFlow(t *testing.T) {
 	st := newFakeState(1)
 	ctx, rec := newCtx(st)
-	M.SetClock(func() time.Time { return time.Date(2026, 10, 21, 9, 0, 0, 0, businessZone) }) // 周三
+	M.SetClock(func() time.Time { return time.Date(2026, 10, 21, 9, 0, 0, 0, timeutil.BusinessZone) }) // 周三
 	m := M
 
 	// 信息：未领取，今天=3。

@@ -39,12 +39,6 @@ import (
 // stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "login"
 
-// businessZone 固定 UTC+8：与签到共用同一套业务日口径。
-//
-// 用 FixedZone 而不是 LoadLocation：不依赖容器里有没有 tzdata，
-// 也不会因系统时区变化改变「今天」的判定。
-var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
-
 // Data 是登录礼包的私有状态。
 //
 // 字段语义：

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/timeutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -69,7 +70,7 @@ func newCtx(st *fakeState) *module.Context {
 
 // day 返回北京时间某天的正午，避免边界歧义。
 func day(n int) time.Time {
-	return time.Date(2026, 10, 20, 12, 0, 0, 0, businessZone).AddDate(0, 0, n)
+	return time.Date(2026, 10, 20, 12, 0, 0, 0, timeutil.BusinessZone).AddDate(0, 0, n)
 }
 
 // TestFirstLoginGrants 首次登录发第 1 档，连续天数=1。

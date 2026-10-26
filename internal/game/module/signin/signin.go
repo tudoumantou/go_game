@@ -19,27 +19,19 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"time"
 
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"game_study/pkg/timeutil"
 	"github.com/samber/lo"
 )
 
 const (
 	// stateKey 同时是 Ext 槽位键与落库归属的模块名。
 	stateKey = "signin"
-
-	weekDays int32 = 7
 )
-
-// businessZone 固定 UTC+8：进程或容器时区不同不该改变「今天周几」。
-//
-// 与 loginreward 同一常量：两个日历玩法必须同口径，否则会出现
-// 「登录礼包按 UTC 已跨天、签到还没跨周」的错位。
-var businessZone = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // SignIn 是签到的业务视图：本周已领取天数（1=周一…7=周日）与已领取奖励汇总。
 //
@@ -76,7 +68,7 @@ func onInfo(c *module.Ctx[SignIn]) error {
 	// 每个请求只采样一次时钟，防止处理途中跨过周零点：
 	// 若在 has() 判断后重新取时间，跨过周日 24 点的请求会出现
 	// 「按旧周几判定已领、按新周几发奖」的错位。
-	today := weekdayOf(c.Now())
+	today := timeutil.Weekday(c.Now())
 
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -95,7 +87,7 @@ func onInfo(c *module.Ctx[SignIn]) error {
 // 顺序固定为「取状态 → 校验配置 → 幂等判断 → 发奖 → 改状态 → 存回」，
 // 任何一步失败都不 Save，内存改动不会产生一次无意义的提交。
 func onClaim(c *module.Ctx[SignIn]) error {
-	today := weekdayOf(c.Now())
+	today := timeutil.Weekday(c.Now())
 
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -183,19 +175,6 @@ func (d *SignIn) add(day int32, grants []module.ItemGrant) {
 	for _, g := range grants {
 		d.Rewards[g.ItemID] += g.Count
 	}
-}
-
-// weekdayOf 返回北京时间下的周几：1=周一…7=周日。
-//
-// Go 知识点：time.Weekday 的零值是 Sunday（0），与「周一=1」差一天，
-// 所以周日要单独映射成 7；In(zone) 把时间切到固定时区再取 Weekday，
-// 避免服务器 UTC 时把周一算成周日。
-func weekdayOf(now time.Time) int32 {
-	wd := now.In(businessZone).Weekday()
-	if wd == time.Sunday {
-		return 7
-	}
-	return int32(wd)
 }
 
 // protoRewards 把内部发奖结构转成协议结构（按 ItemID 排序由调用方保证）。
