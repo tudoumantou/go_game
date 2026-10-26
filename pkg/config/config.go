@@ -272,8 +272,12 @@ type CacheMapping struct {
 	// Table 表名。
 	Table string `yaml:"table"`
 	// By 归属者列，成为 ZSET 的 score（如 role_id / player_id / guild_id）。
+	//
+	// preload_all 时可留空：整表预热不需要归属列。
 	By string `yaml:"by"`
 	// Key 实体 id 列，成为 ZSET 的 member（通常是主键）。
+	//
+	// 必填：索引构建与实体预热都以它为 keyset 分页游标。
 	Key string `yaml:"key"`
 	// LoadOnLogin 登录时展开：按角色捞出全部 id 并预加载到内存。
 	//
@@ -291,14 +295,18 @@ func (m CacheMapping) Validate() error {
 	if m.Table == "" {
 		return fmt.Errorf("idtab.mappings: table 不能为空")
 	}
+	if m.Key == "" {
+		return fmt.Errorf("idtab.mappings[%s]: key（实体 id 列）必填——构建与预热都以它为分页游标", m.Table)
+	}
 	if m.PreloadAll {
 		if m.LoadOnLogin {
 			return fmt.Errorf("idtab.mappings[%s]: preload_all 与 load_on_login 互斥（数据已在缓存，不需要再展开）", m.Table)
 		}
+		// by 可空：整表预热只搬数据，不建归属索引
 		return nil
 	}
-	if m.By == "" || m.Key == "" {
-		return fmt.Errorf("idtab.mappings[%s]: 非 preload_all 时必须同时声明 by 与 key", m.Table)
+	if m.By == "" {
+		return fmt.Errorf("idtab.mappings[%s]: 非 preload_all 必须声明 by（归属者列）", m.Table)
 	}
 	if m.By == m.Key {
 		return fmt.Errorf("idtab.mappings[%s]: by 与 key 不能是同一列（%s）", m.Table, m.Key)

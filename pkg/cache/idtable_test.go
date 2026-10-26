@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"strings"
@@ -344,4 +345,59 @@ func mustSAdd(t *testing.T, mr *miniredis.Miniredis, key string, members ...stri
 	t.Helper()
 	_, err := mr.SAdd(key, members...)
 	require.NoError(t, err, fmt.Sprintf("sadd %s: %v", key, err))
+}
+
+// guildRows 构造公会表的一页实体行（SELECT * 动态列）。
+func guildRows(rows ...[]any) *sqlmock.Rows {
+	r := sqlmock.NewRows([]string{"id", "name", "level"})
+	for _, row := range rows {
+		vals := make([]driver.Value, len(row))
+		for i, v := range row {
+			vals[i] = v
+		}
+		r.AddRow(vals...)
+	}
+	return r
+}
+
+// TestPreheatLoadsAllRows 整表预热：keyset 分页扫全表，逐页合批 HSET 回填。
+func TestPreheatLoadsAllRows(t *testing.T) {
+	it, mr, mock, cleanup := newTestIDTable(t)
+	defer cleanup()
+	it.SetPageSize(2) // 强制翻页
+
+	mock.ExpectQuery("SELECT \\* FROM guild WHERE").WithArgs(0, 2).
+		WillReturnRows(guildRows([]any{1, "g1", 5}, []any{2, "g2", 7}))
+	mock.ExpectQuery("SELECT \\* FROM guild WHERE").WithArgs(2, 2).
+		WillReturnRows(guildRows([]any{3, "g3", 9}))
+
+	n, err := it.Preheat(context.Background(), TableMeta{Name: "guild", PK: "id"})
+	require.NoError(t, err)
+	require.EqualValues(t, 3, n, "预热行数")
+
+	// 全部行进hash，字段原样（toString 归一）
+	require.Equal(t, "g1", mr.HGet(EntityKey("guild", 1), "name"))
+	require.Equal(t, "9", mr.HGet(EntityKey("guild", 3), "level"),
+		"整型列经 toString 归一为字符串")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestPreheatNilHandles 无双句柄时退化为空操作（单测/无 Redis 环境）。
+func TestPreheatNilHandles(t *testing.T) {
+	sqlDB, _, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	n, err := NewIDTable(nil, sqlDB).Preheat(context.Background(), TableMeta{Name: "guild", PK: "id"})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, n)
+}
+
+// TestPreheatBadIdent 标识符白名单：非法表名在预热前报错。
+func TestPreheatBadIdent(t *testing.T) {
+	it, _, _, cleanup := newTestIDTable(t)
+	defer cleanup()
+	_, err := it.Preheat(context.Background(), TableMeta{Name: "guild; DROP TABLE player", PK: "id"})
+	require.Error(t, err)
 }

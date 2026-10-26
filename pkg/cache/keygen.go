@@ -73,3 +73,12 @@ func ShardKey(index int, playerID int64) string {
 func OwnerIndexKey(table string) string {
 	return fmt.Sprintf("%s:%s", PrefixOwnerIndex, table)
 }
+
+// OwnerIndexReadyKey 归属索引构建完成标记。
+//
+// 与 IDTabReadyKey 故意分开：同一张表可能同时有存在性集合与归属索引
+// （如 player_partner 两个都建），两者的构建时机与数据来源不同，
+// 共用 ready 会让其中一个把另一个误标记为「已就绪」。
+func OwnerIndexReadyKey(table string) string {
+	return fmt.Sprintf("%s:%s:ready", PrefixOwnerIndex, table)
+}

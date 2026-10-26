@@ -84,6 +84,12 @@ type Server struct {
 	metricsSrv *metrics.Server
 	idTable    *cache.IDTable // ID 表：存在性判断从 MySQL 挪到 Redis（12.5）
 
+	// ownerIdx 归属索引（by_owner:{table} ZSET）：一对多表按角色展开，
+	// 登录时一次取出某玩家的全部实体 id（缓存架构设计 §3）。按表名索引，
+	// 由 idtab.mappings 声明驱动；preload_all 的表只预热实体不建索引，
+	// 不出现在这里。
+	ownerIdx map[string]*cache.OwnerIndex
+
 	// mailMod/chatMod 是模块实例，Kafka 消费者要直接调它们（发邮件/落聊天历史）。
 	// 提升为字段而不是 initModules 的局部变量：装配被拆成多个方法后，
 	// 跨方法的依赖只能挂在 Server 上。
@@ -147,6 +153,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.initIDTable()
+	s.initOwnerIndex()
 	s.initCenterClient()
 
 	// ② Actor 系统 → 场景 → 跨服/battle → Kafka 生产者 → 模块注册
@@ -444,6 +451,93 @@ func (s *Server) maintainIDTables(ctx context.Context) {
 					s.logger.Warn("idtab orphan clean failed", "table", meta.Name, "err", err)
 				} else if n > 0 {
 					s.logger.Info("idtab orphan cleaned", "table", meta.Name, "removed", n)
+				}
+			}
+		}
+	}
+}
+
+// buildOwnerIndexes 后台构建归属索引与整表预热（缓存架构设计 §3）。
+//
+// 每个映射二选一（或都做）：
+//   - preload_all：idTable.Preheat 把整表实体行搬进 Redis hash；
+//   - 带 by：OwnerIndex.BuildOne 建 ZSET（取材 → 临时 key + RENAME → ready）。
+//
+// 逐映射构建、记录第一错误但不中断——一个映射配错（比如 by 列不存在）
+// 不该让其余映射也建不起来。ready 未置位期间登录展开回落 MySQL。
+func (s *Server) buildOwnerIndexes(ctx context.Context) {
+	for _, m := range s.cfg.IDTab.Mappings {
+		if ctx.Err() != nil {
+			return
+		}
+		start := time.Now()
+		if m.PreloadAll {
+			n, err := s.idTable.Preheat(ctx, cache.TableMeta{Name: m.Table, PK: m.Key})
+			if err != nil {
+				s.logger.Warn("owner preheat failed", "table", m.Table, "err", err)
+				continue
+			}
+			s.logger.Info("owner preheat done", "table", m.Table, "count", n,
+				"elapsed", time.Since(start).Round(time.Millisecond))
+			continue
+		}
+		oi, ok := s.ownerIdx[m.Table]
+		if !ok {
+			continue
+		}
+		n, err := oi.BuildOne(ctx)
+		elapsed := time.Since(start)
+		if err != nil {
+			s.logger.Warn("owner index build failed", "table", m.Table, "err", err)
+			continue
+		}
+		if metrics.Enabled() {
+			metrics.OwnerIndexBuildObserve(m.Table, elapsed)
+			metrics.OwnerIndexState(m.Table, n, true)
+		}
+		s.logger.Info("owner index built", "table", m.Table, "count", n,
+			"elapsed", elapsed.Round(time.Millisecond))
+	}
+	s.logger.Info("owner index build done", "mappings", len(s.cfg.IDTab.Mappings))
+}
+
+// maintainOwnerIndexes 归属索引维护（缓存架构设计 §5）：每 10 分钟数量核对。
+//
+// 与 maintainIDTables 的 Reconcile 同构：ZCARD 与库里行数不一致 → 重建
+// （重建期间 Members 回落 DB，不阻塞登录）。只核对索引，实体 hash 的
+// 孤儿清理由 IDTable.CleanOrphans 负责（同一个 e:{table}:{id} 空间）。
+func (s *Server) maintainOwnerIndexes(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, m := range s.cfg.IDTab.Mappings {
+				if ctx.Err() != nil {
+					return
+				}
+				oi, ok := s.ownerIdx[m.Table]
+				if !ok {
+					continue
+				}
+				rebuilt, err := oi.Reconcile(ctx)
+				if err != nil {
+					s.logger.Warn("owner index reconcile failed", "table", m.Table, "err", err)
+					continue
+				}
+				if rebuilt {
+					if metrics.Enabled() {
+						metrics.OwnerIndexReconcileMismatch(m.Table)
+					}
+					s.logger.Warn("owner index rebuilt after mismatch", "table", m.Table)
+				}
+				if n, err := oi.Index().Count(ctx); err == nil {
+					if metrics.Enabled() {
+						metrics.OwnerIndexState(m.Table, n, oi.Ready(ctx))
+					}
 				}
 			}
 		}

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"game_study/pkg/actor"
+	"game_study/pkg/cache"
 	"game_study/pkg/writebehind"
 )
 
@@ -133,6 +134,12 @@ type ActivitySnapshot struct {
 type PrefetchSource interface {
 	Equips() []EquipSnapshot
 	Activities() []ActivitySnapshot
+	// OwnerRows 归属展开预加载的实体行（缓存架构设计 §4.2）。
+	//
+	// 入参是 idtab.mappings 里声明的表名（模块自己知道自己是哪张表）；
+	// 返回该玩家名下按 id 升序的实体行（列名 → 字符串值，动态列）。
+	// 未配 load_on_login 的表返回 nil，模块回落自行查库。
+	OwnerRows(table string) []cache.EntityRow
 }
 
 // Context 模块上下文：Actor 上下文 + 玩家状态 + 下行发送。

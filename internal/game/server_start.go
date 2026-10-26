@@ -143,6 +143,61 @@ func (s *Server) initIDTable() {
 	}
 }
 
+// initOwnerIndex 建归属索引（缓存架构设计 §3）：按 idtab.mappings 声明。
+//
+// 只给「有归属列」的映射建索引；preload_all 的映射走整表实体预热
+// （idTable.Preheat），它也可能同时带 by——那索引也建，两件事都做。
+// 构建/维护同样在后台 goroutine：ready 未置位期间 Members 回落 MySQL，
+// 服务可用性不受影响（与 initIDTable 同一约定）。
+func (s *Server) initOwnerIndex() {
+	if s.database == nil || s.redis == nil {
+		return
+	}
+	for _, m := range s.cfg.IDTab.Mappings {
+		if m.By == "" {
+			continue // 纯整表预热：没有归属列可索引
+		}
+		if s.ownerIdx == nil {
+			s.ownerIdx = make(map[string]*cache.OwnerIndex, len(s.cfg.IDTab.Mappings))
+		}
+		s.ownerIdx[m.Table] = cache.NewOwnerIndex(
+			s.redis.GetClient(), s.database.DB, m.Table, m.By, m.Key)
+	}
+	if len(s.ownerIdx) == 0 && !anyPreloadAll(s.cfg.IDTab.Mappings) {
+		return
+	}
+	go s.buildOwnerIndexes(s.runCtx)
+	go s.maintainOwnerIndexes(s.runCtx)
+}
+
+// anyPreloadAll 是否有整表预热的映射（决定要不要起构建 goroutine）。
+func anyPreloadAll(mappings []config.CacheMapping) bool {
+	for _, m := range mappings {
+		if m.PreloadAll {
+			return true
+		}
+	}
+	return false
+}
+
+// ownerIndexes 返回登录时要展开的索引（只含 load_on_login 的映射）。
+//
+// 按表名排序：展开顺序会影响日志先后与加载时序，排序让每次启动一致。
+// load_on_login: false 的映射（懒加载）也建索引、也对账，但不在登录
+// 时展开——等接入方（如点开邮箱的按需读）自己用 Index 查。
+func (s *Server) ownerIndexes() []*cache.OwnerIndex {
+	out := make([]*cache.OwnerIndex, 0, len(s.ownerIdx))
+	for _, m := range s.cfg.IDTab.Mappings {
+		if !m.LoadOnLogin {
+			continue
+		}
+		if oi, ok := s.ownerIdx[m.Table]; ok {
+			out = append(out, oi)
+		}
+	}
+	return out
+}
+
 // initCenterClient 建中心服客户端（P8 匹配 + P0 跨节点投递）。
 //
 // 必须在 Actor 系统之前：actor.Config.Remote 引用它。
@@ -352,7 +407,13 @@ func (s *Server) initPlayerManager() {
 	// 登录预加载（12.6）：5 表并行拉取 + 5s 超时保护
 	if s.database != nil {
 		preloadTimeout := player.DefaultPreloadTimeout
-		s.players.SetPreloader(player.NewPreloader(s.database, s.logger, preloadTimeout))
+		preloader := player.NewPreloader(s.database, s.logger, preloadTimeout)
+		// 归属展开（缓存架构设计 §4.2）：一对多表的实体按角色 id 批量加载。
+		// 没有 mappings 时是空列表，ExpandOwners 退化为空操作。
+		if idx := s.ownerIndexes(); len(idx) > 0 {
+			preloader.SetOwnerIndexes(idx...)
+		}
+		s.players.SetPreloader(preloader)
 	}
 }
 

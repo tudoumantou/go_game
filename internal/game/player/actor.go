@@ -535,7 +535,22 @@ func (a *Actor) preload(ctx *actor.Context) error {
 		a.setState(state)
 		a.cacheVersion = version
 		a.loaded = true
-		a.prefetch = nil
+		// 归属展开（缓存架构设计 §4.2）：一对多功能的实体按角色 id 批量
+		// 加载，结果挂进 prefetch 供模块 OnLogin 消费（与 Prefetch 的
+		// Equips/Activities 同一机制）。未配 mappings 时是空操作。
+		//
+		// 失败即登录失败：实体数据缺失时放行等于「功能列表为空」——
+		// 不报错、只是没数据，是这套设计里最难查的事故形态。
+		// Redis 故障已在 ExpandOwners 内部回落 MySQL，能到这里说明库也答不上来。
+		if a.preloader != nil {
+			rows, err := a.preloader.ExpandOwners(loadCtx, a.playerID)
+			if err != nil {
+				return err
+			}
+			if len(rows) > 0 {
+				a.prefetch = &Prefetch{ownerRows: rows}
+			}
+		}
 		return nil
 	}
 	if a.preloader != nil {

@@ -102,6 +102,7 @@ func Init(service string) {
 		registerCross()
 		registerLogin()
 		registerIDTab()
+		registerOwnerIndex()
 		registerCenter()
 		registerKafka()
 		// 开关最后置 true：见函数注释的竞态窗口说明
@@ -706,6 +707,71 @@ func IDTabBuildObserve(table string, d time.Duration) {
 		return
 	}
 	idtabBuildDur.WithLabelValues(Service(), table).Observe(d.Seconds())
+}
+
+// ============================ 归属索引 ============================
+
+var (
+	ownerIndexSize      *prometheus.GaugeVec
+	ownerIndexReady     *prometheus.GaugeVec
+	ownerIndexReconcile *prometheus.CounterVec
+	ownerIndexBuildDur  *prometheus.HistogramVec
+)
+
+// registerOwnerIndex 注册归属索引（by_owner ZSET）指标。
+//
+// 与 idtab 指标分开：同一张表可能两个结构都建（存在性集合 + 归属索引），
+// 合成一个指标族会让 size 标签互相覆盖。ready=0 表示索引还在构建，
+// 登录展开回落 MySQL——「缓存未热」的明确信号；reconcile_mismatch 是
+// 对账告警项：索引与库已漂移。
+func registerOwnerIndex() {
+	ownerIndexSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "owner_index", Name: "size",
+		Help: "归属索引成员数（ZSET 全量）",
+	}, []string{"service", "table"})
+	ownerIndexReady = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "owner_index", Name: "ready",
+		Help: "归属索引构建完成标记（1/0）。0 表示登录展开回落 MySQL",
+	}, []string{"service", "table"})
+	ownerIndexReconcile = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "owner_index", Name: "reconcile_mismatch_total",
+		Help: "对账发现数量不一致的次数（20.3 告警项）",
+	}, []string{"service", "table"})
+	ownerIndexBuildDur = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: Namespace, Subsystem: "owner_index", Name: "build_duration_seconds",
+		Help:    "归属索引构建耗时",
+		Buckets: []float64{0.05, 0.1, 0.5, 1, 2, 5, 10, 30, 60},
+	}, []string{"service", "table"})
+	registry.MustRegister(ownerIndexSize, ownerIndexReady, ownerIndexReconcile, ownerIndexBuildDur)
+}
+
+// OwnerIndexState 上报某张表归属索引的状态（size 与 ready 一个调用两指标）。
+func OwnerIndexState(table string, size int64, ready bool) {
+	if !enabled.Load() {
+		return
+	}
+	ownerIndexSize.WithLabelValues(Service(), table).Set(float64(size))
+	r := 0.0
+	if ready {
+		r = 1
+	}
+	ownerIndexReady.WithLabelValues(Service(), table).Set(r)
+}
+
+// OwnerIndexReconcileMismatch 对账不一致计数。
+func OwnerIndexReconcileMismatch(table string) {
+	if !enabled.Load() {
+		return
+	}
+	ownerIndexReconcile.WithLabelValues(Service(), table).Inc()
+}
+
+// OwnerIndexBuildObserve 记录单表索引构建耗时。
+func OwnerIndexBuildObserve(table string, d time.Duration) {
+	if !enabled.Load() {
+		return
+	}
+	ownerIndexBuildDur.WithLabelValues(Service(), table).Observe(d.Seconds())
 }
 
 // ============================ 中心服 ============================

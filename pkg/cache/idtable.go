@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/redis/go-redis/v9"
@@ -529,6 +530,108 @@ func (t *IDTable) CleanOrphans(ctx context.Context, table string, limit int64) (
 // 哨兵错误：调用方用 errors.Is(err, cache.ErrNotFound) 与「Redis/DB
 // 故障」区分开——前者是正常业务结果，后者要重试/降级。
 var ErrNotFound = fmt.Errorf("entity not found")
+
+// EntityRow 一行实体数据（动态列：列名 → 字符串值）。
+//
+// 与 LoadEntity 返回的 map 同一约定——表结构演进（加列）不需要改代码，
+// 调用方按需解析具体类型。批量加载（OwnerIndex.LoadBatch / Preheat）
+// 用它携带「哪一行」：ID 是 key 列的值。
+type EntityRow struct {
+	ID     int64
+	Fields map[string]string
+}
+
+// Preheat 启动预热：把整表实体行灌进 Redis hash（preload_all 映射用）。
+//
+// 与 LoadEntity 的分工：LoadEntity 是「按需回源」（登录/访问时逐个补），
+// Preheat 是「启动时全量」——服务公会/榜单这类「上线后几乎必然被全量
+// 访问」的小表，省掉每个玩家登录时的回源。大表不要配 preload_all：
+// 全表扫描 + 全量 HSET 会把启动拉长，内存占用线性于表大小。
+//
+// 分页用 keyset（pk > after），与 BuildOne 同一套理由（深翻页不退化）。
+// 幂等：重复预热只是重复 HSET 同一批值；已有的行不会被清掉。
+func (t *IDTable) Preheat(ctx context.Context, meta TableMeta) (int64, error) {
+	if err := validateMeta(meta); err != nil {
+		return 0, err
+	}
+	if t.rdb == nil || t.db == nil {
+		return 0, nil
+	}
+
+	var (
+		after int64
+		total int64
+	)
+	for {
+		//nolint:gosec // 表名/列名经 validateMeta 白名单校验
+		q := fmt.Sprintf("SELECT * FROM %s WHERE %s > ? ORDER BY %s LIMIT ?",
+			meta.Name, meta.PK, meta.PK)
+		rows, err := t.db.QueryContext(ctx, q, after, t.pageSize)
+		if err != nil {
+			return total, fmt.Errorf("preheat scan %s: %w", meta.Name, err)
+		}
+		entityRows, err := scanEntityRows(rows, meta.PK)
+		_ = rows.Close()
+		if err != nil {
+			return total, err
+		}
+		if len(entityRows) == 0 {
+			break
+		}
+
+		// 合批 HSET：一次往返写一页，行数受 pageSize 控制
+		pipe := t.rdb.Pipeline()
+		for _, r := range entityRows {
+			pipe.HSet(ctx, EntityKey(meta.Name, r.ID), stringMapToAny(r.Fields))
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return total, fmt.Errorf("preheat hset %s: %w", meta.Name, err)
+		}
+		total += int64(len(entityRows))
+		after = entityRows[len(entityRows)-1].ID
+		if int64(len(entityRows)) < t.pageSize {
+			break
+		}
+	}
+	return total, nil
+}
+
+// scanEntityRows 动态列扫描：把结果集转成 []EntityRow。
+//
+// keyCol 是主键列——它的值同时作为 EntityRow.ID（驱动对整型列返回
+// int64，toString 归一后 ParseInt 回来）。LoadEntity 的 loadRow 是
+// 单行版；这里是批量版，OwnerIndex.LoadBatch 与 Preheat 共用。
+func scanEntityRows(rows *sql.Rows, keyCol string) ([]EntityRow, error) {
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]EntityRow, 0, 8)
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		row := EntityRow{Fields: make(map[string]string, len(cols))}
+		for i, c := range cols {
+			row.Fields[c] = toString(vals[i])
+		}
+		id, err := strconv.ParseInt(row.Fields[keyCol], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("bad %s value %q", keyCol, row.Fields[keyCol])
+		}
+		row.ID = id
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
 // validateMeta 校验表名与主键列名。
 //
