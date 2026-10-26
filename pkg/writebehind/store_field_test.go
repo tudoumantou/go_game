@@ -44,8 +44,8 @@ func newFieldStore(t *testing.T) (*Store, *miniredis.Miniredis) {
 	return NewStore(rdb), mr
 }
 
-// TestCommitWritesOnlyChangedFields 只提交变化字段时，其余字段原样保留。
-func TestCommitWritesOnlyChangedFields(t *testing.T) {
+// TestSyncWritesOnlyChangedFields 只同步变化字段时，其余字段原样保留。
+func TestSyncWritesOnlyChangedFields(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newFieldStore(t)
 
@@ -58,12 +58,12 @@ func TestCommitWritesOnlyChangedFields(t *testing.T) {
 	}
 	token, err := store.AcquireLease(ctx, 7)
 	require.NoError(t, err)
-	_, err = store.Commit(ctx, full.PlayerID, full, full.FieldNames(), nil, token)
+	_, err = store.Sync(ctx, full.PlayerID, full, full.FieldNames(), nil, token)
 	require.NoError(t, err)
 
 	// 只改签到的 Ext，其余字段不该被重写（内容不变即可，用值判断）。
 	full.Ext["signin"] = json.RawMessage(`{"day":2}`)
-	_, err = store.Commit(ctx, full.PlayerID, full, []string{"ext:signin"}, nil, token)
+	_, err = store.Sync(ctx, full.PlayerID, full, []string{"ext:signin"}, nil, token)
 	require.NoError(t, err)
 
 	got, err := store.Load(ctx, 7)
@@ -73,9 +73,9 @@ func TestCommitWritesOnlyChangedFields(t *testing.T) {
 	require.Equal(t, `{"day":2}`, string(got.State.Ext["signin"]), "变化字段应更新")
 }
 
-// TestCommitRemovesDeletedExtExt 模块状态被 Reset 后，Redise 里的 ext field 要删掉，
+// TestSyncRemovesDeletedExt 模块状态被 Reset 后，Redis 里的 ext field 要删掉，
 // 否则下次 Load 会把已重置的模块状态读回来。
-func TestCommitRemovesDeletedExt(t *testing.T) {
+func TestSyncRemovesDeletedExt(t *testing.T) {
 	ctx := context.Background()
 	store, mr := newFieldStore(t)
 
@@ -87,7 +87,7 @@ func TestCommitRemovesDeletedExt(t *testing.T) {
 	}
 	token, err := store.AcquireLease(ctx, 11)
 	require.NoError(t, err)
-	_, err = store.Commit(ctx, snap.PlayerID, snap, snap.FieldNames(), nil, token)
+	_, err = store.Sync(ctx, snap.PlayerID, snap, snap.FieldNames(), nil, token)
 	require.NoError(t, err)
 	keys, err := mr.HKeys(store.stateKey(11))
 	require.NoError(t, err)
@@ -95,7 +95,7 @@ func TestCommitRemovesDeletedExt(t *testing.T) {
 
 	// 模块 Reset：Ext 里不再有 signin，调用方把 "ext:signin" 放进 removed。
 	snap.Ext = map[string]json.RawMessage{}
-	_, err = store.Commit(ctx, snap.PlayerID, snap, []string{"profile"}, []string{"ext:signin"}, token)
+	_, err = store.Sync(ctx, snap.PlayerID, snap, []string{"profile"}, []string{"ext:signin"}, token)
 	require.NoError(t, err)
 
 	keys, err = mr.HKeys(store.stateKey(11))

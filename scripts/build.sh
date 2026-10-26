@@ -10,7 +10,7 @@ VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
 OUT="bin"
 mkdir -p "$OUT"
 
-SERVICES=(login gateway game center cross map flusher)
+SERVICES=(login gateway game center cross map)
 for s in "${SERVICES[@]}"; do
   echo "==> building $s ($GOOS/$GOARCH)"
   CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \

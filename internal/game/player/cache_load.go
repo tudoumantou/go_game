@@ -48,7 +48,7 @@ func (r *Repository) LoadCached(ctx context.Context, id int64) (*State, int64, e
 		if dbVersion, verr := r.writebehindVersion(ctx, id); verr == nil && record.Version < dbVersion {
 			// 落后：先清掉（否则 Seed 的「已存在即返回」会让重建写不进去），
 			// 清不掉也不要紧——下面直接用冷快照返回，绝不返回旧副本。
-			_ = r.cache.Reset(ctx, id)
+			_ = r.cache.Drop(ctx, id)
 			break
 		}
 		return stateFromSnapshot(record.State), record.Version, nil

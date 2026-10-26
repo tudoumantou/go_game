@@ -56,7 +56,7 @@ const onlineTTL = 45 * time.Second
 // Server 游戏服（组装层入口，职责见设计文档 3.1 目录树）
 //
 // 字段按「启动顺序」大致分组：基础设施（db/redis/actorSys）→ 业务容器
-// （modules/players/sceneMgr）→ 持久化（repo/flusher/wbWorker）→ 外联
+// （modules/players/sceneMgr）→ 持久化（repo/flusher）→ 外联
 // （crossPool/centerCli/producer/consumers）→ 会话表（见下方 mu 注释）。
 type Server struct {
 	cfg        *config.Config
@@ -75,8 +75,7 @@ type Server struct {
 	flusher  *flush.Flusher
 
 	redis      *cache.Client
-	cacheStore *writebehind.Store  // Redis 权威快照 + 脏队列
-	wbWorker   *writebehind.Worker // 进程内落库者（缓存权威模式）
+	cacheStore *writebehind.Store // Redis 快照副本（只读写副本，不承载落库）
 	presence   *cache.Presence
 	producer   *pkgmq.Producer
 	consumers  *gamemq.Group
@@ -168,9 +167,6 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// ③ 落库链路：flusher → writebehind worker → player manager
 	if err := s.startFlusher(); err != nil {
-		return err
-	}
-	if err := s.startWritebehind(); err != nil {
 		return err
 	}
 	s.initPlayerManager()
@@ -276,14 +272,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// FLUSH：确认落库。失败要出现在返回值里，由 main 非零退出。
 	mgr.Register("flush-all", shutdown.PhaseFlush, func(ctx context.Context) error {
 		var errs []error
-		// 缓存权威模式：脏任务在 Redis 队列里，必须先把进程内 worker 的积压排空。
-		// 只调 flusher.FlushAll 是空转（缓存玩家的 onDirty 已被置空），数据会随进程消失。
-		if s.wbWorker != nil {
-			if err := s.wbWorker.FlushAll(ctx); err != nil {
-				errs = append(errs, fmt.Errorf("writebehind: %w", err))
-			}
-		}
-		// 非缓存玩家的直连落库路径。
+		// 落库只有一条路：flusher 从 Actor 内存取数写库。
+		// （Redis 队列那条通道已删除，见 v3.6 的取舍说明。）
 		if s.flusher != nil {
 			if err := s.flusher.FlushAll(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("flusher: %w", err))

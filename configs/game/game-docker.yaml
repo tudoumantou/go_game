@@ -50,7 +50,6 @@ flush:                         # 10 分片分时落库（worker 共享连接池�
   stagger: 6s
   batch_rows: 500
   dirty_ttl: 10m
-  disable_inline_writebehind: true  # compose 里有独立 flusher 服务，游戏服不再重复消费脏队列
 
 idtab:
   build_on_start: true         # 启动构建 Redis ID 表

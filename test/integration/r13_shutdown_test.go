@@ -17,10 +17,8 @@ import (
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
 	"game_study/pkg/codec"
-	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/writebehind"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,8 +35,7 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 	ids := make([]int64, 0, n)
 	defer func() {
 		for _, id := range ids {
-			rdb.Del(context.Background(), fmt.Sprintf("wb:{player-%d}:state:%d", writebehind.Partition(id), id))
-			rdb.ZRem(context.Background(), fmt.Sprintf("wb:{player-%d}:dirty", writebehind.Partition(id)), id)
+			rdb.Del(context.Background(), fmt.Sprintf("wb:{player-%d}:state:%d", id, id))
 			database.Exec("DELETE FROM player_signin WHERE player_id=?", id)
 			database.Exec("DELETE FROM player_writebehind WHERE player_id=?", id)
 			database.Exec("DELETE FROM player_item WHERE player_id=?", id)
@@ -116,82 +113,4 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 		require.EqualValues(t, "[3]", days, fmt.Sprintf("player %d: days=%q rewards=%q", id, days, rewards))
 		require.EqualValues(t, `{"1001":300}`, rewards)
 	}
-}
-
-// TestR13FlushAllKeepsDirtyOnDatabaseFailure 落库失败时不能 Ack：
-// 脏任务必须留在 Redis，供下次启动或独立 flusher 重试。
-func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
-	database, rdb, dsn := startStorage(t)
-	ctx := context.Background()
-	store := writebehind.NewStore(rdb)
-	repo := player.NewRepository(database)
-	repo.SetCache(store)
-	logger := log.New("r13-test", log.WithLevel("error"))
-
-	id := int64(920100)
-	insertTestPlayer(t, database, id)
-	defer func() {
-		rdb.Del(context.Background(), fmt.Sprintf("wb:{player-%d}:state:%d", writebehind.Partition(id), id))
-		rdb.ZRem(context.Background(), fmt.Sprintf("wb:{player-%d}:dirty", writebehind.Partition(id)), id)
-	}()
-
-	registry := module.NewRegistry()
-	signin.M.SetClock(func() time.Time {
-		return time.Date(2026, 10, 21, 2, 0, 0, 0, time.UTC)
-	})
-	registry.Register(signin.M)
-	sys := actor.NewSystem(actor.Config{ShardCount: 1, MailboxSize: 64})
-	sys.Start(ctx)
-
-	a := player.NewActor(id, registry, logger, repo, nil,
-		func(uint64, uint32, []byte) error { return nil })
-	pid, err := sys.Spawn(fmt.Sprintf("r13b:%d", id), a)
-	require.NoError(t, err)
-	err = sys.Send(pid, &player.BindMsg{PlayerID: id, SessionID: uint64(id)})
-	require.NoError(t, err)
-	err = sys.Send(pid, &player.PacketMsg{MsgID: codec.MsgSigninClaimReq})
-	require.NoError(t, err)
-	drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	err = sys.Drain(drainCtx)
-	require.NoError(t, err, fmt.Sprintf("drain: %v", err))
-	sys.Stop()
-
-	// 数据库不可用：排空必须失败，且脏任务仍在。
-	//
-	// 内存权威下 Sync 不再入队（落库由 flusher 从内存走），这里手动补一条
-	// 队列成员，专门验证 writebehind 通道（兼容路径）的失败语义仍然正确。
-	_, err = rdb.ZAdd(ctx, fmt.Sprintf("wb:{player-%d}:dirty", writebehind.Partition(id)),
-		redis.Z{Score: 1, Member: fmt.Sprintf("%d", id)}).Result()
-	require.NoError(t, err, "enqueue for writebehind path")
-	err = database.Close()
-	require.NoError(t, err, fmt.Sprintf("close db: %v", err))
-	worker := writebehind.NewWorker(store, database.DB, 10)
-	err = worker.FlushAll(ctx)
-	require.Error(t, err, "flush must fail when MySQL is unavailable")
-	pending, err := store.Pending(ctx, writebehind.Partition(id), 100)
-	require.NoError(t, err, fmt.Sprintf("dirty task lost after failed flush: %v %v", pending, err))
-	require.Len(t, pending, 1)
-
-	// 恢复连接后同一脏任务可以落库。
-	reopened, err := db.New(db.Config{DSN: dsn, MaxOpen: 5, MaxIdle: 2})
-	require.NoError(t, err, "reconnect")
-	defer func() {
-		database.Exec("DELETE FROM player_signin WHERE player_id=?", id)
-		database.Exec("DELETE FROM player_writebehind WHERE player_id=?", id)
-		database.Exec("DELETE FROM player_item WHERE player_id=?", id)
-		database.Exec("DELETE FROM player_attr WHERE player_id=?", id)
-		database.Exec("DELETE FROM player WHERE id=?", id)
-		reopened.Close()
-	}()
-	worker2 := writebehind.NewWorker(store, reopened.DB, 10)
-	err = worker2.FlushAll(ctx)
-	require.NoError(t, err, fmt.Sprintf("flush after recovery: %v", err))
-	var days string
-	err = reopened.QueryRow(`SELECT claimed_days FROM player_signin WHERE player_id=?`, id).Scan(&days)
-	require.NoError(t, err, fmt.Sprintf("signin row: %v", err))
-	require.EqualValues(t, "[3]", days)
-	pending, err = store.Pending(ctx, writebehind.Partition(id), 100)
-	require.NoError(t, err, fmt.Sprintf("dirty queue not drained: %v %v", pending, err))
-	require.Empty(t, pending)
 }

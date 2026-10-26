@@ -357,40 +357,6 @@ func (s *Server) startFlusher() error {
 	return nil
 }
 
-// startWritebehind 起进程内 writebehind worker（Redis 队列的落库通道）。
-//
-// 内存权威模式下这个 worker 是**兜底**：玩家状态同步走 Store.Sync（只写
-// 副本不入队），队列通常为空。保留它的理由有两个：兼容缓存权威部署形态
-// （Commit 会入队），以及万一有路径误入队时不至于永远不落库。
-//
-// 部署了独立 cmd/flusher 时可关闭（版本栅栏保证两者并行也安全）。
-func (s *Server) startWritebehind() error {
-	// 缓存权威状态下，脏队列的唯一消费者是 writebehind worker。
-	// 进程内默认起一个，避免「忘了部署 cmd/flusher 就永远不落库」；
-	// 部署了独立 flusher 时可关闭（版本栅栏保证两者并行也安全）。
-	if s.repo.CacheEnabled() {
-		if s.cfg.Flush.DisableInlineWritebehind {
-			s.logger.Info("inline writebehind disabled; rely on standalone flusher")
-		} else if s.database != nil {
-			interval, err := config.ParseDuration(s.cfg.Flush.Interval)
-			if err != nil {
-				return fmt.Errorf("flush interval: %w", err)
-			}
-			worker := writebehind.NewWorker(s.cacheStore, s.database.DB, s.cfg.Flush.BatchRows)
-			s.wbWorker = worker
-			go func() {
-				if err := worker.Run(s.runCtx, interval, func(err error) {
-					s.logger.Warn("writebehind flush failed; Redis task retained", "err", err)
-				}); err != nil {
-					s.logger.Warn("writebehind worker stopped", "err", err)
-				}
-			}()
-			s.logger.Info("inline writebehind started", "interval", interval.String(), "partitions", writebehind.Partitions)
-		}
-	}
-	return nil
-}
-
 // initPlayerManager 建玩家管理器并注入反向依赖。
 func (s *Server) initPlayerManager() {
 	// 落库调度：内存权威模式下，所有玩家状态变动都走 flusher——

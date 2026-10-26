@@ -25,7 +25,7 @@ docker cp configs/. "$assets_id:/configs/"
 docker cp -a deploy/keys/. "$assets_id:/keys/"
 docker cp sql/schema/. "$assets_id:/schema/"
 docker cp deploy/monitoring/. "$assets_id:/monitoring/"
-docker compose -f deploy/docker-compose.yaml up -d --build etcd redis mysql kafka center cross flusher game login gateway
+docker compose -f deploy/docker-compose.yaml up -d --build etcd redis mysql kafka center cross game login gateway
 for ((i=0; i<60; i++)); do
   ready=true
   for port in 8081 9101 9102 9201 9301; do

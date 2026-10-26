@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,23 +38,7 @@ func (d demoPersister) Load(ctx context.Context, tx *sql.Tx, playerID int64) (js
 	return d.load(ctx, tx, playerID)
 }
 
-func expectCommonBatch(mock sqlmock.Sqlmock, players ...int64) {
-	mock.ExpectBegin()
-	mock.ExpectExec("INSERT IGNORE INTO player_writebehind").WillReturnResult(sqlmock.NewResult(0, 0))
-	rows := sqlmock.NewRows([]string{"player_id", "version"})
-	for _, id := range players {
-		rows.AddRow(id, 0)
-	}
-	mock.ExpectQuery("SELECT player_id, version FROM player_writebehind").WillReturnRows(rows)
-	mock.ExpectExec("UPDATE player SET").WillReturnResult(sqlmock.NewResult(0, int64(len(players))))
-	count := sqlmock.NewRows([]string{"count"})
-	count.AddRow(int64(len(players)))
-	mock.ExpectQuery("SELECT COUNT").WillReturnRows(count)
-	mock.ExpectExec("INSERT INTO player_attr").WillReturnResult(sqlmock.NewResult(0, int64(len(players))))
-	mock.ExpectExec("DELETE FROM player_item").WillReturnResult(sqlmock.NewResult(0, 0))
-}
-
-// 注册一个模块后，框架自动把它的 Ext 交给它落库 —— 不需要改 worker 的任何逻辑。
+// 注册一个模块后，框架自动把它的 Ext 交给它落库 —— 不需要改框架代码。
 func TestRegisteredPersisterReceivesItsRows(t *testing.T) {
 	resetPersisters()
 	t.Cleanup(resetPersisters)
@@ -63,52 +46,37 @@ func TestRegisteredPersisterReceivesItsRows(t *testing.T) {
 	var got []ModuleRow
 	RegisterPersister(demoPersister{
 		name: "demo",
-		persist: func(ctx context.Context, tx *sql.Tx, rows []ModuleRow) error {
+		persist: func(_ context.Context, _ *sql.Tx, rows []ModuleRow) error {
 			got = append(got, rows...)
-			_, err := tx.ExecContext(ctx, "INSERT INTO demo_state (player_id, payload) VALUES (?,?)", rows[0].PlayerID, string(rows[0].Data))
-			return err
+			return nil
 		},
 	})
 
-	database, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	defer database.Close()
-	expectCommonBatch(mock, 7, 8)
-	mock.ExpectExec("INSERT INTO demo_state").WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectExec("INSERT INTO player_writebehind").WillReturnResult(sqlmock.NewResult(0, 2))
-	mock.ExpectCommit()
-
-	records := []Record{
-		{Version: 1, State: Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"demo": json.RawMessage(`{"counter":1}`)}}},
-		{Version: 2, State: Snapshot{PlayerID: 8, Ext: map[string]json.RawMessage{"demo": json.RawMessage(`{"counter":2}`)}}},
+	snap := Snapshot{
+		PlayerID: 7,
+		Ext:      map[string]json.RawMessage{"demo": json.RawMessage(`{"counter":1}`)},
 	}
-	err = NewWorker(nil, database, 100).Persist(context.Background(), records)
-	require.NoError(t, err)
-	err = mock.ExpectationsWereMet()
-	require.NoError(t, err)
-	require.Len(t, got, 2, fmt.Sprintf("persister rows = %+v", got))
-	require.EqualValues(t, 7, got[0].PlayerID)
-	require.EqualValues(t, 8, got[1].PlayerID)
-	require.EqualValues(t, `{"counter":1}`, string(got[0].Data))
+	require.NoError(t, PersistDirtyModules(context.Background(), nil, snap, []string{"demo"}))
+
+	require.Len(t, got, 1, fmt.Sprintf("persister rows = %+v", got))
+	require.EqualValues(t, 7, got[0].PlayerID, "行必须带上玩家 id")
+	require.EqualValues(t, `{"counter":1}`, string(got[0].Data), "行必须带上模块快照")
 }
 
-// 未注册的模块状态必须拒绝写入：宁可整批回滚，也不能把数据写到没人认领的地方。
+// 未注册的模块状态必须拒绝写入：宁可失败，也不能把数据写到没人认领的地方。
 func TestUnregisteredModuleStateRejected(t *testing.T) {
 	resetPersisters()
 	t.Cleanup(resetPersisters)
 
-	err := Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"ghost": json.RawMessage(`{}`)}}.Validate()
+	snap := Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"ghost": json.RawMessage(`{}`)}}
+
+	// ① 入口校验（Seed 前的公共闸门）
+	err := snap.Validate()
 	require.Error(t, err, fmt.Sprintf("unregistered module accepted: %v", err))
 	require.Contains(t, err.Error(), "ghost")
 
-	database, mock, dbErr := sqlmock.New()
-	require.Nil(t, dbErr)
-	defer database.Close()
-	mock.ExpectBegin()
-	mock.ExpectExec("INSERT IGNORE INTO player_writebehind").WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectQuery("SELECT player_id, version FROM player_writebehind").WillReturnRows(sqlmock.NewRows([]string{"player_id", "version"}).AddRow(7, 0))
-	mock.ExpectRollback()
-	r := Record{Version: 1, State: Snapshot{PlayerID: 7, Ext: map[string]json.RawMessage{"ghost": json.RawMessage(`{}`)}}}
-	err = NewWorker(nil, database, 100).Persist(context.Background(), []Record{r})
+	// ② 落库侧同样拒绝，且不能静默跳过
+	err = PersistDirtyModules(context.Background(), nil, snap, []string{"ghost"})
 	require.Error(t, err, "unregistered module persisted")
+	require.Contains(t, err.Error(), "no persister registered")
 }

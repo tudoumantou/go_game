@@ -2,7 +2,7 @@
 //
 // 玩法模块通过实现 Persister 并 RegisterPersister 接入统一落库：
 // 之后该模块的快照会自动进入 Redis 提交、冷启动装载与合批写，
-// worker/snapshot 等横切文件零改动（开闭原则：对扩展开放、对修改关闭）。
+// 落库编排/快照层等横切文件零改动（开闭原则：对扩展开放、对修改关闭）。
 //
 // 注册时机：通常在模块包的 init 中调用——只要包被 import（协议注册
 // 保证它会被 import），数据链路即生效，杜绝「协议通了但数据不落库」
@@ -33,7 +33,7 @@ type ModuleRow struct {
 // Persister 是模块自有持久化扩展点。
 //
 // 实现并注册它之后，模块状态会自动进入统一快照、Redis 提交队列和落库批次，
-// 不需要再修改 worker / snapshot / cache_load 这些横切文件。
+// 不需要再修改落库编排 / 快照 / cache_load 这些横切文件。
 //
 // 约定：
 //   - Name 同时是 Snapshot.Ext 的键，必须全局唯一且在版本升级间保持稳定；
@@ -42,7 +42,7 @@ type ModuleRow struct {
 //   - Load 只读，返回 nil 表示该玩家没有这个模块的数据。
 //
 // Go 细节：接口方法全部显式接收 context 与资源（tx），实现不得
-// 私自开连接/起事务——事务边界由 worker.Persist 统一控制，
+// 私自开连接/起事务——事务边界由调用方（flusher）统一控制，
 // 模块越界提交会破坏「多模块同一事务」的原子性保证。
 type Persister interface {
 	Name() string

@@ -1,14 +1,15 @@
-// Package writebehind 维护玩家热状态的 Redis 副本，并提供两种写入模式。
+// Package writebehind 维护玩家热状态的 Redis 副本 + 模块持久化注册表。
 //
-// 两条路径的分工（权威归属不同，不能混用）：
-//   - Store.Sync（内存权威，当前默认）：只写副本 + 版本，不登记脏队列。
-//     落库由 pkg/flush 从 Actor 内存走，因此绝不能入队——入队会引来
-//     worker 用可能落后的副本覆盖内存最新值；
-//   - Store.Commit（缓存权威，兼容保留）：写副本并入队，由 Worker 消费
-//     落库。适用于「Redis 是唯一数据源」的部署形态。
+// 职责只有两件，都不含「落库」：
+//   - Store.Sync / Load / Seed / Drop / AcquireLease：Redis 快照副本的
+//     读写与版本、租约管理。副本只是加速层与跨进程视图，权威是 Actor 内存；
+//   - Persister 注册表 + PersistDirtyModules：把模块 Ext 交给各模块自己的
+//     落库实现（内存权威路径下由 pkg/flush 驱动）。
 //
-// 与 pkg/flush 的关系：flush 是「进程内分片落库框架」，本包负责副本与
-// （可选）Redis 队列的落库通道。两者互补而非替代。
+// 历史注记：早期还有「写副本并入队 → Worker 消费落库」的 Redis 权威通道
+// （Store.Commit + 脏 ZSET + Worker + cmd/flusher）。内存权威落地后这条
+// 通道没有任何写入方，已于 v3.6 整条删除——落库只保留「内存 → flusher →
+// MySQL」一条路。
 package writebehind
 
 import (
@@ -16,14 +17,6 @@ import (
 	"fmt"
 	"math"
 )
-
-// Partitions 是共享持久队列协议的一部分，不能在单个进程中单独调整。
-//
-// 10 个脏队列分区被所有游戏服进程与独立落库进程共享：改这个值等于
-// 改协议，必须全网同步（老数据按新分区算会落到错误队列/错误 slot）。
-// 与 flush 分片数的关系：两者都是「按玩家分桶」，但一个分 Redis
-// 队列、一个分进程内 worker，独立演进、各自配置。
-const Partitions = 10
 
 // Profile 玩家基础档案（玩法进度类的核心资产）。
 //
@@ -65,7 +58,7 @@ type ItemGrant struct {
 //
 // 字段分组：
 //   - PlayerID：主键；Load 时与 key 中的 id 互相校验（防串号）；
-//   - Profile/Attr/Items：核心资产，由 worker.persistSnapshots 直接写
+//   - Profile/Attr/Items：核心资产，由 flusher 的落库路径直接写
 //     player / player_attr / player_item 三张表；
 //   - Ext：模块名 → 模块快照 JSON。框架只搬运不解释，RawMessage 延迟
 //     解析到 Persister；键名即模块名（注册表契约），map 无 tag；
@@ -82,12 +75,12 @@ type Snapshot struct {
 	AppliedGrants map[string]bool
 }
 
-// Record 是「版本 + 快照」的组合：落库与 Ack 的最小单位。
+// Record 是「版本 + 快照」的组合（Store.Load/Seed 的返回值）。
 //
-// version 是 Redis 侧的提交版本（Commit 的返回值），同时充当下次
-// Commit 的 expected 与数据库版本栅栏（player_writebehind.version）。
+// version 是 Redis 侧的快照版本（Sync 每次提交 +1），同时充当下次提交的
+// CAS 期望值与数据库版本栅栏（player_writebehind.version）的比较基准。
 type Record struct {
-	// Version 快照版本（单调递增；0/负值非法，worker.Persist 会拒绝）。
+	// Version 快照版本（单调递增；0/负值非法）。
 	Version int64
 	// State 快照本体。
 	State Snapshot
@@ -99,7 +92,7 @@ type Record struct {
 // 幂等键表全部复制一遍（100 件道具约 4.3µs），而一次提交通常只改一个字段。
 // 按需取字段后，这份复制就没了。
 //
-// 实现者：Snapshot（冷启动种子 / pending 补提）与 player.State（常规提交）。
+// 实现者：Snapshot（冷启动种子）与 player.State（常规提交）。
 type FieldSource interface {
 	// Field 返回字段的 JSON；nil 表示该字段没有内容（调用方跳过写入）。
 	Field(name string) ([]byte, error)
@@ -161,10 +154,3 @@ func (s Snapshot) Validate() error {
 	}
 	return nil
 }
-
-// Partition 玩家 → 脏队列分区（取模）。
-//
-// Go 细节：int64 先转 uint64 再取模——Go 的取模符号跟随被除数，
-// 负数直接 % 会得到负分区（key 形态异常、ZSET 错队），转无符号后
-// 任何 int64 输入都得到 [0, Partitions) 内的确定分区。
-func Partition(playerID int64) int { return int(uint64(playerID) % Partitions) }

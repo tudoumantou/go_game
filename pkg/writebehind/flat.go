@@ -3,8 +3,7 @@
 // 大多数玩法模块的持久化需求止于「一个玩家一行」：读出来、改一改、
 // 整行 UPSERT 回去。为每个这样的模块手写 Persister（四方法）是重复劳动，
 // RegisterFlat 用 flush.FlatOps[T]（gendb 生成的 Upsert/Load 函数对）
-// 现场构造一个标准 Persister 注册进同一张表，worker/snapshot/Redis
-// 提交路径一行不改。
+// 现场构造一个标准 Persister 注册进同一张表，落库编排与快照层一行不改。
 //
 // 设计取舍：先覆盖「单行表」这个 80% 场景；复杂模块（分表、增量删、
 // 跨表事务）仍可随时改写 Persister 接管——JSON 槽位格式不变，线上
@@ -24,7 +23,7 @@ import (
 // RegisterFlat 把「玩家级单行状态表」注册为模块持久化实现。
 //
 // 它是 Persister 扩展点的语法糖：内部构造标准 Persister 注册进同一张表，
-// worker / 快照 / Redis 提交一行不改。将来状态变复杂时，删掉注册改手写
+// 落库编排 / 快照层一行不改。将来状态变复杂时，删掉注册改手写
 // Persister 即可，JSON 槽位格式不变（T 就是 gendb 生成的表结构体）。
 //
 // validate 是可选业务校验（语义约束）；不传则只做结构校验（可解码且非 nil）。

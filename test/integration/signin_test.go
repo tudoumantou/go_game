@@ -46,8 +46,7 @@ func TestSigninActorFlow(t *testing.T) {
 	ids := []int64{88021, 88031} // 相同持久化分片，验证多角色真正合批。
 	defer func() {
 		for _, id := range ids {
-			rdb.Del(context.Background(), fmt.Sprintf("wb:{player-%d}:state:%d", writebehind.Partition(id), id))
-			rdb.ZRem(context.Background(), fmt.Sprintf("wb:{player-%d}:dirty", writebehind.Partition(id)), id)
+			rdb.Del(context.Background(), fmt.Sprintf("wb:{player-%d}:state:%d", id, id))
 		}
 		for _, table := range []string{"player_signin", "player_writebehind", "player_item", "player_attr", "player"} {
 			key := "player_id"
@@ -157,14 +156,10 @@ func TestSigninActorFlow(t *testing.T) {
 	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "restart from cache")
 	// Redis 丢失：FlatPersister 走生成代码从 SQL 冷启动恢复。
 	//
-	// 必须把 state 与脏队列一起清掉：只删 state 会留下「快照没了、脏标记还在」
-	// 的不一致状态，Store 会以「脏队列里还有比 MySQL 更新的快照」为由拒绝
-	// seed（见 seedScript）。真实场景里 Redis 整体丢失，两者是一起没的。
+	// 只删 state：seedScript 的「已存在即返回 0」要求快照真的不在，否则重建
+	// 写不进去（真实场景里 Redis 整体丢失，快照是一起没的）。
 	sys.Stop()
-	part := writebehind.Partition(ids[0])
-	err = rdb.Del(ctx, fmt.Sprintf("wb:{player-%d}:state:%d", part, ids[0])).Err()
-	require.NoError(t, err)
-	_, err = rdb.ZRem(ctx, fmt.Sprintf("wb:{player-%d}:dirty", part), ids[0]).Result()
+	err = rdb.Del(ctx, fmt.Sprintf("wb:{player-%d}:state:%d", ids[0], ids[0])).Err()
 	require.NoError(t, err)
 	start()
 	p1 = spawn(ids[0])

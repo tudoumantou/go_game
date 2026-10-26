@@ -58,7 +58,7 @@ new-module: ## 生成模块骨架（NAME=mailbox [MSGS=MailboxListReq:MailboxLis
 	@test -n "$(NAME)" || (echo "用法: make new-module NAME=mailbox [MSGS=Req:Resp,...] [TABLE=player_mailbox]"; exit 1)
 	@go run ./tools/newmodule -name=$(NAME) -msgs="$(MSGS)" -table="$(TABLE)"
 
-build: ## 交叉编译六进程（五服务 + map + flusher）→ bin/
+build: ## 交叉编译六进程（五个服务 + map）→ bin/
 	./scripts/build.sh
 
 test: ## 单元测试（纯逻辑，无外部依赖；集成测试见 test-integration）
@@ -79,7 +79,7 @@ vet: ## go vet 全量
 dev: ## 仅起中间件（etcd/redis/mysql/kafka）
 	docker compose -f deploy/docker-compose.yaml up -d etcd redis mysql kafka
 
-run-all: ## 本地跑五服务及 flusher（需先 make dev && make db-init && make db-seed）
+run-all: ## 本地跑五个服务 + map（需先 make dev && make db-init && make db-seed）
 	@./scripts/run-all.sh
 
 test-integration: ## 集成测试（testcontainers 起真实中间件）

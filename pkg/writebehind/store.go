@@ -1,15 +1,14 @@
-// pkg/writebehind/store.go —— Redis 侧玩家快照存储（权威热状态 + 可靠脏队列）
+// pkg/writebehind/store.go —— Redis 侧玩家快照副本（读写 + 版本 + 租约）
 //
-// 职责：把玩家快照（Snapshot）存进 Redis hash，把「该落库了」登记进
-// 脏 ZSET，并提供原子化的版本栅栏。缓存权威模式下 Redis 是热数据的
-// 唯一真相源，MySQL 只是异步投影——落库 worker 只消费队列，不回写缓存。
+// 职责：把玩家快照（Snapshot）存进 Redis hash，并提供版本与租约栅栏。
+// 副本不是权威——权威是 Actor 内存；它服务三件事：跨进程可见（顶号判定、
+// 别的节点读得到）、崩溃恢复、以及「副本落后于库」时的版本比对。
 //
 // 关键不变量：
-//   - 版本单调：Commit 用 expected 版本做 CAS，旧提交者得 ErrConflict；
-//   - 提交与入队原子：同一 Lua 脚本内完成 version+1、HSET、ZADD，
-//     不会出现「状态新了但没入队」（丢落库）或「入队了状态旧」（写回旧数据）；
-//   - key 带 hash tag {player-N}：state key 与 dirty key 落在同一
-//     Redis Cluster slot，Lua 多 key 操作才能原子执行。
+//   - 版本单调：Sync 每次成功 +1，调用方据此判断副本是否落后；
+//   - 租约围栏：Sync 校验 epoch，被顶号后的旧 Actor 得 ErrConflict；
+//   - key 带 hash tag {player-N}：state key 与 epoch key 同 slot，
+//     Lua 多 key 操作才能原子执行。
 package writebehind
 
 import (
@@ -50,123 +49,54 @@ func NewStore(rdb redis.UniversalClient) *Store { return &Store{rdb: rdb} }
 // stateKey 玩家快照 hash 的 key。
 //
 // {player-N} 是 Redis Cluster 的 hash tag：花括号内的部分决定 slot，
-// 保证同一玩家的 state key 与 dirty key 同 slot（Lua 原子性的前提）。
+// 保证同一玩家的 state key 与 epoch key 同 slot——Sync 的 Lua 要同时
+// 读写这两个 key，跨 slot 会直接报 CROSSSLOT。
 // wb 前缀便于运维按模式清理/统计。
-//
-// Go 细节：fmt.Sprintf 每次调用都有字符串分配——key 拼接发生在
-// 每个 Commit/Ack 上，量级可接受；若成为热点可改为调用方缓存。
 func (s *Store) stateKey(id int64) string {
-	return fmt.Sprintf("wb:{player-%d}:state:%d", Partition(id), id)
+	return fmt.Sprintf("wb:{player-%d}:state:%d", id, id)
 }
 
 // epochKey 会话所有权代号（R2.5 围栏令牌）。
 //
-// 与 state/dirty 同一个 hash tag：三者要在 commitScript 里原子读写。
+// 与 stateKey 同一个 hash tag：Sync 的 Lua 要同时读写两者。
 func (s *Store) epochKey(id int64) string {
-	return fmt.Sprintf("wb:{player-%d}:epoch:%d", Partition(id), id)
+	return fmt.Sprintf("wb:{player-%d}:epoch:%d", id, id)
 }
 
-// dirtyKey 分区脏队列 ZSET 的 key（score = 入队时间戳毫秒）。
+// leaseTTL 会话令牌有效期。
 //
-// 按 partition 聚合而非按玩家：落库 worker 一次取一个分区的批量玩家，
-// 分摊 Lua 往返；同一分区 key 与所有该分区玩家的 state key 同 slot。
-func (s *Store) dirtyKey(part int) string { return fmt.Sprintf("wb:{player-%d}:dirty", part) }
+// 7 天：远大于 Tier-2 的 Actor 保留期（90s），不会出现「Actor 还活着但令牌
+// 已过期」；同时保证长期不登录的玩家不会在 Redis 里留下永久 key。
+const leaseTTL = 7 * 24 * time.Hour
 
-// Lua keys 使用同一 hash tag，可在 Redis Cluster 中原子执行。
+// acquireLeaseScript 自增并续期会话令牌。
 //
-// commitScript 提交快照并登记脏队列，一个脚本内完成四件事：
-//  1. 版本 CAS：version 与 expected（ARGV[1]）不符返回 -1（调用方转 ErrConflict）；
-//  2. 队列类型防御：dirty key 若不是 zset/none，报错而非静默写入
-//     （类型被外部改会造成不可预期的行为）；
-//  3. HINCRBY version 自增——原子的读-改-写，避免 GET 后再 SET 的竞态；
-//  4. HSET 新快照 + ZADD NX 入队（NX：已在队列则不刷新 score，
-//     保留最早入队时刻，避免连续提交把落库时机无限推迟）。
-//
-// 为什么用 Lua：版本校验、自增、写状态、入队四步必须原子，拆成多条
-// 命令在失败/并发下会出现「版本新了但没入队」或「旧快照入队」。
-// redis.NewScript 负责 EVALSHA 加载与 NOSCRIPT 自动重试，调用方只管 Run。
-var commitScript = redis.NewScript(`
-local token = tonumber(ARGV[1])
-if not token or token <= 0 then
-  return redis.error_reply('invalid lease token')
-end
-local epoch = tonumber(redis.call('GET', KEYS[3]) or '0')
-if epoch == 0 then
-  redis.call('SET', KEYS[3], token)
-elseif token ~= epoch then
-  return -1
-end
-local queueType=redis.call('TYPE',KEYS[2]).ok
-if queueType~='none' and queueType~='zset' then return redis.error_reply('invalid dirty queue type') end
-
--- ARGV[1]=token ARGV[2]=playerID ARGV[3]=score ARGV[4]=占位
--- ARGV[5..] 是 field/value 对；field 以 '-' 开头表示删除该 field。
-local i = 5
-while i <= #ARGV do
-  local f = ARGV[i]
-  local v = ARGV[i+1]
-  if string.sub(f, 1, 1) == '-' then
-    redis.call('HDEL', KEYS[1], string.sub(f, 2))
-  else
-    redis.call('HSET', KEYS[1], f, v)
-  end
-  i = i + 2
-end
-
-local next=redis.call('HINCRBY',KEYS[1],'version',1)
-redis.call('ZADD',KEYS[2],'NX',ARGV[3],ARGV[2])
-return next
+// 只操作 epoch 一个 key，天然在单 slot 内；与 Sync 的 epoch 校验共同构成
+// 围栏：新会话 +1 后，旧 Actor 手里的令牌立即失效。
+var acquireLeaseScript = redis.NewScript(`
+local epoch = redis.call('INCR', KEYS[1])
+redis.call('PEXPIRE', KEYS[1], ARGV[1])
+return epoch
 `)
 
-// Commit 提交玩家快照：版本 CAS 成功则落 Redis 并登记脏队列。
+// AcquireLease 取得本会话的所有权令牌（R2.5）。
 //
-// 流程：本地 Validate（防坏数据进缓存）→ json.Marshal 整快照 →
-// Lua 原子提交 → version<0 判冲突。
-// expected 是调用方 Load 时拿到的版本；并发提交时只有一个赢家，
-// 输家收 ErrConflict 后应重新 Load 合并再提交（上层重试策略）。
+// 调用时机：玩家 Actor 首次加载状态时（Bind 路径）。每次调用都分配新令牌，
+// 因此「同节点顶号」也会让旧 Actor 失效——这是原先靠 sessionID 比较 +
+// kick 做、且存在窗口的那件事。
 //
-// 取舍：每次提交序列化**整份**快照而非 diff——快照量级在 KB 内，
-// 全量的实现与正确性论证（幂等、无合并冲突）远比增量简单；
-// 真正的写压力在数据库侧，那里有合批 UPSERT 兜底。
-// Commit 提交快照的部分字段。
-//
-// src 按字段现取现序列化（FieldSource），不再要求调用方先构造整份 Snapshot。
-// fields 为空表示「没有变化」，调用方应避免这种情况（白写一次 Redis）。
-func (s *Store) Commit(ctx context.Context, playerID int64, src FieldSource, fields, removed []string, token int64) (int64, error) {
-	if playerID <= 0 {
-		return 0, fmt.Errorf("invalid player id")
-	}
-	// 只序列化本次变化的字段（R2.5-B）：签到消息不再重写整个背包。
-	args := []interface{}{token, playerID, time.Now().UnixMilli()}
-	args = append(args, 0) // 占位：字段对从 ARGV[5] 开始
-	for _, f := range fields {
-		raw, err := src.Field(f)
-		if err != nil {
-			return 0, err
-		}
-		if raw == nil {
-			continue // 模块没有状态，不写
-		}
-		if err := validateField(f, raw); err != nil {
-			return 0, err
-		}
-		args = append(args, f, string(raw))
-	}
-	for _, f := range removed {
-		args = append(args, "-"+f, "")
-	}
-	version, err := commitScript.Run(ctx, s.rdb, []string{
-		s.stateKey(playerID),
-		s.dirtyKey(Partition(playerID)),
-		s.epochKey(playerID),
-	}, args...).Int64()
+// 与 presence.TrySetOnline 的分工：presence 决定「谁在线」（跨节点拒绝绑定），
+// AcquireLease 决定「谁的写有效」（同一会话内每次提交校验）。
+func (s *Store) AcquireLease(ctx context.Context, playerID int64) (int64, error) {
+	token, err := acquireLeaseScript.Run(ctx, s.rdb,
+		[]string{s.epochKey(playerID)}, leaseTTL.Milliseconds()).Int64()
 	if err != nil {
 		return 0, err
 	}
-	if version < 0 {
-		return 0, ErrConflict
+	if token <= 0 {
+		return 0, fmt.Errorf("writebehind: invalid lease token %d", token)
 	}
-	return version, nil
+	return token, nil
 }
 
 // validateField 校验单个字段：Ext 字段要求模块已注册且自校验通过。
@@ -214,61 +144,16 @@ func marshalField(state Snapshot, field string) ([]byte, error) {
 	return raw, nil
 }
 
-// leaseTTL 会话令牌有效期。
+// seedScript 冷启动把 MySQL 读出的快照 seed 回 Redis（幂等 + 分字段）。
 //
-// 7 天：远大于 Tier-2 的 Actor 保留期（90s），不会出现「Actor 还活着但令牌
-// 已过期」；同时保证长期不登录的玩家不会在 Redis 里留下永久 key。
-const leaseTTL = 7 * 24 * time.Hour
-
-// acquireLeaseScript 自增并续期会话令牌。
+// ARGV[1]=version，ARGV[2..]=field/value 对。字段布局必须与 Sync 一致，
+// 否则 Seed 写完立刻被 Load 读成空状态。
 //
-// 只操作 epoch 一个 key，天然在单 slot 内；与 commitScript 的 epoch 校验
-// 共同构成围栏：新会话 +1 后，旧 Actor 手里的令牌立即失效。
-var acquireLeaseScript = redis.NewScript(`
-local epoch = redis.call('INCR', KEYS[1])
-redis.call('PEXPIRE', KEYS[1], ARGV[1])
-return epoch
-`)
-
-// AcquireLease 取得本会话的所有权令牌（R2.5）。
-//
-// 调用时机：玩家 Actor 首次加载状态时（Bind 路径）。每次调用都分配新令牌，
-// 因此「同节点顶号」也会让旧 Actor 失效——这是原先靠 sessionID 比较 +
-// kick 做、且存在窗口的那件事。
-//
-// 与 presence.TrySetOnline 的分工：presence 决定「谁在线」（跨节点拒绝绑定），
-// AcquireLease 决定「谁的写有效」（同一会话内每次提交校验）。
-func (s *Store) AcquireLease(ctx context.Context, playerID int64) (int64, error) {
-	token, err := acquireLeaseScript.Run(ctx, s.rdb,
-		[]string{s.epochKey(playerID)}, leaseTTL.Milliseconds()).Int64()
-	if err != nil {
-		return 0, err
-	}
-	if token <= 0 {
-		return 0, fmt.Errorf("writebehind: invalid lease token %d", token)
-	}
-	return token, nil
-}
-
-// seedScript 冷启动把 MySQL 读出的旧快照 seed 回 Redis（幂等）。
-//
-// 两道防御：
-//  1. EXISTS 检查：缓存已存在（别的进程/路径已 seed 过）时直接返回 0，
-//     不用旧数据盖掉更新的缓存；
-//  2. ZSCORE 检查：若该玩家已在脏队列里，说明有比这份 MySQL 数据更新的
-//     快照等着落库，此刻 seed 会把「更新版本」倒盖成「旧版本」——
-//     直接报错拒绝，宁可 seed 失败暴露问题，不可静默丢更新。
-//
-// seedScript 冷启动把 MySQL 读出的旧快照 seed 回 Redis（幂等 + 分字段）。
-//
-// ARGV[1]=version ARGV[2]=playerID（脏队列成员）ARGV[3..]=field/value 对。
-// 与 Commit 用同一套字段格式——两者写的必须是同一种布局，否则 Seed 写完
-// 立刻被 Load 读成空状态。
+// 「已存在即返回 0」是幂等闸门：并发 seed 只有一个生效，其余读回现状。
 var seedScript = redis.NewScript(`
 if redis.call('EXISTS',KEYS[1])==1 then return 0 end
-if redis.call('ZSCORE',KEYS[2],ARGV[2]) then return redis.error_reply('missing dirty snapshot; cannot recover from stale SQL') end
 redis.call('HSET',KEYS[1],'version',ARGV[1])
-local i = 3
+local i = 2
 while i <= #ARGV do
   redis.call('HSET',KEYS[1],ARGV[i],ARGV[i+1])
   i = i + 2
@@ -288,8 +173,8 @@ func (s *Store) Seed(ctx context.Context, state Snapshot, version int64) (Record
 	if version < 0 {
 		return Record{}, fmt.Errorf("invalid version")
 	}
-	// 逐字段写入，与 Commit 同一套布局（R2.5-B）。
-	args := []interface{}{version, state.PlayerID}
+	// 逐字段写入，与 Sync 同一套布局。
+	args := []interface{}{version}
 	for _, f := range state.FieldNames() {
 		raw, err := state.Field(f)
 		if err != nil {
@@ -302,7 +187,6 @@ func (s *Store) Seed(ctx context.Context, state Snapshot, version int64) (Record
 	}
 	if _, err := seedScript.Run(ctx, s.rdb, []string{
 		s.stateKey(state.PlayerID),
-		s.dirtyKey(Partition(state.PlayerID)),
 	}, args...).Result(); err != nil {
 		return Record{}, err
 	}
@@ -366,62 +250,11 @@ func (s *Store) Load(ctx context.Context, id int64) (Record, error) {
 	return Record{Version: version, State: state}, nil
 }
 
-// Pending 取一个分区最早的 limit 个待落库玩家（按入队时间排序）。
-//
-// 参数防御：partition 越界/limit<=0 直接报错（防 ZRANGE 0 -1 这种
-// 误用把整队拉爆内存）。member 逐个校验：可解析、id>0、
-// Partition(id)==partition——队列里发现「不属于本分区的玩家」
-// 说明协议被破坏（如 Partitions 改过），必须报错而不是照写。
-//
-// Go 细节：ids 按 len(members) 预分配；ZRange 的 0 与 limit-1 是
-// 闭区间下标，limit 个一批正好对应 worker 的合批上限。
-func (s *Store) Pending(ctx context.Context, partition, limit int) ([]int64, error) {
-	if partition < 0 || partition >= Partitions || limit <= 0 {
-		return nil, fmt.Errorf("invalid queue parameters")
-	}
-	members, err := s.rdb.ZRange(ctx, s.dirtyKey(partition), 0, int64(limit)-1).Result()
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]int64, 0, len(members))
-	for _, member := range members {
-		id, err := strconv.ParseInt(member, 10, 64)
-		if err != nil || id <= 0 || Partition(id) != partition {
-			return nil, fmt.Errorf("invalid pending player %q", member)
-		}
-		ids = append(ids, id)
-	}
-	return ids, nil
-}
-
-// ackScript 落库成功后移除脏标记——但仅当版本仍匹配。
-//
-// 版本匹配（ARGV[1] == 当前 version）才 ZREM：防止「旧 worker 用
-// 过期记录 Ack，删掉新提交的入队标记」——那会导致新快照永远
-// 不落库。版本不匹配返回 0（什么都不删），由新提交者自行再 Ack。
-var ackScript = redis.NewScript(`
-if redis.call('HGET',KEYS[1],'version')==ARGV[1] then return redis.call('ZREM',KEYS[2],ARGV[2]) end
-return 0
-`)
-
-// Ack 确认落库完成，把玩家移出脏队列（版本匹配才生效，见 ackScript）。
-//
-// 失败由 .Err() 上抛；worker 的处理是「不重试 Ack，保留队列」——
-// 下次 tick 该玩家会以新版本重新入队/重新落库，重复落库被数据库
-// 版本栅栏挡住（见 worker.Persist），代价小、正确性高。
-func (s *Store) Ack(ctx context.Context, id, version int64) error {
-	return ackScript.Run(ctx, s.rdb, []string{s.stateKey(id), s.dirtyKey(Partition(id))}, version, id).Err()
-}
-
-// replicaScript 只写快照与版本，不登记脏队列（内存权威模式）。
-//
-// 为什么不能复用 commitScript：它的 ZADD 会把玩家放进落库队列，引来
-// writebehind worker。而内存权威下落库的数据源是 Actor 内存（pkg/flush →
-// persistPlayer），worker 读的是 Redis 副本——两条写路径对同一行没有先后
-// 保证，副本落后时旧值会覆盖 flusher 刚写的内存最新值。
+// syncScript 写快照副本与版本（租约不匹配则整体拒绝）。
 //
 // ARGV[1]=token；ARGV[2..] 是 field/value 对，field 以 '-' 开头表示删除。
-var replicaScript = redis.NewScript(`
+// 整个脚本原子：版本自增与字段写入不会出现「版本变了但字段没写」的中间态。
+var syncScript = redis.NewScript(`
 local token = tonumber(ARGV[1])
 if not token or token <= 0 then
   return redis.error_reply('invalid lease token')
@@ -446,14 +279,12 @@ end
 return redis.call('HINCRBY', KEYS[1], 'version', 1)
 `)
 
-// Sync 把内存状态同步到缓存副本（不登记脏队列）。
+// Sync 把内存状态同步到 Redis 副本。
 //
-// 与 Commit 的分工：
-//   - Sync（内存权威）：只更新副本 + 版本，供跨进程读与崩溃恢复；
-//     落库由 pkg/flush 从内存走，因此绝不能入队；
-//   - Commit（缓存权威）：写副本并入队，由 writebehind worker 消费落库。
+// 只写副本 + 版本，供跨进程读与崩溃恢复；**不承载落库**——落库由
+// pkg/flush 从 Actor 内存走（副本可能落后，拿它落库等于写回旧值）。
 //
-// 失败语义由调用方决定：内存权威下这只是「副本同步失败」，业务继续。
+// 失败语义由调用方决定：这只是「副本同步失败」，业务继续。
 func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, fields, removed []string, token int64) (int64, error) {
 	if playerID <= 0 {
 		return 0, fmt.Errorf("invalid player id")
@@ -475,7 +306,7 @@ func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, field
 	for _, f := range removed {
 		args = append(args, "-"+f, "")
 	}
-	version, err := replicaScript.Run(ctx, s.rdb, []string{
+	version, err := syncScript.Run(ctx, s.rdb, []string{
 		s.stateKey(playerID),
 		s.epochKey(playerID),
 	}, args...).Int64()
@@ -488,49 +319,18 @@ func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, field
 	return version, nil
 }
 
-// Drop 删除玩家的热快照，并从脏队列移除（A 类数据同步落库后调用）。
+// Drop 删除玩家的热快照（保留租约 epoch）。
 //
-// 为什么删而不是改写：同步事务已经把 player_writebehind.version 推进了，
-// 缓存里的旧快照即使留着，异步落库的版本栅栏也会判定它过期而不采用；
-// 但下一次 LoadCached 仍会读到它——玩家重登会看到「充值前的余额」。
-// 删掉之后加载必然 ErrMiss，走冷启动从 MySQL 读，读到的就是刚提交的数据。
+// 两种用途，动作相同、意图不同：
+//  1. 同步落库之后（A 类数据）：库里的 player_writebehind.version 已推进，
+//     缓存里的旧快照即使留着，异步通道的版本栅栏也不会采用它；但下一次
+//     LoadCached 仍会读到——玩家重登会看到「充值前的余额」。删掉之后加载
+//     必然 ErrMiss，走冷启动从 MySQL 读，读到的就是刚提交的数据。
+//  2. 加载时发现副本落后于库：必须让下一次 Seed 能真正写入——seedScript
+//     的「已存在即返回 0」不清掉就会一直读回旧副本。
 //
 // 保留 epochKey：租约仍归当前 Actor，顶号保护不受影响。
-// 两个命令放同一 pipeline：DEL 决定数据是否可见，ZREM 决定是否还会被
-// 扫描到，各自独立生效，任一失败都不影响另一个的正确性。
 func (s *Store) Drop(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return fmt.Errorf("invalid player id")
-	}
-	pipe := s.rdb.Pipeline()
-	pipe.Del(ctx, s.stateKey(id))
-	pipe.ZRem(ctx, s.dirtyKey(Partition(id)), id)
-	_, err := pipe.Exec(ctx)
-	return err
-}
-
-// DropQueue 无条件把玩家移出脏队列。
-//
-// 与 Ack 的分工：Ack 要求「队列中的版本 == 当前 state 的版本」才删，
-// 防止旧 worker 误删新提交的入队标记；而本方法服务「state key 已被
-// Drop 删除」的场景——此时版本校验必然失败（HGET 返回空），只剩
-// 无条件删除一条路。调用方必须自己确认数据已在 MySQL 里。
-func (s *Store) DropQueue(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return fmt.Errorf("invalid player id")
-	}
-	return s.rdb.ZRem(ctx, s.dirtyKey(Partition(id)), id).Err()
-}
-
-// Reset 只删除热快照，保留租约与脏队列成员。
-//
-// 用途：加载时发现「副本版本落后于库」（同步落库推进过 version 但缓存
-// 没跟上）。此时必须让下一次 Seed 能真正写入——seedScript 的语义是
-// 「已存在即返回 0」，不清掉就会一直读回旧副本。
-//
-// 与 Drop 的区别：Drop 连队列成员一起清（数据已同步落库，不再需要落库），
-// Reset 保留队列（那个玩家的改动仍要经异步通道写进库）。
-func (s *Store) Reset(ctx context.Context, id int64) error {
 	if id <= 0 {
 		return fmt.Errorf("invalid player id")
 	}

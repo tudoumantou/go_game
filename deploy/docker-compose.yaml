@@ -109,20 +109,6 @@ services:
       game: { condition: service_started }
       etcd: { condition: service_healthy }
 
-  flusher:
-    stop_grace_period: 40s
-    build:
-      context: ..
-      dockerfile: ./deploy/docker/game.Dockerfile
-      args:
-        SERVICE: flusher
-    volumes:
-      - configs:/app/configs:ro
-    command: ["-config", "/app/configs/game/game-docker.yaml"]
-    depends_on:
-      mysql: { condition: service_healthy }
-      redis: { condition: service_healthy }
-
   map:
     stop_grace_period: 40s
     build:

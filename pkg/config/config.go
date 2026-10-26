@@ -290,12 +290,6 @@ type FlushConfig struct {
 	Stagger    string `yaml:"stagger"`    // 相邻 worker 唤醒间隔
 	BatchRows  int    `yaml:"batch_rows"` // 单批写回行数
 	DirtyTTL   string `yaml:"dirty_ttl"`  // 脏 key 存活上限（异常兜底）
-	// DisableInlineWritebehind 关闭游戏服进程内的写穿 worker。
-	//
-	// Redis 权威状态下，脏队列的唯一消费者是 writebehind worker。默认开启进程内
-	// worker，保证「只启动游戏服」也能落库；已部署独立 cmd/flusher 时置 true 省资源。
-	// 两者同时运行安全：SQL 版本栅栏与带版本校验的 Ack 保证不会重复生效。
-	DisableInlineWritebehind bool `yaml:"disable_inline_writebehind"`
 }
 
 type IDTabConfig struct {
