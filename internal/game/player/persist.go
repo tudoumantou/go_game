@@ -184,7 +184,10 @@ func (r *Repository) save(ctx context.Context, state *State, withGrants bool) (i
 		// 模块私有表：本方法只负责 player/attr/items 三张基础表，Ext 表由
 		// 这里补上。内存权威的落库路径不经过 writebehind worker，缺这一步
 		// 模块状态（签到/任务/装备…）永远不会入库。
-		if err := writebehind.PersistModules(ctx, tx, state.snapshot()); err != nil {
+		//
+		// 只写**脏模块**：多数轮次玩家只动了金币/道具，把 9 张 Ext 表全量
+		// UPSERT 一遍纯属浪费（量随在线人数线性增长）。
+		if err := writebehind.PersistDirtyModules(ctx, tx, state.snapshot(), state.DirtyModules()); err != nil {
 			return err
 		}
 		if !withGrants {
@@ -196,8 +199,11 @@ func (r *Repository) save(ctx context.Context, state *State, withGrants bool) (i
 		return 0, err // 失败保留脏标记，下轮重试
 	}
 
-	// 同一 Actor 线程内执行（onSave 走 Actor 消息），清标记无并发风险
+	// 同一 Actor 线程内执行（onSave 走 Actor 消息），清标记无并发风险。
+	// 两个标记都要清：道具增量（ClearItemsDirty）与模块脏（ClearDirtyModules），
+	// 否则下一轮会把已经落过的模块再写一遍。
 	state.ClearItemsDirty()
+	state.ClearDirtyModules()
 	return version, nil
 }
 

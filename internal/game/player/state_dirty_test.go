@@ -8,11 +8,14 @@
 package player
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/db"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,4 +76,56 @@ func TestSeedDoesNotMarkChanged(t *testing.T) {
 	s.ClearChanged()
 	s.SeedItem(1001, 10)
 	require.False(t, s.HasChanged(), "SeedItem 是加载路径，不应触发提交")
+}
+
+// TestDirtyModulesTrackAndClear 模块级脏标记：置位、排序、清理。
+//
+// 这组标记决定落库写哪几张 Ext 表，与 DirtyFields（服务 Redis 副本）是
+// 两套独立状态：副本同步成功不能顺带清掉落库标记，否则模块状态永远不入库。
+func TestDirtyModulesTrackAndClear(t *testing.T) {
+	s := NewState(1)
+	require.Nil(t, s.DirtyModules(), "初始无脏模块")
+
+	s.SetExt("signin", json.RawMessage(`{"days":[1]}`))
+	s.SetExt("quest", json.RawMessage(`{"quests":{}}`))
+	require.Equal(t, []string{"quest", "signin"}, s.DirtyModules(), "应按名字升序")
+
+	// 副本同步清字段级标记，不应影响模块级
+	s.ClearDirtyFields()
+	require.Equal(t, []string{"quest", "signin"}, s.DirtyModules(),
+		"ClearDirtyFields 只服务副本同步，不能清模块标记")
+
+	s.ClearDirtyModules()
+	require.Nil(t, s.DirtyModules(), "落库成功后应清空")
+
+	// Ext 仍在（数据没删），只是标记清了
+	require.NotEmpty(t, s.Ext("signin"))
+}
+
+// TestSaveSkipsModulesThatDidNotChange 只改基础字段时，不应产生任何模块表写入。
+//
+// 用「Ext 里有内容、但没有脏标记」模拟「从库加载进来的模块状态」：
+// 它已经在库里了，这一轮没有变化，再写一遍纯属浪费。
+// 若实现退回全量写，会因为模块未注册而报错（no persister registered），
+// 这条测试就是那道闸门。
+func TestSaveSkipsModulesThatDidNotChange(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer raw.Close()
+
+	repo := NewRepository(&db.DB{DB: raw})
+	state := NewState(7)
+	state.SetProfile(module.Profile{Name: "n", Level: 2, Exp: 3, Coin: 4, SceneID: 5})
+	// 模拟冷启动加载的模块状态：有数据，但不脏
+	state.SetExt("zz_loaded_mod", json.RawMessage(`{"v":1}`))
+	state.ClearDirtyModules()
+	require.Nil(t, state.DirtyModules())
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE player SET").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO player_attr").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.Save(context.Background(), state), "只改基础字段应成功")
+	require.NoError(t, mock.ExpectationsWereMet())
 }

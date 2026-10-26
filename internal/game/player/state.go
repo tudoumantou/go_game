@@ -29,6 +29,7 @@ package player
 
 import (
 	"encoding/json"
+	"sort"
 	"sync"
 
 	"game_study/internal/game/module"
@@ -576,6 +577,34 @@ func (s *State) IsDirty(module string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dirty[module]
+}
+
+// DirtyModules 自上次落库以来状态变过的模块名（升序）。
+//
+// 与 DirtyFields 的分工：DirtyFields 是字段级、服务 Redis 副本同步；
+// 本方法是模块级、服务 MySQL 落库（决定写哪几张 Ext 表）。
+// 两者由不同的清除函数管理——副本同步成功不等于落库成功。
+func (s *State) DirtyModules() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.dirty) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.dirty))
+	for name := range s.dirty {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ClearDirtyModules 落库成功后清空模块脏标记。
+//
+// 只在事务提交成功后调用：失败时保留标记，下一轮重试同一批模块。
+func (s *State) ClearDirtyModules() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.dirty)
 }
 
 // ClearDirty 清除脏标记（落库成功后调用）。

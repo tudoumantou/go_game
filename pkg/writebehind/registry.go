@@ -132,32 +132,56 @@ func resetPersisters() {
 	persisters = make(map[string]Persister)
 }
 
-// PersistModules 把快照里的模块私有状态写进各自的表（在调用方事务内）。
+// PersistModules 把快照里的**全部**模块私有状态写进各自的表（调用方事务内）。
 //
-// 内存权威模式下的落库补丁：pkg/flush → Repository.Save 只处理 player /
-// player_attr / player_item 三张基础表，模块私有表（player_signin 等）由
-// 这里补上。写入复用模块注册的 Persister，与 worker 的 Ext 落库逻辑一致，
-// 因此两条通道写出的行完全相同。
-//
-// 只遍历内存里实际存在的模块（快照里没有 key 的不碰），所以对「本次没有
-// 变更、甚至从未加载」的模块不会产生空覆盖。
+// 用于「快照是完整视图」的路径（Redis 权威兼容：队列里的快照不带脏标记）。
 func PersistModules(ctx context.Context, tx *sql.Tx, state Snapshot) error {
+	return persistModuleRows(ctx, tx, state, nil, true)
+}
+
+// PersistDirtyModules 只写 names 里列出的模块（内存权威路径）。
+//
+// 空列表 = 什么都不写：玩家这一轮只动了金币/道具，模块 Ext 一个都没变。
+// 全量写会把 9 张 Ext 表按玩家数逐行 UPSERT 一遍——量与在线人数成正比，
+// 却几乎全是重复写。
+//
+// 与 PersistModules 拆成两个函数而不是加一个 nil 参数：空列表与「全部」
+// 在 []string 上是同一个零值（len 都为 0），靠 nil 区分极其脆弱——
+// 调用方传个空切片就会被当成全量，静默多写 9 张表。
+func PersistDirtyModules(ctx context.Context, tx *sql.Tx, state Snapshot, names []string) error {
+	return persistModuleRows(ctx, tx, state, names, false)
+}
+
+// persistModuleRows 模块落库实现：all=true 忽略 names，遍历全部 Ext。
+func persistModuleRows(ctx context.Context, tx *sql.Tx, state Snapshot, names []string, all bool) error {
 	if len(state.Ext) == 0 {
 		return nil
 	}
-	// 顺序按名字固定：便于复现、也让并发写入的加锁顺序一致。
-	names := make([]string, 0, len(state.Ext))
-	for name := range state.Ext {
-		names = append(names, name)
+	if all {
+		names = make([]string, 0, len(state.Ext))
+		for name := range state.Ext {
+			names = append(names, name)
+		}
 	}
-	sort.Strings(names)
-	for _, name := range names {
+	// 排序：便于复现，也让并发写入的加锁顺序一致。
+	// 复制一份再排：不修改调用方传入的顺序。
+	ordered := make([]string, len(names))
+	copy(ordered, names)
+	sort.Strings(ordered)
+
+	for _, name := range ordered {
+		raw, ok := state.Ext[name]
+		if !ok {
+			// 脏标记在、Ext 已空：模块状态被 Delete 过。行删除走墓碑，
+			// 这里不产生 UPSERT（否则会把已删的行写回）。
+			continue
+		}
 		p, ok := LookupPersister(name)
 		if !ok {
 			// 未注册不等于可以静默丢：内存里有这份状态，就必须有地方落。
 			return fmt.Errorf("no persister registered for module %q", name)
 		}
-		row := ModuleRow{PlayerID: state.PlayerID, Data: state.Ext[name]}
+		row := ModuleRow{PlayerID: state.PlayerID, Data: raw}
 		if err := p.PersistBatch(ctx, tx, []ModuleRow{row}); err != nil {
 			return fmt.Errorf("module %q: %w", name, err)
 		}
