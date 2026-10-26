@@ -86,14 +86,15 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	}
 	mr.SetError("cache unavailable")
 	id := send()
-	require.EqualValues(t, 20, id, fmt.Sprintf("unexpected success %d", id))
-	require.EqualValues(t, 60, a.state.GetItemCount(1001), "SQL-confirmed reward discarded")
+	require.EqualValues(t, 9002, id,
+		"内存权威：副本同步失败不该拦住业务，回业务响应而非错误通知")
+	require.EqualValues(t, 60, a.state.GetItemCount(1001), "奖励必须留在内存")
 	mr.SetError("")
 	id = send()
 	require.EqualValues(t, 9002, id)
 	record, err := store.Load(ctx, 7)
 	require.NoError(t, err)
-	require.EqualValues(t, 60, record.State.Items[1001])
+	require.EqualValues(t, 60, record.State.Items[1001], "副本恢复后补齐")
 }
 
 // capturedReply 记录一次下行（协议号 + 原始 body）。
@@ -236,26 +237,19 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 					return capturedReply{}
 				}
 			}
+			// 内存权威：副本同步失败不再是业务失败。三种注入下业务都应当
+			// 成功——改动留在内存并保持脏标记，下一次提交会把累积的改动
+			// 一起补上（副本落后不影响内存，也不影响落库）。
 			first := call()
-			if failure == "none" {
-				resp := decodeClaim(t, first)
-				require.False(t, resp.Code != 0 || resp.Already)
-			} else {
-				// 缓存提交失败是框架级失败：走统一错误通知（20），
-				// 业务响应的 code 只表达玩法规则，不承担系统错误。
-				require.EqualValues(t, 20, first.id)
-				notify := &gatev1.ErrorNotify{}
-				require.NoError(t, proto.Unmarshal(first.body, notify))
-				require.EqualValues(t, 1005, notify.Code)
-				// R2.5：失败后不回滚内存，而是标记「下一条消息前整份重载」。
-				require.False(t, !a.cacheReload, "failed cache write must schedule reload")
-			}
+			firstResp := decodeClaim(t, first)
+			require.EqualValues(t, 0, firstResp.Code, "副本同步失败不应让业务失败")
+			require.False(t, firstResp.Already, "首次领取不应是已领")
 			mr.SetError("")
 			retry := call()
 			retryResp := decodeClaim(t, retry)
 			require.EqualValues(t, 0, retryResp.Code)
-			expectedAlready := failure != "before"
-			require.EqualValues(t, expectedAlready, retryResp.Already)
+			require.True(t, retryResp.Already,
+				"重试必须幂等：内存里的领取标记不因副本同步失败而丢")
 			// 签到奖励按当天配置发（周一到周日不同），
 			// 不能写死 100——否则测试只在特定的星期几通过。
 			var want int64 = 10
@@ -282,9 +276,9 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 				}
 			}
 			err = grant()
-			require.Error(t, err, "expected unknown grant result")
+			require.NoError(t, err, "内存权威：副本同步失败不影响发货回执")
 			err = grant()
-			require.NoError(t, err)
+			require.NoError(t, err, "重投幂等：业务键已置位")
 			record, err = store.Load(ctx, 7)
 			require.False(t, err != nil || record.State.Items[1001] != want+50 || !record.State.AppliedGrants["recharge:order-1"], fmt.Sprintf("grant repeated: %+v %v", record, err))
 			sys.Stop()

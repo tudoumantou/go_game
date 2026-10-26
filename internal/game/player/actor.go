@@ -743,10 +743,10 @@ func (a *Actor) onSave(ctx *actor.Context, msg *SaveMsg) {
 }
 
 // savePlayer 真正执行落库，返回第一个错误（模块钩子或 SQL 失败）。
+//
+// 内存权威：这里就是所有玩家数据的落库入口，不管缓存开没开。数据源是
+// Actor 内存（a.state），Redis 副本落后于内存也不影响——落库以内存为准。
 func (a *Actor) savePlayer(ctx *actor.Context) error {
-	if a.repo.CacheEnabled() {
-		return nil // 缓存权威：落库由 writebehind worker 负责
-	}
 	var firstErr error
 	if a.registry != nil {
 		mctx := a.moduleCtx(ctx)

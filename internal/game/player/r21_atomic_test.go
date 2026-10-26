@@ -129,21 +129,30 @@ func TestSpendAndRewardCommitTogether(t *testing.T) {
 //
 // 为什么重置更好：回滚要 clone 一份完整状态（每条消息两次 map 分配 + 两次
 // 深拷贝），而重载只在失败时发生一次，且 Redis 就是权威，重置不会算错。
-func TestSpendResetsToAuthorityWhenCacheFails(t *testing.T) {
+// TestSpendKeepsMemoryWhenCacheFails 验证内存权威下的扣款语义。
+//
+// 副本同步失败不影响业务：内存里余额已扣、响应正常；Redis 副本停在提交前
+// 的版本，由下一次成功的提交（脏标记仍然保留）或落库后的加载校验补齐。
+// 这与改造前不同——那时缓存是权威，提交失败必须回错误并让内存回到权威值。
+func TestSpendKeepsMemoryWhenCacheFails(t *testing.T) {
 	rig := newSpendRig(t, map[int32]int64{costItem: 100})
 	before, err := rig.store.Load(context.Background(), 7)
 	require.NoError(t, err)
 
 	rig.mr.SetError("cache unavailable")
-	if id := rig.send(t); id != 20 { // 网关通用错误通知
-		t.Fatalf("failed commit must reply with error, got %d", id)
+	if id := rig.send(t); id == 20 { // 网关通用错误通知
+		t.Fatalf("副本同步失败不该回错误通知，got %d", id)
 	}
-	// R2.5：失败后内存保留改动（不回滚），由 cacheReload 在下条消息前重置。
-	require.False(t, !rig.actor.cacheReload, "failed commit must schedule reload")
-	// Redis 权威状态保持提交前版本。
+	// 内存是权威：扣款已生效，不回滚、不标记重载。
+	require.Less(t, rig.actor.state.GetItemCount(costItem), int64(100),
+		"扣款必须在内存里生效")
+	require.False(t, rig.actor.cacheReload, "内存权威下不该用副本覆盖内存")
+
+	// 副本停在提交前的版本与内容，等下一次成功提交覆盖。
 	rig.mr.SetError("")
 	after, err := rig.store.Load(context.Background(), 7)
 	require.NoError(t, err)
-	require.EqualValues(t, before.Version, after.Version, fmt.Sprintf("snapshot changed after failed commit: %+v", after))
-	require.EqualValues(t, 100, after.State.Items[costItem])
+	require.EqualValues(t, before.Version, after.Version,
+		fmt.Sprintf("失败的提交不该推进副本版本: %+v", after))
+	require.EqualValues(t, 100, after.State.Items[costItem], "副本保持旧值")
 }

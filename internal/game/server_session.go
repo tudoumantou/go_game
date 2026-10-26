@@ -53,13 +53,9 @@ const saveAckTimeout = 5 * time.Second
 // 返回 nil 的语义是「SQL 已成功」而不是「消息已投递」：以前只 Send 就返回 nil，
 // flusher 会把玩家从脏队列移除，保存失败时数据静默丢失。
 func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
-	// 缓存权威模式下直连落库已禁用（persist.Save 同样拒绝执行）：脏数据在
-	// Redis 队列里由 wbWorker 消费，flusher 只服务非缓存玩家。
-	if s.repo.CacheEnabled() {
-		return nil
-	}
-	// 玩家不在线（从未上线或 PID 已不在索引）→ 没有 Actor 可保存：
-	// 此时库里的数据就是最新状态，视为成功，不能当成失败重试。
+	// 落库的唯一出口：flusher → 这里 → SaveMsg → Actor 用内存状态写库。
+	// 内存权威模式下对所有玩家生效（Redis 副本由 Sync 维护，不入队、
+	// 不参与落库）；玩家不在线时库里的就是最新状态，视为成功。
 	pid, ok := s.players.Get(playerID)
 	if !ok {
 		return nil

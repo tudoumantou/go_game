@@ -413,6 +413,81 @@ func (s *Store) Ack(ctx context.Context, id, version int64) error {
 	return ackScript.Run(ctx, s.rdb, []string{s.stateKey(id), s.dirtyKey(Partition(id))}, version, id).Err()
 }
 
+// replicaScript 只写快照与版本，不登记脏队列（内存权威模式）。
+//
+// 为什么不能复用 commitScript：它的 ZADD 会把玩家放进落库队列，引来
+// writebehind worker。而内存权威下落库的数据源是 Actor 内存（pkg/flush →
+// persistPlayer），worker 读的是 Redis 副本——两条写路径对同一行没有先后
+// 保证，副本落后时旧值会覆盖 flusher 刚写的内存最新值。
+//
+// ARGV[1]=token；ARGV[2..] 是 field/value 对，field 以 '-' 开头表示删除。
+var replicaScript = redis.NewScript(`
+local token = tonumber(ARGV[1])
+if not token or token <= 0 then
+  return redis.error_reply('invalid lease token')
+end
+local epoch = tonumber(redis.call('GET', KEYS[2]) or '0')
+if epoch == 0 then
+  redis.call('SET', KEYS[2], token)
+elseif token ~= epoch then
+  return -1
+end
+local i = 2
+while i <= #ARGV do
+  local f = ARGV[i]
+  local v = ARGV[i+1]
+  if string.sub(f, 1, 1) == '-' then
+    redis.call('HDEL', KEYS[1], string.sub(f, 2))
+  else
+    redis.call('HSET', KEYS[1], f, v)
+  end
+  i = i + 2
+end
+return redis.call('HINCRBY', KEYS[1], 'version', 1)
+`)
+
+// Sync 把内存状态同步到缓存副本（不登记脏队列）。
+//
+// 与 Commit 的分工：
+//   - Sync（内存权威）：只更新副本 + 版本，供跨进程读与崩溃恢复；
+//     落库由 pkg/flush 从内存走，因此绝不能入队；
+//   - Commit（缓存权威）：写副本并入队，由 writebehind worker 消费落库。
+//
+// 失败语义由调用方决定：内存权威下这只是「副本同步失败」，业务继续。
+func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, fields, removed []string, token int64) (int64, error) {
+	if playerID <= 0 {
+		return 0, fmt.Errorf("invalid player id")
+	}
+	args := []interface{}{token}
+	for _, f := range fields {
+		raw, err := src.Field(f)
+		if err != nil {
+			return 0, err
+		}
+		if raw == nil {
+			continue // 模块没有状态，不写
+		}
+		if err := validateField(f, raw); err != nil {
+			return 0, err
+		}
+		args = append(args, f, string(raw))
+	}
+	for _, f := range removed {
+		args = append(args, "-"+f, "")
+	}
+	version, err := replicaScript.Run(ctx, s.rdb, []string{
+		s.stateKey(playerID),
+		s.epochKey(playerID),
+	}, args...).Int64()
+	if err != nil {
+		return 0, err
+	}
+	if version < 0 {
+		return 0, ErrConflict
+	}
+	return version, nil
+}
+
 // Drop 删除玩家的热快照，并从脏队列移除（A 类数据同步落库后调用）。
 //
 // 为什么删而不是改写：同步事务已经把 player_writebehind.version 推进了，
@@ -445,4 +520,19 @@ func (s *Store) DropQueue(ctx context.Context, id int64) error {
 		return fmt.Errorf("invalid player id")
 	}
 	return s.rdb.ZRem(ctx, s.dirtyKey(Partition(id)), id).Err()
+}
+
+// Reset 只删除热快照，保留租约与脏队列成员。
+//
+// 用途：加载时发现「副本版本落后于库」（同步落库推进过 version 但缓存
+// 没跟上）。此时必须让下一次 Seed 能真正写入——seedScript 的语义是
+// 「已存在即返回 0」，不清掉就会一直读回旧副本。
+//
+// 与 Drop 的区别：Drop 连队列成员一起清（数据已同步落库，不再需要落库），
+// Reset 保留队列（那个玩家的改动仍要经异步通道写进库）。
+func (s *Store) Reset(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid player id")
+	}
+	return s.rdb.Del(ctx, s.stateKey(id)).Err()
 }

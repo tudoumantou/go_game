@@ -131,3 +131,36 @@ func resetPersisters() {
 	defer persisterMu.Unlock()
 	persisters = make(map[string]Persister)
 }
+
+// PersistModules 把快照里的模块私有状态写进各自的表（在调用方事务内）。
+//
+// 内存权威模式下的落库补丁：pkg/flush → Repository.Save 只处理 player /
+// player_attr / player_item 三张基础表，模块私有表（player_signin 等）由
+// 这里补上。写入复用模块注册的 Persister，与 worker 的 Ext 落库逻辑一致，
+// 因此两条通道写出的行完全相同。
+//
+// 只遍历内存里实际存在的模块（快照里没有 key 的不碰），所以对「本次没有
+// 变更、甚至从未加载」的模块不会产生空覆盖。
+func PersistModules(ctx context.Context, tx *sql.Tx, state Snapshot) error {
+	if len(state.Ext) == 0 {
+		return nil
+	}
+	// 顺序按名字固定：便于复现、也让并发写入的加锁顺序一致。
+	names := make([]string, 0, len(state.Ext))
+	for name := range state.Ext {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		p, ok := LookupPersister(name)
+		if !ok {
+			// 未注册不等于可以静默丢：内存里有这份状态，就必须有地方落。
+			return fmt.Errorf("no persister registered for module %q", name)
+		}
+		row := ModuleRow{PlayerID: state.PlayerID, Data: state.Ext[name]}
+		if err := p.PersistBatch(ctx, tx, []ModuleRow{row}); err != nil {
+			return fmt.Errorf("module %q: %w", name, err)
+		}
+	}
+	return nil
+}

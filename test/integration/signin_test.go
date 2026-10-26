@@ -4,9 +4,9 @@
 //
 // 不起真实服务进程：直接装配 actor.System + 模块 Registry + Repository/Worker，
 // 用可控时钟把「今天」固定为周三，覆盖四条路径：
-//  1. 在线签到只写缓存（SQL 立即查应为空）；
-//  2. 同分片多角色由 worker 合批落库（一次 FlushBatch 落两行）；
-//  3. Actor 重启：Redis 仍在 → 从缓存恢复已领状态；
+//  1. 在线签到只更新副本（SQL 立即查应为空）；
+//  2. 落库从 Actor 内存走（发 SaveMsg 触发，与 flusher 同一条路径）；
+//  3. Actor 重启：Redis 副本仍在 → 从副本恢复已领状态；
 //  4. Redis 丢失 → FlatPersister 走生成代码从 SQL 冷启动恢复。
 //
 // 另外验证角色隔离与重复领取幂等。
@@ -62,7 +62,6 @@ func TestSigninActorFlow(t *testing.T) {
 		require.NoError(t, err)
 	}
 	store := writebehind.NewStore(rdb)
-	worker := writebehind.NewWorker(store, database.DB, 100)
 	repo := player.NewRepository(database)
 	repo.SetCache(store)
 	logger := log.New("signin-test", log.WithLevel("error"))
@@ -133,9 +132,18 @@ func TestSigninActorFlow(t *testing.T) {
 	require.False(t, !got.Already || got.ClaimedRewards[1001] != 300, "duplicate claim")
 	got = claim(p2)
 	require.False(t, got.Already || got.ClaimedRewards[1001] != 300, "role isolation")
-	n, err := worker.FlushBatch(ctx, writebehind.Partition(ids[0]))
-	require.NoError(t, err, fmt.Sprintf("batch flush: %d %v", n, err))
-	require.EqualValues(t, 2, n)
+	// 内存权威：落库从 Actor 内存走（生产环境由 pkg/flush 的分片 worker
+	// 定时触发同一条路径）。这里对两个角色各发一次 SaveMsg，等价一轮落库。
+	for _, pid := range []*actor.PID{p1, p2} {
+		done := make(chan error, 1)
+		require.NoError(t, sys.Send(pid, &player.SaveMsg{Done: done}), "send save")
+		select {
+		case err := <-done:
+			require.NoError(t, err, "save must succeed")
+		case <-time.After(10 * time.Second):
+			t.Fatal("save timeout")
+		}
+	}
 	for _, id := range ids {
 		days, rewards := sqlRow(id)
 		require.EqualValues(t, "[3]", days, fmt.Sprintf("row %d: days=%q rewards=%q", id, days, rewards))

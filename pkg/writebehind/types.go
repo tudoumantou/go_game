@@ -1,10 +1,14 @@
-// Package writebehind 实现 Redis 权威热状态、可靠脏队列和独立合批落库。
+// Package writebehind 维护玩家热状态的 Redis 副本，并提供两种写入模式。
 //
-// 架构位置：本包定义玩家快照的**线上协议**（Snapshot）与缓存侧存储
-// （store.go），落库 worker（worker.go）把 Redis 脏队列异步投影到
-// MySQL。与 pkg/flush 的关系：flush 是「进程内分片落库框架」，
-// writebehind 是「缓存权威玩家的可靠落库通道」，两者互补——
-// 非缓存玩家走 flush.MarkDirty，缓存玩家走本包的脏 ZSET。
+// 两条路径的分工（权威归属不同，不能混用）：
+//   - Store.Sync（内存权威，当前默认）：只写副本 + 版本，不登记脏队列。
+//     落库由 pkg/flush 从 Actor 内存走，因此绝不能入队——入队会引来
+//     worker 用可能落后的副本覆盖内存最新值；
+//   - Store.Commit（缓存权威，兼容保留）：写副本并入队，由 Worker 消费
+//     落库。适用于「Redis 是唯一数据源」的部署形态。
+//
+// 与 pkg/flush 的关系：flush 是「进程内分片落库框架」，本包负责副本与
+// （可选）Redis 队列的落库通道。两者互补而非替代。
 package writebehind
 
 import (

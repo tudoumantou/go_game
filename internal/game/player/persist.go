@@ -129,7 +129,7 @@ func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]i
 //
 // SQL 语句数从「1 + N（道具数）」降到「1 + 批次 + 批次」。
 func (r *Repository) Save(ctx context.Context, state *State) error {
-	_, err := r.save(ctx, state, false, false)
+	_, err := r.save(ctx, state, false)
 	return err
 }
 
@@ -139,23 +139,19 @@ func (r *Repository) Save(ctx context.Context, state *State) error {
 // 异步通道（writebehind）等的是一个落库窗口，Redis 掉电会连窗口一起丢，
 // 对钱不可接受。
 //
-// 与 Save 的三点差别：
-//  1. 跳过「缓存权威模式禁止直写」的检查——本方法就是给那条链路用的；
-//  2. 同一事务内推进 player_writebehind.version：异步落库的版本栅栏据此
-//     判定缓存里的旧快照已过期，即使后面删缓存失败，旧值也写不回库；
-//  3. 同一事务内写 applied_grants：「发货」与「幂等键」原子生效，
-//     Kafka 重投时幂等命中，不会二次发放。
+// 与 Save 的两点差别：
+//  1. 同一事务内写 applied_grants：「发货」与「幂等键」原子生效，
+//     Kafka 重投时幂等命中，不会二次发放；
+//  2. 同一事务内推进 player_writebehind.version：异步落库与加载侧的
+//     版本校验据此判定缓存副本过期，旧值不会覆盖新值。
 //
 // 返回推进后的版本号。调用方必须用它更新本地 cacheVersion，否则下一次
 // Commit 的 CAS 期望值会落后于数据库，被判为冲突。
 func (r *Repository) SaveForce(ctx context.Context, state *State) (int64, error) {
-	return r.save(ctx, state, true, true)
+	return r.save(ctx, state, true)
 }
 
-func (r *Repository) save(ctx context.Context, state *State, force, withGrants bool) (int64, error) {
-	if !force && r.CacheEnabled() {
-		return 0, fmt.Errorf("direct player SQL save disabled: use cache and independent flusher")
-	}
+func (r *Repository) save(ctx context.Context, state *State, withGrants bool) (int64, error) {
 	dirty := state.DirtyItems()
 	var version int64
 
@@ -183,6 +179,12 @@ func (r *Repository) save(ctx context.Context, state *State, force, withGrants b
 		}
 
 		if err := saveDirtyItems(ctx, tx, playerID, dirty); err != nil {
+			return err
+		}
+		// 模块私有表：本方法只负责 player/attr/items 三张基础表，Ext 表由
+		// 这里补上。内存权威的落库路径不经过 writebehind worker，缺这一步
+		// 模块状态（签到/任务/装备…）永远不会入库。
+		if err := writebehind.PersistModules(ctx, tx, state.snapshot()); err != nil {
 			return err
 		}
 		if !withGrants {

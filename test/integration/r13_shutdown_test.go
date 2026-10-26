@@ -20,6 +20,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	"game_study/pkg/writebehind"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +29,6 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 	ctx := context.Background()
 	store := writebehind.NewStore(rdb)
 	// batch=2：5 个玩家必须分 3 轮排空，顺带验证 FlushAll 的循环而不是只落一批。
-	worker := writebehind.NewWorker(store, database.DB, 2)
 	repo := player.NewRepository(database)
 	repo.SetCache(store)
 	logger := log.New("r13-test", log.WithLevel("error"))
@@ -89,9 +89,19 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 	// ① 排空在途（等价于 Server.Shutdown 的 drain-actors 步骤）
 	err := sys.Drain(closeCtx)
 	require.NoError(t, err, fmt.Sprintf("drain: %v", err))
-	// ② 确认落库（等价于 flush-all 步骤：进程内 worker 排空 Redis 脏队列）
-	err = worker.FlushAll(closeCtx)
-	require.NoError(t, err, fmt.Sprintf("flush all: %v", err))
+	// ② 落库（等价于 flush-all 步骤）。内存权威下数据源是 Actor 内存，
+	// 这里对每个玩家发一次 SaveMsg，与 Server.FlushAll → persistPlayer
+	// 走的是同一条路径。
+	for _, pid := range pids {
+		done := make(chan error, 1)
+		require.NoError(t, sys.Send(pid, &player.SaveMsg{Done: done}), "send save")
+		select {
+		case saveErr := <-done:
+			require.NoError(t, saveErr, "save must succeed during shutdown")
+		case <-closeCtx.Done():
+			t.Fatal("save timeout during shutdown")
+		}
+	}
 	// ③ 停 Actor
 	sys.Stop()
 
@@ -148,6 +158,12 @@ func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
 	sys.Stop()
 
 	// 数据库不可用：排空必须失败，且脏任务仍在。
+	//
+	// 内存权威下 Sync 不再入队（落库由 flusher 从内存走），这里手动补一条
+	// 队列成员，专门验证 writebehind 通道（兼容路径）的失败语义仍然正确。
+	_, err = rdb.ZAdd(ctx, fmt.Sprintf("wb:{player-%d}:dirty", writebehind.Partition(id)),
+		redis.Z{Score: 1, Member: fmt.Sprintf("%d", id)}).Result()
+	require.NoError(t, err, "enqueue for writebehind path")
 	err = database.Close()
 	require.NoError(t, err, fmt.Sprintf("close db: %v", err))
 	worker := writebehind.NewWorker(store, database.DB, 10)

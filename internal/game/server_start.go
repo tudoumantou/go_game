@@ -293,10 +293,13 @@ func (s *Server) startFlusher() error {
 	return nil
 }
 
-// startWritebehind 起进程内 writebehind worker（缓存权威模式的落库通道）。
+// startWritebehind 起进程内 writebehind worker（Redis 队列的落库通道）。
 //
-// 进程内默认起一个，避免「忘了部署 cmd/flusher 就永远不落库」；
-// 部署了独立 flusher 时可关闭（版本栅栏保证两者并行也安全）。
+// 内存权威模式下这个 worker 是**兜底**：玩家状态同步走 Store.Sync（只写
+// 副本不入队），队列通常为空。保留它的理由有两个：兼容缓存权威部署形态
+// （Commit 会入队），以及万一有路径误入队时不至于永远不落库。
+//
+// 部署了独立 cmd/flusher 时可关闭（版本栅栏保证两者并行也安全）。
 func (s *Server) startWritebehind() error {
 	// 缓存权威状态下，脏队列的唯一消费者是 writebehind worker。
 	// 进程内默认起一个，避免「忘了部署 cmd/flusher 就永远不落库」；
@@ -326,17 +329,14 @@ func (s *Server) startWritebehind() error {
 
 // initPlayerManager 建玩家管理器并注入反向依赖。
 func (s *Server) initPlayerManager() {
-	// 落库调度二选一，互斥使用：
+	// 落库调度：内存权威模式下，所有玩家状态变动都走 flusher——
+	// 它的数据源是 Actor 内存（persistPlayer → SaveMsg → savePlayer），
+	// Redis 只是尽力同步的副本，不参与落库。
 	//
-	//	非缓存模式 → flusher.MarkDirty，进程内分片合批直连 MySQL；
-	//	缓存权威模式 → 置空，持久化改由 Redis 脏队列 + writebehind worker 承担。
-	//
-	// 缓存模式若仍走 flusher，玩家会被标进一个没有消费者的队列，永远不落库。
-	var onDirty func(int64) = s.flusher.MarkDirty
-	if s.repo.CacheEnabled() {
-		onDirty = nil
-	} // Redis 内的持久队列由 writebehind worker 消费。
-	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, onDirty, s.sendToClient)
+	// 历史上这里是二选一（缓存模式置空、交给 writebehind 消费 Redis 队列）。
+	// 改成内存权威后两条路不再互斥：writebehind 仍可保留为「跨进程副本
+	// 通道」，但落库的唯一来源是内存。
+	s.players = player.NewManager(s.actorSys, s.modules, s.logger, s.repo, s.flusher.MarkDirty, s.sendToClient)
 	// 场景心跳与重连同步：反向依赖由组装层注入，player 包不认识 scene。
 	s.players.SetSceneLink(s.sceneMgr)
 	// 跨节点顶号：别的节点接管本玩家的在线归属时，会发 KickMsg 过来，

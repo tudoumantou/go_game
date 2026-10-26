@@ -63,14 +63,19 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 		}
 	}
 	if a.cacheReload {
+		// 强制冷启动：跳过 Redis，直接从库重建。
+		//
+		// 走到这里的原因只有「内存可能处于半改状态」（panic 恢复）。内存权威
+		// 模式下不能拿 Redis 副本覆盖内存——副本可能落后于库，用它重建等于
+		// 把已落库的改动倒回去。
 		loadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		state, version, err := a.repo.LoadCached(loadCtx, a.playerID)
+		state, version, err := a.repo.LoadCachedForce(loadCtx, a.playerID)
 		cancel()
 		if err != nil {
 			a.cacheFailure(ctx, err)
 			return
 		}
-		// 保留在线派生加成，Redis 只保存持久化基础属性。
+		// 保留在线派生加成，库与缓存都只保存持久化基础属性。
 		state.bonus = a.state.bonus
 		a.setState(state)
 		a.cacheVersion = version
@@ -94,67 +99,62 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 	a.receive(ctx)
 
 	var commitErr error
-	if a.state.HasChanged() {
+	// 提交条件看「有没有未同步的字段」，而不是「这条消息改没改」。内存权威
+	// 模式下副本允许失败，失败时脏字段保留；如果只按 HasChanged 判断，
+	// 下一条消息本身没有改动就不会触发提交，累积的脏字段永远同步不出去。
+	// 只写变化的字段（R2.5-B）：签到不重写整个背包；字段由 State 现取现
+	// 序列化，不再先构造整份快照（省一次全量复制）。
+	fields, removed := a.state.DirtyFields()
+	if a.state.HasChanged() || len(fields) > 0 || len(removed) > 0 {
 		saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		var version int64
-		// 只写本次变化的字段（R2.5-B）：签到不再重写整个背包。
-		// 字段由 State 现取现序列化，不再先构造整份快照（省一次全量复制）。
-		fields, removed := a.state.DirtyFields()
-		if len(fields) == 0 {
-			// 防御：HasChanged 为真却没有字段标记，说明字段映射漏了。
+		if len(fields) == 0 && len(removed) == 0 {
+			// 防御：有改动却没有字段标记，说明字段映射漏了。
 			// 宁可多写一次整份，也不能让改动不落库。
 			fields = a.state.Fields()
 		}
-		version, commitErr = a.repo.cache.Commit(saveCtx, a.playerID, a.state, fields, removed, a.token)
+		// Sync 而不是 Commit：内存权威下落库走 flusher（数据源是内存），
+		// Redis 只更新副本、不登记脏队列——入队会引来 writebehind worker
+		// 用可能落后的副本与 flusher 争写同一批表。
+		version, commitErr = a.repo.cache.Sync(saveCtx, a.playerID, a.state, fields, removed, a.token)
 		cancel()
 		if commitErr == nil {
 			a.cacheVersion = version
-			a.state.ClearItemsDirty()
+			// 只清「副本同步」用的字段标记，**不清 ClearItemsDirty**：
+			// 后者是落库用的增量道具标记，由 repo.Save 在写库成功后清理。
+			// 在这里清掉会让 flusher 以为没有道具要写，改动只活到进程退出。
 			a.state.ClearDirtyFields()
 		}
 	}
+	// 内存权威：Redis 只是副本，同步失败不影响本次操作的正确性——
+	// 落库走 flusher（数据源是内存，不是 Redis），副本落后由加载时的
+	// 库版本校验兜住（见 Repository.LoadCached）。
+	//
+	// 唯一必须失败的是 BindMsg：它本身就是「从 Redis 加载玩家」，加载不到
+	// 就没有后续操作可言，此时报错比放一个空状态进去安全。
 	if commitErr != nil {
-		// 先退出窗口：cacheFailure 要发的错误回包必须直发，
-		// 否则会入队随后被 defer 的 Discard 一起丢掉，客户端只能等到超时。
-		a.gate.Discard()
-		if a.canDiscardMessage(ctx.Message()) {
-			// 不回滚内存：Redis 是权威，下一条消息开头整份 LoadCached 会覆盖它。
-			// （原先的 setState(previous) 正是这样被立刻覆盖，clone 纯属白做。）
-			a.cacheReload = true
-		} else {
-			// 不可重放的消息（充值发货已在 MySQL 提交事实）：保留待提交快照，
-			// 后续消息先 finishPending 补提，不能丢。
-			a.cachePending = &writebehind.Record{Version: a.cacheVersion, State: a.state.snapshot()}
-			a.cacheReload = false
+		if _, isBind := ctx.Message().(*BindMsg); isBind {
+			a.gate.Discard()
+			a.cacheFailure(ctx, commitErr)
+			return
 		}
-		a.cacheFailure(ctx, commitErr)
-		return
+		// 只告警：这是「副本同步失败」，不是「业务失败」。内存里的改动会由
+		// flusher 在本轮或下轮落库；玩家重登时若副本确实落后，加载侧会用
+		// player_writebehind.version 发现并以库为准重建。
+		a.logger.Warn("cache replica sync failed", "err", commitErr)
 	}
-	// 提交成功才刷出暂存的下行；发送失败只记日志——数据已经落定，
-	// 因为一条推送失败去回滚一次成功提交没有意义。
+	// 刷出暂存的下行。发送失败只记日志——数据已经落定（内存 + 落库队列），
+	// 因为一条推送失败去回滚一次已生效的操作没有意义。
 	for _, err := range a.gate.Commit() {
 		a.logger.Warn("cached reply failed", "err", err)
 	}
 }
 
-// canDiscardMessage 判断请求失败后能否直接丢弃内存改动。
-//
-// 协议号到「可丢弃」的映射由模块自己声明（module.DiscardableAware），
-// 玩家层不再硬编码任何具体玩法：新增玩法不需要改这个文件。
-func (a *Actor) canDiscardMessage(message any) bool {
-	switch msg := message.(type) {
-	case *GrantItemsMsg:
-		return true // 与资产同快照的 BizID 负责幂等重放。
-	case *PacketMsg:
-		if a.registry == nil {
-			return false
-		}
-		return a.registry.IsDiscardable(msg.MsgID)
-	}
-	return false
-}
-
 // finishPending 核对 Redis 实际版本后补提交「结果未知」的旧快照。
+//
+// 注意：内存权威模式下提交流程不再产生 cachePending（副本同步失败只告警，
+// 不阻塞业务），这条路径仅保留给「升级前遗留/N+1 语义」的兼容与测试。
+// 它仍然正确：一旦出现 pending，先收尾再放行新业务。
 //
 // 两种合法情形：
 //   - 版本未变（pending.Version）：上次提交其实没落，重发同一快照即可；

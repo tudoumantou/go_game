@@ -25,25 +25,81 @@ import (
 	"game_study/pkg/writebehind"
 )
 
-// LoadCached 只在热数据不存在时回源；Redis 故障或损坏时不使用旧 SQL 冒充最新状态。
+// LoadCached 读取玩家状态（内存权威模式下的读入口）。
+//
+// 判定顺序：缓存命中且不落后于库 → 直接用；否则一律回源库重建。
+//
+// 与「缓存权威」的两处关键差异：
+//   - 命中后要比较库里的 player_writebehind.version。同步落库（A 类）会推进
+//     库版本而缓存副本可能还没跟上，落后时必须用库重建——否则玩家重登会
+//     看到充值前的余额；
+//   - Redis 故障不再等于登录失败。副本只是加速层，回源即可；回填失败也不
+//     影响本次返回（下次加载再填）。
 //
 // 返回值里的 version 是调用方后续 Commit 的 CAS 期望值起点，必须与读到的
 // 快照同源，不能自行 +1。
 func (r *Repository) LoadCached(ctx context.Context, id int64) (*State, int64, error) {
-	record, err := r.cache.Load(ctx, id)
-	if errors.Is(err, writebehind.ErrMiss) {
-		cold, err := r.loadColdSnapshot(ctx, id)
-		if err != nil {
-			return nil, 0, err
+	record, loadErr := r.cache.Load(ctx, id)
+	switch {
+	case loadErr == nil:
+		// 副本可能落后于库：同步落库（A 类）会推进库版本而缓存没跟上。
+		// 校验是「尽力而为」——查不到库版本（表缺行、查询失败）就信任副本，
+		// 它是加分项而不是正确性前提，不能因为一次辅助查询拒绝登录。
+		if dbVersion, verr := r.writebehindVersion(ctx, id); verr == nil && record.Version < dbVersion {
+			// 落后：先清掉（否则 Seed 的「已存在即返回」会让重建写不进去），
+			// 清不掉也不要紧——下面直接用冷快照返回，绝不返回旧副本。
+			_ = r.cache.Reset(ctx, id)
+			break
 		}
-		record, err = r.cache.Seed(ctx, cold.State, cold.Version)
-		if err != nil {
-			return nil, 0, err
-		}
-	} else if err != nil {
+		return stateFromSnapshot(record.State), record.Version, nil
+	case errors.Is(loadErr, writebehind.ErrMiss):
+		// 正常未命中，回源。
+	default:
+		// Redis 故障：副本不是必需品，回源库。这里不阻断——一次缓存抖动
+		// 不该变成全服登录失败。观测靠连接/消息指标与登录耗时。
+	}
+
+	cold, err := r.loadColdSnapshot(ctx, id)
+	if err != nil {
 		return nil, 0, err
 	}
-	return stateFromSnapshot(record.State), record.Version, nil
+	seeded, err := r.cache.Seed(ctx, cold.State, cold.Version)
+	if err != nil {
+		// 回填失败不影响登录：本次用冷快照，下次加载再填。
+		return stateFromSnapshot(cold.State), cold.Version, nil
+	}
+	return stateFromSnapshot(seeded.State), seeded.Version, nil
+}
+
+// LoadCachedForce 强制从库重建，跳过缓存。
+//
+// 用于「内存可能处于半改状态」的恢复（panic）：此时不能拿可能落后的副本
+// 覆盖内存。回填缓存失败不影响返回值。
+func (r *Repository) LoadCachedForce(ctx context.Context, id int64) (*State, int64, error) {
+	cold, err := r.loadColdSnapshot(ctx, id)
+	if err != nil {
+		return nil, 0, err
+	}
+	if seeded, seedErr := r.cache.Seed(ctx, cold.State, cold.Version); seedErr == nil {
+		return stateFromSnapshot(seeded.State), seeded.Version, nil
+	}
+	return stateFromSnapshot(cold.State), cold.Version, nil
+}
+
+// writebehindVersion 读库里的已落库版本（判定副本是否落后的基准）。
+//
+// 缺行表示这个玩家还没有异步落库记录，视为 0——此时任何副本都不落后。
+func (r *Repository) writebehindVersion(ctx context.Context, id int64) (int64, error) {
+	var version int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT version FROM player_writebehind WHERE player_id = ?`, id).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read writebehind version: %w", err)
+	}
+	return version, nil
 }
 
 // SQL 只承担一致性冷启动读取，不参与在线签到查询、领取。

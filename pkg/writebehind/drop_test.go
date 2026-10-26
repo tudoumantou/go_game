@@ -19,6 +19,58 @@ func newDropTestStore(t *testing.T) (*Store, *redis.Client) {
 	return NewStore(rdb), rdb
 }
 
+// TestSyncWritesReplicaWithoutQueue 验证内存权威下的副本同步边界。
+//
+// 两件事同时成立才算对：
+//   - 副本内容与版本被更新（跨进程读、崩溃恢复依赖它）；
+//   - **不登记落库队列**。入队会引来 writebehind worker，它会用 Redis 副本
+//     与以内存为源的 flusher 争写同一批表；副本落后时旧值覆盖新值，
+//     等于把这套内存权威的语义彻底破坏。
+func TestSyncWritesReplicaWithoutQueue(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newDropTestStore(t)
+
+	snapshot := Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 10}}
+	_, err := store.Seed(ctx, snapshot, 0)
+	require.NoError(t, err)
+	token, err := store.AcquireLease(ctx, 7)
+	require.NoError(t, err)
+
+	snapshot.Items[1001] = 20
+	version, err := store.Sync(ctx, 7, snapshot, snapshot.FieldNames(), nil, token)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, version)
+
+	ids, err := store.Pending(ctx, Partition(7), 10)
+	require.NoError(t, err)
+	require.Empty(t, ids, "Sync 不得登记落库队列：落库只从内存走")
+
+	record, err := store.Load(ctx, 7)
+	require.NoError(t, err)
+	require.EqualValues(t, 20, record.State.Items[1001], "副本必须更新")
+	require.EqualValues(t, 1, record.Version)
+}
+
+// TestSyncRejectsStaleLease 验证副本同步同样受租约保护。
+//
+// 顶号之后旧 Actor 的 Sync 必须被拒——否则它会把旧节点的内存状态写进副本，
+// 而新节点刚刚写过同一份数据。
+func TestSyncRejectsStaleLease(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newDropTestStore(t)
+
+	snapshot := Snapshot{PlayerID: 7, Items: map[int32]int64{1001: 10}}
+	_, err := store.Seed(ctx, snapshot, 0)
+	require.NoError(t, err)
+	stale, err := store.AcquireLease(ctx, 7)
+	require.NoError(t, err)
+	_, err = store.AcquireLease(ctx, 7) // 新会话接管，旧令牌失效
+	require.NoError(t, err)
+
+	_, err = store.Sync(ctx, 7, snapshot, snapshot.FieldNames(), nil, stale)
+	require.ErrorIs(t, err, ErrConflict)
+}
+
 // TestDropRemovesSnapshotAndQueueKeepsLease 验证同步落库后的缓存处置。
 //
 // 三件事必须同时成立：
