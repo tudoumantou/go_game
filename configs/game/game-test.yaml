@@ -50,6 +50,11 @@ idtab:
   build_page_size: 5000
   reconcile_interval: 10m      # 数量对账
 
+  # 一对多索引（docs/缓存架构设计.md §3）：只有「一个归属者多行」的表需要配。
+  # mail 由模块在 onList 里按需展开（load_on_login 必须 false）。
+  mappings:
+    - {table: mail, by: player_id, key: id, load_on_login: false}
+
 limit:                         # 限流：0 = 用内置默认（默认开启），负数 = 关闭该项
   packet_rate: 20              # 每连接每秒包数（网关）
   packet_burst: 40             # 每连接突发容量

@@ -4,6 +4,7 @@ package cache
 import (
 	"context"
 	"database/sql/driver"
+	"strconv"
 	"testing"
 	"time"
 
@@ -300,4 +301,89 @@ func TestOwnerIndexMembersFallbackWhenBreakerOpen(t *testing.T) {
 	require.NoError(t, err, "熔断不应让降级路径失败")
 	require.Equal(t, []int64{101}, ids)
 	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestExpandLoadsAndHeals 展开的主路径：命中缓存 + 残留自愈。
+//
+// Expand 是两个调用方（登录预加载、点开功能的按需读）的共享实现——
+// 自愈放在这里而不是各调用方，是因为「两边各写一遍」迟早会漏掉一处，
+// 而漏掉的表现是索引越积越脏且无人发现。
+func TestExpandLoadsAndHeals(t *testing.T) {
+	oi, mr, mock, cleanup := newTestOwnerIndex(t, 0)
+	defer cleanup()
+	ctx := context.Background()
+
+	mustSet(t, mr, OwnerIndexReadyKey("mail"), "1")
+	mustZAddMember(t, mr, 7, 101)
+	mustZAddMember(t, mr, 7, 102)
+	mustZAddMember(t, mr, 7, 103) // 库里已删、索引漏清
+
+	// 101 在缓存里命中（0 次 SQL）；102、103 未命中 → 一条 IN；
+	// 103 库里也没有 → 进 missing
+	mr.HSet(EntityKey("mail", 101), "id", "101", "title", "cached")
+	mock.ExpectQuery("SELECT \\* FROM mail WHERE id IN").WithArgs(102, 103).
+		WillReturnRows(mailRows([]any{102, 7, "from-db"}))
+
+	rows, removed, err := oi.Expand(ctx, 7)
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "101 走缓存、102 回源；103 两边都没有")
+	require.Equal(t, []int64{103}, removed, "残留 id 应被报出来")
+
+	// 自愈真的执行了：ZSET 里不再有 103
+	// （不用 ZScore 断言：miniredis 对「key 在、member 没有」返回 (0, nil)）
+	members, err := mr.ZMembers(OwnerIndexKey("mail"))
+	require.NoError(t, err)
+	require.NotContains(t, members, "103", "残留索引应被摘掉")
+
+	// 回填：102 被写进缓存，下次展开不再打库
+	require.Equal(t, "from-db", mr.HGet(EntityKey("mail", 102), "title"))
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestExpandEmptyOwner 名下确实没有实体 → 空结果且不报错。
+//
+// 与「索引答不上来」严格区分：后者必须返回 error 让调用方回落 SQL，
+// 否则数据缺失会被演变成「功能列表为空」。
+func TestExpandEmptyOwner(t *testing.T) {
+	oi, mr, _, cleanup := newTestOwnerIndex(t, 0)
+	defer cleanup()
+
+	mustSet(t, mr, OwnerIndexReadyKey("mail"), "1")
+	rows, removed, err := oi.Expand(context.Background(), 7)
+	require.NoError(t, err)
+	require.Empty(t, rows)
+	require.Empty(t, removed)
+}
+
+// TestAddRemoveEntity 运行时增删索引。
+//
+// 这两个是业务侧真正会调的入口（投递新邮件 / 删除邮件）：
+// Add 需要归属者，Remove 不需要——ZSET 的 member 本身能定位。
+func TestAddRemoveEntity(t *testing.T) {
+	oi, mr, _, cleanup := newTestOwnerIndex(t, 0)
+	defer cleanup()
+	ctx := context.Background()
+
+	require.NoError(t, oi.AddEntity(ctx, 7, 501))
+	score, err := mr.ZScore(OwnerIndexKey("mail"), "501")
+	require.NoError(t, err)
+	require.EqualValues(t, 7, score)
+
+	require.NoError(t, oi.RemoveEntity(ctx, 501))
+	// 501 是唯一成员：删掉后整个 ZSET 随之消失（Redis 的空集合不留 key）
+	require.False(t, mr.Exists(OwnerIndexKey("mail")), "删除后索引里不应再有")
+
+	// 非法入参 fail-fast，不静默吞掉
+	require.Error(t, oi.AddEntity(ctx, 0, 1))
+	require.Error(t, oi.AddEntity(ctx, 1, 0))
+	// 空列表是合法的 no-op（批量删除可能为空）
+	require.NoError(t, oi.RemoveEntity(ctx))
+}
+
+// mustZAddMember 往归属索引里放一条成员。
+func mustZAddMember(t *testing.T, mr *miniredis.Miniredis, score float64, member int64) {
+	t.Helper()
+	_, err := mr.ZAdd(OwnerIndexKey("mail"), score, strconv.FormatInt(member, 10))
+	require.NoError(t, err)
 }

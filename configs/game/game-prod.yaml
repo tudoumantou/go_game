@@ -60,14 +60,18 @@ idtab:
   build_page_size: 5000
   reconcile_interval: 10m      # 数量对账
 
-  # 一对多索引（docs/缓存架构设计.md）：启动时建 by_owner:{table} 这个 ZSET，
-  # 登录时按角色 id 一次取出全部实体（ZRANGEBYSCORE + 批量加载）。
+  # 一对多索引（docs/缓存架构设计.md）：启动时建 by_owner:{table} 这个 ZSET。
   # 只有「一个归属者对应多行」的表需要配；一对一的（签到/属性/任务进度、
-  # 当前实现的伙伴）配了是纯浪费——按 player_id 一次查询就够。
+  # 当前实现的伙伴/装备都是单行 JSON）配了是纯浪费——按 player_id 一次查询就够。
   # key（主键列）必填：构建与预热都以它为分页游标；by 仅 preload_all 可省。
-  # 启用前先确认对应模块会消费 Prefetch.OwnerRows(table)，否则只是白建数据。
-  # mappings:
-  #   - {table: mail,         by: player_id, key: id, load_on_login: true}
+  #
+  # mail: 点开邮箱时按需展开（Members → 批量加载 → 回填），不参与登录。
+  #   load_on_login 必须是 false——mail 模块在 onList 里自己调 Expand，
+  #   配 true 只会让每次登录多一次无人消费的展开。
+  #   消费方：internal/game/module/mail（listRows / indexAdd）。
+  mappings:
+    - {table: mail, by: player_id, key: id, load_on_login: false}
+  # 以下两项是「接下一对多功能」时的样板，模块未接入前不要打开：
   #   - {table: guild_member, by: guild_id,  key: id, load_on_login: false}
   #   - {table: guild,        key: id, preload_all: true}
 

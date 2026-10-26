@@ -25,9 +25,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/cache"
 	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
@@ -57,6 +61,9 @@ const (
 	codeNoAttachment int32 = 5003
 	codeBagFull      int32 = 5004
 )
+
+// mailListLimit 单页列表上限（产品约定，与聊天的 50 不同）。
+const mailListLimit = 100
 
 // 仓储级错误。
 //
@@ -115,10 +122,30 @@ func NewRepo(database *db.DB) *Repo {
 
 // Insert 插入邮件，返回邮件 ID。
 //
-// 委托 model.InsertMail（gendb 生成的 model 层，SQL 由代码生成维护），
-// 这里只做错误包装（%w 保留底层错误链供排查）。
+// 这里没有用 model.InsertMail（生成代码），只为一件事：`biz_id` 是
+// **可空 + 唯一键**（uk_player_biz），普通投递没有业务键，必须写 NULL。
+//
+// MySQL 的唯一索引对 NULL 不生效（多行 NULL 互不冲突），对空串则生效——
+// 生成代码把可空 VARCHAR 映射成 string，零值就是空串，于是同一玩家的
+// 第二封普通邮件立刻撞键（Error 1062）。被集成测试抓到的真实缺陷：
+// 一个玩家收到两封系统邮件就投递失败。
+//
+// 常量列（template_id/status）与可空列（biz_id/expire_at）都在这里显式
+// 绑定，SQL 只有这一条，维护成本可控。
 func (r *Repo) Insert(ctx context.Context, m *model.Mail) (int64, error) {
-	res, err := model.InsertMail(ctx, r.db.DB, m)
+	// bizID 为 nil 时驱动写 NULL；非空时才作为幂等键参与唯一约束。
+	var bizID any
+	if m.BizId != "" {
+		bizID = m.BizId
+	}
+	var expireAt any
+	if m.ExpireAt.Valid {
+		expireAt = m.ExpireAt.Time
+	}
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO mail (player_id, template_id, title, content, channel, status, biz_id, expire_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, bizID, expireAt)
 	if err != nil {
 		return 0, fmt.Errorf("insert mail: %w", err)
 	}
@@ -133,6 +160,47 @@ func (r *Repo) InsertAttachment(ctx context.Context, mailID int64, itemID, count
 	const q = `INSERT INTO mail_attachment (mail_id, item_id, count) VALUES (?, ?, ?)`
 	_, err := r.db.ExecContext(ctx, q, mailID, itemID, count)
 	return err
+}
+
+// HasAttachments 批量判断「这些邮件里哪些有附件」。
+//
+// 一次 IN 查询换掉列表里的 N 次 EXISTS：缓存展开路径拿到一批 id 后，
+// 只关心「有没有」，不需要附件本身，DISTINCT 把多附件邮件折成一行。
+// 与 SQL 列表版本的 EXISTS 口径一致：只看存在性，不看 claimed。
+func (r *Repo) HasAttachments(ctx context.Context, mailIDs []int64) (map[int64]bool, error) {
+	if len(mailIDs) == 0 {
+		return nil, nil
+	}
+	//nolint:gosec // 只有占位符拼接，id 走参数绑定
+	q := `SELECT DISTINCT mail_id FROM mail_attachment WHERE mail_id IN (` +
+		sqlPlaceholders(len(mailIDs)) + `)`
+	args := make([]any, len(mailIDs))
+	for i, id := range mailIDs {
+		args[i] = id
+	}
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query mail attachments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	out := make(map[int64]bool, len(mailIDs))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+// sqlPlaceholders 生成 n 个逗号分隔的占位符（IN 子句）。
+func sqlPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
 // ListByPlayer 邮件列表（按时间倒序，最多 100 封）。
@@ -261,10 +329,11 @@ func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
 // 而不是建一封可能重复的发奖单——充值链路「报错可重试」远好过「重复发奖」。
 // RowsAffected=0 时直接 return nil：IGNORE 未真插入，LastInsertId 不可信，
 // 绝不能拿去插附件（会插出 mail_id=0 的孤儿行）。
-func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (bool, error) {
+func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (int64, bool, error) {
 	if bizID == "" {
-		return false, fmt.Errorf("offline delivery requires biz_id")
+		return 0, false, fmt.Errorf("offline delivery requires biz_id")
 	}
+	var newID int64
 	created := false
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
@@ -291,13 +360,14 @@ func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title,
 				return err
 			}
 		}
+		newID = mailID
 		created = true
 		return nil
 	})
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
-	return created, nil
+	return newID, created, nil
 }
 
 // mailRepo 是模块对仓储的全部依赖（接口隔离）。
@@ -308,10 +378,11 @@ type mailRepo interface {
 	UnreadCount(ctx context.Context, playerID int64) (int64, error)
 	Insert(ctx context.Context, m *model.Mail) (int64, error)
 	InsertAttachment(ctx context.Context, mailID int64, itemID, count int32) error
+	HasAttachments(ctx context.Context, mailIDs []int64) (map[int64]bool, error)
 	ListByPlayer(ctx context.Context, playerID int64, limit int) ([]MailRow, error)
 	FindAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error)
 	MarkTaken(ctx context.Context, mailID int64) error
-	DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (bool, error)
+	DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (int64, bool, error)
 }
 
 // Module 邮件模块。
@@ -324,6 +395,35 @@ type Module struct {
 	// repo 仓储；nil 表示无 DB 环境（列表/领取降级，离线发放报错，见各方法）
 	repo   mailRepo
 	logger *log.Logger
+
+	// index 归属索引（by_owner:mail）。nil = 不启用，列表回落直查 SQL。
+	//
+	// 邮件是「一人多行」里最标准的一个：player_id 单一归属、新增/删除只动
+	// 自己那一份。因此它是第一个真正消费归属索引的模块——新增时 Add、
+	// 列表时 Expand，从而把「索引 → 展开 → 回填 → 自愈」整条链路跑在真实
+	// 业务上，而不是只活在单测里。
+	index *cache.OwnerIndex
+}
+
+// SetOwnerIndex 注入归属索引（组装层在 Register 之前调用）。
+//
+// nil 表示不启用（单测/无 Redis 环境）：列表自动回落 ListByPlayer，
+// 行为与接入索引之前完全一致——这正是「索引是加速层，不是正确性前提」
+// 在模块侧的体现。
+func (m *Module) SetOwnerIndex(oi *cache.OwnerIndex) { m.index = oi }
+
+// indexAdd 尽力登记新邮件。
+//
+// 失败只记日志：索引漏了这一条，下次 Reconcile（10 分钟）会重建补上，
+// 期间列表回落 SQL 仍能读到——不值得为一次缓存写让发邮件失败。
+func (m *Module) indexAdd(ctx context.Context, playerID, mailID int64) {
+	if m.index == nil {
+		return
+	}
+	if err := m.index.AddEntity(ctx, playerID, mailID); err != nil {
+		m.logger.Warn("mail index add failed",
+			"player_id", playerID, "mail_id", mailID, "err", err)
+	}
 }
 
 // New 创建邮件模块。
@@ -348,7 +448,16 @@ func (m *Module) DeliverOffline(ctx context.Context, playerID int64, bizID, titl
 	if m.repo == nil {
 		return false, fmt.Errorf("mail repository unavailable")
 	}
-	return m.repo.DeliverOffline(ctx, playerID, bizID, title, content, items)
+	mailID, created, err := m.repo.DeliverOffline(ctx, playerID, bizID, title, content, items)
+	if err != nil {
+		return false, err
+	}
+	// 只有真新建才登记索引：biz_id 幂等命中时 mailID 为 0，
+	// 重复 Add 同一 member 本身幂等，但没有 id 可 Add。
+	if created {
+		m.indexAdd(ctx, playerID, mailID)
+	}
+	return created, nil
 }
 
 // onLogin 登录时拉一次未读数（经 ThinLogin 挂接）。
@@ -416,6 +525,8 @@ func (m *Module) Deliver(ctx context.Context, msg *pkgmq.MailMsg) (int64, error)
 	if err != nil {
 		return 0, err
 	}
+	// 先落库再登记索引：构建期只从库里取材，反过来会漏行。
+	m.indexAdd(ctx, msg.PlayerID, mailID)
 	for _, it := range msg.Items {
 		if it.Count <= 0 {
 			continue
@@ -427,6 +538,126 @@ func (m *Module) Deliver(ctx context.Context, msg *pkgmq.MailMsg) (int64, error)
 	return mailID, nil
 }
 
+// listRows 取邮件列表：归属索引展开优先，未启用/失败回落 SQL。
+//
+// 为什么值得走缓存：SQL 版本是「100 行 × 100 次 EXISTS 探测」；缓存版本是
+// 「1 次 ZRANGEBYSCORE + 1 次 pipeline HGETALL + 1 次 IN 查附件」——邮件越多，
+// EXISTS 的次数越多，而 IN 始终一次。少的那 100 次探测就是这里的收益。
+//
+// 回落条件刻意宽（索引为 nil、展开报错都回落）：列表是读路径，任何缓存
+// 故障都不该让玩家看不到邮件——顶多多打一次库。
+func (m *Module) listRows(ctx context.Context, playerID int64) ([]MailRow, error) {
+	if m.index != nil {
+		entityRows, removed, err := m.index.Expand(ctx, playerID)
+		if err != nil {
+			m.logger.Warn("mail expand failed, falling back to sql",
+				"player_id", playerID, "err", err)
+		} else {
+			if len(removed) > 0 {
+				m.logger.Info("mail index self-healed",
+					"player_id", playerID, "removed", len(removed))
+			}
+			return m.rowsFromCache(ctx, entityRows)
+		}
+	}
+	return m.repo.ListByPlayer(ctx, playerID, mailListLimit)
+}
+
+// rowsFromCache 把展开出的实体行组装成列表行。
+//
+// 与 SQL 版本的两处差异，都是有意为之：
+//   - 倒序与限长在内存做（SQL 是 ORDER BY id DESC LIMIT）：索引返回升序，
+//     而邮件量级是几十到几百，内存排序的代价远小于一次额外往返；
+//   - 附件标记多一次 IN 查询：e:mail:{id} 只缓存 mail 表的列，
+//     mail_attachment 是另一张表。不做冗余字段——那会在每次领取附件时
+//     多一处必须同步的缓存写，而「不同步」正是这套设计最难查的问题。
+func (m *Module) rowsFromCache(ctx context.Context, rows []cache.EntityRow) ([]MailRow, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]MailRow, 0, len(rows))
+	for _, er := range rows {
+		row, ok := mailRowFrom(er)
+		if !ok {
+			// 单行字段损坏不该让整页失败：跳过它，其余照常返回。
+			m.logger.Warn("mail entity row malformed", "id", er.ID)
+			continue
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	if len(out) > mailListLimit {
+		out = out[:mailListLimit]
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+
+	ids := make([]int64, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+	}
+	withAtt, err := m.repo.HasAttachments(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].HasAttachment = withAtt[out[i].ID]
+	}
+	return out, nil
+}
+
+// mailRowFrom 把缓存里的动态列还原成列表行。
+//
+// 字段名是列名（`id`/`title`/…），值统一是字符串——这是 EntityRow 的约定
+// （与 IDTable.LoadEntity 同构）。时间列由 toString 格式化为 RFC3339
+// （见 pkg/cache 的 toString），这里按 RFC3339 解析。
+func mailRowFrom(er cache.EntityRow) (MailRow, bool) {
+	var row MailRow
+	id, err := strconv.ParseInt(er.Fields["id"], 10, 64)
+	if err != nil || id <= 0 {
+		return row, false
+	}
+	row.ID = id
+	row.Title = er.Fields["title"]
+	row.Channel = parseInt32(er.Fields["channel"])
+	row.Status = parseInt32(er.Fields["status"])
+	if t, ok := parseTimeField(er.Fields["created_at"]); ok {
+		row.CreatedAt = t
+	}
+	if t, ok := parseTimeField(er.Fields["expire_at"]); ok {
+		row.ExpireAt = sql.NullTime{Time: t, Valid: true}
+	}
+	return row, true
+}
+
+// parseInt32 宽松解析：坏值按 0 处理（列表展示用，不值得让整行失败）。
+func parseInt32(s string) int32 {
+	n, err := strconv.ParseInt(s, 10, 32)
+	if err != nil {
+		return 0
+	}
+	return int32(n)
+}
+
+// parseTimeField 解析缓存里的时间列。
+//
+// 两种格式都认：RFC3339（parseTime=true 时 toString 的产出）与
+// MySQL 原生 "2006-01-02 15:04:05"（parseTime=false 或 []byte 直传）。
+// 只认前者会让「换一次驱动配置」变成「列表时间全变 1970」。
+func parseTimeField(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
 // onList 邮件列表。
 //
 // make(..., 0, len(rows)) 预分配容量：已知行数时一次分配到位，
@@ -435,7 +666,10 @@ func (m *Module) Deliver(ctx context.Context, msg *pkgmq.MailMsg) (int64, error)
 // ExpireAt.Valid 先判再取：sql.NullTime 的可空语义，Valid=false 时
 // .Time 是零值，直接 Unix() 会回一个 1970 的过期时间骗客户端。
 func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
-	rows, err := m.repo.ListByPlayer(context.Background(), ctx.State.PlayerID(), 100)
+	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	rows, err := m.listRows(ctxDB, ctx.State.PlayerID())
 	if err != nil {
 		return err
 	}

@@ -13,8 +13,12 @@ package integration
 import (
 	"context"
 	"testing"
+	"time"
 
+	"game_study/internal/game/module/mail"
 	"game_study/pkg/cache"
+	"game_study/pkg/log"
+	pkgmq "game_study/pkg/mq"
 
 	"github.com/stretchr/testify/require"
 )
@@ -135,4 +139,82 @@ func TestOwnerIndexFullLoop(t *testing.T) {
 	name2, err := rdb.HGet(ctx, cache.EntityKey("guild", guild2), "name").Result()
 	require.NoError(t, err)
 	require.Equal(t, "owner_idx_guild2", name2, "新增行应在第二次预热后可见")
+}
+
+// TestMailIndexThroughModule 「索引有真实调用方」的验收点。
+//
+// 前一条测试直接操作 ZSET，证明的是「索引层自己能跑」；这一条走真实模块，
+// 证明的是「业务真的在用它」：
+//
+//	mail.Deliver（Kafka 消费路径）→ 落库 + ZADD
+//	  → oi.Members 走 ZSET 拿到 id（ready 已置位，不打库）
+//	  → oi.Expand 展开出完整行（缓存未命中时的回源 + 回填）
+//
+// 顺带验一件事：时间列经 EntityRow 的字符串化之后还能还原。这是 mail
+// 列表显示「发送时间」的前提，也是缓存层用 map[string]string 装动态列的
+// 必然代价——不显式格式化就会变成 "2026-10-26 22:00:00 +0800 CST"，
+// 谁都解析不了。
+func TestMailIndexThroughModule(t *testing.T) {
+	database, rdb, _ := startStorage(t)
+	ctx := context.Background()
+
+	res, err := database.ExecContext(ctx,
+		`INSERT INTO player (account_id, name) VALUES (?, ?)`, 9300, "mail_idx_role")
+	require.NoError(t, err, "insert player")
+	playerID, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	oi := cache.NewOwnerIndex(rdb, database.DB, "mail", "player_id", "id")
+	m := mail.New(mail.NewRepo(database), log.New("it-mail", log.WithLevel("error")))
+	m.SetOwnerIndex(oi)
+
+	// 模拟「索引已就绪」：真实环境里由 BuildOne 置位，这里只要 ZADD 生效。
+	require.NoError(t, rdb.Set(ctx, cache.OwnerIndexReadyKey("mail"), "1", 0).Err())
+
+	id1, err := m.Deliver(ctx, &pkgmq.MailMsg{PlayerID: playerID, Title: "first"})
+	require.NoError(t, err, "deliver 1")
+	id2, err := m.Deliver(ctx, &pkgmq.MailMsg{PlayerID: playerID, Title: "second"})
+	require.NoError(t, err, "deliver 2")
+	require.NotEqual(t, id1, id2)
+
+	// ① 索引里能按玩家捞到这两封（走 ZSET，不打库）
+	ids, err := oi.Members(ctx, playerID)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []int64{id1, id2}, ids, "投递后索引里应有两封")
+
+	// ② 展开：缓存未命中 → 一条 IN 回源 → 回填
+	rows, removed, err := oi.Expand(ctx, playerID)
+	require.NoError(t, err)
+	require.Empty(t, removed, "刚投递的邮件不该被当成残留")
+	require.Len(t, rows, 2)
+
+	byID := make(map[int64]cache.EntityRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	require.Equal(t, "first", byID[id1].Fields["title"])
+	require.Equal(t, "second", byID[id2].Fields["title"])
+
+	// ③ 时间列：RFC3339，且往返后与「直接查库读到的时刻」完全相同。
+	//
+	// 断言对象刻意选 DB 的原值而不是 time.Now()：这里要验的是**缓存往返无损**，
+	// 而不是 DB 时区对不对。两者是两件事——DSN 没配 loc 时，驱动会把库里的
+	// 时间当本地时区解析，SQL 路径与缓存路径会一起偏（同一个偏差，不是缓存
+	// 引入的）。拿 time.Now() 比会把配置问题算到缓存头上。
+	raw := byID[id1].Fields["created_at"]
+	require.NotEmpty(t, raw, "created_at 必须被缓存")
+	got, err := time.Parse(time.RFC3339, raw)
+	require.NoError(t, err, "created_at 应是 RFC3339，实际 %q", raw)
+
+	var fromDB time.Time
+	require.NoError(t, database.QueryRowContext(ctx,
+		`SELECT created_at FROM mail WHERE id = ?`, id1).Scan(&fromDB))
+	require.True(t, fromDB.Equal(got),
+		"缓存往返不能改变时刻：db=%v cache=%v（若差 8 小时，检查 DSN 的 loc 参数）", fromDB, got)
+
+	// ④ 回填生效：清掉 ready 后 Members 回落库仍一致，说明数据表与库同源
+	require.NoError(t, rdb.Del(ctx, cache.OwnerIndexReadyKey("mail")).Err())
+	fallback, err := oi.Members(ctx, playerID)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []int64{id1, id2}, fallback, "回落库结果应与索引一致")
 }

@@ -199,25 +199,15 @@ func (p *Preloader) ExpandOwners(ctx context.Context, playerID int64) (map[strin
 	}
 	out := make(map[string][]cache.EntityRow, len(p.owners))
 	for _, oi := range p.owners {
-		ids, err := oi.Members(ctx, playerID)
+		// Expand 内部做 Members → LoadBatch → 残留自愈，与「按需展开」
+		// （点开邮件等）走同一份实现。
+		rows, removed, err := oi.Expand(ctx, playerID)
 		if err != nil {
-			return nil, fmt.Errorf("expand %s members: %w", oi.Table(), err)
+			return nil, fmt.Errorf("expand %s: %w", oi.Table(), err)
 		}
-		if len(ids) == 0 {
-			continue
-		}
-		rows, missing, err := oi.LoadBatch(ctx, ids)
-		if err != nil {
-			return nil, fmt.Errorf("expand %s rows: %w", oi.Table(), err)
-		}
-		if len(missing) > 0 {
-			if err := oi.Index().Remove(ctx, missing...); err != nil {
-				p.logger.Warn("owner index self-heal failed",
-					"table", oi.Table(), "player_id", playerID, "ids", missing, "err", err)
-			} else {
-				p.logger.Info("owner index self-healed",
-					"table", oi.Table(), "removed", len(missing))
-			}
+		if len(removed) > 0 {
+			p.logger.Info("owner index self-healed",
+				"table", oi.Table(), "player_id", playerID, "removed", len(removed))
 		}
 		if len(rows) > 0 {
 			out[oi.Table()] = rows

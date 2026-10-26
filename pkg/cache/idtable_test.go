@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
@@ -400,4 +401,19 @@ func TestPreheatBadIdent(t *testing.T) {
 	defer cleanup()
 	_, err := it.Preheat(context.Background(), TableMeta{Name: "guild; DROP TABLE player", PK: "id"})
 	require.Error(t, err)
+}
+
+// TestToStringFormatsTime 时间列必须可无损往返。
+//
+// fmt.Sprint(time.Time) 产出 "2026-10-26 22:00:00 +0800 CST"——其中 CST
+// 会让 time.Parse 落到零偏移的未知时区，还原出来的时间直接偏 8 小时。
+// 缓存里的时间列一旦失真，业务侧（如邮件列表的发送时间）就会显示错。
+func TestToStringFormatsTime(t *testing.T) {
+	ts := time.Date(2026, 10, 26, 22, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	s := toString(ts)
+	require.Equal(t, "2026-10-26T22:00:00+08:00", s, "应格式化为 RFC3339")
+
+	back, err := time.Parse(time.RFC3339, s)
+	require.NoError(t, err)
+	require.True(t, ts.Equal(back), "往返后必须与原点同一时刻")
 }

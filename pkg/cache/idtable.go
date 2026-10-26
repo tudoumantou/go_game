@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -700,6 +701,14 @@ func toString(v any) string {
 		return string(x)
 	case string:
 		return x
+	case time.Time:
+		// 时间列必须显式格式化：fmt.Sprint 会产出
+		// "2026-10-26 22:00:00 +0800 CST"，其中的 CST 无法被 time.Parse
+		// 还原（Go 会当成零偏移的未知时区）。RFC3339 带偏移量，可无损往返。
+		//
+		// 触发条件：DSN 开了 parseTime=true（本项目如此），驱动把
+		// DATETIME/TIMESTAMP 直接交给 time.Time。
+		return x.Format(time.RFC3339)
 	default:
 		return fmt.Sprint(x)
 	}

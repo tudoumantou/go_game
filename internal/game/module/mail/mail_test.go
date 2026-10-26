@@ -79,8 +79,18 @@ func (f *fakeRepo) MarkTaken(_ context.Context, mailID int64) error {
 	return nil
 }
 
-func (f *fakeRepo) DeliverOffline(context.Context, int64, string, string, string, []Attachment) (bool, error) {
-	return false, nil
+func (f *fakeRepo) DeliverOffline(context.Context, int64, string, string, string, []Attachment) (int64, bool, error) {
+	return 0, false, nil
+}
+
+func (f *fakeRepo) HasAttachments(context.Context, []int64) (map[int64]bool, error) {
+	out := make(map[int64]bool, len(f.atts))
+	for id, atts := range f.atts {
+		if len(atts) > 0 {
+			out[id] = true
+		}
+	}
+	return out, nil
 }
 
 // newTestModule 组装一个内存版邮件模块。

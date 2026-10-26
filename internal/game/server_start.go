@@ -301,6 +301,10 @@ func (s *Server) initModules() {
 	// 无库环境（单测/演示）整体跳过，玩家仍可用 profile/attr/bag/item/battle。
 	if s.database != nil {
 		s.mailMod = mail.New(mail.NewRepo(s.database), s.logger)
+		// 邮件是第一个真正消费归属索引的模块（缓存架构设计 §4.2）：
+		// 列表走「按需展开」——未配 mappings 或 Redis 不可用时 index 为 nil，
+		// 模块内部自动回落 ListByPlayer，行为与接入前完全一致。
+		s.mailMod.SetOwnerIndex(s.ownerIdx["mail"])
 		s.chatMod = chat.New(chat.NewRepo(s.database), chatMessenger{srv: s}, s.logger)
 		// 聊天频控：默认 1 条/秒（突发 3），配置负数关闭。
 		// 与网关包级限流是两道：包限流管总量，这里管「单条成本」。

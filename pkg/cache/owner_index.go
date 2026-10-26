@@ -80,6 +80,71 @@ func (x *OwnerIndex) Index() *Index { return x.idx }
 // Table 表名（日志/对账用）。
 func (x *OwnerIndex) Table() string { return x.table }
 
+// Expand 按归属者展开实体行：Members → LoadBatch → 残留自愈。
+//
+// 这是「登录展开」（Preloader）与「按需展开」（点开某个功能时）的**共同实现**。
+// 自愈（缓存架构设计 §4.3）放在这里而不是留给调用方，是因为两个调用方各写
+// 一遍迟早会漏掉其中一处；而漏掉的表现是索引越积越脏、没人发现。
+//
+// 返回值 removed 是被顺手摘掉的残留 id（索引里有、库里没有）：调用方按需
+// 记日志/打点，不参与业务逻辑。
+//
+// 空结果与错误严格区分：ownerID 名下确实没有实体 → (nil, nil, nil)；
+// 索引/库都答不上来 → 返回 error，让调用方回落 SQL 或失败，**绝不返回
+// 空列表冒充「没有数据」**。
+func (x *OwnerIndex) Expand(ctx context.Context, ownerID int64) (rows []EntityRow, removed []int64, err error) {
+	ids, err := x.Members(ctx, ownerID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	rows, missing, err := x.LoadBatch(ctx, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(missing) == 0 {
+		return rows, nil, nil
+	}
+	// 残留清理失败不影响本次返回：索引脏了由 Reconcile 兜底重建。
+	if rmErr := x.idx.Remove(ctx, missing...); rmErr != nil {
+		return rows, nil, nil
+	}
+	return rows, missing, nil
+}
+
+// AddEntity 登记一条新实体（业务侧「新增行」之后调用）。
+//
+// 时序前提：**先落库再 Add**。索引构建只从库里取材，若先 Add 后落库，
+// 构建期（ready 未置位）会漏掉这一行；反过来则必然被取材到。
+//
+// 失败语义：索引是加速层，Add 失败只让「下次展开慢一点」（回落 DB），
+// 不该让业务失败——但调用方应记日志，因为持续失败意味着对账会频繁重建。
+func (x *OwnerIndex) AddEntity(ctx context.Context, ownerID, entityID int64) error {
+	if ownerID <= 0 || entityID <= 0 {
+		return fmt.Errorf("cache: invalid owner %d / entity %d", ownerID, entityID)
+	}
+	return x.idx.Add(ctx, ownerID, entityID)
+}
+
+// RemoveEntity 摘除实体索引（业务侧「删除行」之后调用）。
+//
+// 不需要知道归属者：ZSET 的 member 本身就能定位（缓存架构设计 §2 的
+// 「删除不必知道归属者」）。因此删除路径不必先查一次库拿 owner。
+func (x *OwnerIndex) RemoveEntity(ctx context.Context, entityIDs ...int64) error {
+	valid := make([]int64, 0, len(entityIDs))
+	for _, id := range entityIDs {
+		if id > 0 {
+			valid = append(valid, id)
+		}
+	}
+	if len(valid) == 0 {
+		return nil
+	}
+	return x.idx.Remove(ctx, valid...)
+}
+
 // validate 三个标识符过白名单（动态 SQL 的前置）。
 func (x *OwnerIndex) validate() error {
 	if err := validateIdent(x.table); err != nil {
