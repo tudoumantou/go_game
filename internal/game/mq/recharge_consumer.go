@@ -208,16 +208,23 @@ func (c *RechargeConsumer) grant(ctx context.Context, playerID int64, orderID st
 	done := make(chan error, 1)
 	// BizID 透传给 Actor：玩家侧道具流水可追溯到订单，防重幂等的
 	// 第二道闸（Actor 内按 biz_id 去重）。
-	msg := &player.GrantItemsMsg{Source: "recharge", BizID: orderID, Items: items, Done: done}
+	//
+	// Sync 置真：充值属于 A 类数据，回执必须在 MySQL 提交之后发出。
+	// 异步通道等的是一个落库窗口，Redis 掉电会连窗口一起丢——订单已经
+	// 标记 delivered 但货没到账，只能靠人工补偿。
+	msg := &player.GrantItemsMsg{
+		Source: "recharge", BizID: orderID, Items: items, Sync: true, Done: done,
+	}
 	if err := c.deps.Sys.Send(pid, msg); err != nil {
 		return err
 	}
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(3 * time.Second):
-		// 3s 上限：Actor 正常处理是微秒级；超时大概率是信箱积压/死锁，
-		// 宁可让本条进死信人工介入，也不拖死整个消费循环（分区停摆）。
+	case <-time.After(8 * time.Second):
+		// 8s 上限：同步路径含一次 MySQL 事务（自身 5s 超时），必须留出
+		// 余量，否则回执还在路上就被判超时，消费者会重复投递（虽然幂等
+		// 兜得住，但会放大日志与重试）。Actor 正常处理是毫秒级。
 		return fmt.Errorf("grant timeout for player %d", playerID)
 	case <-ctx.Done():
 		// 关服中断：立即让路，不等剩余超时；消息不提交，重启重放，

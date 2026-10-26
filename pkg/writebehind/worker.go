@@ -74,10 +74,22 @@ func (w *Worker) FlushBatch(ctx context.Context, partition int) (int, error) {
 	records := make([]Record, 0, len(ids))
 	for _, id := range ids {
 		record, err := w.store.Load(ctx, id)
+		if errors.Is(err, ErrMiss) {
+			// 快照已被 Drop（A 类数据走同步事务落库后删缓存）：MySQL 里
+			// 已是最新状态，这条队列成员是残留，清掉即可——不能让整批
+			// 因为它回滚，否则同批其他玩家的落库会被无限拖住。
+			if delErr := w.store.DropQueue(ctx, id); delErr != nil {
+				return 0, delErr
+			}
+			continue
+		}
 		if err != nil {
 			return 0, err
 		}
 		records = append(records, record)
+	}
+	if len(records) == 0 {
+		return 0, nil
 	}
 	if err := w.Persist(ctx, records); err != nil {
 		return 0, err

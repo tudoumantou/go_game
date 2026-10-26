@@ -19,6 +19,7 @@ package player
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"game_study/internal/game/module"
@@ -128,10 +129,35 @@ func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]i
 //
 // SQL 语句数从「1 + N（道具数）」降到「1 + 批次 + 批次」。
 func (r *Repository) Save(ctx context.Context, state *State) error {
-	if r.CacheEnabled() {
-		return fmt.Errorf("direct player SQL save disabled: use cache and independent flusher")
+	_, err := r.save(ctx, state, false, false)
+	return err
+}
+
+// SaveForce 同步全量落库，并把业务幂等键与资产写进同一事务（A 类数据）。
+//
+// 服务对象：充值、交易这类「回执必须在 MySQL 提交之后发出」的操作。
+// 异步通道（writebehind）等的是一个落库窗口，Redis 掉电会连窗口一起丢，
+// 对钱不可接受。
+//
+// 与 Save 的三点差别：
+//  1. 跳过「缓存权威模式禁止直写」的检查——本方法就是给那条链路用的；
+//  2. 同一事务内推进 player_writebehind.version：异步落库的版本栅栏据此
+//     判定缓存里的旧快照已过期，即使后面删缓存失败，旧值也写不回库；
+//  3. 同一事务内写 applied_grants：「发货」与「幂等键」原子生效，
+//     Kafka 重投时幂等命中，不会二次发放。
+//
+// 返回推进后的版本号。调用方必须用它更新本地 cacheVersion，否则下一次
+// Commit 的 CAS 期望值会落后于数据库，被判为冲突。
+func (r *Repository) SaveForce(ctx context.Context, state *State) (int64, error) {
+	return r.save(ctx, state, true, true)
+}
+
+func (r *Repository) save(ctx context.Context, state *State, force, withGrants bool) (int64, error) {
+	if !force && r.CacheEnabled() {
+		return 0, fmt.Errorf("direct player SQL save disabled: use cache and independent flusher")
 	}
 	dirty := state.DirtyItems()
+	var version int64
 
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		playerID := state.PlayerID()
@@ -156,14 +182,44 @@ func (r *Repository) Save(ctx context.Context, state *State) error {
 			return fmt.Errorf("upsert attr: %w", err)
 		}
 
-		return saveDirtyItems(ctx, tx, playerID, dirty)
+		if err := saveDirtyItems(ctx, tx, playerID, dirty); err != nil {
+			return err
+		}
+		if !withGrants {
+			return nil
+		}
+		return saveGrantsAndBumpVersion(ctx, tx, state, &version)
 	})
 	if err != nil {
-		return err // 失败保留脏标记，下轮重试
+		return 0, err // 失败保留脏标记，下轮重试
 	}
 
 	// 同一 Actor 线程内执行（onSave 走 Actor 消息），清标记无并发风险
 	state.ClearItemsDirty()
+	return version, nil
+}
+
+// saveGrantsAndBumpVersion 在同一事务里写幂等键并推进版本号。
+//
+// 版本必须推进：缓存里的旧快照带着旧 version，异步落库的栅栏用
+// 「快照 version > 数据库 version」判断是否采用。推进之后旧快照永远
+// 不满足条件，从而不会被写回库——这是同步落库与异步通道共存的关键。
+func saveGrantsAndBumpVersion(ctx context.Context, tx *sql.Tx, state *State, version *int64) error {
+	raw, err := json.Marshal(state.snapshot().AppliedGrants)
+	if err != nil {
+		return fmt.Errorf("encode applied grants: %w", err)
+	}
+	playerID := state.PlayerID()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO player_writebehind (player_id, version, applied_grants) VALUES (?, 1, ?)
+		 ON DUPLICATE KEY UPDATE version = version + 1, applied_grants = VALUES(applied_grants)`,
+		playerID, string(raw)); err != nil {
+		return fmt.Errorf("bump writebehind version: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx,
+		`SELECT version FROM player_writebehind WHERE player_id = ?`, playerID).Scan(version); err != nil {
+		return fmt.Errorf("read writebehind version: %w", err)
+	}
 	return nil
 }
 

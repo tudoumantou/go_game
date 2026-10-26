@@ -412,3 +412,37 @@ return 0
 func (s *Store) Ack(ctx context.Context, id, version int64) error {
 	return ackScript.Run(ctx, s.rdb, []string{s.stateKey(id), s.dirtyKey(Partition(id))}, version, id).Err()
 }
+
+// Drop 删除玩家的热快照，并从脏队列移除（A 类数据同步落库后调用）。
+//
+// 为什么删而不是改写：同步事务已经把 player_writebehind.version 推进了，
+// 缓存里的旧快照即使留着，异步落库的版本栅栏也会判定它过期而不采用；
+// 但下一次 LoadCached 仍会读到它——玩家重登会看到「充值前的余额」。
+// 删掉之后加载必然 ErrMiss，走冷启动从 MySQL 读，读到的就是刚提交的数据。
+//
+// 保留 epochKey：租约仍归当前 Actor，顶号保护不受影响。
+// 两个命令放同一 pipeline：DEL 决定数据是否可见，ZREM 决定是否还会被
+// 扫描到，各自独立生效，任一失败都不影响另一个的正确性。
+func (s *Store) Drop(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid player id")
+	}
+	pipe := s.rdb.Pipeline()
+	pipe.Del(ctx, s.stateKey(id))
+	pipe.ZRem(ctx, s.dirtyKey(Partition(id)), id)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// DropQueue 无条件把玩家移出脏队列。
+//
+// 与 Ack 的分工：Ack 要求「队列中的版本 == 当前 state 的版本」才删，
+// 防止旧 worker 误删新提交的入队标记；而本方法服务「state key 已被
+// Drop 删除」的场景——此时版本校验必然失败（HGET 返回空），只剩
+// 无条件删除一条路。调用方必须自己确认数据已在 MySQL 里。
+func (s *Store) DropQueue(ctx context.Context, id int64) error {
+	if id <= 0 {
+		return fmt.Errorf("invalid player id")
+	}
+	return s.rdb.ZRem(ctx, s.dirtyKey(Partition(id)), id).Err()
+}

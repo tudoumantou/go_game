@@ -175,7 +175,12 @@ type GrantItemsMsg struct {
 	BizID  string // 与奖励一起持久化的业务唯一键，用于重复投递。
 	Source string // 来源标记（recharge/mail/...），用于日志与幂等排查
 	Items  []GrantItem
-	Done   chan error // 可选：同步等待结果
+	// Sync 为真时走同步事务落库，MySQL 提交后才回执（A 类数据：充值、
+	// 交易）。为假时保持原行为——改内存 + 标脏，由异步通道批量落库。
+	// 判据：这笔奖励丢了是否要赔钱/回滚订单；是就置真。
+	// 前置条件：Sync 必须同时给 BizID，否则重投时无幂等键可查，会二次发放。
+	Sync bool
+	Done chan error // 可选：同步等待结果
 }
 
 // SendFunc 下行发送（sessionID + 协议号 + 包体），由组装层注入。
@@ -623,10 +628,15 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 		// 直接写会漏掉标脏——分字段提交时 grants 字段就不会被写回 Redis，
 		// 幂等键丢失，Kafka 重投会二次发奖。
 		if !a.state.ClaimBiz(key) {
-			if msg.Done != nil {
-				// 幂等命中：结果要等本次提交落定后再回执（与正常路径一致）。
-				_ = a.gate.Send(func() error { msg.Done <- nil; return nil })
+			// 幂等命中：货已发过。但可能是「上次 DB 提交成功、删缓存失败」
+			// 导致的重投——补一次清理，让它自愈。
+			if msg.Sync {
+				if err := a.dropCache(); err != nil {
+					a.replyGrant(msg, err)
+					return
+				}
 			}
+			a.replyGrant(msg, nil)
 			return
 		}
 	}
@@ -640,12 +650,91 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 	if a.onDirty != nil {
 		a.onDirty(a.playerID)
 	}
-	a.logger.Info("grant items", "source", msg.Source, "count", len(msg.Items))
-	if msg.Done != nil {
-		// 结果等本次提交落定后再回执：提交成功走 gate 刷出，
-		// 失败由 cacheFailure 直接回 err。
-		_ = a.gate.Send(func() error { msg.Done <- nil; return nil })
+	a.logger.Info("grant items", "source", msg.Source, "count", len(msg.Items), "sync", msg.Sync)
+
+	// A 类数据（充值/交易）：MySQL 提交后才回执，不等异步落库窗口。
+	if msg.Sync {
+		a.grantSync(msg)
+		return
 	}
+	a.replyGrant(msg, nil)
+}
+
+// replyGrant 回执发货结果。
+//
+// 两条路必须分开：异步路径走提交通道（gate），等快照提交成功再回执，
+// 避免「回了成功但没落库」的假成功；同步路径自己已经把数据写进
+// MySQL，没有任何待提交项，走进 gate 反而会永远等不到刷出。
+func (a *Actor) replyGrant(msg *GrantItemsMsg, err error) {
+	if msg.Done == nil {
+		return
+	}
+	if msg.Sync {
+		msg.Done <- err
+		return
+	}
+	_ = a.gate.Send(func() error { msg.Done <- err; return nil })
+}
+
+// grantSync 同步落库后发货（A 类数据）。
+//
+// 顺序与每一步的理由：
+//  1. MySQL 事务提交（资产 + 幂等键同事务）：回执一旦发出客户端就认为
+//     货已到账，钱必须在库里；同事务推进的 version 让异步落库的栅栏
+//     判定缓存里的旧快照过期，旧值写不回库；
+//  2. 清脏标记：本路径不发 Commit，留着标记会让 receiveCached 在返回后
+//     补一次提交，把内存里的快照重新写回刚清理过的缓存；
+//  3. 删缓存：事务推进了 version，旧快照虽然写不回库，但玩家重登仍会
+//     读到它。删掉让加载走冷启动，读到刚提交的数据。
+//
+// 失败处理分两段：
+//   - 落库失败：内存已改，标记重载让下一条消息从库重读；回执 err，
+//     Kafka 重投时幂等键（同事务，没写成）会重新走一遍发货；
+//   - 删缓存失败：**也要回执 err**。不清理的话「重登读到旧值」会一直
+//     持续到有人手动删 key；上抛让 Kafka 重投，重投走幂等命中分支再补
+//     一次清理，形成自愈闭环。
+func (a *Actor) grantSync(msg *GrantItemsMsg) {
+	if a.repo == nil {
+		// 只在测试装配里出现；同步发货必须能落库，宁可明确失败。
+		a.replyGrant(msg, fmt.Errorf("player %d sync grant without repository", a.playerID))
+		return
+	}
+	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	version, err := a.repo.SaveForce(saveCtx, a.state)
+	cancel()
+	if err != nil {
+		a.needsReload = true
+		a.logger.Error("sync grant save failed",
+			"source", msg.Source, "biz_id", msg.BizID, "err", err)
+		a.replyGrant(msg, err)
+		return
+	}
+	a.cacheVersion = version
+
+	// 数据已在库里：脏标记作废，且不能触发 Commit（会把旧内存快照写回缓存）。
+	a.state.ClearChanged()
+	a.state.ClearDirtyFields()
+	a.state.ClearItemsDirty()
+
+	if err := a.dropCache(); err != nil {
+		a.logger.Error("drop cache after sync grant failed",
+			"source", msg.Source, "biz_id", msg.BizID, "err", err)
+		a.replyGrant(msg, err)
+		return
+	}
+	a.logger.Info("sync grant committed",
+		"source", msg.Source, "biz_id", msg.BizID, "version", version)
+	a.replyGrant(msg, nil)
+}
+
+// dropCache 删除本玩家的热快照（同步落库后的缓存失效）。
+func (a *Actor) dropCache() error {
+	if a.repo == nil || a.repo.cache == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return a.repo.cache.Drop(ctx, a.playerID)
 }
 
 // onSave 执行保存并回执真实结果；没有 Done 时保持 fire-and-forget。
