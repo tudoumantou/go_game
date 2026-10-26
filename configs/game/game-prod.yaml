@@ -67,13 +67,12 @@ idtab:
   #
   # mail: 点开邮箱时按需展开（Members → 批量加载 → 回填）。
   #   消费方：internal/game/module/mail（listRows / indexAdd / onDelete）。
-  #   load_on_login 恒为 false：登录展开入口已于 v3.9 删除（缓存架构设计 §4.2），
-  #   现在写 true 不产生任何效果。
+  #   登录展开入口已于 v3.9 删除（缓存架构设计 §4.2），配置项也在 v3.11 移除。
   mappings:
-    - {table: mail, by: player_id, key: id, load_on_login: false}
+    - {table: mail, by: player_id, key: id}
   # 以下两项是「接下一对多功能」时的样板，模块未接入前不要打开：
-  #   - {table: guild_member, by: guild_id,  key: id, load_on_login: false}
-  #   - {table: guild,        key: id, preload_all: true}
+  #   - {table: guild_member, by: guild_id,  key: id}
+  #   - {table: guild,        key: id, preload_all: true}   # 未启用：当前没有需要整表预热的表
 
 limit:                         # 限流：0 = 用内置默认（默认开启），负数 = 关闭该项
   packet_rate: 20              # 每连接每秒包数（网关）

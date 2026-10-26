@@ -132,36 +132,20 @@ func resetPersisters() {
 	persisters = make(map[string]Persister)
 }
 
-// PersistModules 把快照里的**全部**模块私有状态写进各自的表（调用方事务内）。
-//
-// 用于「快照是完整视图」的路径（Redis 权威兼容：队列里的快照不带脏标记）。
-func PersistModules(ctx context.Context, tx *sql.Tx, state Snapshot) error {
-	return persistModuleRows(ctx, tx, state, nil, true)
-}
-
 // PersistDirtyModules 只写 names 里列出的模块（内存权威路径）。
 //
 // 空列表 = 什么都不写：玩家这一轮只动了金币/道具，模块 Ext 一个都没变。
-// 全量写会把 9 张 Ext 表按玩家数逐行 UPSERT 一遍——量与在线人数成正比，
-// 却几乎全是重复写。
+// 按玩家逐表全量 UPSERT 的量与在线人数成正比，却几乎全是重复写。
 //
-// 与 PersistModules 拆成两个函数而不是加一个 nil 参数：空列表与「全部」
-// 在 []string 上是同一个零值（len 都为 0），靠 nil 区分极其脆弱——
-// 调用方传个空切片就会被当成全量，静默多写 9 张表。
+// 参数用切片而不是「nil 表示全部」：空列表与「全部」在 []string 上是同一个
+// 零值（len 都为 0），靠 nil 区分极其脆弱——调用方传个空切片就会被当成
+// 全量，静默多写 9 张表。
+//
+// 历史注记：曾有 PersistModules（全量版）服务「快照是完整视图」的
+// Redis 权威路径。那条路径在 v3.7 删除后它零调用方，v3.11 一并删除。
 func PersistDirtyModules(ctx context.Context, tx *sql.Tx, state Snapshot, names []string) error {
-	return persistModuleRows(ctx, tx, state, names, false)
-}
-
-// persistModuleRows 模块落库实现：all=true 忽略 names，遍历全部 Ext。
-func persistModuleRows(ctx context.Context, tx *sql.Tx, state Snapshot, names []string, all bool) error {
 	if len(state.Ext) == 0 {
 		return nil
-	}
-	if all {
-		names = make([]string, 0, len(state.Ext))
-		for name := range state.Ext {
-			names = append(names, name)
-		}
 	}
 	// 排序：便于复现，也让并发写入的加锁顺序一致。
 	// 复制一份再排：不修改调用方传入的顺序。

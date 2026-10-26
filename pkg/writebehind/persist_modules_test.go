@@ -63,10 +63,6 @@ func TestPersistModulesOnlyWritesNamed(t *testing.T) {
 	require.NoError(t, PersistDirtyModules(context.Background(), nil, snap, []string{}))
 	require.Equal(t, 0, a.calls+b.calls, "空列表不应产生任何写入")
 
-	// ③ 全量（兼容路径）
-	require.NoError(t, PersistModules(context.Background(), nil, snap))
-	require.Equal(t, 1, a.calls)
-	require.Equal(t, 1, b.calls)
 }
 
 // TestPersistModulesUnknownName 指定了未注册的模块必须报错（不能静默丢）。

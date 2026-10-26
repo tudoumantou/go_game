@@ -51,9 +51,9 @@ idtab:
   reconcile_interval: 10m      # 数量对账
 
   # 一对多索引（docs/缓存架构设计.md §3）：只有「一个归属者多行」的表需要配。
-  # mail 由模块在 onList 里按需展开；load_on_login 恒为 false（登录展开入口已删）。
+  # mail 由模块在 onList 里按需展开（登录展开入口已在 v3.9 删除）。
   mappings:
-    - {table: mail, by: player_id, key: id, load_on_login: false}
+    - {table: mail, by: player_id, key: id}
 
 limit:                         # 限流：0 = 用内置默认（默认开启），负数 = 关闭该项
   packet_rate: 20              # 每连接每秒包数（网关）

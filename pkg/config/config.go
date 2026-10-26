@@ -318,18 +318,11 @@ type CacheMapping struct {
 	//
 	// 必填：索引构建与实体预热都以它为 keyset 分页游标。
 	Key string `yaml:"key"`
-	// LoadOnLogin 登录时展开：按角色捞出全部 id 并预加载到内存。
+	// PreloadAll 启动时连整行数据一起搬进 Redis（公会、排行榜这类
+	// 「上线后几乎必然被全量访问」的表）。
 	//
-	// **v3.9 起不再生效**：登录展开入口已删除（零消费者，且与当前模块形态
-	// 不匹配，见 docs/缓存架构设计.md §4.2）。字段保留是为了「将来真出现
-	// 有内存态的一对多功能」时不必改配置结构；现在写 true 不产生任何效果。
-	//
-	// 保留校验（与 preload_all 互斥）：配成互斥的两个 true 说明使用者对
-	// 这张表的形态判断有误，越早炸越好。
-	LoadOnLogin bool `yaml:"load_on_login"`
-	// PreloadAll 启动时连整行数据一起搬进 Redis（公会、排行榜这类）。
-	//
-	// 与 LoadOnLogin 互斥：数据已经在缓存里，不需要再按角色展开。
+	// 历史注记：曾有 LoadOnLogin（登录时按角色展开）与它互斥。登录展开
+	// 入口在 v3.9 删除后该字段就成了死配置（写了不生效），v3.11 一并删除。
 	PreloadAll bool `yaml:"preload_all"`
 }
 
@@ -342,9 +335,6 @@ func (m CacheMapping) Validate() error {
 		return fmt.Errorf("idtab.mappings[%s]: key（实体 id 列）必填——构建与预热都以它为分页游标", m.Table)
 	}
 	if m.PreloadAll {
-		if m.LoadOnLogin {
-			return fmt.Errorf("idtab.mappings[%s]: preload_all 与 load_on_login 互斥（数据已在缓存，不需要再展开）", m.Table)
-		}
 		// by 可空：整表预热只搬数据，不建归属索引
 		return nil
 	}

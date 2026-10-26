@@ -116,6 +116,17 @@ func (x *Index) Remove(ctx context.Context, entityIDs ...int64) error {
 	return x.rdb.ZRem(ctx, OwnerIndexKey(x.table), members...).Err()
 }
 
+// 下面三个是 ZSET 的「访问面」（判存在 / 反查归属 / 按归属计数），与
+// Add/Remove/Members 一起构成这张索引结构的完整查询能力。
+//
+// 当前业务代码只用到 Add/Remove/Members（经 OwnerIndex 的
+// AddEntity/RemoveEntity/Expand），这三个没有生产调用方。保留的理由：
+//   - 删掉会让 Index 结构不完整（有写有读，却没有「这个 id 归谁」这种
+//     最基本的反查），而它们各自只是一条 ZSCORE/ZCOUNT；
+//   - 单测用它们做断言；删了就得在测试里直接操作 miniredis，把测试绑到
+//     实现细节上，反而更脆。
+// 如果将来确认用不上，删除时连 index_test.go 里对应用例一起删。
+
 // Owner 反查归属者；未索引返回 ErrNotIndexed。
 func (x *Index) Owner(ctx context.Context, entityID int64) (int64, error) {
 	if x.rdb == nil {
