@@ -28,13 +28,6 @@ const (
 	// stateKey 同时是 Ext 槽位键与落库归属的模块名。
 	stateKey = "signin"
 
-	// 错误码全部来自 errcode 枚举（api/proto/common/v1/errcode.proto），
-	// 模块不再手写数字：客户端与服务端从同一份定义生成文案。
-	codeSystem   int32 = int32(errcode.ErrSystem)
-	codeConfig   int32 = int32(errcode.ErrSigninConfig)
-	codeBagLimit int32 = int32(errcode.ErrSigninRewardLimit)
-	codeBagFull  int32 = int32(errcode.ErrSigninBagFull)
-
 	weekDays int32 = 7
 )
 
@@ -70,7 +63,7 @@ type Data struct {
 func New(logger *log.Logger, clock ...func() time.Time) *module.Bound[Data] {
 	m := module.Bind(stateKey, newData,
 		module.ThinLogger(logger),
-		module.ThinErrCode(codeSystem),
+		module.ThinErrCode(int32(errcode.ErrSystem)),
 		// 缓存权威路径未就绪一律拒绝：签到发奖必须走快照 CAS，
 		// 直写路径已移除，没有降级方案——宁可不可用，不可双写。
 		module.ThinGuard(module.RequireCache),
@@ -101,7 +94,7 @@ func onInfo(c *module.Ctx[Data]) error {
 
 	d, err := c.Repo.Get()
 	if err != nil {
-		return c.Fail(codeSystem, err)
+		return c.Fail(errcode.ErrSystem, err)
 	}
 	return c.Reply(&gamev1.SigninInfoResp{
 		Today:          today,
@@ -120,7 +113,7 @@ func onClaim(c *module.Ctx[Data]) error {
 
 	d, err := c.Repo.Get()
 	if err != nil {
-		return c.Fail(codeSystem, err)
+		return c.Fail(errcode.ErrSystem, err)
 	}
 
 	// 四个分支共用一份回包：只有 Code/Already/Rewards 会变，
@@ -131,7 +124,7 @@ func onClaim(c *module.Ctx[Data]) error {
 
 	grants, cfgErr := rewardsForDay(today)
 	if cfgErr != nil {
-		resp.Code = codeConfig
+		resp.Code = int32(errcode.ErrSigninConfig)
 		return c.Reply(resp)
 	}
 	resp.Rewards = protoRewards(grants)
@@ -146,13 +139,13 @@ func onClaim(c *module.Ctx[Data]) error {
 	// 领取位也就不会置上，玩家清包后可重新领。
 	changes, grantErr := module.Grant(c.State, grants)
 	if grantErr != nil {
-		resp.Code = grantCode(grantErr)
+		resp.Code = int32(grantCode(grantErr))
 		return c.Reply(resp)
 	}
 
 	d.add(today, grants)
 	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(codeSystem, err)
+		return c.Fail(errcode.ErrSystem, err)
 	}
 	resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
 
@@ -169,11 +162,11 @@ func onClaim(c *module.Ctx[Data]) error {
 //
 // 两种失败的处理方式不同：满包是「清包再来」，超限是「数量异常」，
 // 客户端提示与客诉话术都不一样，所以不合并成一个码。
-func grantCode(err error) int32 {
+func grantCode(err error) errcode.Code {
 	if errors.Is(err, module.ErrItemLimit) {
-		return codeBagLimit
+		return errcode.ErrSigninRewardLimit
 	}
-	return codeBagFull
+	return errcode.ErrSigninBagFull
 }
 
 // newData 新玩家的空状态（空切片而非 nil，业务里不必判空）。

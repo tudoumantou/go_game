@@ -14,6 +14,7 @@ package module
 import (
 	"time"
 
+	"game_study/internal/common/errcode"
 	"game_study/pkg/codec"
 	"google.golang.org/protobuf/proto"
 )
@@ -61,8 +62,8 @@ func (c *Ctx[D]) Reply(msg proto.Message) error {
 }
 
 // Fail 记录告警并按错误码回失败响应（响应模板由注册时的 respID 决定）。
-func (c *Ctx[D]) Fail(code int32, err error) error {
-	return c.bound.Stateful.Fail(c.Context, c.msgID, code, err)
+func (c *Ctx[D]) Fail(code errcode.Code, err error) error {
+	return c.bound.Stateful.Fail(c.Context, c.msgID, int32(code), err)
 }
 
 // Handler 业务处理器：只关心上下文，不看原始字节。
