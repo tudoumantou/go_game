@@ -70,7 +70,8 @@ func TestSigninActorFlow(t *testing.T) {
 	// 2026-10-21 10:00 北京时间，周三。
 	clock.Store(time.Date(2026, 10, 21, 2, 0, 0, 0, time.UTC).Unix())
 	registry := module.NewRegistry()
-	registry.Register(signin.New(logger, func() time.Time { return time.Unix(clock.Load(), 0) }))
+	signin.M.SetClock(func() time.Time { return time.Unix(clock.Load(), 0) })
+	registry.Register(signin.M)
 	type response struct {
 		id   uint32
 		body []byte

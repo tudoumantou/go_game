@@ -54,9 +54,10 @@ func TestR13ShutdownDrainsInflightBeforeFlush(t *testing.T) {
 
 	registry := module.NewRegistry()
 	// 固定周三（北京时间），签到领取第 3 天奖励。
-	registry.Register(signin.New(logger, func() time.Time {
+	signin.M.SetClock(func() time.Time {
 		return time.Date(2026, 10, 21, 2, 0, 0, 0, time.UTC)
-	}))
+	})
+	registry.Register(signin.M)
 
 	sys := actor.NewSystem(actor.Config{ShardCount: 1, MailboxSize: 256})
 	sys.Start(ctx)
@@ -125,9 +126,10 @@ func TestR13FlushAllKeepsDirtyOnDatabaseFailure(t *testing.T) {
 	}()
 
 	registry := module.NewRegistry()
-	registry.Register(signin.New(logger, func() time.Time {
+	signin.M.SetClock(func() time.Time {
 		return time.Date(2026, 10, 21, 2, 0, 0, 0, time.UTC)
-	}))
+	})
+	registry.Register(signin.M)
 	sys := actor.NewSystem(actor.Config{ShardCount: 1, MailboxSize: 64})
 	sys.Start(ctx)
 

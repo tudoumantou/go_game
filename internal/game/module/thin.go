@@ -334,16 +334,27 @@ func (t *Thin) Reply(ctx *Context, respID uint32, msg proto.Message) error {
 // 日志带 player_id/msg_id：失败响应对客户端只是一个错误码，
 // 服务端必须能从日志反查是哪次请求、什么原因。
 func (t *Thin) Fail(ctx *Context, msgID uint32, code int32, err error) error {
-	if t.logger != nil && ctx != nil && ctx.State != nil {
-		t.logger.Warn("module request failed",
-			"module", t.name, "player_id", ctx.State.PlayerID(), "msg_id", msgID, "err", err)
-	}
+	t.Warn(ctx, msgID, err)
 	respID, msg, ok := t.errorResp(msgID, code)
 	if !ok {
 		return err
 	}
 	return t.Reply(ctx, respID, msg)
 }
+
+// Warn 记录一次处理失败（module/player/msg 三元组，便于反查是哪次请求）。
+func (t *Thin) Warn(ctx *Context, msgID uint32, err error) {
+	if t.logger != nil && ctx != nil && ctx.State != nil {
+		t.logger.Warn("module request failed",
+			"module", t.name, "player_id", ctx.State.PlayerID(), "msg_id", msgID, "err", err)
+	}
+}
+
+// SetGuard 设置处理器前置校验（Define 的链式 API 使用）。
+func (t *Thin) SetGuard(fn func(ctx *Context, msgID uint32) error) { t.guard = fn }
+
+// SetInit 设置 Init 钩子（Define 的链式 API 使用）。
+func (t *Thin) SetInit(fn func(ctx *Context) error) { t.initFn = fn }
 
 // RequireCache 缓存权威前置校验：State 就绪且 Redis 权威路径已接入。
 //

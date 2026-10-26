@@ -124,7 +124,7 @@ func TestDataAdd(t *testing.T) {
 func TestStateRoundTrip(t *testing.T) {
 	st := newFakeState(7)
 	ctx, _ := newCtx(st)
-	m := New(nil)
+	m := M
 
 	// 业务只调 Repo：Get 解码 → 改 → Save 编码并标脏。
 	biz := m.NewCtx(ctx)
@@ -158,7 +158,8 @@ func TestStateRoundTrip(t *testing.T) {
 func TestClaimFlow(t *testing.T) {
 	st := newFakeState(1)
 	ctx, rec := newCtx(st)
-	m := New(nil, func() time.Time { return time.Date(2026, 10, 21, 9, 0, 0, 0, businessZone) }) // 周三
+	M.SetClock(func() time.Time { return time.Date(2026, 10, 21, 9, 0, 0, 0, businessZone) }) // 周三
+	m := M
 
 	// 信息：未领取，今天=3。
 	info := &gamev1.SigninInfoResp{}

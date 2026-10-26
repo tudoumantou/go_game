@@ -19,7 +19,6 @@ import (
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/samber/lo"
 )
@@ -54,35 +53,29 @@ type Data struct {
 	Rewards map[int32]int64
 }
 
-// New 创建签到模块。
+// M 是签到模块的唯一实例：声明在包级，路由在 init 注册。
 //
-// 可选时钟用于验证周几边界；生产默认使用服务器时间（c.Now()）。
-// 两个请求都满足「重放无第二次副作用」：Info 只读；Claim 按「今天已领」
-// 事实幂等（已领过直接回状态，不第二次发奖），因此可安全声明为可丢弃——
-// 缓存提交失败时丢弃内存改动重放是安全的。
-func New(logger *log.Logger, clock ...func() time.Time) *module.Bound[Data] {
-	m := module.Bind(stateKey, newData,
-		module.ThinLogger(logger),
-		module.ThinErrCode(int32(errcode.ErrSystem)),
-		// 缓存权威路径未就绪一律拒绝：签到发奖必须走快照 CAS，
-		// 直写路径已移除，没有降级方案——宁可不可用，不可双写。
-		module.ThinGuard(module.RequireCache),
-		// 启动期校验七天奖励配置齐全，配错不等到玩家点领取才暴露。
-		module.ThinInit(func(*module.Context) error {
-			for day := int32(1); day <= weekDays; day++ {
-				if _, err := rewardsForDay(day); err != nil {
-					return err
-				}
-			}
-			return nil
-		}),
-	)
-	if len(clock) > 0 && clock[0] != nil {
-		m.SetClock(clock[0])
+// 没有 New()：日志、状态编解码、分发都由 Define 兜底，每次启动手工
+// 组装一遍只是多一处漏配的机会。两个请求都满足「重放无第二次副作用」
+// （Info 只读；Claim 按「今天已领」事实幂等），因此可安全声明为可丢弃。
+// 测试要换时钟用 M.SetClock。
+var M = module.Define[Data](stateKey, newData).
+	Guard(module.RequireCache).
+	OnInit(validateRewards)
+
+func init() {
+	M.HandleRoute(&gamev1.SigninInfoReq{}, onInfo)
+	M.HandleRoute(&gamev1.SigninClaimReq{}, onClaim)
+}
+
+// validateRewards 启动期校验七天奖励配置齐全，配错不等到玩家点领取才暴露。
+func validateRewards(*module.Context) error {
+	for day := int32(1); day <= weekDays; day++ {
+		if _, err := rewardsForDay(day); err != nil {
+			return err
+		}
 	}
-	m.OnMsg(&gamev1.SigninInfoReq{}, &gamev1.SigninInfoResp{}, onInfo)
-	m.OnMsg(&gamev1.SigninClaimReq{}, &gamev1.SigninClaimResp{}, onClaim)
-	return m
+	return nil
 }
 
 // onInfo 签到信息查询：今天周几、今天是否已领、本周领取全貌。
@@ -94,7 +87,7 @@ func onInfo(c *module.Ctx[Data]) error {
 
 	d, err := c.Repo.Get()
 	if err != nil {
-		return c.Fail(errcode.ErrSystem, err)
+		return c.Fail(&gamev1.SigninInfoResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 	return c.Reply(&gamev1.SigninInfoResp{
 		Today:          today,
@@ -113,7 +106,7 @@ func onClaim(c *module.Ctx[Data]) error {
 
 	d, err := c.Repo.Get()
 	if err != nil {
-		return c.Fail(errcode.ErrSystem, err)
+		return c.Fail(&gamev1.SigninClaimResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 
 	// 四个分支共用一份回包：只有 Code/Already/Rewards 会变，
@@ -145,7 +138,7 @@ func onClaim(c *module.Ctx[Data]) error {
 
 	d.add(today, grants)
 	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(errcode.ErrSystem, err)
+		return c.Fail(&gamev1.SigninClaimResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 	resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
 

@@ -259,7 +259,7 @@ func (s *Server) initModules() {
 		s.modules.Register(copy.New(s.logger))
 		s.modules.Register(shop.New(s.logger))
 		s.modules.Register(activity.New(s.logger, s.producer))
-		s.modules.Register(signin.New(s.logger))
+		s.modules.Register(signin.M)
 		s.modules.Register(loginreward.New(s.logger))
 		// 榜单查询代理到中心服；未配置中心服时模块回「暂不可用」而不是空榜。
 		s.modules.Register(rankmodule.New(rankQuerier{cli: s.centerCli}, s.logger))

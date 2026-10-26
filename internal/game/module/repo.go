@@ -1,21 +1,29 @@
-// internal/game/module/repo.go —— 模块状态的 CRUD 门面（业务只写逻辑）
+// internal/game/module/repo.go —— 模块声明、路由与状态门面
 //
-// 目标形态：业务处理器不再接触 Ext/JSON/标脏，只做三件事——
+// 目标形态：模块只有「声明一行 + 路由若干行 + 业务函数」，
+// 装配（日志/状态编解码/分发/生命周期）全部由基座完成。
 //
-//	d, err := c.Repo.Get()      // 取状态
-//	...改 d...                   // 业务规则
-//	return c.Repo.Save(d)       // 存回去（基座负责编码与标脏）
+//	var M = module.Define[Data]("signin").Guard(module.RequireCache)
 //
-// 与 Read/Mutate 闭包的关系：两者等价。闭包省一次显式 Save，但要求业务
-// 理解「返回 true 才写回」；Repo 版本更直白，适合「取出来 → 校验 → 改 → 存」
-// 这种线性流程。Choose one, 不要混用。
+//	func init() {
+//		M.HandleRoute(&gamev1.SigninInfoReq{}, onInfo)
+//		M.HandleRoute(&gamev1.SigninClaimReq{}, onClaim)
+//	}
+//
+//	func onInfo(c *module.Ctx[Data]) error {
+//		d, err := c.Repo.Get()          // 取状态
+//		if err != nil { return c.Fail(&gamev1.SigninInfoResp{Code: int32(errcode.ErrSystem)}, err) }
+//		return c.Reply(&gamev1.SigninInfoResp{...})   // 回什么由协议自己决定
+//	}
+//
+// 注册时不声明响应协议：处理器可以回任意消息（或不回）。
 package module
 
 import (
 	"time"
 
-	"game_study/internal/common/errcode"
 	"game_study/pkg/codec"
+	"game_study/pkg/log"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -44,12 +52,12 @@ func (r *Repo[D]) Delete() error {
 // Ctx 业务处理器上下文：在 module.Context 之上挂类型化的 Repo。
 //
 // 嵌入 *Context 后，State/Send/Prefetch/Now 等能力仍可直接用；
-// Reply/Fail 只收 proto 消息与错误码，协议号由基座按类型反查。
+// Reply 只收 proto 消息，协议号由基座按类型反查。
 type Ctx[D any] struct {
 	*Context
 	Repo *Repo[D]
 
-	msgID uint32 // 当前请求号（Fail 按它找失败回包模板）
+	msgID uint32 // 当前请求号（Fail 记录日志用）
 	bound *Bound[D]
 }
 
@@ -61,48 +69,66 @@ func (c *Ctx[D]) Reply(msg proto.Message) error {
 	return c.bound.Stateful.Reply(c.Context, codec.ProtoID(msg), msg)
 }
 
-// Fail 记录告警并按错误码回失败响应（响应模板由注册时的 respID 决定）。
-func (c *Ctx[D]) Fail(code errcode.Code, err error) error {
-	return c.bound.Stateful.Fail(c.Context, c.msgID, int32(code), err)
+// Fail 记录失败并回 msg（错误码已经写在 msg 里）。
+//
+// 不回包失败响应是故意的：一个请求要回什么、回不回，由协议自己决定
+// （推送/单向命令本来就没有响应）。需要回错误时把 Code 写进消息再传进来。
+func (c *Ctx[D]) Fail(msg proto.Message, err error) error {
+	c.bound.Warn(c.Context, c.msgID, err)
+	return c.Reply(msg)
 }
 
 // Handler 业务处理器：只关心上下文，不看原始字节。
 type Handler[D any] func(c *Ctx[D]) error
 
-// Bound 由 Bind 产出的模块：内嵌 Stateful，Module 接口（Name/MsgIDs/分发/
+// Bound 由 Define 产出的模块：内嵌 Stateful，Module 接口（Name/MsgIDs/分发/
 // 生命周期/可丢弃声明）仍由 Thin 预装配，业务只写 Handler。
 type Bound[D any] struct {
 	*Stateful[D]
 	clock func() time.Time
 }
 
-// Bind 创建模块。newFn 给出新玩家的空状态（可为 nil，用零值）。
-func Bind[D any](name string, newFn func() *D, opts ...ThinOption) *Bound[D] {
-	return &Bound[D]{Stateful: NewStateful(name, newFn, opts...)}
+// Define 声明模块：一行搞定名字、日志与状态解码。
+//
+// newFn 可选：给新玩家一个非零初始状态（如空切片而非 nil）；
+// 不传则用 T 的零值。
+func Define[D any](name string, newFn ...func() *D) *Bound[D] {
+	var init func() *D
+	if len(newFn) > 0 {
+		init = newFn[0]
+	}
+	return &Bound[D]{Stateful: NewStateful(name, init, ThinLogger(log.New(name)))}
+}
+
+// Guard 设置处理器前置校验（如「缓存权威路径必须就绪」）。
+func (b *Bound[D]) Guard(fn func(ctx *Context, msgID uint32) error) *Bound[D] {
+	b.SetGuard(fn)
+	return b
+}
+
+// OnInit 设置启动期初始化/配置校验钩子。
+func (b *Bound[D]) OnInit(fn func(ctx *Context) error) *Bound[D] {
+	b.SetInit(fn)
+	return b
 }
 
 // SetClock 注入模块级时钟（测试专用；生产用系统时间）。
-//
-// 注入后每个请求的 Context.Clock 为空时自动带上，业务用 c.Now() 取时间。
-func (b *Bound[D]) SetClock(fn func() time.Time) { b.clock = fn }
+func (b *Bound[D]) SetClock(fn func() time.Time) *Bound[D] {
+	b.clock = fn
+	return b
+}
 
-// On 按协议号注册处理器：respID + prototype 用于失败时自动回包。
-func (b *Bound[D]) On(reqID, respID uint32, prototype proto.Message, h Handler[D]) {
-	b.HandleR(reqID, respID, prototype, func(ctx *Context, msgID uint32, _ []byte) error {
+// HandleRoute 注册一条路由：协议号由消息类型反查，回什么由处理器决定。
+//
+// 与旧 HandleR 的区别：不预先绑定响应协议，因此不限制「一问一答」——
+// 处理器可以回任意消息、回多条，或者不回。
+func (b *Bound[D]) HandleRoute(req proto.Message, h Handler[D]) {
+	b.Handle(codec.ProtoID(req), func(ctx *Context, msgID uint32, _ []byte) error {
 		if b.clock != nil && ctx.Clock == nil {
 			ctx.Clock = b.clock
 		}
 		return h(b.newCtx(ctx, msgID))
 	})
-}
-
-// OnMsg 按消息类型注册处理器：协议号从 proto 的 @msg 注解反查。
-//
-//	m.OnMsg(&gamev1.SigninInfoReq{}, &gamev1.SigninInfoResp{}, onInfo)
-//
-// 相比 On 不会写错号，也不会出现「请求/响应对不上」的拼写错误。
-func (b *Bound[D]) OnMsg(req, resp proto.Message, h Handler[D]) {
-	b.On(codec.ProtoID(req), codec.ProtoID(resp), resp, h)
 }
 
 // NewCtx 用给定上下文构造业务上下文（测试可直接调用处理器）。
@@ -116,3 +142,6 @@ func (b *Bound[D]) newCtx(ctx *Context, msgID uint32) *Ctx[D] {
 		bound:   b,
 	}
 }
+
+// 编译期断言：Bound 必须满足 Module 接口。
+var _ Module = (*Bound[struct{}])(nil)

@@ -15,6 +15,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/log"
 	gamev1 "game_study/pkg/pb/game/v1"
+	gatev1 "game_study/pkg/pb/gate/v1"
 	"game_study/pkg/writebehind"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/alicebob/miniredis/v2"
@@ -95,6 +96,23 @@ func TestLegacySQLRewardIsRetainedUntilCacheRecovers(t *testing.T) {
 	require.EqualValues(t, 60, record.State.Items[1001])
 }
 
+// capturedReply 记录一次下行（协议号 + 原始 body）。
+//
+// 缓存/守卫这类框架级失败走统一错误通知（ErrorNotify 20），业务成功走
+// 各自的响应号；两者都算「回了」，测试按 id 分支断言。
+type capturedReply struct {
+	id   uint32
+	body []byte
+}
+
+func decodeClaim(t *testing.T, r capturedReply) *gamev1.SigninClaimResp {
+	t.Helper()
+	require.EqualValues(t, 6604, r.id, "业务响应应走 SigninClaimResp")
+	out := &gamev1.SigninClaimResp{}
+	require.NoError(t, proto.Unmarshal(r.body, out))
+	return out
+}
+
 func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)
@@ -108,11 +126,13 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	repo.SetCache(writebehind.NewStore(rdb))
 	logger := log.New("bind-test", log.WithLevel("error"))
 	registry := module.NewRegistry()
-	registry.Register(signin.New(logger))
-	replies := make(chan uint64, 1)
-	a := NewActor(7, registry, logger, repo, nil, func(session uint64, id uint32, _ []byte) error {
-		if id == 6604 {
-			replies <- session
+	registry.Register(signin.M)
+	replies := make(chan capturedReply, 1)
+	sessions := make(chan uint64, 1)
+	a := NewActor(7, registry, logger, repo, nil, func(session uint64, id uint32, body []byte) error {
+		if id == 20 || id == 6604 {
+			sessions <- session
+			replies <- capturedReply{id: id, body: body}
 		}
 		return nil
 	})
@@ -126,11 +146,16 @@ func TestCacheUnavailableDuringBindStillRepliesToCurrentSession(t *testing.T) {
 	err = sys.Send(pid, &PacketMsg{MsgID: 6603})
 	require.NoError(t, err)
 	select {
-	case session := <-replies:
+	case session := <-sessions:
 		require.EqualValues(t, 9, session)
 	case <-time.After(time.Second):
 		t.Fatal("failed bind hid the cache error response")
 	}
+	got := <-replies
+	require.EqualValues(t, 20, got.id, "缓存不可用应走统一错误通知")
+	notify := &gatev1.ErrorNotify{}
+	require.NoError(t, proto.Unmarshal(got.body, notify))
+	require.EqualValues(t, 1005, notify.Code)
 }
 
 type loseCommitReply struct{ armed atomic.Bool }
@@ -170,15 +195,11 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			repo.SetCache(store)
 			logger := log.New("cache-test", log.WithLevel("error"))
 			registry := module.NewRegistry()
-			registry.Register(signin.New(logger))
-			replies := make(chan *gamev1.SigninClaimResp, 8)
+			registry.Register(signin.M)
+			replies := make(chan capturedReply, 8)
 			a := NewActor(7, registry, logger, repo, nil, func(_ uint64, id uint32, body []byte) error {
-				if id == 6604 {
-					out := &gamev1.SigninClaimResp{}
-					if err := proto.Unmarshal(body, out); err != nil {
-						return err
-					}
-					replies <- out
+				if id == 6604 || id == 20 {
+					replies <- capturedReply{id: id, body: body}
 				}
 				return nil
 			})
@@ -203,7 +224,7 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 			if failure == "after" {
 				hook.armed.Store(true)
 			}
-			call := func() *gamev1.SigninClaimResp {
+			call := func() capturedReply {
 				t.Helper()
 				err := sys.Send(pid, &PacketMsg{MsgID: 6603})
 				require.NoError(t, err)
@@ -212,27 +233,33 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 					return out
 				case <-time.After(5 * time.Second):
 					t.Fatal("reply timeout")
-					return nil
+					return capturedReply{}
 				}
 			}
 			first := call()
 			if failure == "none" {
-				require.False(t, first.Code != 0 || first.Already)
+				resp := decodeClaim(t, first)
+				require.False(t, resp.Code != 0 || resp.Already)
 			} else {
-				require.EqualValues(t, 1, first.Code)
+				// 缓存提交失败是框架级失败：走统一错误通知（20），
+				// 业务响应的 code 只表达玩法规则，不承担系统错误。
+				require.EqualValues(t, 20, first.id)
+				notify := &gatev1.ErrorNotify{}
+				require.NoError(t, proto.Unmarshal(first.body, notify))
+				require.EqualValues(t, 1005, notify.Code)
 				// R2.5：失败后不回滚内存，而是标记「下一条消息前整份重载」。
-				// 下一轮 retry 会走重载路径，其断言覆盖了「状态最终回到权威」。
 				require.False(t, !a.cacheReload, "failed cache write must schedule reload")
 			}
 			mr.SetError("")
 			retry := call()
-			require.EqualValues(t, 0, retry.Code)
+			retryResp := decodeClaim(t, retry)
+			require.EqualValues(t, 0, retryResp.Code)
 			expectedAlready := failure != "before"
-			require.EqualValues(t, expectedAlready, retry.Already)
+			require.EqualValues(t, expectedAlready, retryResp.Already)
 			// 签到奖励按当天配置发（周一到周日不同），
 			// 不能写死 100——否则测试只在特定的星期几通过。
 			var want int64 = 10
-			for _, r := range retry.Rewards {
+			for _, r := range retryResp.Rewards {
 				if r.ItemId == 1001 {
 					want += int64(r.Count)
 				}
