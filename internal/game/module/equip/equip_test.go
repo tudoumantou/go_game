@@ -9,12 +9,13 @@ package equip
 
 import (
 	"encoding/json"
+	"game_study/internal/common/errcode"
 	"testing"
 
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/moduletest"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 	"game_study/pkg/model"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -26,17 +27,17 @@ const (
 	equipArmor int32 = 3002 // armor，门槛 1，atk +5
 )
 
-func newTestModule(t *testing.T) (*Module, *moduletest.State, *moduletest.Recorder, *module.Context) {
+func newTestModule(t *testing.T) (*module.Bound[Data], *moduletest.State, *moduletest.Recorder, *module.Context) {
 	t.Helper()
 	st := moduletest.NewState(1)
 	st.SetProfile(module.Profile{Level: 10}) // 默认满足 3001/3002 的等级门槛
 	rec := moduletest.NewRecorder()
-	m := New(log.New("equip-test", log.WithLevel("error")))
+	m := M
 	return m, st, rec, moduletest.NewContext(st, rec)
 }
 
 // seed 把装备列表写进模块状态（走 Mutate，与线上写入路径一致）。
-func seed(t *testing.T, m *Module, ctx *module.Context, equips ...Entry) {
+func seed(t *testing.T, m *module.Bound[Data], ctx *module.Context, equips ...Entry) {
 	t.Helper()
 	require.NoError(t, m.Mutate(ctx, func(d *Data) bool {
 		d.Equips = equips
@@ -44,9 +45,9 @@ func seed(t *testing.T, m *Module, ctx *module.Context, equips ...Entry) {
 	}))
 }
 
-func wear(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, uid int64) *gamev1.EquipWearResp {
+func wear(t *testing.T, m *module.Bound[Data], ctx *module.Context, rec *moduletest.Recorder, uid int64) *gamev1.EquipWearResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDWearReq, msgIDWearResp, &gamev1.EquipWearReq{Uid: uid})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgEquipWearReq, codec.MsgEquipWearResp, &gamev1.EquipWearReq{Uid: uid})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "穿戴没有回包")
 	resp := &gamev1.EquipWearResp{}
@@ -54,9 +55,9 @@ func wear(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder
 	return resp
 }
 
-func takeOff(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder, uid int64) *gamev1.EquipTakeOffResp {
+func takeOff(t *testing.T, m *module.Bound[Data], ctx *module.Context, rec *moduletest.Recorder, uid int64) *gamev1.EquipTakeOffResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDTakeOffReq, msgIDTakeOffResp, &gamev1.EquipTakeOffReq{Uid: uid})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgEquipTakeOffReq, codec.MsgEquipTakeOffResp, &gamev1.EquipTakeOffReq{Uid: uid})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "卸下没有回包")
 	resp := &gamev1.EquipTakeOffResp{}
@@ -64,9 +65,9 @@ func takeOff(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recor
 	return resp
 }
 
-func list(t *testing.T, m *Module, ctx *module.Context, rec *moduletest.Recorder) *gamev1.EquipListResp {
+func list(t *testing.T, m *module.Bound[Data], ctx *module.Context, rec *moduletest.Recorder) *gamev1.EquipListResp {
 	t.Helper()
-	raw, err := moduletest.Call(m, ctx, rec, msgIDListReq, msgIDListResp, &gamev1.EquipListReq{})
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgEquipListReq, codec.MsgEquipListResp, &gamev1.EquipListReq{})
 	require.NoError(t, err)
 	require.NotNil(t, raw, "列表请求不能返回 nil")
 	resp := &gamev1.EquipListResp{}
@@ -80,10 +81,10 @@ func TestWearAddsBonus(t *testing.T) {
 	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword, Quality: 1})
 
 	resp := wear(t, m, ctx, rec, 100)
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 10, st.GetAttr("atk"), "穿戴必须加攻击")
 	require.NotEmpty(t, resp.Attrs, "穿戴要回属性面板")
-	require.Equal(t, 1, rec.Count(msgIDWearResp), "一次请求只能回一个包")
+	require.Equal(t, 1, rec.Count(codec.MsgEquipWearResp), "一次请求只能回一个包")
 
 	d, err := m.State(ctx)
 	require.NoError(t, err)
@@ -96,7 +97,7 @@ func TestWearUnknownUID(t *testing.T) {
 	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
 
 	resp := wear(t, m, ctx, rec, 999)
-	require.EqualValues(t, codeNotExist, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrEquipNotExist), resp.Code)
 	require.EqualValues(t, 0, st.GetAttr("atk"), "失败不能加属性")
 }
 
@@ -107,7 +108,7 @@ func TestWearLevelLow(t *testing.T) {
 	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
 
 	resp := wear(t, m, ctx, rec, 100)
-	require.EqualValues(t, codeLevelLow, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrEquipLevelLow), resp.Code)
 	require.EqualValues(t, 0, st.GetAttr("atk"))
 	d, _ := m.State(ctx)
 	require.False(t, d.Equips[0].Equipped)
@@ -126,7 +127,7 @@ func TestWearSlotConflict(t *testing.T) {
 	st.AddBonus("atk", 10) // 已穿戴的 3001 提供的加成
 
 	resp := wear(t, m, ctx, rec, 101)
-	require.EqualValues(t, codeSlotConflict, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrEquipSlotConflict), resp.Code)
 	require.EqualValues(t, 10, st.GetAttr("atk"), "冲突时不能重复加属性")
 
 	d, _ := m.State(ctx)
@@ -139,11 +140,11 @@ func TestWearTwiceDoesNotDoubleBonus(t *testing.T) {
 	m, st, rec, ctx := newTestModule(t)
 	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
 
-	require.EqualValues(t, codeOK, wear(t, m, ctx, rec, 100).Code)
+	require.EqualValues(t, int32(errcode.OK), wear(t, m, ctx, rec, 100).Code)
 	require.EqualValues(t, 10, st.GetAttr("atk"))
 
 	mark := ctx.State.(*moduletest.State).DirtyModules()
-	require.EqualValues(t, codeOK, wear(t, m, ctx, rec, 100).Code)
+	require.EqualValues(t, int32(errcode.OK), wear(t, m, ctx, rec, 100).Code)
 	require.EqualValues(t, 10, st.GetAttr("atk"), "重复穿戴不能二次加属性")
 	require.Equal(t, mark, ctx.State.(*moduletest.State).DirtyModules(), "幂等路径不该标脏（不产生提交）")
 }
@@ -155,9 +156,9 @@ func TestTakeOffRemovesBonus(t *testing.T) {
 	st.AddBonus("atk", 10)
 
 	resp := takeOff(t, m, ctx, rec, 100)
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 0, st.GetAttr("atk"), "卸下必须精确扣回")
-	require.Equal(t, 1, rec.Count(msgIDTakeOffResp))
+	require.Equal(t, 1, rec.Count(codec.MsgEquipTakeOffResp))
 
 	d, _ := m.State(ctx)
 	require.False(t, d.Equips[0].Equipped)
@@ -170,7 +171,7 @@ func TestTakeOffNotEquipped(t *testing.T) {
 	st.AddBonus("atk", 0)
 
 	resp := takeOff(t, m, ctx, rec, 100)
-	require.EqualValues(t, codeNotEquipped, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrEquipNotEquipped), resp.Code)
 	require.EqualValues(t, 0, st.GetAttr("atk"))
 }
 
@@ -178,7 +179,7 @@ func TestTakeOffNotEquipped(t *testing.T) {
 func TestTakeOffUnknownUID(t *testing.T) {
 	m, _, rec, ctx := newTestModule(t)
 	resp := takeOff(t, m, ctx, rec, 404)
-	require.EqualValues(t, codeNotExist, resp.Code)
+	require.EqualValues(t, int32(errcode.ErrEquipNotExist), resp.Code)
 }
 
 // TestLoginRecomputesBonus 登录按已穿戴件重算：只算穿着的，不重复累加。
@@ -209,21 +210,21 @@ func TestListReturnsSnapshotOrder(t *testing.T) {
 	)
 
 	resp := list(t, m, ctx, rec)
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Len(t, resp.Equips, 2)
 	require.EqualValues(t, 100, resp.Equips[0].Uid, "顺序即持有顺序")
 	require.EqualValues(t, 3, resp.Equips[0].EnhanceLevel)
 	require.EqualValues(t, 2, resp.Equips[0].Quality)
 	require.True(t, resp.Equips[0].Equipped)
 	require.False(t, resp.Equips[1].Equipped)
-	require.Equal(t, 1, rec.Count(msgIDListResp))
+	require.Equal(t, 1, rec.Count(codec.MsgEquipListResp))
 }
 
 // TestListEmpty 没有装备时也要正常回包（不能是 nil 报文）。
 func TestListEmpty(t *testing.T) {
 	m, _, rec, ctx := newTestModule(t)
 	resp := list(t, m, ctx, rec)
-	require.EqualValues(t, codeOK, resp.Code)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Empty(t, resp.Equips)
 }
 

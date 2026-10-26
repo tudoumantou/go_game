@@ -65,6 +65,13 @@ type Ctx[D any] struct {
 // MsgID 当前请求的协议号。
 func (c *Ctx[D]) MsgID() uint32 { return c.msgID }
 
+// Log 模块日志器（已带模块名字段）。
+//
+// 为什么从这里取而不是业务自己引用包级 M：模块的钩子（比如 WithEvent）
+// 在包级变量初始化时就被 M 引用，钩子里再引用 M 会构成初始化循环，
+// 编译期直接报错。
+func (c *Ctx[D]) Log() *log.Logger { return c.bound.Logger() }
+
 // Reply 回包：协议号由消息类型反查（codec.ProtoID），业务不写数字。
 func (c *Ctx[D]) Reply(msg proto.Message) error {
 	return c.bound.Stateful.Reply(c.Context, codec.ProtoID(msg), msg)

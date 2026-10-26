@@ -306,14 +306,18 @@ func (s *Server) initModules() {
 		}
 		s.modules.Register(s.mailMod)
 		s.modules.Register(s.chatMod)
-		s.modules.Register(quest.New(s.logger))
-		s.modules.Register(equip.New(s.logger))
+		s.modules.Register(quest.M)
+		s.modules.Register(equip.M)
 		s.modules.Register(skill.M)
 		s.modules.Register(guild.New(guild.NewRepo(s.database), s.logger))
 		s.modules.Register(team.New(team.NewRepo(s.database), s.logger))
 		s.modules.Register(copy.M)
 		s.modules.Register(shop.M)
-		s.modules.Register(activity.New(s.logger, s.producer))
+		// 全服活动贡献上报走包级注入（模块本身已是单例，不再有 New）。
+		if s.producer != nil {
+			activity.SetProducer(s.producer)
+		}
+		s.modules.Register(activity.M)
 		s.modules.Register(signin.M)
 		s.modules.Register(loginreward.New(s.logger))
 		// 榜单查询代理到中心服；未配置中心服时模块回「暂不可用」而不是空榜。

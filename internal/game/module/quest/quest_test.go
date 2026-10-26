@@ -6,9 +6,11 @@ package quest
 import (
 	"encoding/json"
 	"fmt"
+	"game_study/internal/common/errcode"
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -90,10 +92,10 @@ func TestAcceptProgressClaim(t *testing.T) {
 	cfg := firstQuest(t)
 	st := newFakeState(1)
 	ctx, replies := newCtx(st)
-	m := New(nil)
+	m := M
 
 	acceptBody, _ := proto.Marshal(&gamev1.QuestAcceptReq{QuestId: int32(cfg.Id)})
-	err := m.OnMessage(ctx, msgIDAcceptReq, acceptBody)
+	err := m.OnMessage(ctx, codec.MsgQuestAcceptReq, acceptBody)
 	require.NoError(t, err)
 	// 事件推进（类型取自配置，增量给足）
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3)})
@@ -105,13 +107,13 @@ func TestAcceptProgressClaim(t *testing.T) {
 	require.EqualValues(t, int32(cfg.Col3), rec.Progress)
 
 	claimBody, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
-	err = m.OnMessage(ctx, msgIDClaimReq, claimBody)
+	err = m.OnMessage(ctx, codec.MsgQuestClaimReq, claimBody)
 	require.NoError(t, err)
 	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
 	require.EqualValues(t, int64(cfg.Col3)*100, st.exp)
 	var claimResp gamev1.QuestClaimResp
-	require.NoError(t, proto.Unmarshal((*replies)[msgIDClaimResp], &claimResp))
-	require.EqualValues(t, codeOK, claimResp.Code, "领奖成功必须回 0")
+	require.NoError(t, proto.Unmarshal((*replies)[codec.MsgQuestClaimResp], &claimResp))
+	require.EqualValues(t, int32(errcode.OK), claimResp.Code, "领奖成功必须回 0")
 	d, _ = m.State(ctx)
 	require.EqualValues(t, statusClaimed, d.Quests[int32(cfg.Id)].Status, "claim state not persisted in snapshot")
 }
@@ -121,19 +123,19 @@ func TestClaimIdempotent(t *testing.T) {
 	cfg := firstQuest(t)
 	st := newFakeState(1)
 	ctx, replies := newCtx(st)
-	m := New(nil)
+	m := M
 
 	body, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
 	d := &Data{Quests: map[int32]Record{int32(cfg.Id): {Status: statusDone, Progress: int32(cfg.Col3)}}}
 	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))
 	for i := 0; i < 2; i++ {
-		err := m.OnMessage(ctx, msgIDClaimReq, body)
+		err := m.OnMessage(ctx, codec.MsgQuestClaimReq, body)
 		require.NoError(t, err)
 	}
 	require.EqualValues(t, int64(cfg.Col3)*10, st.GetItemCount(1001))
 	var resp gamev1.QuestClaimResp
-	require.NoError(t, proto.Unmarshal((*replies)[msgIDClaimResp], &resp))
-	require.EqualValues(t, codeQuestClaimed, resp.Code, "重复领奖必须回 7104，不能被成功码覆盖")
+	require.NoError(t, proto.Unmarshal((*replies)[codec.MsgQuestClaimResp], &resp))
+	require.EqualValues(t, int32(errcode.ErrQuestClaimed), resp.Code, "重复领奖必须回 7104，不能被成功码覆盖")
 }
 
 // TestClaimUnfinished 进度不足时不发奖、不改状态。
@@ -141,16 +143,16 @@ func TestClaimUnfinished(t *testing.T) {
 	cfg := firstQuest(t)
 	st := newFakeState(1)
 	ctx, replies := newCtx(st)
-	m := New(nil)
+	m := M
 	d := &Data{Quests: map[int32]Record{int32(cfg.Id): {Status: statusDoing}}}
 	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))
 	body, _ := proto.Marshal(&gamev1.QuestClaimReq{QuestId: int32(cfg.Id)})
-	err := m.OnMessage(ctx, msgIDClaimReq, body)
+	err := m.OnMessage(ctx, codec.MsgQuestClaimReq, body)
 	require.NoError(t, err)
 	require.EqualValues(t, 0, st.GetItemCount(1001), "unfinished quest must not grant")
 	var resp gamev1.QuestClaimResp
-	require.NoError(t, proto.Unmarshal((*replies)[msgIDClaimResp], &resp))
-	require.EqualValues(t, codeQuestUnfinished, resp.Code, "未完成必须回 7103，不能被成功码覆盖")
+	require.NoError(t, proto.Unmarshal((*replies)[codec.MsgQuestClaimResp], &resp))
+	require.EqualValues(t, int32(errcode.ErrQuestUnfinished), resp.Code, "未完成必须回 7103，不能被成功码覆盖")
 	back, _ := m.State(ctx)
 	require.EqualValues(t, statusDoing, back.Quests[int32(cfg.Id)].Status, "status changed on failed claim")
 }
@@ -162,7 +164,7 @@ func TestClaimUnfinished(t *testing.T) {
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
 	ctx, _ := newCtx(st)
-	m := New(nil)
+	m := M
 
 	d := &Data{Quests: map[int32]Record{101: {Status: statusClaimed, Progress: 5}}}
 	require.NoError(t, m.Mutate(ctx, func(dst *Data) bool { *dst = *d; return true }))

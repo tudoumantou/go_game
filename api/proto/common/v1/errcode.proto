@@ -53,10 +53,30 @@ enum ErrCode {
   ERR_CODE_BATTLE_FULL            = 6004; // 战斗房间已满
   ERR_CODE_RESULT_REWARD_INVALID  = 6005; // 上报的奖励不存在
 
+  // ===== 65xx 活动 =====
+  ERR_CODE_ACTIVITY_NOT_EXIST    = 6501; // 活动配置不存在
+  ERR_CODE_ACTIVITY_NOT_FINISHED = 6502; // 活动进度未达标
+  ERR_CODE_ACTIVITY_CLAIMED      = 6503; // 奖励已领取（幂等保护）
+  ERR_CODE_ACTIVITY_BAG_FULL     = 6504; // 背包已满，无法领取奖励
+  ERR_CODE_ACTIVITY_NOT_OPEN     = 6505; // 活动不在开放期
+
   // ===== 66xx 签到 =====
   ERR_CODE_SIGNIN_CONFIG       = 6601; // 签到奖励配置错误
   ERR_CODE_SIGNIN_REWARD_LIMIT = 6602; // 签到奖励数量超出上限
   ERR_CODE_SIGNIN_BAG_FULL     = 6603; // 背包已满，无法领取签到奖励
+
+  // ===== 71xx 任务 =====
+  ERR_CODE_QUEST_NOT_EXIST   = 7101; // 任务配置不存在
+  ERR_CODE_QUEST_ACCEPTED    = 7102; // 任务已接取（幂等保护）
+  ERR_CODE_QUEST_UNFINISHED  = 7103; // 任务未完成
+  ERR_CODE_QUEST_CLAIMED     = 7104; // 奖励已领取（幂等保护）
+  ERR_CODE_QUEST_BAG_FULL    = 7105; // 背包已满，无法领取奖励
+
+  // ===== 31xx 装备 =====
+  ERR_CODE_EQUIP_NOT_EXIST     = 3101; // 装备不存在
+  ERR_CODE_EQUIP_LEVEL_LOW     = 3102; // 等级不足，无法穿戴
+  ERR_CODE_EQUIP_SLOT_CONFLICT = 3103; // 同部位已有装备
+  ERR_CODE_EQUIP_NOT_EQUIPPED  = 3104; // 该装备未穿戴
 
   // ===== 32xx 技能 =====
   ERR_CODE_SKILL_NOT_EXIST    = 3201; // 技能配置不存在

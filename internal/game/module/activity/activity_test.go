@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/stretchr/testify/require"
@@ -75,12 +76,12 @@ func TestClaimOnce(t *testing.T) {
 	cfg := firstActivity(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil, nil)
+	m := M
 	seed := &Data{Records: map[int32]Record{int32(cfg.Id): {Progress: int32(cfg.Col3)}}}
 	require.NoError(t, m.Mutate(ctx, func(d *Data) bool { *d = *seed; return true }))
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
 	for i := 0; i < 2; i++ {
-		err := m.OnMessage(ctx, msgIDClaimReq, body)
+		err := m.OnMessage(ctx, codec.MsgActivityClaimReq, body)
 		require.NoError(t, err)
 	}
 	want := int64(cfg.Col3) * 20
@@ -94,9 +95,9 @@ func TestClaimUnfinished(t *testing.T) {
 	cfg := firstActivity(t)
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil, nil)
+	m := M
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
-	err := m.OnMessage(ctx, msgIDClaimReq, body)
+	err := m.OnMessage(ctx, codec.MsgActivityClaimReq, body)
 	require.NoError(t, err)
 	require.EqualValues(t, 0, st.GetItemCount(itemDiamond), "unfinished activity must not grant")
 }
@@ -109,7 +110,7 @@ func TestEventClampsProgress(t *testing.T) {
 	}
 	st := newFakeState(1)
 	ctx := newCtx(st)
-	m := New(nil, nil)
+	m := M
 	m.OnEvent(ctx, module.Event{Type: cfg.Col2, Delta: int64(cfg.Col3) + 100})
 	d, _ := m.State(ctx)
 	got := d.Records[int32(cfg.Id)].Progress

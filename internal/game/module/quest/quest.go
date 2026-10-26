@@ -14,10 +14,9 @@
 package quest
 
 import (
+	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-	"game_study/pkg/log"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -25,26 +24,6 @@ import (
 
 // stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "quest"
-
-// 协议号（4.9：7101/7102 列表，7103/7104 接取，7105/7106 领奖）。
-const (
-	msgIDListReq    = codec.MsgQuestListReq
-	msgIDListResp   = codec.MsgQuestListResp
-	msgIDAcceptReq  = codec.MsgQuestAcceptReq
-	msgIDAcceptResp = codec.MsgQuestAcceptResp
-	msgIDClaimReq   = codec.MsgQuestClaimReq
-	msgIDClaimResp  = codec.MsgQuestClaimResp
-)
-
-// 业务码（4.10）：任务段 7101-7105。
-const (
-	codeOK              int32 = 0
-	codeQuestNotExist   int32 = 7101
-	codeQuestAccepted   int32 = 7102
-	codeQuestUnfinished int32 = 7103
-	codeQuestClaimed    int32 = 7104
-	codeBagFull         int32 = 7105
-)
 
 // 任务状态（与快照内 JSON 一致）。
 //
@@ -78,33 +57,22 @@ type Data struct {
 // newData 新玩家的空状态：map 必须初始化，nil map 写会 panic。
 func newData() *Data { return &Data{Quests: map[int32]Record{}} }
 
-// Module 任务模块。
-type Module struct {
-	// Stateful 内嵌 Thin：消息注册/生命周期仍由 Thin 提供，
-	// 多出来的是「Data ↔ Ext ↔ 表行」的编解码与标脏。
-	*module.Stateful[Data]
-	logger *log.Logger
-}
+// M 任务模块的唯一实例。
+var M = module.Define[Data](stateKey, newData).
+	WithLogout(onLogout).
+	WithEvent(onEvent)
 
-// New 创建任务模块。
-func New(logger *log.Logger) *Module {
-	m := &Module{logger: logger}
-	m.Stateful = module.NewStateful(stateKey, newData,
-		module.ThinLogger(logger),
-		module.ThinLogout(m.onLogout),
-		module.ThinOnEvent(m.onEvent),
-	)
-	m.HandleR(msgIDListReq, msgIDListResp, &gamev1.QuestListResp{}, m.onList)
-	m.HandleR(msgIDAcceptReq, msgIDAcceptResp, &gamev1.QuestAcceptResp{}, module.Typed(msgIDAcceptResp, m.onAccept))
-	m.HandleR(msgIDClaimReq, msgIDClaimResp, &gamev1.QuestClaimResp{}, module.Typed(msgIDClaimResp, m.onClaim))
-	return m
+func init() {
+	M.HandleRoute(&gamev1.QuestListReq{}, onList)
+	module.Route(M, &gamev1.QuestAcceptReq{}, onAccept)
+	module.Route(M, &gamev1.QuestClaimReq{}, onClaim)
 }
 
 // onLogout 下线时标脏，保证最后一次进度推进随快照落库。
 //
 // 不做预加载：任务数据随 Ext 懒加载，列表请求时才解码 JSON。
-func (m *Module) onLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty(m.Name())
+func onLogout(c *module.Ctx[Data]) error {
+	c.State.MarkDirty(stateKey)
 	return nil
 }
 
@@ -116,39 +84,43 @@ func (m *Module) onLogout(ctx *module.Context) error {
 // Go 知识点：EventAware 是可选接口，Registry 用类型断言探测
 // （见 module.go DispatchEvent）——本模块实现它即「订阅全部事件」，
 // 事件过滤在函数体内按 cfg.Col2 做。
-func (m *Module) onEvent(ctx *module.Context, evt module.Event) {
-	// 一次事件只解析一次状态、只写回一次；fn 返回 false 表示一个任务都没推进，
-	// 基座不会写回 Ext，也就不会产生一次无意义的提交。
-	err := m.Mutate(ctx, func(d *Data) bool {
-		changed := false
-		// 配置约定：Col1=任务名，Col2=监听的事件类型，Col3=目标次数。
-		for _, cfg := range gamedata.QuestCfgList() {
-			if cfg.Col2 != evt.Type {
-				continue
-			}
-			id := int32(cfg.Id)
-			rec, ok := d.Quests[id]
-			if !ok || rec.Status != statusDoing {
-				continue // 未接取或已完成的任务不推进
-			}
-			target := int32(cfg.Col3)
-			next := rec.Progress + int32(evt.Delta)
-			// 到达目标即置完成态并截断：超额计数没有意义，
-			// 截断还能防止 int32 被恶意大 Delta 冲爆。
-			if next >= target {
-				next = target
-				rec.Status = statusDone
-			}
-			rec.Progress = next
-			d.Quests[id] = rec
-			changed = true
-		}
-		return changed
-	})
+func onEvent(c *module.Ctx[Data], evt module.Event) {
+	// 一次事件只解析一次状态、只写回一次；没推进任何任务就不写回，
+	// 也就不产生一次无意义的提交。
+	d, err := c.Repo.Get()
 	if err != nil {
-		// 状态损坏只告警不抛错：OnEvent 没有返回值，
-		// 不能让一个坏任务把整条业务消息的响应搞失败。
-		m.warn("quest progress save failed", ctx, err)
+		c.Log().Warn("quest state load failed", "player_id", c.State.PlayerID(), "err", err)
+		return
+	}
+	changed := false
+	// 配置约定：Col1=任务名，Col2=监听的事件类型，Col3=目标次数。
+	for _, cfg := range gamedata.QuestCfgList() {
+		if cfg.Col2 != evt.Type {
+			continue
+		}
+		id := int32(cfg.Id)
+		rec, ok := d.Quests[id]
+		if !ok || rec.Status != statusDoing {
+			continue // 未接取或已完成的任务不推进
+		}
+		target := int32(cfg.Col3)
+		next := rec.Progress + int32(evt.Delta)
+		// 到达目标即置完成态并截断：超额计数没有意义，
+		// 截断还能防止 int32 被恶意大 Delta 冲爆。
+		if next >= target {
+			next = target
+			rec.Status = statusDone
+		}
+		rec.Progress = next
+		d.Quests[id] = rec
+		changed = true
+	}
+	if changed {
+		if err := c.Repo.Save(d); err != nil {
+			// 状态损坏只告警不抛错：OnEvent 没有返回值，
+			// 不能让一个坏任务把整条业务消息的响应搞失败。
+			c.Log().Warn("quest progress save failed", "player_id", c.State.PlayerID(), "err", err)
+		}
 	}
 }
 
@@ -157,149 +129,107 @@ func (m *Module) onEvent(ctx *module.Context, evt module.Event) {
 // 注意内部 status（0/1/2）与协议 status（0-3）是两套编码：
 // 内部没有「未接」状态（用键不存在表达），协议需要显式 0，
 // 所以这里做一次映射，而不是把内部状态直接下发。
-func (m *Module) onList(ctx *module.Context, _ uint32, _ []byte) error {
-	resp := &gamev1.QuestListResp{Code: codeOK}
-	if err := m.Read(ctx, func(d *Data) {
-		for _, cfg := range gamedata.QuestCfgList() {
-			entry := &gamev1.QuestEntry{
-				QuestId: int32(cfg.Id),
-				Name:    cfg.Col1,
-				Target:  int32(cfg.Col3),
-				Status:  0, // 未接
-			}
-			if rec, ok := d.Quests[int32(cfg.Id)]; ok {
-				entry.Progress = rec.Progress
-				switch rec.Status {
-				case statusClaimed:
-					entry.Status = 3
-				case statusDone:
+func onList(c *module.Ctx[Data]) error {
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.QuestListResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	resp := &gamev1.QuestListResp{}
+	for _, cfg := range gamedata.QuestCfgList() {
+		entry := &gamev1.QuestEntry{
+			QuestId: int32(cfg.Id),
+			Name:    cfg.Col1,
+			Target:  int32(cfg.Col3),
+			Status:  0, // 未接
+		}
+		if rec, ok := d.Quests[int32(cfg.Id)]; ok {
+			entry.Progress = rec.Progress
+			switch rec.Status {
+			case statusClaimed:
+				entry.Status = 3
+			case statusDone:
+				entry.Status = 2
+			default:
+				if rec.Progress >= int32(cfg.Col3) {
 					entry.Status = 2
-				default:
-					if rec.Progress >= int32(cfg.Col3) {
-						entry.Status = 2
-					} else {
-						entry.Status = 1
-					}
+				} else {
+					entry.Status = 1
 				}
 			}
-			resp.Quests = append(resp.Quests, entry)
 		}
-	}); err != nil {
-		return err
+		resp.Quests = append(resp.Quests, entry)
 	}
-	return reply(ctx, msgIDListResp, resp)
+	return c.Reply(resp)
 }
 
 // onAccept 接取任务。
 //
 // 已领奖的任务允许重新接取（日常任务的设计前提）：Status==claimed
 // 时覆盖为 doing 并清零进度，实现「每日刷新」而不需要删键。
-func (m *Module) onAccept(ctx *module.Context, req *gamev1.QuestAcceptReq, resp *gamev1.QuestAcceptResp) error {
-	*resp = gamev1.QuestAcceptResp{}
+func onAccept(c *module.Ctx[Data], req *gamev1.QuestAcceptReq) error {
 	if _, ok := gamedata.GetQuestCfg(int64(req.QuestId)); !ok {
-		resp.Code = codeQuestNotExist
-		return nil
+		return c.Reply(&gamev1.QuestAcceptResp{Code: int32(errcode.ErrQuestNotExist)})
 	}
-	return m.Mutate(ctx, func(d *Data) bool {
-		if rec, ok := d.Quests[req.QuestId]; ok && rec.Status != statusClaimed {
-			resp.Code = codeQuestAccepted
-			return false // 已在进行中：不改状态，也不产生提交
-		}
-		d.Quests[req.QuestId] = Record{Status: statusDoing}
-		resp.Code = codeOK
-		return true
-	})
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.QuestAcceptResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	if rec, ok := d.Quests[req.QuestId]; ok && rec.Status != statusClaimed {
+		// 已在进行中：不改状态，也不产生提交。
+		return c.Reply(&gamev1.QuestAcceptResp{Code: int32(errcode.ErrQuestAccepted)})
+	}
+	d.Quests[req.QuestId] = Record{Status: statusDoing}
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(&gamev1.QuestAcceptResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	return c.Reply(&gamev1.QuestAcceptResp{})
 }
 
 // onClaim 领奖（经验 + 道具）。
 //
 // 领取事实与奖励在同一次快照提交：已领状态写进 Ext，道具进 Items，经验进 Profile，
 // Redis 提交失败时三者一起回滚，不会出现「状态已领、奖励没到账」。
-func (m *Module) onClaim(ctx *module.Context, req *gamev1.QuestClaimReq, resp *gamev1.QuestClaimResp) error {
-	*resp = gamev1.QuestClaimResp{}
+func onClaim(c *module.Ctx[Data], req *gamev1.QuestClaimReq) error {
 	cfg, ok := gamedata.GetQuestCfg(int64(req.QuestId))
 	if !ok {
-		resp.Code = codeQuestNotExist
-		return nil
+		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestNotExist)})
 	}
-
-	var (
-		applied bool
-		expGain int64
-		changes []module.BagChange
-	)
-	err := m.Mutate(ctx, func(d *Data) bool {
-		rec, ok := d.Quests[req.QuestId]
-		if !ok {
-			resp.Code = codeQuestUnfinished
-			return false
-		}
-		if rec.Status == statusClaimed {
-			resp.Code = codeQuestClaimed
-			return false
-		}
-		if rec.Progress < int32(cfg.Col3) {
-			resp.Code = codeQuestUnfinished
-			return false
-		}
-
-		// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）。
-		// 满包/超限时整个领取被拒，不会出现「状态已置领、道具没发」。
-		grants := []module.ItemGrant{{ItemID: 1001, Count: int64(cfg.Col3) * 10}}
-		c, grantErr := module.Grant(ctx.State, grants)
-		if grantErr != nil {
-			resp.Code = codeBagFull
-			return false
-		}
-		expGain = int64(cfg.Col3) * 100
-		changes = c
-		rec.Status = statusClaimed
-		d.Quests[req.QuestId] = rec
-		applied = true
-		return true
-	})
+	d, err := c.Repo.Get()
 	if err != nil {
-		return err
+		return c.Fail(&gamev1.QuestClaimResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	if !applied {
-		// 闭包里已经设好拒绝码（7103/7104/6603…），这里不能再覆盖成 0。
-		return nil
+	rec, ok := d.Quests[req.QuestId]
+	if !ok {
+		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestUnfinished)})
+	}
+	if rec.Status == statusClaimed {
+		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestClaimed)})
+	}
+	if rec.Progress < int32(cfg.Col3) {
+		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestUnfinished)})
 	}
 
-	resp.Code = codeOK
-	resp.ExpGain = expGain
-	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(changes)}); err == nil {
+	// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）。
+	// 满包/超限时整个领取被拒，不会出现「状态已置领、道具没发」。
+	grants := []module.ItemGrant{{ItemID: 1001, Count: int64(cfg.Col3) * 10}}
+	bagChanges, grantErr := module.Grant(c.State, grants)
+	if grantErr != nil {
+		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestBagFull)})
+	}
+	expGain := int64(cfg.Col3) * 100
+	rec.Status = statusClaimed
+	d.Quests[req.QuestId] = rec
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(&gamev1.QuestClaimResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+
+	resp := &gamev1.QuestClaimResp{ExpGain: expGain}
+	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(bagChanges)}); err == nil {
 		resp.Rewards = raw
 	}
 	// 发经验（Actor 内部会推送等级变化）；仍在同一条消息内，随同一份快照提交。
-	if ctx.AddExp != nil && expGain > 0 {
-		ctx.AddExp(expGain)
+	if c.AddExp != nil && expGain > 0 {
+		c.AddExp(expGain)
 	}
-	// 回包由 module.Typed 统一完成。
-	return nil
-}
-
-// load 读取任务状态；从未玩过任务时返回空结构（不可为 nil，避免 map 写入 panic）。
-
-// decode 把表行的 JSON 列解成业务视图；坏 JSON 直接报错，由落库校验整批回滚。
-
-// save 把状态编码回快照槽位；落库由 Write-Behind 负责。
-
-// reply 序列化 proto 并经 ctx.Reply 下发。
-func reply(ctx *module.Context, msgID uint32, msg proto.Message) error {
-	body, err := proto.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return ctx.Reply(msgID, body)
-}
-
-// warn 统一告警入口（logger 可为 nil）。
-//
-// logger 判空是依赖注入的常见形态：测试传 nil 也不 panic，
-// 生产由组装层注入真实 logger。
-func (m *Module) warn(msg string, ctx *module.Context, err error) {
-	if m.logger != nil {
-		m.logger.Warn(msg, "player_id", ctx.State.PlayerID(), "err", err)
-	}
+	return c.Reply(resp)
 }

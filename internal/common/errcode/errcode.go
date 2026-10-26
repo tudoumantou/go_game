@@ -80,6 +80,20 @@ const (
 	ErrResultReported       = commonv1.ErrCode_ERR_CODE_RESULT_REPORTED
 	ErrBattleFull           = commonv1.ErrCode_ERR_CODE_BATTLE_FULL
 	ErrResultRewardInvalid  = commonv1.ErrCode_ERR_CODE_RESULT_REWARD_INVALID
+	ErrActivityNotExist     = commonv1.ErrCode_ERR_CODE_ACTIVITY_NOT_EXIST
+	ErrActivityNotFinish    = commonv1.ErrCode_ERR_CODE_ACTIVITY_NOT_FINISHED
+	ErrActivityClaimed      = commonv1.ErrCode_ERR_CODE_ACTIVITY_CLAIMED
+	ErrActivityBagFull      = commonv1.ErrCode_ERR_CODE_ACTIVITY_BAG_FULL
+	ErrActivityNotOpen      = commonv1.ErrCode_ERR_CODE_ACTIVITY_NOT_OPEN
+	ErrQuestNotExist        = commonv1.ErrCode_ERR_CODE_QUEST_NOT_EXIST
+	ErrQuestAccepted        = commonv1.ErrCode_ERR_CODE_QUEST_ACCEPTED
+	ErrQuestUnfinished      = commonv1.ErrCode_ERR_CODE_QUEST_UNFINISHED
+	ErrQuestClaimed         = commonv1.ErrCode_ERR_CODE_QUEST_CLAIMED
+	ErrQuestBagFull         = commonv1.ErrCode_ERR_CODE_QUEST_BAG_FULL
+	ErrEquipNotExist        = commonv1.ErrCode_ERR_CODE_EQUIP_NOT_EXIST
+	ErrEquipLevelLow        = commonv1.ErrCode_ERR_CODE_EQUIP_LEVEL_LOW
+	ErrEquipSlotConflict    = commonv1.ErrCode_ERR_CODE_EQUIP_SLOT_CONFLICT
+	ErrEquipNotEquipped     = commonv1.ErrCode_ERR_CODE_EQUIP_NOT_EQUIPPED
 	ErrSkillNotExist        = commonv1.ErrCode_ERR_CODE_SKILL_NOT_EXIST
 	ErrSkillLevelLow        = commonv1.ErrCode_ERR_CODE_SKILL_LEVEL_LOW
 	ErrSkillLearned         = commonv1.ErrCode_ERR_CODE_SKILL_LEARNED
@@ -138,6 +152,20 @@ var messages = map[Code]string{
 	ErrResultReported:       "战斗结果已上报",
 	ErrBattleFull:           "战斗房间已满",
 	ErrResultRewardInvalid:  "上报的奖励不存在",
+	ErrActivityNotExist:     "活动不存在",
+	ErrActivityNotFinish:    "活动进度未达标",
+	ErrActivityClaimed:      "奖励已领取",
+	ErrActivityBagFull:      "背包已满，无法领取活动奖励",
+	ErrActivityNotOpen:      "活动不在开放期",
+	ErrQuestNotExist:        "任务不存在",
+	ErrQuestAccepted:        "任务已接取",
+	ErrQuestUnfinished:      "任务尚未完成",
+	ErrQuestClaimed:         "奖励已领取",
+	ErrQuestBagFull:         "背包已满，无法领取任务奖励",
+	ErrEquipNotExist:        "装备不存在",
+	ErrEquipLevelLow:        "等级不足，无法穿戴",
+	ErrEquipSlotConflict:    "该部位已有装备",
+	ErrEquipNotEquipped:     "该装备未穿戴",
 	ErrSkillNotExist:        "技能配置不存在",
 	ErrSkillLevelLow:        "等级不足，无法学习",
 	ErrSkillLearned:         "该技能已学习",
