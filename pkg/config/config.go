@@ -257,6 +257,53 @@ type IDTabConfig struct {
 	BuildOnStart      bool   `yaml:"build_on_start"`     // 启动时构建 ID 表
 	BuildPageSize     int    `yaml:"build_page_size"`    // 构建分页（对应 IDTable.SetPageSize）
 	ReconcileInterval string `yaml:"reconcile_interval"` // 数量核对周期（默认 10m）
+
+	// Mappings 一对多索引的声明（见 docs/缓存架构设计.md）。
+	//
+	// 只有「一个归属者对应多行」的表需要配（伙伴/装备/邮件/好友）；
+	// 一对一的表（签到/属性/任务进度）配了是纯浪费——按 player_id 一次
+	// 查询就够，白多一份索引要维护。
+	Mappings []CacheMapping `yaml:"mappings"`
+}
+
+// CacheMapping 声明一张表的归属关系，启动时据此在 Redis 建
+// by_owner:{table} 这个 ZSET（score = 归属者，member = 实体 id）。
+type CacheMapping struct {
+	// Table 表名。
+	Table string `yaml:"table"`
+	// By 归属者列，成为 ZSET 的 score（如 role_id / player_id / guild_id）。
+	By string `yaml:"by"`
+	// Key 实体 id 列，成为 ZSET 的 member（通常是主键）。
+	Key string `yaml:"key"`
+	// LoadOnLogin 登录时展开：按角色捞出全部 id 并预加载到内存。
+	//
+	// 漏配的后果是「登录后该功能列表为空」，而且不报错——是这套设计里
+	// 最难查的一类问题。
+	LoadOnLogin bool `yaml:"load_on_login"`
+	// PreloadAll 启动时连整行数据一起搬进 Redis（公会、排行榜这类）。
+	//
+	// 与 LoadOnLogin 互斥：数据已经在缓存里，不需要再按角色展开。
+	PreloadAll bool `yaml:"preload_all"`
+}
+
+// Validate 校验声明是否自洽。
+func (m CacheMapping) Validate() error {
+	if m.Table == "" {
+		return fmt.Errorf("idtab.mappings: table 不能为空")
+	}
+	if m.PreloadAll {
+		if m.LoadOnLogin {
+			return fmt.Errorf("idtab.mappings[%s]: preload_all 与 load_on_login 互斥（数据已在缓存，不需要再展开）", m.Table)
+		}
+		return nil
+	}
+	if m.By == "" || m.Key == "" {
+		return fmt.Errorf("idtab.mappings[%s]: 非 preload_all 时必须同时声明 by 与 key", m.Table)
+	}
+	if m.By == m.Key {
+		return fmt.Errorf("idtab.mappings[%s]: by 与 key 不能是同一列（%s）", m.Table, m.Key)
+	}
+	return nil
 }
 
 type CenterConfig struct {
@@ -407,6 +454,18 @@ func (c *Config) Validate() error {
 		if err := c.Map.Validate(); err != nil {
 			return fmt.Errorf("map: %w", err)
 		}
+	}
+	// 一对多索引声明：配错会表现为「登录后功能列表为空」且不报错，
+	// 所以放在启动校验里，让配置错误第一秒就炸。
+	seen := make(map[string]struct{}, len(c.IDTab.Mappings))
+	for _, m := range c.IDTab.Mappings {
+		if err := m.Validate(); err != nil {
+			return err
+		}
+		if _, dup := seen[m.Table]; dup {
+			return fmt.Errorf("idtab.mappings: 表 %s 重复声明", m.Table)
+		}
+		seen[m.Table] = struct{}{}
 	}
 	return nil
 }

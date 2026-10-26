@@ -50,6 +50,15 @@ idtab:
   build_page_size: 5000
   reconcile_interval: 10m      # 数量对账
 
+  # 一对多索引（docs/缓存架构设计.md）：启动时建 by_owner:{table} 这个 ZSET。
+  # 只有「一个归属者对应多行」的表需要配；一对一的（签到/属性/任务进度）
+  # 配了是纯浪费——按 player_id 一次查询就够。
+  # 启用前先确认对应模块已接入 cache.Index，否则只是白建一份 Redis 数据。
+  # mappings:
+  #   - {table: partner, by: role_id,   key: id, load_on_login: true}
+  #   - {table: mail,    by: player_id, key: id, load_on_login: false}
+  #   - {table: guild,   preload_all: true}
+
 limit:                         # 限流：0 = 用内置默认（默认开启），负数 = 关闭该项
   packet_rate: 20              # 每连接每秒包数（网关）
   packet_burst: 40             # 每连接突发容量
