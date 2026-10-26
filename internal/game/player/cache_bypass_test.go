@@ -1,9 +1,9 @@
 // internal/game/player/cache_bypass_test.go —— 无状态消息的快路径判定
 //
-// canBypassCache 是「跳过 clone/CAS」的唯一闸门，四个前提缺一不可。
+// canBypassCache 是「跳过 clone/CAS」的唯一闸门，三个前提缺一不可。
 // 判错方向的后果不对称：漏判只多付一次快照开销；误放行会让
-// cachePending（结果未知的旧快照）或 cacheReload（待重载）被跳过，
-// 从而在错误的版本基线上继续写——所以这里逐条锁死。
+// cacheReload（待重载）被跳过，从而在过期的内存状态上继续写——
+// 所以这里逐条锁死。
 package player
 
 import (
@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"game_study/internal/game/module"
-	"game_study/pkg/writebehind"
 
 	"github.com/stretchr/testify/require"
 )
@@ -38,10 +37,10 @@ func newBypassTestActor() *Actor {
 	return &Actor{registry: reg, loaded: true}
 }
 
-// TestCanBypassCacheHappyPath 已加载 + 无未决提交 + 无待重载 + 模块声明无状态。
+// TestCanBypassCacheHappyPath 已加载 + 无待重载 + 模块声明无状态。
 func TestCanBypassCacheHappyPath(t *testing.T) {
 	a := newBypassTestActor()
-	require.True(t, a.canBypassCache(bypassTestMsgID), "满足四个前提时应放行")
+	require.True(t, a.canBypassCache(bypassTestMsgID), "满足三个前提时应放行")
 }
 
 // TestCanBypassCacheRequiresLoaded 未加载时必须走完整流程（先 preload）。
@@ -49,13 +48,6 @@ func TestCanBypassCacheRequiresLoaded(t *testing.T) {
 	a := newBypassTestActor()
 	a.loaded = false
 	require.False(t, a.canBypassCache(bypassTestMsgID), "未加载不得跳过")
-}
-
-// TestCanBypassCacheBlocksOnPending 上次提交结果未知时必须先 finishPending。
-func TestCanBypassCacheBlocksOnPending(t *testing.T) {
-	a := newBypassTestActor()
-	a.cachePending = &writebehind.Record{Version: 1}
-	require.False(t, a.canBypassCache(bypassTestMsgID), "存在未决提交不得跳过")
 }
 
 // TestCanBypassCacheBlocksOnReload 待重载时必须先 LoadCached 拿新版本。

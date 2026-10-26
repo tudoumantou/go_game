@@ -27,7 +27,6 @@ import (
 	"game_study/pkg/actor"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
-	"game_study/pkg/writebehind"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -237,10 +236,6 @@ type Actor struct {
 	// gate 提交通道：缓存提交窗口内的下行先暂存，提交成功才刷出（R2.5）。
 	// 提交策略集中在这里，业务与流程都不再感知「延迟发送」的存在。
 	gate commitGate
-
-	// cachePending 结果未知的旧快照（来自不可回滚消息）：保留版本与状态，
-	// 后续消息先在 finishPending 里核对 Redis 实际版本，再放行新业务。
-	cachePending *writebehind.Record
 }
 
 // NewActor 创建玩家 Actor。
@@ -314,10 +309,9 @@ func (a *Actor) Receive(ctx *actor.Context) {
 // canBypassCache 判断一条协议能否跳过缓存快照流程。
 //
 // 三个前提缺一不可：模块声明无状态（不写 State）；状态已加载（否则处理器
-// 读到空背包）；没有未决提交或待重载（cachePending / cacheReload 必须走
-// 完整流程才能恢复一致的版本栅栏）。
+// 读到空背包）；没有待重载（cacheReload 必须走完整流程才能拿回一致版本）。
 func (a *Actor) canBypassCache(msgID uint32) bool {
-	return a.loaded && a.cachePending == nil && !a.cacheReload &&
+	return a.loaded && !a.cacheReload &&
 		a.registry != nil && a.registry.IsStateless(msgID)
 }
 

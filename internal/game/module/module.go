@@ -108,32 +108,11 @@ type Event struct {
 	Delta int64  // 增量（数量）
 }
 
-// EquipSnapshot 预加载的装备行（避免模块 OnLogin 再查一次库）。
+// PrefetchSource 登录预加载结果（12.6：并行拉取，模块 OnLogin 直接读）。
 //
-// 登录时由 player.Repository 并行拉取（12.6），随 Context.Prefetch 下发；
-// 这样装备模块的 OnLogin 只做纯内存重算，不产生额外 SQL。
-type EquipSnapshot struct {
-	UID          int64 // 实例唯一 ID（同一配置 ID 可持有多件）
-	EquipID      int32 // 装备配置 ID（equip.xml）
-	EnhanceLevel int32 // 强化等级
-	Quality      int32 // 品质
-	Equipped     bool  // 是否已穿戴（只有 true 的行提供属性加成）
-}
-
-// ActivitySnapshot 预加载的活动进度行。
-type ActivitySnapshot struct {
-	ActivityID int32 // 活动配置 ID
-	Progress   int32 // 当前进度
-	RewardMask int64 // 领取位图（bit0=第一档已领）
-}
-
-// PrefetchSource 登录预加载结果（12.6：全部并行拉取，模块 OnLogin 直接读）。
-//
-// 实现方是 player.Repository。返回 nil 表示未预取（降级为模块自行查库），
+// 实现方是 player.Prefetch。返回 nil 表示未预取（降级为模块自行查库），
 // 模块必须同时支持两条路径——预加载是优化，不是正确性前提。
 type PrefetchSource interface {
-	Equips() []EquipSnapshot
-	Activities() []ActivitySnapshot
 	// OwnerRows 归属展开预加载的实体行（缓存架构设计 §4.2）。
 	//
 	// 入参是 idtab.mappings 里声明的表名（模块自己知道自己是哪张表）；

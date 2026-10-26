@@ -5,7 +5,7 @@
 //	清改动标记 → 执行业务 → 有改动则凭会话令牌提交 → 成功刷回包 / 失败标记重载
 //
 // 协作关系：由 actor.go 的 Receive 分流进入（纯下行消息与无状态模块不进这里）；
-// 提交、重载、pending 收尾全部在本文件，业务 handler（各模块）对此无感。
+// 提交、重载全部在本文件，业务 handler（各模块）对此无感。
 //
 // 设计取舍（R2.5 简化，逐条对应旧实现）：
 //   - 不 clone 备份：Actor 独占数据（同一玩家只有一个执行者），进程内不存在
@@ -14,21 +14,19 @@
 //     ——只活了一瞬间。
 //   - 不逐消息 diff：脏标记（State.changed）已经是「改没改」的答案，序列化
 //     两份快照做字节比较是重复劳动，还占掉一条消息 60% 的开销。
-//   - 失败不回滚而重载：Redis 是权威，重置比修补可靠；重载只在失败时发生一次，
+//   - 失败不回滚而重载：重置比修补可靠；重载只在失败时发生一次，
 //     而 clone 是每条消息都付。
 //   - 回包缓冲到提交之后：否则客户端先看到「成功回包」再收到「提交失败」，
 //     业务状态与客户端认知长期分叉。缓冲由 commitGate 统一管理。
 //
-// 例外：不可重放的消息（充值发货已在 MySQL 提交事实）失败时保留 cachePending，
-// 下次消息先 finishPending 补提——这条路径不适用「丢弃重载」，因为钱的事实
-// 已经在 MySQL 落定，丢掉 Redis 快照会与事实分叉（见 R2.3）。
+// 历史注记：旧实现有「不可重放消息提交失败 → 保留 cachePending、下条消息
+// 先 finishPending 补提」这条路径。内存权威（v3.5）之后副本同步失败只告警
+// 不回滚，不再产生 pending，该字段与方法已于 v3.6 删除。
 package player
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"game_study/pkg/writebehind"
 	"time"
 
 	"game_study/pkg/actor"
@@ -38,19 +36,13 @@ import (
 
 // receiveCached 缓存权威模式的一条消息的完整生命周期。
 //
-// 顺序即正确性：pending 收尾 → 冷/热加载 → 过期重载 → 执行业务 → 脏标记判定 → 令牌提交。
+// 顺序即正确性：冷/热加载 → 过期重载 → 执行业务 → 脏标记判定 → 令牌提交。
 // 任何一步失败都走 cacheFailure，由它按消息类型给出下行错误。
 func (a *Actor) receiveCached(ctx *actor.Context) {
 	if msg, ok := ctx.Message().(*BindMsg); ok {
 		// 会话路由独立于热状态加载，即使 Redis 故障也要能向当前连接回报错误。
 		a.sessionID = msg.SessionID
 		a.online = true
-	}
-	if a.cachePending != nil {
-		if err := a.finishPending(); err != nil {
-			a.cacheFailure(ctx, err)
-			return
-		}
 	}
 	if !a.loaded {
 		switch ctx.Message().(type) {
@@ -148,47 +140,6 @@ func (a *Actor) receiveCached(ctx *actor.Context) {
 	for _, err := range a.gate.Commit() {
 		a.logger.Warn("cached reply failed", "err", err)
 	}
-}
-
-// finishPending 核对 Redis 实际版本后补提交「结果未知」的旧快照。
-//
-// 注意：内存权威模式下提交流程不再产生 cachePending（副本同步失败只告警，
-// 不阻塞业务），这条路径仅保留给「升级前遗留/N+1 语义」的兼容与测试。
-// 它仍然正确：一旦出现 pending，先收尾再放行新业务。
-//
-// 两种合法情形：
-//   - 版本未变（pending.Version）：上次提交其实没落，重发同一快照即可；
-//   - 版本 +1 且内容与 pending 一致：提交已落，只是当年没收到确认，
-//     把本地版本追平即可，绝不能重发（那会把旧资产再覆盖一次）。
-//
-// 其余版本差说明期间有别的写入方（独立 flusher/别的实例），无法安全合并，
-// 只能报错让人工介入。
-func (a *Actor) finishPending() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	pending := a.cachePending
-
-	// 直接重提，不读 Redis 比对内容：
-	//   - 上次其实写成功了 → 重写同样内容，version+1，幂等无害；
-	//   - 上次没写成功 → 正好补上。
-	// 原先的「读出来再 marshal 两份比对」要两次序列化，而它只影响
-	// 「是否报错」这一个判断，不值得。
-	// pending 是整份快照，必须全量写（它是「上次那条消息的完整结果」）。
-	version, err := a.repo.cache.Commit(ctx, pending.State.PlayerID, pending.State, pending.State.FieldNames(), nil, a.token)
-	if err != nil {
-		if errors.Is(err, writebehind.ErrConflict) {
-			// 已被新会话接管：这个 Actor 不该再写。放弃补提转重载——
-			// MySQL 侧已落定的事实由对账补偿（R2.3），不在这里硬修。
-			a.cachePending = nil
-			a.cacheReload = true
-			return fmt.Errorf("pending commit superseded: %w", err)
-		}
-		return err
-	}
-	a.cacheVersion = version
-	a.cachePending = nil
-	a.state.ClearItemsDirty()
-	return nil
 }
 
 // cacheFailure 缓存路径失败时的统一下行：日志 + 按消息类型回错误。

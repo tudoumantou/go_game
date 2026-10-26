@@ -42,15 +42,16 @@ const DefaultPreloadTimeout = 5 * time.Second
 
 // Prefetch 预加载结果（一次并行拉取的全部数据）。
 //
-// 字段按「框架资产 / 模块资产」分两组：Player/Attr/Items 由框架组装进
-// State，EquipList/ActList 原样透传给模块——框架不解析模块私有结构。
-// ownerRows 同属第二组：按表名分组的实体行（归属展开产物）。
+// 字段分两组：Player/Attr/Items 由框架组装进 State；ownerRows 是归属展开
+// 的实体行，原样透传给模块——框架不解析模块私有结构。
+//
+// 为什么没有装备/活动快照：P12 设计里它们各占一个并行查询，改成「状态随
+// 玩家快照（Ext）加载」之后就没有第二个来源了，字段与 Equips/Activities
+// 接口一并删除（v3.6）。模块要预取一对多实体，走 OwnerRows。
 type Prefetch struct {
-	Player    *model.Player
-	Attr      *model.PlayerAttr
-	Items     map[int32]int64
-	EquipList []module.EquipSnapshot
-	ActList   []module.ActivitySnapshot
+	Player *model.Player
+	Attr   *model.PlayerAttr
+	Items  map[int32]int64
 
 	// ownerRows 归属展开的实体行（按表名分组，见 ExpandOwners）。
 	ownerRows map[string][]cache.EntityRow
@@ -59,20 +60,13 @@ type Prefetch struct {
 // OwnerRows 实现 module.PrefetchSource：某表归属展开的实体行。
 //
 // 未展开的表返回 nil——模块必须同时支持自行查库的路径（预加载是优化，
-// 不是正确性前提，与 Equips/Activities 同一约定）。返回的行按实体 id
-// 升序（索引侧保证）。
+// 不是正确性前提）。返回的行按实体 id 升序（索引侧保证）。
 func (p *Prefetch) OwnerRows(table string) []cache.EntityRow {
 	if p == nil {
 		return nil
 	}
 	return p.ownerRows[table]
 }
-
-// Equips 实现 module.PrefetchSource。
-func (p *Prefetch) Equips() []module.EquipSnapshot { return p.EquipList }
-
-// Activities 实现 module.PrefetchSource。
-func (p *Prefetch) Activities() []module.ActivitySnapshot { return p.ActList }
 
 // Preloader 预加载器。
 type Preloader struct {
@@ -177,7 +171,8 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 	if err != nil {
 		return nil, nil, err
 	}
-	// 装备与活动状态已随玩家快照（Ext）加载，不再单独查库。
+	// 装备与活动状态已随玩家快照（Ext）加载，不再单独查库——
+	// 原 P12 的两个快照字段与 Equips/Activities 接口已于 v3.6 删除。
 
 	return assembleState(playerID, pf), pf, nil
 }
