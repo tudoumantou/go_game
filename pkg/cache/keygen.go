@@ -13,6 +13,13 @@ const (
 	PrefixLock    = "lock"    // lock:<resource>
 	PrefixMailBox = "mailbox" // mailbox:<player_id>
 	PrefixShard   = "shard"   // shard:<index>:<player_id>
+
+	// PrefixOwnerIndex 归属索引（ZSET：score = 归属者 id，member = 实体 id）。
+	//
+	// 与 PrefixIDTab 的分工：idtab 只回答「存在吗」（Set）；本 key 还回答
+	// 「属于谁」和「某人有哪些」。一对多的表（伙伴/装备/邮件）用本 key，
+	// 一对一的表（签到/属性）用 idtab——后者配了索引是纯浪费。
+	PrefixOwnerIndex = "by_owner"
 )
 
 // PlayerKey 玩家数据 key。
@@ -56,4 +63,13 @@ func LockKey(resource string) string {
 // ShardKey 落库分片 key。
 func ShardKey(index int, playerID int64) string {
 	return fmt.Sprintf("%s:%d:%d", PrefixShard, index, playerID)
+}
+
+// OwnerIndexKey 归属索引 key。
+//
+// ZSET：score = 归属者 id（角色/玩家/公会），member = 实体 id。
+// 一个结构承担三件事：ZSCORE 判存在、ZSCORE 反查归属、
+// ZRANGEBYSCORE 按归属者取列表。
+func OwnerIndexKey(table string) string {
+	return fmt.Sprintf("%s:%s", PrefixOwnerIndex, table)
 }
