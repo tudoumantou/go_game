@@ -194,7 +194,7 @@ services:
     image: grafana/grafana:11.1.0
     ports: ["127.0.0.1:3000:3000"]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GF_ADMIN_PASSWORD:-admin}"   # 本地 dev 默认 admin，共享环境请设环境变量覆盖
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_PATHS_PROVISIONING: /monitoring/grafana/provisioning
     volumes:
