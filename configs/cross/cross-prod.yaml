@@ -24,7 +24,7 @@ xservice:                      # CrossServer 侧被游戏服连接，无需主�
   max_streams_per_game: 1      # 每个游戏服维持一条 CrossService 流
 
 redis:
-  addrs: ["192.0.2.51:6379", "192.0.2.52:6379", "192.0.2.53:6379"]
+  addrs: ["redis:6379"]
   pool_size: 50
   min_idle_conns: 10
   password: ""

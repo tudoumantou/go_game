@@ -21,19 +21,19 @@ token:
   rsa_private_key: "/etc/game_study/login_rsa.pem"   # 签发 Token 用，与网关握手密钥分离
 
 redis:
-  addrs: ["198.51.100.11:6379", "198.51.100.12:6379", "198.51.100.13:6379"]
+  addrs: ["redis:6379"]
   pool_size: 50
   min_idle_conns: 10
   password: ""
   db: 0
 
 mysql:                          # 账号/角色元信息（Tier-1 直连）
-  dsn: "game:${MYSQL_PASSWORD}@tcp(198.51.100.21:3306)/game_study?parseTime=true"
+  dsn: "game:${MYSQL_PASSWORD}@tcp(mysql:3306)/game_study?parseTime=true"
   max_open_conns: 20
   max_idle_conns: 5
 
 kafka:                          # 充值订单生产
-  brokers: ["198.51.100.51:9092", "198.51.100.52:9092", "198.51.100.53:9092"]
+  brokers: ["kafka:9092"]
   producer_required_acks: all
   consumer_group: "login-server"
 

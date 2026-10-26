@@ -12,24 +12,24 @@ actor:
   mailbox_size: 4096
 
 mysql:
-  dsn: "game:${MYSQL_PASSWORD}@tcp(192.0.2.54:3306)/game_study?parseTime=true"
+  dsn: "game:${MYSQL_PASSWORD}@tcp(mysql:3306)/game_study?parseTime=true"
   max_open_conns: 30           # 业务池 30（第 14 章推导）；flush 10 worker 错峰共享借还
   max_idle_conns: 10
 
 redis:
-  addrs: ["192.0.2.51:6379", "192.0.2.52:6379", "192.0.2.53:6379"]
+  addrs: ["redis:6379"]
   pool_size: 100
   min_idle_conns: 20
   password: ""
   db: 0
 
 kafka:
-  brokers: ["192.0.2.55:9092", "192.0.2.56:9092", "192.0.2.57:9092"]
+  brokers: ["kafka:9092"]
   producer_required_acks: all
   consumer_group: "game-server-01"   # 每实例独立组，分区按 playerID 有序
 
 etcd:
-  endpoints: ["192.0.2.32:2379", "192.0.2.33:2379", "192.0.2.34:2379"]
+  endpoints: ["etcd:2379"]
   lease_ttl: 10
   keepalive_interval: 3
 

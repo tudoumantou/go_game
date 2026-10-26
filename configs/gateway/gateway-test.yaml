@@ -22,7 +22,7 @@ crypto:                        # RSA+AES 配置
   prev_rsa_public_key: ""      # 轮换期上一把公钥
 
 rpc:                           # gRPC 客户端（连游戏服）
-  etcd_endpoints: ["198.51.100.31:2379", "198.51.100.32:2379", "198.51.100.33:2379"]
+  etcd_endpoints: ["etcd:2379"]
   service_prefix: "/services"      # etcd key 根前缀（与 registry/etcd 的注册路径一致）
   channel_per_target: 16       # 每目标 Channel 数
   max_streams_per_channel: 2000
@@ -30,14 +30,14 @@ rpc:                           # gRPC 客户端（连游戏服）
   keepalive: 10s
 
 redis:
-  addrs: ["198.51.100.11:6379", "198.51.100.12:6379", "198.51.100.13:6379"]
+  addrs: ["redis:6379"]
   pool_size: 100               # Token/在线状态查询为主
   min_idle_conns: 20           # 必须 ≤ pool_size
   password: ""
   db: 0
 
 kafka:
-  brokers: ["198.51.100.51:9092", "198.51.100.52:9092", "198.51.100.53:9092"]
+  brokers: ["kafka:9092"]
   producer_required_acks: all
   consumer_group: "gateway-broadcast"
 
