@@ -287,12 +287,12 @@ func (s *Service) archiveOne(ctx context.Context, season, rankType string) error
 // rows 记录实际写入行数：done 时非 0 说明本期确实产出了历史，运维可核对。
 func (s *Service) saveTask(ctx context.Context, id, season, rankType string, status int32, rows int) error {
 	_, err := model.UpsertRankArchiveTaskByPK(ctx, s.db.DB, &model.RankArchiveTask{
-		Id:        id,
-		Season:    season,
-		RankType:  rankType,
-		Status:    status,
-		Rows:      int32(rows),
-		UpdatedAt: s.now().Unix(),
+		Id:           id,
+		Season:       season,
+		RankType:     rankType,
+		Status:       status,
+		ArchivedRows: int32(rows),
+		UpdatedAt:    s.now().Unix(),
 	})
 	return err
 }

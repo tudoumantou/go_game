@@ -12,22 +12,22 @@ import (
 
 // RankArchiveTask rank_archive_task 表
 type RankArchiveTask struct {
-	Id        string `db:"id"`
-	Season    string `db:"season"`
-	RankType  string `db:"rank_type"`
-	Status    int32  `db:"status"`
-	Rows      int32  `db:"rows"`
-	UpdatedAt int64  `db:"updated_at"`
+	Id           string `db:"id"`
+	Season       string `db:"season"`
+	RankType     string `db:"rank_type"`
+	Status       int32  `db:"status"`
+	ArchivedRows int32  `db:"archived_rows"`
+	UpdatedAt    int64  `db:"updated_at"`
 }
 
 // RankArchiveTask 列名
 const (
-	ColRankArchiveTaskId        = "id"
-	ColRankArchiveTaskSeason    = "season"
-	ColRankArchiveTaskRankType  = "rank_type"
-	ColRankArchiveTaskStatus    = "status"
-	ColRankArchiveTaskRows      = "rows"
-	ColRankArchiveTaskUpdatedAt = "updated_at"
+	ColRankArchiveTaskId           = "id"
+	ColRankArchiveTaskSeason       = "season"
+	ColRankArchiveTaskRankType     = "rank_type"
+	ColRankArchiveTaskStatus       = "status"
+	ColRankArchiveTaskArchivedRows = "archived_rows"
+	ColRankArchiveTaskUpdatedAt    = "updated_at"
 )
 
 // TableName 表名
@@ -39,19 +39,19 @@ var RankArchiveTaskColumns = []string{
 	ColRankArchiveTaskSeason,
 	ColRankArchiveTaskRankType,
 	ColRankArchiveTaskStatus,
-	ColRankArchiveTaskRows,
+	ColRankArchiveTaskArchivedRows,
 	ColRankArchiveTaskUpdatedAt,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertRankArchiveTask(ctx context.Context, db Querier, m *RankArchiveTask) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO rank_archive_task (id,season,rank_type,status,rows,updated_at) VALUES (?,?,?,?,?,?)", m.Id, m.Season, m.RankType, m.Status, m.Rows, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO rank_archive_task (id,season,rank_type,status,archived_rows,updated_at) VALUES (?,?,?,?,?,?)", m.Id, m.Season, m.RankType, m.Status, m.ArchivedRows, m.UpdatedAt)
 }
 
 // FindRankArchiveTaskByPK 按主键查询
 func FindRankArchiveTaskByPK(ctx context.Context, db Querier, Id string) (*RankArchiveTask, error) {
 	var m RankArchiveTask
-	query := "SELECT id,season,rank_type,status,rows,updated_at FROM rank_archive_task WHERE id = ?"
+	query := "SELECT id,season,rank_type,status,archived_rows,updated_at FROM rank_archive_task WHERE id = ?"
 	row := db.QueryRowContext(ctx, query, Id)
 	if err := scanRankArchiveTask(&m, row); err != nil {
 		return nil, err
@@ -60,17 +60,17 @@ func FindRankArchiveTaskByPK(ctx context.Context, db Querier, Id string) (*RankA
 }
 
 func scanRankArchiveTask(m *RankArchiveTask, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Id, &m.Season, &m.RankType, &m.Status, &m.Rows, &m.UpdatedAt)
+	return sc.Scan(&m.Id, &m.Season, &m.RankType, &m.Status, &m.ArchivedRows, &m.UpdatedAt)
 }
 
 // UpdateRankArchiveTaskByPK 按主键更新（幂等）
 func UpdateRankArchiveTaskByPK(ctx context.Context, db Querier, m *RankArchiveTask) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE rank_archive_task SET season = ?, rank_type = ?, status = ?, rows = ?, updated_at = ? WHERE id = ?", m.Season, m.RankType, m.Status, m.Rows, m.UpdatedAt, m.Id)
+	return db.ExecContext(ctx, "UPDATE rank_archive_task SET season = ?, rank_type = ?, status = ?, archived_rows = ?, updated_at = ? WHERE id = ?", m.Season, m.RankType, m.Status, m.ArchivedRows, m.UpdatedAt, m.Id)
 }
 
 // UpsertRankArchiveTaskByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertRankArchiveTaskByPK(ctx context.Context, db Querier, m *RankArchiveTask) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO rank_archive_task (id,season,rank_type,status,rows,updated_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE season = VALUES(season), rank_type = VALUES(rank_type), status = VALUES(status), rows = VALUES(rows), updated_at = VALUES(updated_at)", m.Id, m.Season, m.RankType, m.Status, m.Rows, m.UpdatedAt)
+	return db.ExecContext(ctx, "INSERT INTO rank_archive_task (id,season,rank_type,status,archived_rows,updated_at) VALUES (?,?,?,?,?,?) ON DUPLICATE KEY UPDATE season = VALUES(season), rank_type = VALUES(rank_type), status = VALUES(status), archived_rows = VALUES(archived_rows), updated_at = VALUES(updated_at)", m.Id, m.Season, m.RankType, m.Status, m.ArchivedRows, m.UpdatedAt)
 }
 
 // DeleteRankArchiveTaskByPK 按主键删除
@@ -79,11 +79,11 @@ func DeleteRankArchiveTaskByPK(ctx context.Context, db Querier, Id string) (sql.
 }
 
 // upsertRankArchiveTaskCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertRankArchiveTaskCols = []string{"id", "season", "rank_type", "status", "rows", "updated_at"}
+var upsertRankArchiveTaskCols = []string{"id", "season", "rank_type", "status", "archived_rows", "updated_at"}
 
 // UpsertRankArchiveTaskBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertRankArchiveTaskBatch(ctx context.Context, tx *sql.Tx, rows []RankArchiveTask) error {
 	return flush.UpsertBatch(ctx, tx, "rank_archive_task", upsertRankArchiveTaskCols, rows, func(m RankArchiveTask) []any {
-		return []any{m.Id, m.Season, m.RankType, m.Status, m.Rows, m.UpdatedAt}
+		return []any{m.Id, m.Season, m.RankType, m.Status, m.ArchivedRows, m.UpdatedAt}
 	})
 }

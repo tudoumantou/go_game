@@ -858,7 +858,7 @@ CREATE TABLE `rank_archive_task` (
   `season`     VARCHAR(32) NOT NULL COMMENT '赛季',
   `rank_type`  VARCHAR(32) NOT NULL COMMENT '榜单类型',
   `status`     TINYINT NOT NULL DEFAULT 0 COMMENT '0 待归档 1 归档中 2 已完成',
-  `rows`       INT NOT NULL DEFAULT 0 COMMENT '已写入行数',
+  `archived_rows` INT NOT NULL DEFAULT 0 COMMENT '已写入行数（原名 rows，与 MySQL 8.0 保留字冲突）',
   `updated_at` BIGINT NOT NULL DEFAULT 0 COMMENT '最近更新（unix 秒）',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='赛季归档任务（断点续跑）';

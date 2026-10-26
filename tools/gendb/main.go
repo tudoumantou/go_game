@@ -161,6 +161,41 @@ func flatSuffix(t table) string {
 // Go 知识点：FindAllStringSubmatchIndex 返回「子匹配的字节区间」而不是字符串，
 // 因此同一组区间可以分别在原文（text，取 @flat 标注）与去注释版（stripped，
 // 取 CREATE TABLE）里取串 —— 「标注在注释里、语句在代码里」能对齐比较的关键。
+// reservedWords MySQL 8.0 保留字（RESERVED，非关键字）。
+//
+// 只列「真的会被当成标识符用」的那部分——完整表 200+ 个，但绝大多数
+// （SELECT/WHERE/AND 之类）不可能被拿来当列名。这里收的是**表结构里
+// 出现过或很可能出现**的：rows 已经踩过（rank_archive_task.rows 让整张表
+// 读写了几个月都没成功），rank/order/group/key/status/level/interval/
+// window 都是容易顺手写上去的。
+//
+// 只收 **reserved**：MySQL 的关键字分 reserved（必须加反引号才能当标识符）
+// 与 non-reserved（可以直接用）。status / level / system / date / text
+// 这些看似危险的都是 non-reserved，现有表用了也没问题，放进来只会误报。
+//
+// 维护策略：加列时撞到新的保留字（表现为运行时 Error 1064），把那个词补进来。
+// 漏一个不可怕——可怕的是「生成物看起来正常、跑起来全错」。
+var reservedWords = map[string]bool{
+	// MySQL 8.0 新增的窗口函数保留字——最容易被忽略的一类（rows 已经踩过）
+	"rows": true, "row": true, "over": true, "window": true,
+	"rank": true, "dense_rank": true, "row_number": true, "ntile": true,
+	"lead": true, "lag": true, "first_value": true, "last_value": true,
+	"nth_value": true, "percent_rank": true, "cume_dist": true,
+	"partition": true, "range": true, "preceding": true, "following": true,
+	"unbounded": true, "current": true, "recursive": true, "lateral": true,
+	"json_table": true, "empty": true, "of": true, "groups": true,
+	// 传统保留字里最容易当列名的
+	"order": true, "group": true, "key": true, "keys": true,
+	"desc": true, "describe": true, "interval": true, "usage": true,
+	"condition": true, "match": true, "out": true, "in": true,
+	"is": true, "like": true, "between": true, "exists": true,
+	"case": true, "when": true, "then": true, "else": true, "end": true,
+	"and": true, "or": true, "not": true, "null": true, "true": true,
+	"false": true, "default": true, "values": true, "index": true,
+	"primary": true, "foreign": true, "references": true,
+	"constraint": true, "unique": true,
+}
+
 func parseSQL(path string) ([]table, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -215,6 +250,12 @@ func parseSQL(path string) ([]table, error) {
 			c := column{
 				Name:    strings.Trim(fields[0], "`\""),
 				SQLType: strings.ToLower(fields[1]),
+			}
+			// 保留字检查：生成的 SQL 不给列名加反引号，撞上 MySQL 保留字就是
+			// 语法错误（Error 1064），而且生成物本身看不出来。必须在生成阶段拦。
+			if reservedWords[c.Name] {
+				return nil, fmt.Errorf("表 %s 的列名 %q 是 MySQL 保留字：生成的 SQL 不加反引号，"+
+					"运行时会报 Error 1064。请换个名字（如 rows → archived_rows）", t.Name, c.Name)
 			}
 			c.GoName = upperCamel(c.Name)
 			c.GoType = goType(c.SQLType)
