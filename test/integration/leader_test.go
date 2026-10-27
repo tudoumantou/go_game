@@ -22,47 +22,33 @@ import (
 	"game_study/pkg/log"
 
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-// startEtcd 启动一个单节点 etcd 容器并返回客户端。
+// startEtcd 连接共享 etcd、清空 key 空间，返回客户端。
+//
+// 不再每个用例起一个容器：整个包已经在 TestMain 里起了 MySQL/Redis/etcd，
+// p7 还独占一个 Redis，再叠加 3 个 etcd 会把 CI 的 docker daemon 拖到不响应
+// （报错是 `container exec inspect: context deadline exceeded`，看起来像
+// etcd 起不来，其实是容器总量超了 runner 的承受范围）。
+//
+// 选举用例确实需要「干净的 key 空间」——这一点由开头的 Delete(WithPrefix)
+// 保证。残留的 leader key 会让第二个用例一进来就以为自己已经是 leader，
+// 表现为「本应变主的没有变」。
 func startEtcd(t *testing.T) *clientv3.Client {
 	t.Helper()
-	ctx := context.Background()
-
-	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "quay.io/coreos/etcd:v3.5.10",
-			ExposedPorts: []string{"2379/tcp"},
-			Cmd: []string{
-				"/usr/local/bin/etcd",
-				"--advertise-client-urls=http://0.0.0.0:2379",
-				"--listen-client-urls=http://0.0.0.0:2379",
-			},
-			// 超时给足 3 分钟：`WithStartupTimeout` 把**镜像拉取**也算在内，
-			// 而 quay.io 在 CI 上首拉经常要一两分钟。原来写 60s，本地有镜像
-			// 缓存所以从没暴露，CI 上则是稳定失败（host port waiting failed）。
-			// 与 mysql 容器同一数量级，避免「同一套测试里两个超时标准」。
-			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(3 * time.Minute),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start etcd")
-	t.Cleanup(func() { _ = c.Terminate(context.Background()) })
-
-	host, err := c.Host(ctx)
-	require.NoError(t, err)
-	port, err := c.MappedPort(ctx, "2379/tcp")
-	require.NoError(t, err)
 
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{fmt.Sprintf("%s:%s", host, port.Port())},
+		Endpoints:   []string{testEtcdAddr},
 		DialTimeout: 5 * time.Second,
 	})
 	require.NoError(t, err, "connect etcd")
 	t.Cleanup(func() { _ = cli.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = cli.Delete(ctx, "", clientv3.WithPrefix())
+	require.NoError(t, err, "清空 etcd key")
 	return cli
 }
 
