@@ -18,6 +18,7 @@ import (
 
 	"game_study/pkg/db"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
 )
 
@@ -78,13 +79,17 @@ func (c *LoginLogConsumer) handle(ctx context.Context, env *pkgmq.Envelope) erro
 	if c.db == nil {
 		return fmt.Errorf("login log consumer without database")
 	}
-	// 参数化查询（? 占位）：防 SQL 注入（device/reason 是外部可控字符串），
-	// 且让驱动走预编译，批量插入时性能更好。
-	// ctx 传入 ExecContext：关服取消能中断在途 INSERT，offset 不提交，
-	// 重启重放（重复行由「不去重」的设计兜底）。
-	_, err := c.db.ExecContext(ctx,
-		`INSERT INTO login_log (account_id, player_id, ip, device, result, reason) VALUES (?, ?, ?, ?, ?, ?)`,
-		msg.AccountID, msg.PlayerID, msg.IP, msg.Device, msg.Result, msg.Reason)
+	// 用生成的 InsertLoginLog：列名来自 schema，加列/改列时编译期就能发现。
+	// 参数化与 ctx 取消语义不变（生成函数内部仍是 ExecContext）。
+	// 重复行由「登录流水不去重」的设计兜底（每次登录尝试都是一条独立事实）。
+	_, err := model.InsertLoginLog(ctx, c.db.DB, &model.LoginLog{
+		AccountId: msg.AccountID,
+		PlayerId:  msg.PlayerID,
+		Ip:        msg.IP,
+		Device:    msg.Device,
+		Result:    msg.Result,
+		Reason:    msg.Reason,
+	})
 	if err != nil {
 		return fmt.Errorf("insert login_log: %w", err)
 	}

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 
+	"game_study/pkg/model"
 	"game_study/pkg/writebehind"
 )
 
@@ -90,16 +91,14 @@ func (r *Repository) LoadCachedForce(ctx context.Context, id int64) (*State, int
 //
 // 缺行表示这个玩家还没有异步落库记录，视为 0——此时任何副本都不落后。
 func (r *Repository) writebehindVersion(ctx context.Context, id int64) (int64, error) {
-	var version int64
-	err := r.db.QueryRowContext(ctx,
-		`SELECT version FROM player_writebehind WHERE player_id = ?`, id).Scan(&version)
+	w, err := model.FindPlayerWritebehindByPK(ctx, r.db.DB, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	if err != nil {
 		return 0, fmt.Errorf("read writebehind version: %w", err)
 	}
-	return version, nil
+	return w.Version, nil
 }
 
 // SQL 只承担一致性冷启动读取，不参与在线签到查询、领取。
@@ -113,42 +112,51 @@ func (r *Repository) loadColdSnapshot(ctx context.Context, id int64) (writebehin
 	}
 	defer func() { _ = tx.Rollback() }()
 	out := writebehind.Record{State: writebehind.Snapshot{PlayerID: id, Items: make(map[int32]int64)}}
-	var receipts sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT version, applied_grants FROM player_writebehind WHERE player_id = ?`, id).Scan(&out.Version, &receipts)
-	if err == nil && receipts.Valid {
-		if err := json.Unmarshal([]byte(receipts.String), &out.State.AppliedGrants); err != nil {
-			return out, err
+	// 幂等键与版本：缺行表示首次登录（版本 0、还没有任何已应用发放）
+	w, err := model.FindPlayerWritebehindByPK(ctx, tx, id)
+	switch {
+	case err == nil:
+		out.Version = w.Version
+		if w.AppliedGrants.Valid {
+			if err := json.Unmarshal([]byte(w.AppliedGrants.String), &out.State.AppliedGrants); err != nil {
+				return out, err
+			}
 		}
-	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	case errors.Is(err, sql.ErrNoRows):
+		// 首次登录，正常路径
+	default:
 		return out, err
 	}
 	p := &out.State.Profile
-	if err := tx.QueryRowContext(ctx, `SELECT name, level, exp, coin, scene_id FROM player WHERE id = ?`, id).Scan(&p.Name, &p.Level, &p.Exp, &p.Coin, &p.SceneID); err != nil {
-		return out, err
-	}
-	a := &out.State.Attr
-	err = tx.QueryRowContext(ctx, `SELECT career, hp, mp, atk, def, spd FROM player_attr WHERE player_id = ?`, id).Scan(&a.Career, &a.Hp, &a.Mp, &a.Atk, &a.Def, &a.Spd)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return out, err
-	}
-	rows, err := tx.QueryContext(ctx, `SELECT item_id, count FROM player_item WHERE player_id = ?`, id)
+	row, err := model.FindPlayerByPK(ctx, tx, id)
 	if err != nil {
 		return out, err
 	}
-	for rows.Next() {
-		var item int32
-		var count int64
-		if err := rows.Scan(&item, &count); err != nil {
-			rows.Close()
-			return out, err
+	p.Name, p.Level, p.Exp, p.Coin, p.SceneID = row.Name, row.Level, row.Exp, row.Coin, row.SceneId
+
+	attr, err := model.FindPlayerAttrByPK(ctx, tx, id)
+	switch {
+	case err == nil:
+		out.State.Attr = writebehind.Attr{
+			Career: attr.Career,
+			Hp:     attr.Hp,
+			Mp:     attr.Mp,
+			Atk:    attr.Atk,
+			Def:    attr.Def,
+			Spd:    attr.Spd,
 		}
-		out.State.Items[item] = count
+	case errors.Is(err, sql.ErrNoRows):
+		// 无属性行按空属性继续（创角事务异常时也能登录自愈）
+	default:
+		return out, err
 	}
-	err = rows.Err()
-	rows.Close()
+
+	items, err := model.ListPlayerItemByPlayer(ctx, tx, id)
 	if err != nil {
 		return out, err
+	}
+	for _, it := range items {
+		out.State.Items[it.ItemId] = int64(it.Count)
 	}
 	// 模块私有表由各自的 Persister 读取，框架不再内建任何玩法的 SQL。
 	if err := loadModuleStates(ctx, tx, &out.State); err != nil {

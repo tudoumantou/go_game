@@ -25,8 +25,9 @@ func TestLoginLogConsumerInserts(t *testing.T) {
 	database, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer database.Close()
+	// 生成的 INSERT 显式列出 id 列（零值由自增分配），参数顺序以 schema 为准。
 	mock.ExpectExec(`INSERT INTO login_log`).
-		WithArgs(int64(9), int64(0), "1.2.3.4", "device-a", int32(1), "invalid token").
+		WithArgs(int64(0), int64(9), int64(0), "1.2.3.4", "device-a", int32(1), "invalid token").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	c := NewLoginLogConsumer(nil, &db.DB{DB: database}, log.New("test", log.WithLevel("error")))

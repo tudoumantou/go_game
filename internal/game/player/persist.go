@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"game_study/internal/game/module"
@@ -98,26 +99,15 @@ func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 }
 
 func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]int64, error) {
-	query := "SELECT item_id, count FROM player_item WHERE player_id = ?"
-	rows, err := r.db.DB.QueryContext(ctx, query, playerID)
+	rows, err := model.ListPlayerItemByPlayer(ctx, r.db.DB, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
-	// defer 保证遍历中途 return（Scan 失败）时连接不泄漏
-	defer func() { _ = rows.Close() }()
-
-	out := make(map[int32]int64)
-	for rows.Next() {
-		var itemID int32
-		var count int32
-		if err := rows.Scan(&itemID, &count); err != nil {
-			return nil, err
-		}
-		out[itemID] = int64(count)
+	out := make(map[int32]int64, len(rows))
+	for _, it := range rows {
+		out[it.ItemId] = int64(it.Count)
 	}
-	// rows.Err 不能省：Next 返回 false 可能是正常结束也可能是驱动错误，
-	// 不检查会把查询失败静默当成「背包为空」
-	return out, rows.Err()
+	return out, nil
 }
 
 // Save 落库玩家状态（事务：角色 + 属性 + 道具）。
@@ -159,22 +149,30 @@ func (r *Repository) save(ctx context.Context, state *State, withGrants bool) (i
 		playerID := state.PlayerID()
 		a := state.Attr()
 
-		// 角色基础信息（name 不在此更新，改名走独立流程）
+		// 角色基础信息（name 不在此更新，改名走独立流程）。
+		// 用生成的部分列更新而不是全列 UPDATE：account_id/name 由别的流程
+		// 维护，落库时带进来会覆盖并发写入的结果。
 		p := state.Profile()
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE player SET level = ?, exp = ?, coin = ?, scene_id = ? WHERE id = ?`,
-			p.Level, p.Exp, p.Coin, p.SceneID, playerID); err != nil {
+		if _, err := model.UpdatePlayerProgressByPK(ctx, tx, &model.Player{
+			Id:      playerID,
+			Level:   p.Level,
+			Exp:     p.Exp,
+			Coin:    p.Coin,
+			SceneId: p.SceneID,
+		}); err != nil {
 			return fmt.Errorf("update player: %w", err)
 		}
 
 		// 属性 upsert（事务内执行，保证与道具同事务）
-		_, err := tx.ExecContext(ctx,
-			`INSERT INTO player_attr (player_id, career, hp, mp, atk, def, spd)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)
-			 ON DUPLICATE KEY UPDATE career=VALUES(career), hp=VALUES(hp), mp=VALUES(mp),
-			   atk=VALUES(atk), def=VALUES(def), spd=VALUES(spd)`,
-			playerID, a.Career, a.Hp, a.Mp, a.Atk, a.Def, a.Spd)
-		if err != nil {
+		if _, err := model.UpsertPlayerAttrByPK(ctx, tx, &model.PlayerAttr{
+			PlayerId: playerID,
+			Career:   a.Career,
+			Hp:       a.Hp,
+			Mp:       a.Mp,
+			Atk:      a.Atk,
+			Def:      a.Def,
+			Spd:      a.Spd,
+		}); err != nil {
 			return fmt.Errorf("upsert attr: %w", err)
 		}
 
@@ -212,21 +210,33 @@ func (r *Repository) save(ctx context.Context, state *State, withGrants bool) (i
 // 版本必须推进：缓存里的旧快照带着旧 version，异步落库的栅栏用
 // 「快照 version > 数据库 version」判断是否采用。推进之后旧快照永远
 // 不满足条件，从而不会被写回库——这是同步落库与异步通道共存的关键。
+//
+// 先读后写的两步都在同一事务内，且同一玩家只有一个 Actor 在跑
+// SaveForce（跨进程由玩家归属保证），因此没有并发写版本的风险；
+// 换来的好处是不再依赖 `version = version + 1` 的表达式更新（生成器
+// 不支持表达式 SET），也不必再回读一次版本。
 func saveGrantsAndBumpVersion(ctx context.Context, tx *sql.Tx, state *State, version *int64) error {
 	raw, err := json.Marshal(state.snapshot().AppliedGrants)
 	if err != nil {
 		return fmt.Errorf("encode applied grants: %w", err)
 	}
 	playerID := state.PlayerID()
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO player_writebehind (player_id, version, applied_grants) VALUES (?, 1, ?)
-		 ON DUPLICATE KEY UPDATE version = version + 1, applied_grants = VALUES(applied_grants)`,
-		playerID, string(raw)); err != nil {
-		return fmt.Errorf("bump writebehind version: %w", err)
-	}
-	if err := tx.QueryRowContext(ctx,
-		`SELECT version FROM player_writebehind WHERE player_id = ?`, playerID).Scan(version); err != nil {
+	w, err := model.FindPlayerWritebehindByPK(ctx, tx, playerID)
+	switch {
+	case err == nil:
+		*version = w.Version + 1
+	case errors.Is(err, sql.ErrNoRows):
+		// 首次同步落库：与历史 INSERT 语义一致（初始版本为 1）
+		*version = 1
+	default:
 		return fmt.Errorf("read writebehind version: %w", err)
+	}
+	if _, err := model.UpsertPlayerWritebehindByPK(ctx, tx, &model.PlayerWritebehind{
+		PlayerId:      playerID,
+		Version:       *version,
+		AppliedGrants: sql.NullString{String: string(raw), Valid: true},
+	}); err != nil {
+		return fmt.Errorf("bump writebehind version: %w", err)
 	}
 	return nil
 }
@@ -250,10 +260,15 @@ func saveDirtyItems(ctx context.Context, tx *sql.Tx, playerID int64, dirty map[i
 		upserts = append(upserts, []any{playerID, itemID, count})
 	}
 
-	itemCols := []string{"player_id", "item_id", "count"}
+	// 列名取生成代码的常量：改列名时生成物变化 → 这里编译失败，
+	// 而不是像字面量那样静默拼出一条 Unknown column 的 SQL。
+	// 不含 expire_at：本路径只维护数量，过期时间由过期玩法单独管理，
+	// 带上它会把已有过期时间覆盖成 NULL。
+	itemCols := []string{model.ColPlayerItemPlayerId, model.ColPlayerItemItemId, model.ColPlayerItemCount}
+	itemTable := (&model.PlayerItem{}).TableName()
 
 	for _, batch := range flush.Chunk(upserts, flush.DefaultBatchRows, flush.DefaultBatchBytes) {
-		q, args, err := flush.BuildBatchUpsert("player_item", itemCols, batch)
+		q, args, err := flush.BuildBatchUpsert(itemTable, itemCols, batch)
 		if err != nil {
 			return fmt.Errorf("build item upsert: %w", err)
 		}
@@ -269,8 +284,8 @@ func saveDirtyItems(ctx context.Context, tx *sql.Tx, playerID int64, dirty map[i
 		if end > len(deletes) {
 			end = len(deletes)
 		}
-		q, args, err := flush.BuildBatchDeleteWhere("player_item", "player_id = ?",
-			[]any{playerID}, "item_id", deletes[start:end])
+		q, args, err := flush.BuildBatchDeleteWhere(itemTable, "player_id = ?",
+			[]any{playerID}, model.ColPlayerItemItemId, deletes[start:end])
 		if err != nil {
 			return fmt.Errorf("build item delete: %w", err)
 		}

@@ -76,6 +76,34 @@ func DeleteFriendApplyByPK(ctx context.Context, db Querier, Id int64) (sql.Resul
 	return db.ExecContext(ctx, "DELETE FROM friend_apply WHERE id = ?", Id)
 }
 
+// LockFriendApplyByFromIdToId 按 (from_id,to_id) 加行锁并取一行（注解 @lockby:from_id,to_id 生成；必须在事务内调用，否则锁在语句结束后即释放）
+func LockFriendApplyByFromIdToId(ctx context.Context, db Querier, fromId int64, toId int64) (*FriendApply, error) {
+	var m FriendApply
+	query := "SELECT id,from_id,to_id,status,created_at FROM friend_apply WHERE from_id = ? AND to_id = ? ORDER BY id LIMIT 1 FOR UPDATE"
+	row := db.QueryRowContext(ctx, query, fromId, toId)
+	if err := scanFriendApply(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// CountFriendApplyByFromIdStatus 按 (from_id,status) 计数（注解 @countby:from_id,status 生成）
+func CountFriendApplyByFromIdStatus(ctx context.Context, db Querier, fromId int64, status int32) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM friend_apply WHERE from_id = ? AND status = ?", fromId, status).Scan(&n)
+	return n, err
+}
+
+// UpdateFriendApplyStatusByFromIdToId 按 (from_id,to_id) 更新 (status)（注解 @updateby:status 生成）
+func UpdateFriendApplyStatusByFromIdToId(ctx context.Context, db Querier, m *FriendApply) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE friend_apply SET status = ? WHERE from_id = ? AND to_id = ?", m.Status, m.FromId, m.ToId)
+}
+
+// UpdateFriendApplyReapplyByFromIdToId 按 (from_id,to_id) 更新 (status,created_at)（注解 @updateby:reapply 生成）
+func UpdateFriendApplyReapplyByFromIdToId(ctx context.Context, db Querier, m *FriendApply) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE friend_apply SET status = ?, created_at = ? WHERE from_id = ? AND to_id = ?", m.Status, m.CreatedAt, m.FromId, m.ToId)
+}
+
 // upsertFriendApplyCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertFriendApplyCols = []string{"from_id", "to_id", "status"}
 

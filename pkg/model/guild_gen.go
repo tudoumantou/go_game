@@ -88,6 +88,22 @@ func DeleteGuildByPK(ctx context.Context, db Querier, Id int64) (sql.Result, err
 	return db.ExecContext(ctx, "DELETE FROM guild WHERE id = ?", Id)
 }
 
+// LockGuildById 按 (id) 加行锁并取一行（注解 @lockby:id 生成；必须在事务内调用，否则锁在语句结束后即释放）
+func LockGuildById(ctx context.Context, db Querier, id int64) (*Guild, error) {
+	var m Guild
+	query := "SELECT id,name,leader_id,level,exp,notice,member_count,created_at,updated_at FROM guild WHERE id = ? ORDER BY id LIMIT 1 FOR UPDATE"
+	row := db.QueryRowContext(ctx, query, id)
+	if err := scanGuild(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// UpdateGuildMemberCountByPK 按主键只更新 (member_count)（注解 @update:memberCount 生成；其余列保持库里现值，避免全列覆盖把并发写入的字段冲掉）
+func UpdateGuildMemberCountByPK(ctx context.Context, db Querier, m *Guild) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE guild SET member_count = ? WHERE id = ?", m.MemberCount, m.Id)
+}
+
 // upsertGuildCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertGuildCols = []string{"name", "leader_id", "level", "exp", "notice", "member_count"}
 

@@ -2,6 +2,7 @@ package player
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -44,15 +45,47 @@ func TestSaveForceCommitsAssetsAndIdempotencyKeyTogether(t *testing.T) {
 	mock.ExpectExec("UPDATE player SET").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO player_attr").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO player_item").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO player_writebehind").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT version FROM player_writebehind").
-		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(11))
+	// 版本推进改为「先读后写」：读到的版本 +1 再 UPSERT（生成器不支持
+	// version = version + 1 这类表达式 SET，且同玩家单 Actor 串行，安全）
+	mock.ExpectQuery("FROM player_writebehind WHERE player_id = \\?").
+		WithArgs(int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"player_id", "version", "applied_grants"}).AddRow(int64(7), int64(10), nil))
+	mock.ExpectExec("INSERT INTO player_writebehind").
+		WithArgs(int64(7), int64(11), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	version, err := repo.SaveForce(context.Background(), state)
 	require.NoError(t, err)
 	require.EqualValues(t, 11, version,
 		"版本必须读回：调用方要用它更新本地 CAS 期望值，否则下一次提交必冲突")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSaveForceFirstVersionStartsAtOne 首次同步落库（无 player_writebehind 行）
+// 版本从 1 起，与历史 `INSERT ... VALUES (?, 1, ?)` 的语义一致。
+func TestSaveForceFirstVersionStartsAtOne(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer raw.Close()
+
+	repo := NewRepository(&db.DB{DB: raw})
+	state := NewState(7)
+	state.AddItem(1001, 10)
+
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE player SET").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO player_attr").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO player_item").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("FROM player_writebehind WHERE player_id = \\?").WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("INSERT INTO player_writebehind").
+		WithArgs(int64(7), int64(1), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	version, err := repo.SaveForce(context.Background(), state)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, version)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 

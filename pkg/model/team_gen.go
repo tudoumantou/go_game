@@ -79,6 +79,22 @@ func DeleteTeamByPK(ctx context.Context, db Querier, Id int64) (sql.Result, erro
 	return db.ExecContext(ctx, "DELETE FROM team WHERE id = ?", Id)
 }
 
+// LockTeamById 按 (id) 加行锁并取一行（注解 @lockby:id 生成；必须在事务内调用，否则锁在语句结束后即释放）
+func LockTeamById(ctx context.Context, db Querier, id int64) (*Team, error) {
+	var m Team
+	query := "SELECT id,leader_id,copy_id,status,created_at,updated_at FROM team WHERE id = ? ORDER BY id LIMIT 1 FOR UPDATE"
+	row := db.QueryRowContext(ctx, query, id)
+	if err := scanTeam(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// UpdateTeamStatusByPK 按主键只更新 (status)（注解 @update:status 生成；其余列保持库里现值，避免全列覆盖把并发写入的字段冲掉）
+func UpdateTeamStatusByPK(ctx context.Context, db Querier, m *Team) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE team SET status = ? WHERE id = ?", m.Status, m.Id)
+}
+
 // upsertTeamCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertTeamCols = []string{"leader_id", "copy_id", "status"}
 

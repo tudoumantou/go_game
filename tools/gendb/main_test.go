@@ -110,3 +110,109 @@ func TestGenModelGeneratesFlatSpec(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(quest), "FlatOps", "unannotated table must not generate FlatOps")
 }
+
+// annoDDL 带各类查询/更新注解的表 + 一张无注解表（用于验证注解不串表）。
+const annoDDL = `
+-- @findby:account_id
+-- @lockby:id
+-- @update:progress level,exp
+-- @countby:account_id,level
+-- @listby:account_id
+-- @deleteby:account_id
+-- @updateby:bump level account_id
+CREATE TABLE player_probe (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account_id BIGINT UNSIGNED NOT NULL,
+  level INT NOT NULL DEFAULT 1,
+  exp BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE plain_probe (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account_id BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`
+
+// TestParseSQLAnnotations 注解归属与解析：每类注解落到对应槽位，
+// 参数按空白切分（@updateby 三段：名字/更新列/条件列），无注解表保持空。
+func TestParseSQLAnnotations(t *testing.T) {
+	tables, err := parseSQL(writeTempSQL(t, annoDDL))
+	require.NoError(t, err)
+	byName := map[string]table{}
+	for _, tb := range tables {
+		byName[tb.Name] = tb
+	}
+	probe := byName["player_probe"]
+	require.Equal(t, [][]string{{"account_id"}}, probe.Anno.FindBy)
+	require.Equal(t, [][]string{{"id"}}, probe.Anno.LockBy)
+	require.Equal(t, [][]string{{"account_id"}}, probe.Anno.ListBy)
+	require.Equal(t, [][]string{{"account_id"}}, probe.Anno.DeleteBy)
+	require.Equal(t, [][]string{{"account_id", "level"}}, probe.Anno.CountBy)
+	require.Len(t, probe.Anno.Updates, 1)
+	require.Equal(t, "progress", probe.Anno.Updates[0].Name)
+	require.Equal(t, []string{"level", "exp"}, probe.Anno.Updates[0].Cols)
+	require.Len(t, probe.Anno.UpdateBys, 1)
+	require.Equal(t, "bump", probe.Anno.UpdateBys[0].Name)
+	require.Equal(t, []string{"level"}, probe.Anno.UpdateBys[0].SetCols)
+	require.Equal(t, []string{"account_id"}, probe.Anno.UpdateBys[0].WhereCols)
+
+	plain := byName["plain_probe"]
+	require.Empty(t, plain.Anno.FindBy, "annotations must not leak into the next table")
+	require.Empty(t, plain.Anno.Updates)
+}
+
+// TestParseSQLRejectsUnknownAnnoColumn 注解引用了不存在的列：生成期必须失败。
+// 这是「schema 是唯一真相」的兑现点——过去手写 SQL 里列名拼错，
+// 编译能过、测试不覆盖，只能等线上 1054。
+func TestParseSQLRejectsUnknownAnnoColumn(t *testing.T) {
+	const bad = `
+-- @findby:acount_id
+CREATE TABLE player_probe (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account_id BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+`
+	_, err := parseSQL(writeTempSQL(t, bad))
+	require.Error(t, err, "unknown column in @findby must fail generation")
+	require.Contains(t, err.Error(), "acount_id")
+}
+
+// TestGenModelGeneratesAnnotatedFuncs 生成物包含各类注解函数，且 SQL 片段正确：
+//   - @findby 带 ORDER BY 主键 + LIMIT 1（结果确定，不随执行计划漂）
+//   - @lockby 带 FOR UPDATE
+//   - @update 只 SET 声明列（不全列覆盖）
+//   - @updateby 的 WHERE 用非 PK 列
+func TestGenModelGeneratesAnnotatedFuncs(t *testing.T) {
+	tables, err := parseSQL(writeTempSQL(t, annoDDL))
+	require.NoError(t, err)
+	out := t.TempDir()
+	for _, tb := range tables {
+		require.NoError(t, genModel(out, tb))
+	}
+	raw, err := os.ReadFile(filepath.Join(out, "player_probe_gen.go"))
+	require.NoError(t, err)
+	src := string(raw)
+
+	for _, want := range []string{
+		"func FindPlayerProbeByAccountId(ctx context.Context, db Querier, accountId int64) (*PlayerProbe, error)",
+		"WHERE account_id = ? ORDER BY id LIMIT 1\"",
+		"func LockPlayerProbeById(",
+		"LIMIT 1 FOR UPDATE",
+		"func ListPlayerProbeByAccountId(",
+		"func DeletePlayerProbeByAccountId(",
+		"func CountPlayerProbeByAccountIdLevel(ctx context.Context, db Querier, accountId int64, level int32) (int64, error)",
+		"func UpdatePlayerProbeProgressByPK(",
+		"UPDATE player_probe SET level = ?, exp = ? WHERE id = ?",
+		"func UpdatePlayerProbeBumpByAccountId(",
+		"UPDATE player_probe SET level = ? WHERE account_id = ?",
+	} {
+		require.Contains(t, src, want, fmt.Sprintf("generated code missing %q\n---\n%s", want, src))
+	}
+	// 无注解表不得出现注解函数。
+	plain, err := os.ReadFile(filepath.Join(out, "plain_probe_gen.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(plain), "FindPlainProbeByAccountId")
+}

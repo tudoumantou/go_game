@@ -179,22 +179,15 @@ func assembleState(playerID int64, pf *Prefetch) *State {
 }
 
 func (p *Preloader) queryItems(ctx context.Context, playerID int64) (map[int32]int64, error) {
-	const q = `SELECT item_id, count FROM player_item WHERE player_id = ?`
-	rows, err := p.db.DB.QueryContext(ctx, q, playerID)
+	rows, err := model.ListPlayerItemByPlayer(ctx, p.db.DB, playerID)
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
-
-	out := make(map[int32]int64)
-	for rows.Next() {
-		var itemID, count int32
-		if err := rows.Scan(&itemID, &count); err != nil {
-			return nil, err
-		}
-		out[itemID] = int64(count)
+	out := make(map[int32]int64, len(rows))
+	for _, it := range rows {
+		out[it.ItemId] = int64(it.Count)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // ErrNoPlayer 角色不存在（登录时角色被删/数据异常）。

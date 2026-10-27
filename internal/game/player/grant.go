@@ -25,6 +25,7 @@ import (
 	"math"
 
 	"game_study/internal/game/module"
+	"game_study/pkg/model"
 )
 
 // ErrCommitUnknown 表示 COMMIT 返回错误，数据库可能已提交，必须重载后再处理消息。
@@ -59,8 +60,9 @@ func (r *Repository) CommitItems(ctx context.Context, state *State, grants []mod
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var id int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM player WHERE id = ? FOR UPDATE`, state.PlayerID()).Scan(&id); err != nil {
+	// 锁角色行（生成的 @lockby:id）：锁范围只有 player 一行，不扩大；
+	// 行不存在（角色被删）时 ErrNoRows 直接上抛，与手写 SELECT 语义一致。
+	if _, err := model.LockPlayerById(ctx, tx, state.PlayerID()); err != nil {
 		return err
 	}
 	if err := business(tx); err != nil {
@@ -95,28 +97,17 @@ func (r *Repository) ReloadItems(ctx context.Context, state *State) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	var id int64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM player WHERE id = ? FOR UPDATE`, state.PlayerID()).Scan(&id); err != nil {
+	// 锁角色行（生成的 @lockby:id）
+	if _, err := model.LockPlayerById(ctx, tx, state.PlayerID()); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT item_id, count FROM player_item WHERE player_id = ?`, state.PlayerID())
+	rows, err := model.ListPlayerItemByPlayer(ctx, tx, state.PlayerID())
 	if err != nil {
 		return err
 	}
-	items := make(map[int32]int64)
-	for rows.Next() {
-		var itemID int32
-		var count int64
-		if err := rows.Scan(&itemID, &count); err != nil {
-			rows.Close()
-			return err
-		}
-		items[itemID] = count
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return err
+	items := make(map[int32]int64, len(rows))
+	for _, it := range rows {
+		items[it.ItemId] = int64(it.Count)
 	}
 	if err := tx.Commit(); err != nil {
 		return err

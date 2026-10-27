@@ -12,15 +12,15 @@ import (
 
 // MapOperation map_operation 表
 type MapOperation struct {
-	OperationId     string `db:"operation_id"`
-	WorldId         int64  `db:"world_id"`
-	PlayerId        int64  `db:"player_id"`
-	RequestId       string `db:"request_id"`
-	Kind            int32  `db:"kind"`
-	Status          int32  `db:"status"`
-	ResultJson      string `db:"result_json"`
-	RelatedObjectId int64  `db:"related_object_id"`
-	UpdatedAtMs     int64  `db:"updated_at_ms"`
+	OperationId     string         `db:"operation_id"`
+	WorldId         int64          `db:"world_id"`
+	PlayerId        int64          `db:"player_id"`
+	RequestId       string         `db:"request_id"`
+	Kind            int32          `db:"kind"`
+	Status          int32          `db:"status"`
+	ResultJson      sql.NullString `db:"result_json"`
+	RelatedObjectId int64          `db:"related_object_id"`
+	UpdatedAtMs     int64          `db:"updated_at_ms"`
 }
 
 // MapOperation 列名

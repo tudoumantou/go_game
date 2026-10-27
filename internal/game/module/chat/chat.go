@@ -28,6 +28,7 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
 	"game_study/pkg/ratelimit"
 	"strconv"
@@ -102,14 +103,21 @@ func NewRepo(database *db.DB) *Repo {
 
 // Insert 落库一条聊天记录（uk_owner_msg 幂等，重复插入忽略）。
 //
-// ON DUPLICATE KEY UPDATE id = id 是 MySQL 惯用的「冲突即静默忽略」写法：
-// 自更新主键为零操作，既幂等又不报错。写入路径可能重投（Kafka 消费重试 /
-// 双端重复发送），依赖它保证同一 (owner_id, msg_id) 永远只有一行。
+// 幂等实现从 `ON DUPLICATE KEY UPDATE id = id` 换成「普通 INSERT + 1062 视为
+// 已存在」：两者等价（chat_record 只有 uk_owner_msg 会冲突），后者不依赖
+// MySQL 方言，冲突判定走 db.IsDuplicate 的类型断言而不是错误文本。
+// 写入路径可能重投（Kafka 消费重试 / 双端重复发送），依赖它保证同一
+// (owner_id, msg_id) 永远只有一行。
 func (r *Repo) Insert(ctx context.Context, ownerID, peerID, msgID int64, direction int32, channel int32, content string) error {
-	const q = `INSERT INTO chat_record (owner_id, peer_id, msg_id, direction, channel, content)
-	           VALUES (?, ?, ?, ?, ?, ?)
-	           ON DUPLICATE KEY UPDATE id = id`
-	if _, err := r.db.ExecContext(ctx, q, ownerID, peerID, msgID, direction, channel, content); err != nil {
+	_, err := model.InsertChatRecord(ctx, r.db.DB, &model.ChatRecord{
+		OwnerId:   ownerID,
+		PeerId:    peerID,
+		MsgId:     msgID,
+		Direction: direction,
+		Channel:   channel,
+		Content:   content,
+	})
+	if err != nil && !db.IsDuplicate(err) {
 		return fmt.Errorf("insert chat_record: %w", err)
 	}
 	return nil

@@ -13,17 +13,17 @@ import (
 
 // Mail mail 表
 type Mail struct {
-	Id         int64        `db:"id"`
-	PlayerId   int64        `db:"player_id"`
-	TemplateId int32        `db:"template_id"`
-	Title      string       `db:"title"`
-	Content    string       `db:"content"`
-	Channel    int32        `db:"channel"`
-	Status     int32        `db:"status"`
-	BizId      string       `db:"biz_id"`
-	ExpireAt   sql.NullTime `db:"expire_at"`
-	CreatedAt  time.Time    `db:"created_at"`
-	UpdatedAt  time.Time    `db:"updated_at"`
+	Id         int64          `db:"id"`
+	PlayerId   int64          `db:"player_id"`
+	TemplateId int32          `db:"template_id"`
+	Title      string         `db:"title"`
+	Content    string         `db:"content"`
+	Channel    int32          `db:"channel"`
+	Status     int32          `db:"status"`
+	BizId      sql.NullString `db:"biz_id"`
+	ExpireAt   sql.NullTime   `db:"expire_at"`
+	CreatedAt  time.Time      `db:"created_at"`
+	UpdatedAt  time.Time      `db:"updated_at"`
 }
 
 // Mail 列名
@@ -92,6 +92,23 @@ func UpsertMailByPK(ctx context.Context, db Querier, m *Mail) (sql.Result, error
 // DeleteMailByPK 按主键删除
 func DeleteMailByPK(ctx context.Context, db Querier, Id int64) (sql.Result, error) {
 	return db.ExecContext(ctx, "DELETE FROM mail WHERE id = ?", Id)
+}
+
+// DeleteMailByIdPlayerId 按 (id,player_id) 删除（注解 @deleteby:id,player_id 生成）
+func DeleteMailByIdPlayerId(ctx context.Context, db Querier, id int64, playerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM mail WHERE id = ? AND player_id = ?", id, playerId)
+}
+
+// CountMailByPlayerIdStatus 按 (player_id,status) 计数（注解 @countby:player_id,status 生成）
+func CountMailByPlayerIdStatus(ctx context.Context, db Querier, playerId int64, status int32) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM mail WHERE player_id = ? AND status = ?", playerId, status).Scan(&n)
+	return n, err
+}
+
+// UpdateMailStatusByPK 按主键只更新 (status)（注解 @update:status 生成；其余列保持库里现值，避免全列覆盖把并发写入的字段冲掉）
+func UpdateMailStatusByPK(ctx context.Context, db Querier, m *Mail) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE mail SET status = ? WHERE id = ?", m.Status, m.Id)
 }
 
 // upsertMailCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）

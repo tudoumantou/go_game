@@ -88,6 +88,33 @@ func DeletePlayerByPK(ctx context.Context, db Querier, Id int64) (sql.Result, er
 	return db.ExecContext(ctx, "DELETE FROM player WHERE id = ?", Id)
 }
 
+// FindPlayerByAccountId 按 (account_id) 查询一行（注解 @findby:account_id 生成，ORDER BY 主键 LIMIT 1）
+func FindPlayerByAccountId(ctx context.Context, db Querier, accountId int64) (*Player, error) {
+	var m Player
+	query := "SELECT id,account_id,name,level,exp,coin,scene_id,created_at,updated_at FROM player WHERE account_id = ? ORDER BY id LIMIT 1"
+	row := db.QueryRowContext(ctx, query, accountId)
+	if err := scanPlayer(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// LockPlayerById 按 (id) 加行锁并取一行（注解 @lockby:id 生成；必须在事务内调用，否则锁在语句结束后即释放）
+func LockPlayerById(ctx context.Context, db Querier, id int64) (*Player, error) {
+	var m Player
+	query := "SELECT id,account_id,name,level,exp,coin,scene_id,created_at,updated_at FROM player WHERE id = ? ORDER BY id LIMIT 1 FOR UPDATE"
+	row := db.QueryRowContext(ctx, query, id)
+	if err := scanPlayer(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// UpdatePlayerProgressByPK 按主键只更新 (level,exp,coin,scene_id)（注解 @update:progress 生成；其余列保持库里现值，避免全列覆盖把并发写入的字段冲掉）
+func UpdatePlayerProgressByPK(ctx context.Context, db Querier, m *Player) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE player SET level = ?, exp = ?, coin = ?, scene_id = ? WHERE id = ?", m.Level, m.Exp, m.Coin, m.SceneId, m.Id)
+}
+
 // upsertPlayerCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertPlayerCols = []string{"account_id", "name", "level", "exp", "coin", "scene_id"}
 

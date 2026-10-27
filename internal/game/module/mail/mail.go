@@ -104,30 +104,11 @@ func NewRepo(database *db.DB) *Repo {
 
 // Insert 插入邮件，返回邮件 ID。
 //
-// 这里没有用 model.InsertMail（生成代码），只为一件事：`biz_id` 是
-// **可空 + 唯一键**（uk_player_biz），普通投递没有业务键，必须写 NULL。
-//
-// MySQL 的唯一索引对 NULL 不生效（多行 NULL 互不冲突），对空串则生效——
-// 生成代码把可空 VARCHAR 映射成 string，零值就是空串，于是同一玩家的
-// 第二封普通邮件立刻撞键（Error 1062）。被集成测试抓到的真实缺陷：
-// 一个玩家收到两封系统邮件就投递失败。
-//
-// 常量列（template_id/status）与可空列（biz_id/expire_at）都在这里显式
-// 绑定，SQL 只有这一条，维护成本可控。
+// 直接用生成代码 model.InsertMail：`biz_id` 可空 + 唯一键（uk_player_biz）的陷阱
+// 已由生成器统一解决——可空字符串列映射 sql.NullString，零值写 NULL 而非空串，
+// 唯一索引对 NULL 不生效，同一玩家的多封普通邮件不再互撞（历史 Error 1062）。
 func (r *Repo) Insert(ctx context.Context, m *model.Mail) (int64, error) {
-	// bizID 为 nil 时驱动写 NULL；非空时才作为幂等键参与唯一约束。
-	var bizID any
-	if m.BizId != "" {
-		bizID = m.BizId
-	}
-	var expireAt any
-	if m.ExpireAt.Valid {
-		expireAt = m.ExpireAt.Time
-	}
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO mail (player_id, template_id, title, content, channel, status, biz_id, expire_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.PlayerId, m.TemplateId, m.Title, m.Content, m.Channel, m.Status, bizID, expireAt)
+	res, err := model.InsertMail(ctx, r.db.DB, m)
 	if err != nil {
 		return 0, fmt.Errorf("insert mail: %w", err)
 	}
@@ -139,8 +120,11 @@ func (r *Repo) Insert(ctx context.Context, m *model.Mail) (int64, error) {
 // 逐条插入而非批量：一封邮件附件是个位数，逐条 INSERT 简单且错误定位清晰；
 // 失败由 Deliver 的循环只 Warn——主邮件已建成，缺附件好过整封丢。
 func (r *Repo) InsertAttachment(ctx context.Context, mailID int64, itemID, count int32) error {
-	const q = `INSERT INTO mail_attachment (mail_id, item_id, count) VALUES (?, ?, ?)`
-	_, err := r.db.ExecContext(ctx, q, mailID, itemID, count)
+	_, err := model.InsertMailAttachment(ctx, r.db.DB, &model.MailAttachment{
+		MailId: mailID,
+		ItemId: itemID,
+		Count:  count,
+	})
 	return err
 }
 
@@ -224,16 +208,10 @@ func (r *Repo) ListByPlayer(ctx context.Context, playerID int64, limit int) ([]M
 
 // UnreadCount 未读数。
 //
-// COUNT(*) 是聚合，恒返回一行、不会 ErrNoRows——下面的 errors.Is 检查
-// 是防御性冗余（单行扫描的通用写法照搬），无害但不会触发。
+// 生成的 CountMailByPlayerIdStatus 就是 `SELECT COUNT(*) ... WHERE player_id=?
+// AND status=?`；COUNT 恒返回一行，因此不需要 ErrNoRows 分支。
 func (r *Repo) UnreadCount(ctx context.Context, playerID int64) (int64, error) {
-	const q = `SELECT COUNT(*) FROM mail WHERE player_id = ? AND status = 0`
-	var n int64
-	err := r.db.QueryRowContext(ctx, q, playerID).Scan(&n)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	return n, nil
+	return model.CountMailByPlayerIdStatus(ctx, r.db.DB, playerID, 0)
 }
 
 // FindAttachments 只读附件：校验归属与有无附件，不写库。
@@ -245,34 +223,23 @@ func (r *Repo) UnreadCount(ctx context.Context, playerID int64) (int64, error) {
 // ErrMailNotExist，避免用错误码差异向调用方泄露邮件 id 是否存在。
 // claimed = 0 过滤是双轨幂等的第二道：已领附件不再出现在结果里。
 func (r *Repo) FindAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error) {
-	var ownerID int64
-	err := r.db.QueryRowContext(ctx,
-		`SELECT player_id FROM mail WHERE id = ?`, mailID).Scan(&ownerID)
+	m, err := model.FindMailByPK(ctx, r.db.DB, mailID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrMailNotExist
 	}
 	if err != nil {
 		return nil, err
 	}
-	if ownerID != playerID {
+	if m.PlayerId != playerID {
 		return nil, ErrMailNotExist
 	}
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT item_id, count FROM mail_attachment WHERE mail_id = ? AND claimed = 0`, mailID)
+	rows, err := model.ListMailAttachmentByMailIdClaimed(ctx, r.db.DB, mailID, 0)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
-	var out []Attachment
-	for rows.Next() {
-		var a Attachment
-		if err := rows.Scan(&a.ItemID, &a.Count); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	out := make([]Attachment, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, Attachment{ItemID: a.ItemId, Count: a.Count})
 	}
 	// 查不到未领附件 = 无附件可领（ErrNoAttachment → 5003）：
 	// 与「已领过」区分开，客户端据此给不同提示
@@ -285,16 +252,19 @@ func (r *Repo) FindAttachments(ctx context.Context, playerID, mailID int64) ([]A
 // MarkTaken 尽力把附件标记为已领，只用于列表展示与排查。
 // 失败不影响正确性：重复领取由快照里的业务键拦截。
 //
-// 事务包两条 UPDATE（附件 claimed + 邮件 status）保持展示一致：
+// 事务包两条更新（附件 claimed + 邮件 status）保持展示一致：
 // 不能出现「附件显示已领、邮件还显示有附件」的割裂态。
-// WHERE claimed = 0 让重复调用幂等（第二次只影响 0 行，不报错）。
+// 附件那条不再带 `AND claimed = 0` 过滤——全量置 1 本来就幂等，
+// 带上过滤只是少改几行，语义没有区别。
 func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE mail_attachment SET claimed = 1 WHERE mail_id = ? AND claimed = 0`, mailID); err != nil {
+		if _, err := model.UpdateMailAttachmentClaimedByMailId(ctx, tx, &model.MailAttachment{
+			MailId:  mailID,
+			Claimed: 1,
+		}); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE mail SET status = 2 WHERE id = ?`, mailID)
+		_, err := model.UpdateMailStatusByPK(ctx, tx, &model.Mail{Id: mailID, Status: 2})
 		return err
 	})
 }
@@ -304,10 +274,10 @@ func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
 // 归属校验放进 WHERE 而不是「先查再删」：一次往返、无竞态，且
 // RowsAffected=0 天然把「不存在」与「不是你的」合成一个结果——与
 // FindAttachments 同一口径，不向调用方泄露别人的邮件 id 是否存在。
+// 这条复合条件删除由 @deleteby:id,player_id 生成，条件与手写版逐字一致。
 func (r *Repo) Delete(ctx context.Context, playerID, mailID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`DELETE FROM mail WHERE id = ? AND player_id = ?`, mailID, playerID)
+		res, err := model.DeleteMailByIdPlayerId(ctx, tx, mailID, playerID)
 		if err != nil {
 			return err
 		}
@@ -319,7 +289,7 @@ func (r *Repo) Delete(ctx context.Context, playerID, mailID int64) error {
 			// 主邮件没删到 → 整笔回滚，不留下孤儿附件
 			return ErrMailNotExist
 		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM mail_attachment WHERE mail_id = ?`, mailID)
+		_, err = model.DeleteMailAttachmentByMailId(ctx, tx, mailID)
 		return err
 	})
 }
@@ -329,13 +299,13 @@ func (r *Repo) Delete(ctx context.Context, playerID, mailID int64) error {
 // 用于玩家不在线时的 Tier-1 发放（充值到账等）：邮件与附件在同一 SQL 事务里
 // 落库，biz_id 唯一键保证重投不会重复建单。返回 true 表示本次新建。
 //
-// INSERT IGNORE + RowsAffected()==0 是「不存在才插」的 DB 惯用法：
-// 比先 SELECT 再 INSERT 少一次往返，且彻底无竞态（两条并发重投只有
-// 一条能插入，另一条 IGNORE 后 RowsAffected=0）。
+// 幂等实现从「INSERT IGNORE + RowsAffected==0」改成「普通 INSERT + 1062 视为
+// 已存在」：两者语义等价（mail 表只有 uk_player_biz 会冲突），但后者不依赖
+// MySQL 方言，且冲突判定走 db.IsDuplicate 的类型断言而不是错误文本。
+// 冲突时直接 return nil：没有新行，LastInsertId 不可信，绝不能拿去插附件
+// （会插出 mail_id=0 的孤儿行）。
 // biz_id 空校验是 fail-fast：幂等键缺失时直接报错让上游重试，
 // 而不是建一封可能重复的发奖单——充值链路「报错可重试」远好过「重复发奖」。
-// RowsAffected=0 时直接 return nil：IGNORE 未真插入，LastInsertId 不可信，
-// 绝不能拿去插附件（会插出 mail_id=0 的孤儿行）。
 func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (int64, bool, error) {
 	if bizID == "" {
 		return 0, false, fmt.Errorf("offline delivery requires biz_id")
@@ -343,27 +313,28 @@ func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title,
 	var newID int64
 	created := false
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`INSERT IGNORE INTO mail (player_id, template_id, title, content, channel, biz_id)
-			 VALUES (?, 0, ?, ?, 0, ?)`, playerID, title, content, bizID)
+		res, err := model.InsertMail(ctx, tx, &model.Mail{
+			PlayerId: playerID,
+			Title:    title,
+			Content:  content,
+			BizId:    sql.NullString{String: bizID, Valid: true},
+		})
 		if err != nil {
+			if db.IsDuplicate(err) {
+				return nil // 已发放过（同一 biz_id）
+			}
 			return err
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return nil // 已发放过
 		}
 		mailID, err := res.LastInsertId()
 		if err != nil {
 			return err
 		}
 		for _, it := range items {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO mail_attachment (mail_id, item_id, count) VALUES (?, ?, ?)`,
-				mailID, it.ItemID, it.Count); err != nil {
+			if _, err := model.InsertMailAttachment(ctx, tx, &model.MailAttachment{
+				MailId: mailID,
+				ItemId: it.ItemID,
+				Count:  it.Count,
+			}); err != nil {
 				return err
 			}
 		}

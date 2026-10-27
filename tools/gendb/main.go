@@ -51,6 +51,44 @@ type table struct {
 	// FlatModule 非空表示该表被 @flat:<模块名> 标注为「玩家级单行状态表」，
 	// 额外生成 flush.FlatOps 适配，供 writebehind.RegisterFlat 一行注册。
 	FlatModule string
+	// Anno 表前注释里的查询/更新注解，见 annoRe 与 parseAnnos。
+	Anno annoSet
+	// pending 暂存注解原文：注解析发生在列解析之前，只有列齐了才能校验列名。
+	pending []anno
+}
+
+// annoSet 一张表的注解集合（按类型分组，生成时逐类展开）。
+//
+// 为什么需要这些注解：标准 CRUD 只覆盖「按 PK 单行读写 + 按 player_id 整包」，
+// 而业务需要「按账号查角色」「按 mail_id 删附件」「按 (from,to) 锁行」这类
+// 规则形态的语句。过去这些 SQL 手写在业务里，改列名不会报错、只能靠测试兜底；
+// 注解化之后 schema 是唯一真相——列名写错在生成期就失败。
+type annoSet struct {
+	// FindBy / ListBy / LockBy / LockListBy / DeleteBy / CountBy 的每一项是
+	// 一组 WHERE 列（单列或多列 AND）。
+	FindBy     [][]string
+	ListBy     [][]string
+	LockBy     [][]string
+	LockListBy [][]string
+	DeleteBy   [][]string
+	CountBy    [][]string
+	// Updates 是「按 PK 只更新声明列」（@update:<Name> <cols>）。
+	Updates []updateAnno
+	// UpdateBys 是「按非 PK 列更新」（@updateby:<Name> <setcols> <wherecols>）。
+	UpdateBys []updateByAnno
+}
+
+// updateAnno @update 的解析结果：Name 进函数名，Cols 是 SET 列。
+type updateAnno struct {
+	Name string
+	Cols []string
+}
+
+// updateByAnno @updateby 的解析结果：SET 列在前、WHERE 列在后（拼 SQL 的顺序）。
+type updateByAnno struct {
+	Name      string
+	SetCols   []string
+	WhereCols []string
 }
 
 // main 入口：扫 sql/schema/*.sql → 解析表与 @flat 标注 → 生成 querier + 逐表 model。
@@ -94,7 +132,7 @@ func main() {
 			log.Fatalf("gen %s: %v", t.Name, err)
 		}
 		fmt.Printf("  %-24s → %s_gen.go（%d 列，PK: %s%s）\n",
-			t.Name+".sql", t.Name, len(t.Columns), strings.Join(t.PKs, "+"), flatSuffix(t))
+			t.Name+".sql", t.Name, len(t.Columns), strings.Join(t.PKs, "+"), annoSuffix(t))
 	}
 	fmt.Printf("gendb 完成：%d 张表 → %s\n", len(tables), *out)
 }
@@ -140,16 +178,83 @@ var (
 	// 只处理 -- 行注释：DDL 约定不使用 /* */ 块注释（块注释里的 @flat 不会被识别，
 	// 这是约定而非疏漏）。
 	commentRe = regexp.MustCompile(`--[^\n]*`)
-	// flatRe 匹配建表注释里的 @flat:<模块名> 标注。
-	flatRe = regexp.MustCompile(`@flat:([a-zA-Z0-9_]+)`)
+	// annoRe 匹配建表注释里的生成注解。
+	//
+	// 语法约定（注解独占一行注释，写在 CREATE TABLE 之前）：
+	//	@flat:<模块名>                       生成 flush.FlatOps 适配
+	//	@findby:col[,col...]                按列查一行（ORDER BY PK LIMIT 1）
+	//	@listby:col[,col...]                按列查多行
+	//	@lockby:col[,col...]                按列锁一行（SELECT ... FOR UPDATE）
+	//	@locklistby:col[,col...]            按列锁多行（范围锁，不 LIMIT）
+	//	@deleteby:col[,col...]              按列删
+	//	@countby:col[,col...]               按列计数
+	//	@update:<Name> <col[,col...]>       按 PK 只更新声明列
+	//	@updateby:<Name> <setcols> <wherecols>  按非 PK 列更新
+	//
+	// 参数里不含空格（列名逗号分隔），冒号后多余的空格与尾随文字会被忽略，
+	// 允许「@findby:account_id 账号归属查询」这种带说明的写法。
+	annoRe = regexp.MustCompile(`@(flat|findby|listby|lockby|locklistby|deleteby|countby|update|updateby):([^\n]*)`)
 )
 
-// flatSuffix 返回日志里的 @flat 标记（无标注为空）。
-func flatSuffix(t table) string {
-	if t.FlatModule == "" {
+// anno 一条解析出的注解：kind 是注解名，arg 是冒号后的原文。
+type anno struct {
+	kind  string
+	arg   string
+	start int // 注解在原文中的字节区间，用来判断归属哪张表
+	end   int
+}
+
+// parseAnnos 扫描原文里的全部注解。
+//
+// 与 CREATE TABLE 一样按字节区间做归属判定：注解必须落在「上一张表结束」
+// 与「本表开始」之间才算本表的（见 parseSQL）。
+func parseAnnos(text string) []anno {
+	var out []anno
+	for _, m := range annoRe.FindAllStringSubmatchIndex(text, -1) {
+		out = append(out, anno{
+			kind:  text[m[2]:m[3]],
+			arg:   strings.TrimSpace(text[m[4]:m[5]]),
+			start: m[0],
+			end:   m[1],
+		})
+	}
+	return out
+}
+
+// annoSuffix 返回日志里的注解摘要（无注解为空）。
+func annoSuffix(t table) string {
+	var parts []string
+	if t.FlatModule != "" {
+		parts = append(parts, "@flat:"+t.FlatModule)
+	}
+	for range t.Anno.FindBy {
+		parts = append(parts, "@findby")
+	}
+	for range t.Anno.ListBy {
+		parts = append(parts, "@listby")
+	}
+	for range t.Anno.LockBy {
+		parts = append(parts, "@lockby")
+	}
+	for range t.Anno.LockListBy {
+		parts = append(parts, "@locklistby")
+	}
+	for range t.Anno.DeleteBy {
+		parts = append(parts, "@deleteby")
+	}
+	for range t.Anno.CountBy {
+		parts = append(parts, "@countby")
+	}
+	for range t.Anno.Updates {
+		parts = append(parts, "@update")
+	}
+	for range t.Anno.UpdateBys {
+		parts = append(parts, "@updateby")
+	}
+	if len(parts) == 0 {
 		return ""
 	}
-	return "，@flat:" + t.FlatModule
+	return "，" + strings.Join(parts, ",")
 }
 
 // parseSQL 解析一个 .sql 文件里的全部 CREATE TABLE。
@@ -209,7 +314,7 @@ func parseSQL(path string) ([]table, error) {
 	stripped := commentRe.ReplaceAllStringFunc(text, func(m string) string {
 		return strings.Repeat(" ", len(m))
 	})
-	anns := flatRe.FindAllStringSubmatchIndex(text, -1)
+	anns := parseAnnos(text)
 	matches := createTableRe.FindAllStringSubmatchIndex(stripped, -1)
 	var tables []table
 	prevEnd := 0
@@ -217,8 +322,8 @@ func parseSQL(path string) ([]table, error) {
 		t := table{Name: stripped[m[2]:m[3]]}
 		// 标注写在本表之前、上一张表结束之后的注释区间里。
 		for _, a := range anns {
-			if a[0] >= prevEnd && a[1] <= m[0] {
-				t.FlatModule = text[a[2]:a[3]]
+			if a.start >= prevEnd && a.end <= m[0] {
+				t.pending = append(t.pending, a)
 			}
 		}
 		prevEnd = m[1]
@@ -291,6 +396,11 @@ func parseSQL(path string) ([]table, error) {
 		for i := range t.Columns {
 			t.Columns[i].IsPK = pkSet[t.Columns[i].Name]
 		}
+		// 注解此时才解析：列已齐全，能校验「注解里的列名确实存在」——这是
+		// 「schema 是唯一真相」的落点，列名拼错在生成期失败，而不是运行时 1054。
+		if err := t.resolveAnnos(); err != nil {
+			return nil, err
+		}
 		// 标注即契约：单行状态表的主键必须恰为 player_id，否则 FindByPK 的
 		// 签名与 FlatOps.Load 不匹配，宁可在生成期报错也不生成跑不起来的代码。
 		if t.FlatModule != "" && (len(t.PKs) != 1 || t.PKs[0] != "player_id") {
@@ -300,6 +410,112 @@ func parseSQL(path string) ([]table, error) {
 		tables = append(tables, t)
 	}
 	return tables, nil
+}
+
+// resolveAnnos 把暂存的注解解析成 annoSet，并校验列名存在。
+//
+// 校验即价值：`@findby:acount_id` 这种拼写错误若放过，生成出来的是编译通过、
+// 运行报 1054 Unknown column 的代码；在这里失败只要改 schema。
+func (t *table) resolveAnnos() error {
+	for _, a := range t.pending {
+		switch a.kind {
+		case "flat":
+			// @flat 的参数取第一个 token：允许写成「@flat:signin 让 gendb 生成 FlatOps」
+			// 这种注解后面跟说明的写法（历史上就有），不要整行当地名。
+			fields := strings.Fields(a.arg)
+			if len(fields) == 0 {
+				return fmt.Errorf("%s: @flat 缺少模块名", t.Name)
+			}
+			t.FlatModule = fields[0]
+		case "findby", "listby", "lockby", "locklistby", "deleteby", "countby":
+			cols, err := t.requireCols(a)
+			if err != nil {
+				return err
+			}
+			switch a.kind {
+			case "findby":
+				t.Anno.FindBy = append(t.Anno.FindBy, cols)
+			case "listby":
+				t.Anno.ListBy = append(t.Anno.ListBy, cols)
+			case "lockby":
+				t.Anno.LockBy = append(t.Anno.LockBy, cols)
+			case "locklistby":
+				t.Anno.LockListBy = append(t.Anno.LockListBy, cols)
+			case "deleteby":
+				t.Anno.DeleteBy = append(t.Anno.DeleteBy, cols)
+			case "countby":
+				t.Anno.CountBy = append(t.Anno.CountBy, cols)
+			}
+		case "update":
+			// @update:<Name> <cols...>
+			fields := strings.Fields(a.arg)
+			if len(fields) < 2 {
+				return fmt.Errorf("%s: @update 语法为 `@update:<Name> <col[,col...]>`，实际 %q", t.Name, a.arg)
+			}
+			cols, err := t.splitCols(fields[1], "@update:"+fields[0])
+			if err != nil {
+				return err
+			}
+			t.Anno.Updates = append(t.Anno.Updates, updateAnno{Name: fields[0], Cols: cols})
+		case "updateby":
+			// @updateby:<Name> <setcols> <wherecols>
+			fields := strings.Fields(a.arg)
+			if len(fields) < 3 {
+				return fmt.Errorf("%s: @updateby 语法为 `@updateby:<Name> <setcols> <wherecols>`，实际 %q", t.Name, a.arg)
+			}
+			setCols, err := t.splitCols(fields[1], "@updateby:"+fields[0])
+			if err != nil {
+				return err
+			}
+			whereCols, err := t.splitCols(fields[2], "@updateby:"+fields[0])
+			if err != nil {
+				return err
+			}
+			t.Anno.UpdateBys = append(t.Anno.UpdateBys, updateByAnno{Name: fields[0], SetCols: setCols, WhereCols: whereCols})
+		default:
+			return fmt.Errorf("%s: 未知注解 @%s", t.Name, a.kind)
+		}
+	}
+	return nil
+}
+
+// requireCols 取注解的第一个空白分隔 token 作为列清单并校验。
+func (t *table) requireCols(a anno) ([]string, error) {
+	fields := strings.Fields(a.arg)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("%s: @%s 缺少列名", t.Name, a.kind)
+	}
+	return t.splitCols(fields[0], "@"+a.kind)
+}
+
+// splitCols 拆逗号分隔的列名并逐个校验存在性（注解写错在生成期失败）。
+func (t *table) splitCols(raw, annoName string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			continue
+		}
+		if _, ok := t.col(name); !ok {
+			return nil, fmt.Errorf("%s: %s 引用了不存在的列 %q", t.Name, annoName, name)
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s: %s 没有有效列名", t.Name, annoName)
+	}
+	return out, nil
+}
+
+// col 按名查列定义（生成期辅助）。
+func (t *table) col(name string) (column, bool) {
+	for _, c := range t.Columns {
+		if c.Name == name {
+			return c, true
+		}
+	}
+	return column{}, false
 }
 
 // pkCols 从 `PRIMARY KEY (a, b)` 行提取列名（去空白与引号，多列主键按 DDL 顺序）。
@@ -474,6 +690,12 @@ func genModel(outDir string, t table) error {
 	b.WriteString("\treturn db.ExecContext(ctx, \"DELETE FROM " + t.Name + " WHERE " + pkWhere(t) + "\", " + pkArgNames(t) + ")\n")
 	b.WriteString("}\n")
 
+	// 注解生成（@findby/@listby/@lockby/@locklistby/@deleteby/@countby/@update/@updateby）。
+	// 放在标准 CRUD 之后、批量之前：文件里先「单行规则」，再「注解规则」，最后「批量」。
+	if err := genAnnotated(&b, t); err != nil {
+		return err
+	}
+
 	// 批量落库与按玩家读取：Write-Behind 的模块 Persister 只需要这几个函数，
 	// 表名/列名/占位符全部来自生成物，业务代码里不再出现 SQL 字符串。
 	hasBatch := false
@@ -518,6 +740,200 @@ func genModel(outDir string, t table) error {
 	return writeGoFile(path, pruneUnusedFlushImport(b.String()))
 }
 
+// genAnnotated 展开表前注解，生成「按非主键列」的规则语句。
+//
+// 这些函数补的是标准 CRUD 的缺口：业务需要「按账号查角色」「按 mail_id 删附件」
+// 「按 (from,to) 锁行」——过去写在业务里手拼 SQL，改列名不会报错。
+// 生成之后列名来自 schema，改列名重新生成即可，业务侧只会编译失败而不是运行时 1054。
+//
+// 命名规则与标准 CRUD 对齐：Find/List/Lock/LockList/Delete/Count/Update + 表名
+// + By + 列名（多列直接拼接，如 ByPlayerIdFriendId），一眼能看出 WHERE 是什么。
+func genAnnotated(b *strings.Builder, t table) error {
+	tn := upperCamel(t.Name)
+	allCols := strings.Join(colNames(t.Columns), ",")
+	order := orderByPK(t)
+
+	for _, cols := range t.Anno.FindBy {
+		fn := "Find" + tn + "By" + colsCamel(cols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(cols, ",") + ") 查询一行（注解 @findby:" +
+			strings.Join(cols, ",") + " 生成，ORDER BY 主键 LIMIT 1）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") (*" + tn + ", error) {\n")
+		b.WriteString("\tvar m " + tn + "\n")
+		b.WriteString("\tquery := \"SELECT " + allCols + " FROM " + t.Name + " WHERE " + whereCols(cols) + order + " LIMIT 1\"\n")
+		b.WriteString("\trow := db.QueryRowContext(ctx, query, " + argNames(cols) + ")\n")
+		b.WriteString("\tif err := scan" + tn + "(&m, row); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &m, nil\n}\n")
+	}
+
+	for _, cols := range t.Anno.ListBy {
+		fn := "List" + tn + "By" + colsCamel(cols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(cols, ",") + ") 查询多行（注解 @listby:" +
+			strings.Join(cols, ",") + " 生成）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") ([]" + tn + ", error) {\n")
+		b.WriteString("\trows, err := db.QueryContext(ctx, \"SELECT " + allCols + " FROM " + t.Name + " WHERE " + whereCols(cols) + order + "\", " + argNames(cols) + ")\n")
+		b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer func() { _ = rows.Close() }()\n")
+		b.WriteString("\tvar out []" + tn + "\n")
+		b.WriteString("\tfor rows.Next() {\n\t\tvar m " + tn + "\n\t\tif err := scan" + tn + "(&m, rows); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tout = append(out, m)\n\t}\n")
+		b.WriteString("\treturn out, rows.Err()\n}\n")
+	}
+
+	for _, cols := range t.Anno.LockBy {
+		fn := "Lock" + tn + "By" + colsCamel(cols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(cols, ",") + ") 加行锁并取一行（注解 @lockby:" +
+			strings.Join(cols, ",") + " 生成；必须在事务内调用，否则锁在语句结束后即释放）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") (*" + tn + ", error) {\n")
+		b.WriteString("\tvar m " + tn + "\n")
+		b.WriteString("\tquery := \"SELECT " + allCols + " FROM " + t.Name + " WHERE " + whereCols(cols) + order + " LIMIT 1 FOR UPDATE\"\n")
+		b.WriteString("\trow := db.QueryRowContext(ctx, query, " + argNames(cols) + ")\n")
+		b.WriteString("\tif err := scan" + tn + "(&m, row); err != nil {\n\t\treturn nil, err\n\t}\n\treturn &m, nil\n}\n")
+	}
+
+	for _, cols := range t.Anno.LockListBy {
+		fn := "LockList" + tn + "By" + colsCamel(cols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(cols, ",") + ") 加范围锁并取多行（注解 @locklistby:" +
+			strings.Join(cols, ",") + " 生成；不带 LIMIT，锁住整个匹配区间，用于计数上限类并发防护）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") ([]" + tn + ", error) {\n")
+		b.WriteString("\trows, err := db.QueryContext(ctx, \"SELECT " + allCols + " FROM " + t.Name + " WHERE " + whereCols(cols) + order + " FOR UPDATE\", " + argNames(cols) + ")\n")
+		b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer func() { _ = rows.Close() }()\n")
+		b.WriteString("\tvar out []" + tn + "\n")
+		b.WriteString("\tfor rows.Next() {\n\t\tvar m " + tn + "\n\t\tif err := scan" + tn + "(&m, rows); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tout = append(out, m)\n\t}\n")
+		b.WriteString("\treturn out, rows.Err()\n}\n")
+	}
+
+	for _, cols := range t.Anno.DeleteBy {
+		fn := "Delete" + tn + "By" + colsCamel(cols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(cols, ",") + ") 删除（注解 @deleteby:" +
+			strings.Join(cols, ",") + " 生成）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") (sql.Result, error) {\n")
+		b.WriteString("\treturn db.ExecContext(ctx, \"DELETE FROM " + t.Name + " WHERE " + whereCols(cols) + "\", " + argNames(cols) + ")\n")
+		b.WriteString("}\n")
+	}
+
+	for _, cols := range t.Anno.CountBy {
+		fn := "Count" + tn + "By" + colsCamel(cols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(cols, ",") + ") 计数（注解 @countby:" +
+			strings.Join(cols, ",") + " 生成）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") (int64, error) {\n")
+		b.WriteString("\tvar n int64\n")
+		b.WriteString("\terr := db.QueryRowContext(ctx, \"SELECT COUNT(*) FROM " + t.Name + " WHERE " + whereCols(cols) + "\", " + argNames(cols) + ").Scan(&n)\n")
+		b.WriteString("\treturn n, err\n}\n")
+	}
+
+	for _, u := range t.Anno.Updates {
+		cols, err := t.colsOf(u.Cols)
+		if err != nil {
+			return err
+		}
+		fn := "Update" + tn + upperCamel(u.Name) + "ByPK"
+		sets := setClause(cols)
+		b.WriteString("\n// " + fn + " 按主键只更新 (" + strings.Join(u.Cols, ",") + ")（注解 @update:" +
+			u.Name + " 生成；其余列保持库里现值，避免全列覆盖把并发写入的字段冲掉）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, m *" + tn + ") (sql.Result, error) {\n")
+		b.WriteString("\treturn db.ExecContext(ctx, \"UPDATE " + t.Name + " SET " + sets + " WHERE " + pkWhere(t) + "\", " + argsOf(cols) + ", " + pkArgNamesOfM(t) + ")\n")
+		b.WriteString("}\n")
+	}
+
+	for _, u := range t.Anno.UpdateBys {
+		setCols, err := t.colsOf(u.SetCols)
+		if err != nil {
+			return err
+		}
+		whereColsDef, err := t.colsOf(u.WhereCols)
+		if err != nil {
+			return err
+		}
+		fn := "Update" + tn + upperCamel(u.Name) + "By" + colsCamel(u.WhereCols)
+		b.WriteString("\n// " + fn + " 按 (" + strings.Join(u.WhereCols, ",") + ") 更新 (" + strings.Join(u.SetCols, ",") +
+			")（注解 @updateby:" + u.Name + " 生成）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, m *" + tn + ") (sql.Result, error) {\n")
+		b.WriteString("\treturn db.ExecContext(ctx, \"UPDATE " + t.Name + " SET " + setClause(setCols) + " WHERE " + whereCols(u.WhereCols) + "\", " +
+			argsOf(setCols) + ", " + argsOf(whereColsDef) + ")\n")
+		b.WriteString("}\n")
+	}
+	return nil
+}
+
+// colsOf 列名 → 列定义（resolveAnnos 已校验存在，这里只是取 GoName/类型）。
+func (t *table) colsOf(names []string) ([]column, error) {
+	out := make([]column, 0, len(names))
+	for _, n := range names {
+		c, ok := t.col(n)
+		if !ok {
+			return nil, fmt.Errorf("%s: 列 %q 不存在", t.Name, n)
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// colsCamel 列名切片 → 函数名后缀（account_id → AccountId；多列直接拼接）。
+func colsCamel(cols []string) string {
+	var b strings.Builder
+	for _, c := range cols {
+		b.WriteString(upperCamel(c))
+	}
+	return b.String()
+}
+
+// paramsOf 生成形参列表（`accountId int64, friendId int64`），顺序与 cols 一致。
+func paramsOf(t table, cols []string) string {
+	out := make([]string, 0, len(cols))
+	for _, n := range cols {
+		c, ok := t.col(n)
+		if !ok {
+			continue
+		}
+		out = append(out, lowerCamel(c.Name)+" "+c.GoType)
+	}
+	return strings.Join(out, ", ")
+}
+
+// argNames 生成实参列表（`accountId, friendId`），与 paramsOf 一一对应。
+func argNames(cols []string) string {
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, lowerCamel(c))
+	}
+	return strings.Join(out, ", ")
+}
+
+// whereCols 生成 `a = ? AND b = ?` 形式的 WHERE 子句。
+func whereCols(cols []string) string {
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, c+" = ?")
+	}
+	return strings.Join(out, " AND ")
+}
+
+// setClause 生成 `a = ?, b = ?` 形式的 SET 子句。
+func setClause(cols []column) string {
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		out = append(out, c.Name+" = ?")
+	}
+	return strings.Join(out, ", ")
+}
+
+// orderByPK 生成 ` ORDER BY 主键`（无主键时为空）。
+//
+// 加它就是加确定性：不带 ORDER BY 的 LIMIT 1 由执行计划决定返回哪一行，
+// 同一份数据在不同索引选择下可能给出不同结果，测试与线上都会飘。
+func orderByPK(t table) string {
+	if len(t.PKs) == 0 {
+		return ""
+	}
+	return " ORDER BY " + strings.Join(t.PKs, ", ")
+}
+
+// lowerCamel upperCamel 的反向（AccountId → accountId），用于形参名。
+func lowerCamel(s string) string {
+	u := upperCamel(s)
+	if u == "" {
+		return u
+	}
+	return strings.ToLower(u[:1]) + u[1:]
+}
+
 // pruneUnusedFlushImport 在没有生成任何 flush.* 调用时去掉 flush 导入。
 //
 // 为什么需要：像 map_id_allocator 这种「只有自增主键 + DB 生成时间列」的表，
@@ -535,9 +951,15 @@ func pruneUnusedFlushImport(src string) string {
 	return strings.Replace(src, "\n\t\"game_study/pkg/flush\"", "", 1)
 }
 
-// goFieldType 列的 Go 字段类型：自增列恒为 int64；可空时间列用 sql.NullTime
-// （写入零值为 NULL，避免 time.Time{} 超出 TIMESTAMP/DATETIME 范围报 1292；
-// 读出 NULL 也不报 "converting NULL to time.Time is unsupported"）。
+// goFieldType 列的 Go 字段类型：自增列恒为 int64；可空列用 sql.Null* 包装。
+//
+// 可空列必须能表达 NULL，否则两种失真各来一次：
+//   - 可空时间列（expire_at/paid_at）：写零值 time.Time{} 会超出 TIMESTAMP 范围
+//     报 1292；读 NULL 报 "converting NULL to time.Time is unsupported"；
+//   - 可空字符串列（mail.biz_id）：string 零值是空串而不是 NULL，而唯一索引对
+//     空串生效、对 NULL 不生效 —— 同一玩家的第二封普通邮件立刻撞 uk_player_biz
+//     报 1062（历史真实缺陷，当时靠手写 SQL 绑 nil 绕过）。sql.NullString 实现
+//     driver.Valuer，Valid=false 直接写 NULL，唯一索引恢复「多行 NULL 互不冲突」。
 //
 // 自增列恒为 int64 而不按 SQL 类型：MySQL 自增列可以是 int，但 Go 侧主键
 // 统一 int64 后与 robot/gamedata 的 Id int64 口径一致，省去各处类型转换。
@@ -545,11 +967,13 @@ func goFieldType(c column) string {
 	if c.AutoInc {
 		return "int64"
 	}
-	if c.GoType == "time.Time" && !c.NotNull {
-		// 可空时间列（如 expire_at/paid_at）：sql.NullTime 同时根治两个问题——
-		// ① 写入零值不越界（Valid=false → NULL）；② 读出 NULL 不报
-		// "converting NULL to time.Time is unsupported"
-		return "sql.NullTime"
+	if !c.NotNull {
+		switch c.GoType {
+		case "time.Time":
+			return "sql.NullTime"
+		case "string":
+			return "sql.NullString"
+		}
 	}
 	return c.GoType
 }

@@ -76,6 +76,23 @@ func DeleteTeamMemberByPK(ctx context.Context, db Querier, Id int64) (sql.Result
 	return db.ExecContext(ctx, "DELETE FROM team_member WHERE id = ?", Id)
 }
 
+// DeleteTeamMemberByTeamIdPlayerId 按 (team_id,player_id) 删除（注解 @deleteby:team_id,player_id 生成）
+func DeleteTeamMemberByTeamIdPlayerId(ctx context.Context, db Querier, teamId int64, playerId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM team_member WHERE team_id = ? AND player_id = ?", teamId, playerId)
+}
+
+// DeleteTeamMemberByTeamId 按 (team_id) 删除（注解 @deleteby:team_id 生成）
+func DeleteTeamMemberByTeamId(ctx context.Context, db Querier, teamId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM team_member WHERE team_id = ?", teamId)
+}
+
+// CountTeamMemberByTeamId 按 (team_id) 计数（注解 @countby:team_id 生成）
+func CountTeamMemberByTeamId(ctx context.Context, db Querier, teamId int64) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM team_member WHERE team_id = ?", teamId).Scan(&n)
+	return n, err
+}
+
 // upsertTeamMemberCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertTeamMemberCols = []string{"team_id", "player_id", "ready"}
 

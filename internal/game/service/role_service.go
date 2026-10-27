@@ -2,12 +2,17 @@
 //
 // 架构职责：登录服（login）在玩家「进游戏前」的会话级服务，与游戏服内的
 // module.Module 是两层不同的东西：
-//  1. 不在 Actor 内执行——由 login handler 直接调用，靠 MySQL 事务 +
-//     唯一键保证并发安全（与 module 层的「Actor 串行化免锁」不同）；
+//  1. 不在 Actor 内执行——由 login handler 直接调用，并发安全由 RoleStore
+//     的事务 + 唯一键保证（与 module 层的「Actor 串行化免锁」不同）；
 //  2. 不过 Persister/Ext——角色是数据库行本身（player / player_attr /
 //     player_item 三表），没有快照概念；
 //  3. 错误用哨兵 error 表达（ErrNoRole/ErrNameUsed...），由 handler 经
 //     errcode 包翻译成协议错误码（对应设计文档 4.10 的 2003-2005）。
+//
+// 分层边界（本轮整改的重点）：本文件只做**业务规则**——名字/职业校验、
+// 初始属性与初始背包的配置解读；一切 SQL 与驱动细节下沉到 RoleStore 的
+// 实现（internal/game/player/role_store.go，用 gendb 生成的 CRUD）。
+// 因此本文件不 import database/sql，也不持有 *db.DB。
 //
 // 协作关系：login/repo 负责账号与会话，本服务负责角色域；
 // IDTable（cache）登记是 12.5 的可选加速——创建后同步登记，
@@ -16,7 +21,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
@@ -25,19 +29,20 @@ import (
 	"unicode/utf8"
 
 	"game_study/pkg/cache"
-	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
-
-	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
 // 角色服务错误（对应 4.10 错误码 2003-2005）。
 //
 // 哨兵 error 模式：handler 层用 errors.Is 判定后经 errcode 包翻译成
-// 协议错误码；DB 真故障（driver 错误）不走哨兵，由 %w 包装后按
+// 协议错误码；DB 真故障（驱动错误）不走哨兵，由 %w 包装后按
 // 「内部错误」处理——「可预期失败」与「真故障」两条通道分离。
+//
+// 注意 ErrNoRole 与 ErrNameUsed 由 RoleStore 的实现翻译后返回：
+// 「行不存在」「唯一键冲突」是数据库事实，翻译成领域语义是持久化层的
+// 职责（与 login/repo 把 sql.ErrNoRows 翻译成 ErrNoRole 同型）。
 var (
 	// ErrNoRole 账号还没有角色（调用方据此走创角流程）
 	ErrNoRole = errors.New("no role")
@@ -49,18 +54,48 @@ var (
 	ErrCareerBad = errors.New("career not exist")
 )
 
-// 角色名规则：2-16 字符，中英文/数字，禁止空白与特殊符号。
+// InitItem 一行初始道具（创角草稿的组成部分）。
+type InitItem struct {
+	// ItemID 道具配置 id（item.xml 主键）
+	ItemID int32
+	// Count 数量（已按堆叠上限截断）
+	Count int64
+}
+
+// RoleDraft 创角草稿：业务算好的全部落库输入。
 //
-// \p{Han} 是 Unicode 属性类：Go 的 regexp 按 UTF-8 码点匹配，
-// {2,16} 对汉字数的是「字」不是字节——2 个汉字=6 字节也合法。
-// （Create 里的 RuneCountInString>16 是对此的双保险：防将来正则被
-// 改成按字节计数的写法时静默失效。）
-// TrimSpace 先行：「  龙傲天  」应按去空白后的内容判定。
-var namePattern = regexp.MustCompile(`^[\p{Han}A-Za-z0-9]{2,16}$`)
+// 为什么用草稿而不是让 store 自己读配置：初始属性来自 baseAttrs、初始背包
+// 来自 init_bag.xml——两者都是业务规则（改配置不该改持久化层）。store 只负责
+// 「把这份草稿原子地写成三张表的行」，不解释配置。
+type RoleDraft struct {
+	// AccountID 归属账号
+	AccountID int64
+	// Name 角色名（已 TrimSpace、已校验）
+	Name string
+	// Career 职业 id（已校验存在于 career.xml）
+	Career int32
+	// Hp/Mp/Atk/Def/Spd 职业初始属性（player_attr 一行）
+	Hp, Mp, Atk, Def, Spd int32
+	// Items 初始背包（已合并、截断、按 item_id 排序）
+	Items []InitItem
+}
+
+// RoleStore 角色持久化契约（由持久化层实现）。
+//
+// 为什么由 service 定义接口：消费方定义接口是 Go 的惯例，接口只含本服务
+// 真正用到的两个方法，实现方（player.RoleStore）可以自由选择 SQL 形态，
+// 单测也只需一个几行的内存假实现，不必拉起 sqlmock。
+type RoleStore interface {
+	// FindByAccount 返回账号下最早创建的角色；无角色返回 ErrNoRole。
+	FindByAccount(ctx context.Context, accountID int64) (*model.Player, error)
+	// Create 原子写 player + player_attr + player_item，返回新角色 ID；
+	// 角色名撞唯一键返回 ErrNameUsed。
+	Create(ctx context.Context, d RoleDraft) (int64, error)
+}
 
 // RoleService 角色服务。
 type RoleService struct {
-	db     *db.DB
+	store  RoleStore
 	logger *log.Logger
 	// idTable 可选：创角后登记 ID 表（12.5）。
 	// nil 表示未启用（无 cache 环境）——可选依赖用后置注入而非构造参数，
@@ -69,8 +104,8 @@ type RoleService struct {
 }
 
 // NewRoleService 创建服务。
-func NewRoleService(database *db.DB, logger *log.Logger) *RoleService {
-	return &RoleService{db: database, logger: logger}
+func NewRoleService(store RoleStore, logger *log.Logger) *RoleService {
+	return &RoleService{store: store, logger: logger}
 }
 
 // SetIDTable 注入 ID 表（12.5：创建记录后同步登记，避免对账窗口内判断为「不存在」）。
@@ -82,26 +117,14 @@ func (s *RoleService) SetIDTable(t *cache.IDTable) { s.idTable = t }
 
 // FindByAccount 查账号下角色；无角色返回 ErrNoRole。
 //
-// ORDER BY id LIMIT 1：P6 一账号一角色，LIMIT 1 防脏数据多行时
-// QueryRow 直接报错把查询打挂（与 guild.FindByPlayer 同型）。
-// ErrNoRows → ErrNoRole：把 database/sql 的「无行」翻译成领域哨兵，
-// 调用方只认 errors.Is(err, ErrNoRole)，不碰 sql 包。
-// Scan 按位置绑定：SELECT 列序与 &p.XXX 序列必须一一对应，
-// database/sql 不做名字匹配——加列时两处要同步改。
+// 一账号一角色（P6）：store 用 ORDER BY id LIMIT 1 取最早创建的那一行，
+// 脏数据多行时也不会把查询打挂（与 guild.FindByPlayer 同型）。
 func (s *RoleService) FindByAccount(ctx context.Context, accountID int64) (*model.Player, error) {
-	const q = `SELECT id, account_id, name, level, exp, coin, scene_id, created_at, updated_at
-	           FROM player WHERE account_id = ? ORDER BY id LIMIT 1`
-	var p model.Player
-	err := s.db.QueryRowContext(ctx, q, accountID).Scan(
-		&p.Id, &p.AccountId, &p.Name, &p.Level, &p.Exp, &p.Coin, &p.SceneId, &p.CreatedAt, &p.UpdatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNoRole
-	}
+	p, err := s.store.FindByAccount(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("query player: %w", err)
+		return nil, err
 	}
-	return &p, nil
+	return p, nil
 }
 
 // Create 创建角色：校验名字/职业 → 事务插入 player + player_attr + 初始背包。
@@ -132,51 +155,17 @@ func (s *RoleService) Create(ctx context.Context, accountID int64, name string, 
 		return 0, err
 	}
 
-	var roleID int64
-	// 初始道具在事务外读取：配置是进程内快照（gamedata 启动加载），
-	// 事务内复用同一份——热更新不会在本事务中途换表，也避免事务内
-	// 做无关 IO 拉长行锁时间
-	items := initialItems(s.logger) // 配置只读一次，事务内复用（热更新不会在本事务中途换表）
-	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
-		// 三张表一个事务：创角是「要么全出现、要么全不出现」的复合写入，
-		// 半成品角色（有 player 行但没 attr/item）会让客户端首屏异常
-		const insPlayer = `INSERT INTO player (account_id, name, level, exp, coin, scene_id) VALUES (?, ?, 1, 0, 0, 0)`
-		res, err := tx.ExecContext(ctx, insPlayer, accountID, name)
-		if err != nil {
-			// errors.As + *mysqlDriver.MySQLError 是比 strings.Contains
-			// (err.Error(), "1062") 更健壮的 1062 识别：类型断言取结构化
-			// 错误码，不依赖错误文本的措辞（换语言包/换版本也不误判）。
-			// 这也是本文件 import mysqlDriver 的唯一原因。
-			var me *mysqlDriver.MySQLError
-			if errors.As(err, &me) && me.Number == 1062 {
-				return ErrNameUsed
-			}
-			return fmt.Errorf("insert player: %w", err)
-		}
-		// LastInsertId 取自增主键：事务内已插入，必然有效
-		roleID, err = res.LastInsertId()
-		if err != nil {
-			return err
-		}
-
-		// baseAttrs 多返回值解构：职业初始属性一次算出五维
-		hp, mp, atk, def, spd := baseAttrs(career)
-		const insAttr = `INSERT INTO player_attr (player_id, career, hp, mp, atk, def, spd) VALUES (?, ?, ?, ?, ?, ?, ?)`
-		if _, err := tx.ExecContext(ctx, insAttr, roleID, career, hp, mp, atk, def, spd); err != nil {
-			return fmt.Errorf("insert player_attr: %w", err)
-		}
-
-		// 初始背包与角色同事务写入：要么角色和初始道具一起出现，要么都不出现，
-		// 不会留下「有角色但背包空」的半成品（客户端首屏会少展示初始道具）。
-		// items 已按 item_id 排序（buildInitialItems 保证），插入顺序稳定
-		const insItem = `INSERT INTO player_item (player_id, item_id, count) VALUES (?, ?, ?)`
-		for _, it := range items {
-			if _, err := tx.ExecContext(ctx, insItem, roleID, it.itemID, it.count); err != nil {
-				return fmt.Errorf("insert initial item %d: %w", it.itemID, err)
-			}
-		}
-		return nil
-	})
+	// 初始道具与属性在事务外算好（配置是进程内快照，热更新不会在
+	// 本次创角中途换表）：store 拿到的是完整草稿，事务里不再读配置。
+	hp, mp, atk, def, spd := baseAttrs(career)
+	draft := RoleDraft{
+		AccountID: accountID,
+		Name:      name,
+		Career:    career,
+		Hp:        hp, Mp: mp, Atk: atk, Def: def, Spd: spd,
+		Items: initialItems(s.logger),
+	}
+	roleID, err := s.store.Create(ctx, draft)
 	if err != nil {
 		return 0, err
 	}
@@ -191,16 +180,8 @@ func (s *RoleService) Create(ctx context.Context, accountID int64, name string, 
 
 	// 创角审计日志：谁（account）、发了什么职业、发了几件初始道具，
 	// 客诉「没收到新手礼包」时这一行就是对账起点
-	s.logger.Info("role created", "role_id", roleID, "account_id", accountID, "career", career, "init_items", len(items))
+	s.logger.Info("role created", "role_id", roleID, "account_id", accountID, "career", career, "init_items", len(draft.Items))
 	return roleID, nil
-}
-
-// initItem 一行初始道具。
-type initItem struct {
-	// itemID 道具配置 id（item.xml 主键）
-	itemID int32
-	// count 数量（已按堆叠上限截断）
-	count int64
 }
 
 // initialItems 读取 init_bag.xml，返回创角时要写入背包的道具。
@@ -208,11 +189,11 @@ type initItem struct {
 // 容错策略：配置行非法（ID/数量 <= 0）、道具不存在时只告警跳过，不阻断创角——
 // 创角失败的影响远大于少发一件新手道具；错误配置应在启动/发布期通过日志发现。
 // 同一道具多行会合并，并按 item.xml 的堆叠上限截断，避免写出非法数量。
-// 结果按 item_id 排序，保证 SQL 顺序稳定（便于测试与排查）。
+// 结果按 item_id 排序，保证写入顺序稳定（便于测试与排查）。
 //
 // 包一层 buildInitialItems 是为了可测性：配置行由参数注入，单测用内存
 // 构造 rows 即可覆盖合并/截断/跳过边界，不依赖 XML 文件。
-func initialItems(logger *log.Logger) []initItem {
+func initialItems(logger *log.Logger) []InitItem {
 	return buildInitialItems(logger, gamedata.InitBagCfgList())
 }
 
@@ -221,7 +202,7 @@ func initialItems(logger *log.Logger) []initItem {
 //
 // 两阶段「先合并后输出」：map[int32]int64 作累加器（key 存在性即
 // 「见过该道具」），汇总完再一次性转切片——避免在行序上做增量插入。
-func buildInitialItems(logger *log.Logger, rows []gamedata.InitBagCfg) []initItem {
+func buildInitialItems(logger *log.Logger, rows []gamedata.InitBagCfg) []InitItem {
 	merged := make(map[int32]int64)
 	for _, cfg := range rows {
 		itemID, count := int32(cfg.Col1), cfg.Col2
@@ -246,15 +227,15 @@ func buildInitialItems(logger *log.Logger, rows []gamedata.InitBagCfg) []initIte
 			merged[itemID] = item.Col2
 		}
 	}
-	out := make([]initItem, 0, len(merged))
+	out := make([]InitItem, 0, len(merged))
 	// map range 是随机序（Go 规范不保证遍历顺序，且运行时故意随机化）——
 	// 直接输出会让每次创角的 SQL 顺序不同，测试难复现、日志难比对，
 	// 所以必须显式排序把随机序压成确定序
 	for id, n := range merged {
-		out = append(out, initItem{itemID: id, count: n})
+		out = append(out, InitItem{ItemID: id, Count: n})
 	}
 	// sort.Slice 就地排序；itemID 唯一故不需要稳定排序（sort.SliceStable）
-	sort.Slice(out, func(i, j int) bool { return out[i].itemID < out[j].itemID })
+	sort.Slice(out, func(i, j int) bool { return out[i].ItemID < out[j].ItemID })
 	return out
 }
 
@@ -274,3 +255,12 @@ func baseAttrs(career int32) (hp, mp, atk, def, spd int32) {
 		return 800, 150, 40, 20, 10
 	}
 }
+
+// namePattern 角色名规则：2-16 字符，中英文/数字，禁止空白与特殊符号。
+//
+// \p{Han} 是 Unicode 属性类：Go 的 regexp 按 UTF-8 码点匹配，
+// {2,16} 对汉字数的是「字」不是字节——2 个汉字=6 字节也合法。
+// （Create 里的 RuneCountInString>16 是对此的双保险：防将来正则被
+// 改成按字节计数的写法时静默失效。）
+// TrimSpace 先行：「  龙傲天  」应按去空白后的内容判定。
+var namePattern = regexp.MustCompile(`^[\p{Han}A-Za-z0-9]{2,16}$`)

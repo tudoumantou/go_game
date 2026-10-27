@@ -79,6 +79,52 @@ func DeleteMailAttachmentByPK(ctx context.Context, db Querier, Id int64) (sql.Re
 	return db.ExecContext(ctx, "DELETE FROM mail_attachment WHERE id = ?", Id)
 }
 
+// ListMailAttachmentByMailId 按 (mail_id) 查询多行（注解 @listby:mail_id 生成）
+func ListMailAttachmentByMailId(ctx context.Context, db Querier, mailId int64) ([]MailAttachment, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,mail_id,item_id,count,claimed,created_at FROM mail_attachment WHERE mail_id = ? ORDER BY id", mailId)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []MailAttachment
+	for rows.Next() {
+		var m MailAttachment
+		if err := scanMailAttachment(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListMailAttachmentByMailIdClaimed 按 (mail_id,claimed) 查询多行（注解 @listby:mail_id,claimed 生成）
+func ListMailAttachmentByMailIdClaimed(ctx context.Context, db Querier, mailId int64, claimed int32) ([]MailAttachment, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,mail_id,item_id,count,claimed,created_at FROM mail_attachment WHERE mail_id = ? AND claimed = ? ORDER BY id", mailId, claimed)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []MailAttachment
+	for rows.Next() {
+		var m MailAttachment
+		if err := scanMailAttachment(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// DeleteMailAttachmentByMailId 按 (mail_id) 删除（注解 @deleteby:mail_id 生成）
+func DeleteMailAttachmentByMailId(ctx context.Context, db Querier, mailId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM mail_attachment WHERE mail_id = ?", mailId)
+}
+
+// UpdateMailAttachmentClaimedByMailId 按 (mail_id) 更新 (claimed)（注解 @updateby:claimed 生成）
+func UpdateMailAttachmentClaimedByMailId(ctx context.Context, db Querier, m *MailAttachment) (sql.Result, error) {
+	return db.ExecContext(ctx, "UPDATE mail_attachment SET claimed = ? WHERE mail_id = ?", m.Claimed, m.MailId)
+}
+
 // upsertMailAttachmentCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertMailAttachmentCols = []string{"mail_id", "item_id", "count", "claimed"}
 

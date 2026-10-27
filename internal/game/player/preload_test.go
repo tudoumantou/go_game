@@ -40,7 +40,9 @@ func expectPlayerRows(mock sqlmock.Sqlmock, playerID int64, now time.Time) {
 			"player_id", "career", "hp", "mp", "atk", "def", "spd", "created_at", "updated_at",
 		}).AddRow(playerID, 1, 100, 50, 10, 5, 8, now, now))
 	mock.ExpectQuery("FROM player_item WHERE").WithArgs(playerID).
-		WillReturnRows(sqlmock.NewRows([]string{"item_id", "count"}).AddRow(1001, 3))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "player_id", "item_id", "count", "expire_at", "created_at", "updated_at",
+		}).AddRow(1, playerID, 1001, 3, nil, now, now))
 }
 
 // TestLoadReturns 预加载必须在一个有界时间内返回（防 WaitGroup 计数错配死锁）。
@@ -89,7 +91,9 @@ func TestLoadPlayerMissing(t *testing.T) {
 			"player_id", "career", "hp", "mp", "atk", "def", "spd", "created_at", "updated_at",
 		}).AddRow(8, 1, 100, 50, 10, 5, 8, time.Now(), time.Now()))
 	mock.ExpectQuery("FROM player_item WHERE").WithArgs(int64(8)).
-		WillReturnRows(sqlmock.NewRows([]string{"item_id", "count"}))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "player_id", "item_id", "count", "expire_at", "created_at", "updated_at",
+		}))
 
 	done := make(chan error, 1)
 	go func() {

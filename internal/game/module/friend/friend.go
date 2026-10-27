@@ -28,6 +28,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 )
@@ -271,8 +272,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 	var code = int32(errcode.OK)
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
 		// 目标必须存在（好友列表要 JOIN player 取名，悬空 ID 会让列表丢行）。
-		var exists int64
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM player WHERE id = ?`, to).Scan(&exists); err != nil {
+		if _, err := model.FindPlayerByPK(ctx, tx, to); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				code = int32(errcode.ErrFriendTargetNotFound)
 				return nil
@@ -280,22 +280,16 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 			return err
 		}
 
-		var one int
-		err := tx.QueryRowContext(ctx,
-			`SELECT 1 FROM friend WHERE player_id = ? AND friend_id = ?`, from, to).Scan(&one)
-		if err == nil {
+		if _, err := model.FindFriendByPlayerIdFriendId(ctx, tx, from, to); err == nil {
 			code = int32(errcode.ErrFriendAlready)
 			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 
 		// 对方已经申请过我：直接建立双向关系，两条申请都置为已同意。
-		var reverseStatus int32
-		err = tx.QueryRowContext(ctx,
-			`SELECT status FROM friend_apply WHERE from_id = ? AND to_id = ? FOR UPDATE`, to, from).Scan(&reverseStatus)
-		if err == nil && reverseStatus == 0 {
+		reverse, err := model.LockFriendApplyByFromIdToId(ctx, tx, to, from)
+		if err == nil && reverse.Status == 0 {
 			if err := r.becomeFriends(ctx, tx, from, to); err != nil {
 				if errors.Is(err, errFriendFull) {
 					code = int32(errcode.ErrFriendFull)
@@ -311,10 +305,8 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 		}
 
 		// 我已申请且仍在待处理：幂等。
-		var myStatus int32
-		err = tx.QueryRowContext(ctx,
-			`SELECT status FROM friend_apply WHERE from_id = ? AND to_id = ? FOR UPDATE`, from, to).Scan(&myStatus)
-		if err == nil && myStatus == 0 {
+		mine, err := model.LockFriendApplyByFromIdToId(ctx, tx, from, to)
+		if err == nil && mine.Status == 0 {
 			code = int32(errcode.ErrFriendApplyExists)
 			return nil
 		}
@@ -333,21 +325,35 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 		}
 
 		// 我发出的待处理申请上限。
-		var pending int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM friend_apply WHERE from_id = ? AND status = 0`, from).Scan(&pending); err != nil {
+		pending, err := model.CountFriendApplyByFromIdStatus(ctx, tx, from, 0)
+		if err != nil {
 			return err
 		}
-		if pending >= applyLimit() {
+		if pending >= int64(applyLimit()) {
 			code = int32(errcode.ErrFriendApplyFull)
 			return nil
 		}
 
 		// 唯一键冲突时复用同一行：被拒绝过的申请重新回到待处理。
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO friend_apply (from_id, to_id, status, created_at) VALUES (?, ?, 0, NOW())
-			ON DUPLICATE KEY UPDATE status = 0, created_at = NOW()`, from, to)
-		return err
+		// 原来是 INSERT ... ON DUPLICATE KEY UPDATE status=0, created_at=NOW()；
+		// 拆成「插入 + 1062 命中则更新」，语义等价且不依赖 MySQL 方言。
+		if _, err := model.InsertFriendApply(ctx, tx, &model.FriendApply{
+			FromId: from,
+			ToId:   to,
+			Status: 0,
+		}); err != nil {
+			if !db.IsDuplicate(err) {
+				return err
+			}
+			_, err = model.UpdateFriendApplyReapplyByFromIdToId(ctx, tx, &model.FriendApply{
+				FromId:    from,
+				ToId:      to,
+				Status:    0,
+				CreatedAt: time.Now(),
+			})
+			return err
+		}
+		return nil
 	})
 	return code, err
 }
@@ -359,11 +365,7 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time.Duration) (int32, error) {
 	var code = int32(errcode.OK)
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var status int32
-		var createdAt time.Time
-		err := tx.QueryRowContext(ctx,
-			`SELECT status, created_at FROM friend_apply WHERE from_id = ? AND to_id = ? FOR UPDATE`,
-			from, to).Scan(&status, &createdAt)
+		apply, err := model.LockFriendApplyByFromIdToId(ctx, tx, from, to)
 		if errors.Is(err, sql.ErrNoRows) {
 			code = int32(errcode.ErrFriendApplyNotFound)
 			return nil
@@ -371,6 +373,7 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 		if err != nil {
 			return err
 		}
+		status, createdAt := apply.Status, apply.CreatedAt
 
 		switch status {
 		case 1:
@@ -383,8 +386,11 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 
 		if time.Since(createdAt) > ttl {
 			// 过期：顺手置为已拒绝（状态收敛），下次要重新申请
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE friend_apply SET status = 2 WHERE from_id = ? AND to_id = ?`, from, to); err != nil {
+			if _, err := model.UpdateFriendApplyStatusByFromIdToId(ctx, tx, &model.FriendApply{
+				FromId: from,
+				ToId:   to,
+				Status: 2,
+			}); err != nil {
 				return err
 			}
 			code = int32(errcode.ErrFriendApplyExpired)
@@ -392,8 +398,11 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 		}
 
 		if !accept {
-			_, err := tx.ExecContext(ctx,
-				`UPDATE friend_apply SET status = 2 WHERE from_id = ? AND to_id = ?`, from, to)
+			_, err := model.UpdateFriendApplyStatusByFromIdToId(ctx, tx, &model.FriendApply{
+				FromId: from,
+				ToId:   to,
+				Status: 2,
+			})
 			return err
 		}
 
@@ -428,17 +437,28 @@ func (r *Repo) becomeFriends(ctx context.Context, tx *sql.Tx, a, b int64) error 
 		return errFriendFull
 	}
 
-	// 两行必须同时存在：IGNORE 保证重复同意不报错（幂等）。
-	if _, err := tx.ExecContext(ctx,
-		`INSERT IGNORE INTO friend (player_id, friend_id) VALUES (?, ?), (?, ?)`,
-		a, b, b, a); err != nil {
-		return err
+	// 双向插入：两行必须同时存在。重复同意时 1062 即幂等命中，忽略即可
+	// （原来是 INSERT IGNORE，语义一致，但不依赖 MySQL 方言）。
+	for _, pair := range [][2]int64{{a, b}, {b, a}} {
+		if _, err := model.InsertFriend(ctx, tx, &model.Friend{
+			PlayerId: pair[0],
+			FriendId: pair[1],
+		}); err != nil && !db.IsDuplicate(err) {
+			return err
+		}
 	}
 	// 同时把反向申请也置为已同意：两人几乎同时互相申请时不会留下第二条待处理。
-	_, err = tx.ExecContext(ctx, `
-		UPDATE friend_apply SET status = 1
-		WHERE (from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)`, a, b, b, a)
-	return err
+	// 原来的 OR 条件拆成两次按复合键更新，同一事务内等价。
+	for _, pair := range [][2]int64{{a, b}, {b, a}} {
+		if _, err := model.UpdateFriendApplyStatusByFromIdToId(ctx, tx, &model.FriendApply{
+			FromId: pair[0],
+			ToId:   pair[1],
+			Status: 1,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // errFriendFull 事务内信号：由 Handle/Apply 转成业务码。
@@ -446,35 +466,29 @@ var errFriendFull = errors.New("friend full")
 
 // lockFriendCount 锁住某玩家的好友行并返回数量。
 //
-// 用 `SELECT id ... FOR UPDATE` 而不是 COUNT(*) FOR UPDATE：
+// 用 `SELECT ... FOR UPDATE`（不带 LIMIT）而不是 COUNT(*) FOR UPDATE：
 // 需要在 REPEATABLE READ 下拿到 next-key lock，防止两个并发同意同时穿透上限。
 // 这是 MySQL 间隙锁的典型用法——锁住「现有行 + 行间空隙」，
 // 让并发 INSERT 在唯一键冲突前就被挡下。
+// 生成函数 LockListFriendByPlayerId 正是这条范围锁（@locklistby:player_id）。
 func lockFriendCount(ctx context.Context, tx *sql.Tx, playerID int64) (int, error) {
-	rows, err := tx.QueryContext(ctx,
-		`SELECT id FROM friend WHERE player_id = ? FOR UPDATE`, playerID)
+	rows, err := model.LockListFriendByPlayerId(ctx, tx, playerID)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	n := 0
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return 0, err
-		}
-		n++
-	}
-	return n, rows.Err()
+	return len(rows), nil
 }
 
 // Delete 删除双向关系；本来不是好友也返回成功（幂等）。
 func (r *Repo) Delete(ctx context.Context, a, b int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-			DELETE FROM friend
-			WHERE (player_id = ? AND friend_id = ?) OR (player_id = ? AND friend_id = ?)`,
-			a, b, b, a)
-		return err
+		// 原来是 `WHERE (a AND b) OR (c AND d)`；拆成两条按复合键删除，
+		// 同一事务内等价，且各自幂等（删 0 行不报错）。
+		for _, pair := range [][2]int64{{a, b}, {b, a}} {
+			if _, err := model.DeleteFriendByPlayerIdFriendId(ctx, tx, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }

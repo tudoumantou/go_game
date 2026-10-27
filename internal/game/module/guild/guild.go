@@ -32,6 +32,7 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 )
@@ -119,11 +120,18 @@ func (r *Repo) FindByPlayer(ctx context.Context, playerID int64) (*Guild, error)
 func (r *Repo) Create(ctx context.Context, name string, leaderID int64) (int64, error) {
 	var guildID int64
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO guild (name, leader_id, level, exp, notice, member_count) VALUES (?, ?, 1, 0, '', 1)`,
-			name, leaderID)
+		res, err := model.InsertGuild(ctx, tx, &model.Guild{
+			Name:        name,
+			LeaderId:    leaderID,
+			Level:       1,
+			Exp:         0,
+			Notice:      "",
+			MemberCount: 1,
+		})
 		if err != nil {
-			if strings.Contains(err.Error(), "1062") || strings.Contains(err.Error(), "Duplicate") {
+			// 唯一键冲突 = 公会名重复（uk_name）。判定走结构化 1062，
+			// 不再匹配 "Duplicate" 这类错误文本（换驱动版本会静默失效）。
+			if db.IsDuplicate(err) {
 				return ErrNameUsed
 			}
 			return err
@@ -132,9 +140,11 @@ func (r *Repo) Create(ctx context.Context, name string, leaderID int64) (int64, 
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO guild_member (guild_id, player_id, title) VALUES (?, ?, ?)`,
-			guildID, leaderID, titleLeader)
+		_, err = model.InsertGuildMember(ctx, tx, &model.GuildMember{
+			GuildId:  guildID,
+			PlayerId: leaderID,
+			Title:    titleLeader,
+		})
 		return err
 	})
 	return guildID, err
@@ -154,29 +164,36 @@ var ErrNameUsed = errors.New("guild name used")
 // 计数没加」的错位。
 func (r *Repo) Join(ctx context.Context, guildID, playerID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var count, level int32
-		if err := tx.QueryRowContext(ctx, `SELECT member_count, level FROM guild WHERE id = ? FOR UPDATE`, guildID).Scan(&count, &level); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrGuildNotExist
-			}
+		// 锁公会行（生成的 @lockby:id）：member_count 的「读-判断-写」
+		// 三步必须在同一事务内基于同一份读数，否则并发加入会双双通过判定
+		g, err := model.LockGuildById(ctx, tx, guildID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrGuildNotExist
+		}
+		if err != nil {
 			return err
 		}
-		if count >= int32(maxMembers(level)) {
+		if g.MemberCount >= int32(maxMembers(g.Level)) {
 			return ErrGuildFull
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO guild_member (guild_id, player_id, title) VALUES (?, ?, ?)`,
-			guildID, playerID, titleMember); err != nil {
-			// 唯一键冲突 = 已在该公会；靠 MySQL 1062 识别（driver 不暴露约束类型）。
+		if _, err := model.InsertGuildMember(ctx, tx, &model.GuildMember{
+			GuildId:  guildID,
+			PlayerId: playerID,
+			Title:    titleMember,
+		}); err != nil {
+			// 唯一键冲突 = 已在该公会（uk_guild_player）。
 			// 前置的 FindByPlayer 已挡掉绝大多数情况，这里是双端并发加入的兜底。
-			if strings.Contains(err.Error(), "1062") {
+			if db.IsDuplicate(err) {
 				return ErrAlreadyIn
 			}
 			return err
 		}
-		// member_count + 1 用 SQL 表达式累加而非读出来算：
-		// 行已被 FOR UPDATE 锁住，表达式累加不会丢失并发更新
-		_, err := tx.ExecContext(ctx, `UPDATE guild SET member_count = member_count + 1 WHERE id = ?`, guildID)
+		// 人数 +1：行已被 FOR UPDATE 锁住，读改写与表达式累加等价，
+		// 且不依赖生成器支持表达式 SET。
+		_, err = model.UpdateGuildMemberCountByPK(ctx, tx, &model.Guild{
+			Id:          guildID,
+			MemberCount: g.MemberCount + 1,
+		})
 		return err
 	})
 }
@@ -199,31 +216,41 @@ var (
 // 整个事务回滚，不会留下「公会没了、成员行还在」的孤儿数据。
 func (r *Repo) Quit(ctx context.Context, playerID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var guildID int64
-		var title int32
-		err := tx.QueryRowContext(ctx,
-			`SELECT guild_id, title FROM guild_member WHERE player_id = ? LIMIT 1`, playerID).Scan(&guildID, &title)
+		member, err := model.FindGuildMemberByPlayerId(ctx, tx, playerID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotInGuild
 		}
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM guild_member WHERE player_id = ?`, playerID); err != nil {
+		guildID, title := member.GuildId, member.Title
+		if err := model.DeleteGuildMemberByPlayer(ctx, tx, playerID); err != nil {
 			return err
 		}
 		if title == titleLeader {
-			// 会长退出：解散公会
-			if _, err := tx.ExecContext(ctx, `DELETE FROM guild_member WHERE guild_id = ?`, guildID); err != nil {
+			// 会长退出：解散公会（先删成员行再删公会行，满足外键依赖）
+			if _, err := model.DeleteGuildMemberByGuildId(ctx, tx, guildID); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `DELETE FROM guild WHERE id = ?`, guildID)
+			_, err := model.DeleteGuildByPK(ctx, tx, guildID)
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE guild SET member_count = GREATEST(member_count - 1, 0) WHERE id = ?`, guildID)
-		// GREATEST 兜底：并发退出时计数不会被减成负数。
-		// member_count 是冗余计数，异常路径（手工改库/漏更新）可能已失真，
-		// SQL 层兜底比信任应用层更稳——「人数不为负」是数据库 invariant。
+		// 人数 -1：先锁公会行再读改写（原来用 GREATEST 表达式兜底，
+		// 生成器不支持表达式 SET；加行锁后读改写同样不会丢更新，
+		// 且 max(-1, 0) 保住了「人数不为负」这条数据库不变量）。
+		g, err := model.LockGuildById(ctx, tx, guildID)
+		if errors.Is(err, sql.ErrNoRows) {
+			// 公会行已不存在（异常数据）：成员行删掉即达成目标，不再改计数
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		count := g.MemberCount - 1
+		if count < 0 {
+			count = 0
+		}
+		_, err = model.UpdateGuildMemberCountByPK(ctx, tx, &model.Guild{Id: guildID, MemberCount: count})
 		return err
 	})
 }

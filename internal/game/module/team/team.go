@@ -28,13 +28,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
+	"game_study/pkg/model"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 )
@@ -119,8 +119,11 @@ func (r *Repo) FindByPlayer(ctx context.Context, playerID int64) (*Team, error) 
 func (r *Repo) Create(ctx context.Context, leaderID int64, copyID int32) (int64, error) {
 	var teamID int64
 	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO team (leader_id, copy_id, status) VALUES (?, ?, 0)`, leaderID, copyID)
+		res, err := model.InsertTeam(ctx, tx, &model.Team{
+			LeaderId: leaderID,
+			CopyId:   copyID,
+			Status:   0,
+		})
 		if err != nil {
 			return err
 		}
@@ -128,8 +131,11 @@ func (r *Repo) Create(ctx context.Context, leaderID int64, copyID int32) (int64,
 		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO team_member (team_id, player_id, ready) VALUES (?, ?, 0)`, teamID, leaderID)
+		_, err = model.InsertTeamMember(ctx, tx, &model.TeamMember{
+			TeamId:   teamID,
+			PlayerId: leaderID,
+			Ready:    0,
+		})
 		return err
 	})
 	return teamID, err
@@ -148,28 +154,29 @@ func (r *Repo) Create(ctx context.Context, leaderID int64, copyID int32) (int64,
 // 已解散的队伍就是不存在。
 func (r *Repo) Join(ctx context.Context, teamID, playerID int64) error {
 	return r.db.Tx(ctx, func(tx *sql.Tx) error {
-		var leaderID int64
-		var status int32
-		err := tx.QueryRowContext(ctx,
-			`SELECT leader_id, status FROM team WHERE id = ? FOR UPDATE`, teamID).Scan(&leaderID, &status)
-		if errors.Is(err, sql.ErrNoRows) || status == 2 {
+		// 锁队伍主行（生成的 @lockby:id）：让随后的 COUNT(*) 看到一致快照
+		team, err := model.LockTeamById(ctx, tx, teamID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && team.Status == 2) {
 			return ErrTeamNotExist
 		}
 		if err != nil {
 			return err
 		}
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_member WHERE team_id = ?`, teamID).Scan(&count); err != nil {
+		count, err := model.CountTeamMemberByTeamId(ctx, tx, teamID)
+		if err != nil {
 			return err
 		}
-		if count >= maxMembers() {
+		if count >= int64(maxMembers()) {
 			return ErrTeamFull
 		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO team_member (team_id, player_id, ready) VALUES (?, ?, 0)`, teamID, playerID); err != nil {
-			// 唯一键冲突 = 重复加入；MySQL 错误码 1062 是唯一途径（driver 不暴露类型）。
-			// 这是双端并发加入同一队伍的兜底（模块层前置查询挡掉常见情况）。
-			if strings.Contains(err.Error(), "1062") {
+		if _, err := model.InsertTeamMember(ctx, tx, &model.TeamMember{
+			TeamId:   teamID,
+			PlayerId: playerID,
+			Ready:    0,
+		}); err != nil {
+			// 唯一键冲突 = 重复加入（uk_team_player）。这是双端并发加入同一队伍的
+			// 兜底（模块层前置查询挡掉常见情况）；判定走结构化的 1062，不看错误文本。
+			if db.IsDuplicate(err) {
 				return ErrAlreadyIn
 			}
 			return err
@@ -196,14 +203,14 @@ func (r *Repo) Leave(ctx context.Context, playerID int64) error {
 		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM team_member WHERE team_id = ? AND player_id = ?`, teamID, playerID); err != nil {
+		if _, err := model.DeleteTeamMemberByTeamIdPlayerId(ctx, tx, teamID, playerID); err != nil {
 			return err
 		}
 		if leaderID == playerID {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM team_member WHERE team_id = ?`, teamID); err != nil {
+			if _, err := model.DeleteTeamMemberByTeamId(ctx, tx, teamID); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE team SET status = 2 WHERE id = ?`, teamID); err != nil {
+			if _, err := model.UpdateTeamStatusByPK(ctx, tx, &model.Team{Id: teamID, Status: 2}); err != nil {
 				return err
 			}
 		}

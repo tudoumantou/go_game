@@ -19,6 +19,26 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// playerRow 一行完整的 player 记录。
+//
+// 生成函数（@lockby/@findby）取的是全部列，不再是手写 SQL 的 `SELECT id`——
+// 测试要跟着「表结构」走，而不是跟着某条手写语句走。
+func playerRow(id int64) *sqlmock.Rows {
+	now := time.Now()
+	return sqlmock.NewRows([]string{"id", "account_id", "name", "level", "exp", "coin", "scene_id", "created_at", "updated_at"}).
+		AddRow(id, int64(1001), "hero", 1, 0, 0, 0, now, now)
+}
+
+// itemRows 背包行（ListPlayerItemByPlayer 取 player_item 全部列）。
+func itemRows(items ...[2]int32) *sqlmock.Rows {
+	now := time.Now()
+	r := sqlmock.NewRows([]string{"id", "player_id", "item_id", "count", "expire_at", "created_at", "updated_at"})
+	for i, it := range items {
+		r.AddRow(int64(i+1), int64(7), it[0], it[1], nil, now, now)
+	}
+	return r
+}
+
 func TestCommitItemsAtomic(t *testing.T) {
 	for _, fail := range []string{"", "business", "items", "commit"} {
 		t.Run(fail, func(t *testing.T) {
@@ -31,14 +51,14 @@ func TestCommitItemsAtomic(t *testing.T) {
 			s.AddItem(1001, 5) // 尚未落库的已有背包变化也必须一起保存。
 			boom := errors.New("injected failure")
 			mock.ExpectBegin()
-			mock.ExpectQuery("SELECT id FROM player.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+			mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WithArgs(int64(7)).WillReturnRows(playerRow(7))
 			business := mock.ExpectExec("INSERT INTO claim_test").WithArgs(int64(7))
 			if fail == "business" {
 				business.WillReturnError(boom)
 				mock.ExpectRollback()
 			} else {
 				business.WillReturnResult(sqlmock.NewResult(1, 1))
-				items := mock.ExpectExec("INSERT INTO `?player_item`?").WithArgs(int64(7), int32(1001), int64(35))
+				items := mock.ExpectExec("INSERT INTO player_item \\(player_id, item_id, count\\)").WithArgs(int64(7), int32(1001), int64(35))
 				if fail == "items" {
 					items.WillReturnError(boom)
 					mock.ExpectRollback()
@@ -80,8 +100,8 @@ func TestReloadItemsPreservesOtherActorState(t *testing.T) {
 	s.AddBonus("atk", 77)
 	s.AddItem(1001, 15)
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id FROM player.*FOR UPDATE").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
-	mock.ExpectQuery("SELECT item_id, count FROM player_item").WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"item_id", "count"}).AddRow(1001, 35).AddRow(1002, 1))
+	mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WithArgs(int64(7)).WillReturnRows(playerRow(7))
+	mock.ExpectQuery("FROM player_item WHERE player_id = \\?").WithArgs(int64(7)).WillReturnRows(itemRows([2]int32{1001, 35}, [2]int32{1002, 1}))
 	mock.ExpectCommit()
 	err = NewRepository(&db.DB{DB: sqlDB}).ReloadItems(context.Background(), s)
 	require.NoError(t, err)
@@ -126,7 +146,7 @@ func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	mock.ExpectCommit()
 	// 模拟服务端可能成功、客户端收到 COMMIT 错误。
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id FROM player.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+	mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WillReturnRows(playerRow(7))
 	mock.ExpectExec("INSERT INTO claim_test").WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectExec("INSERT INTO player_item").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit().WillReturnError(errors.New("connection lost"))
@@ -134,8 +154,8 @@ func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	require.False(t, !errors.Is(err, ErrCommitUnknown) || !a.needsReload, fmt.Sprintf("uncertainty not retained: %v", err))
 	// SaveMsg 必须跳过。下一条背包请求先锁行恢复，再读取新数量。
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT id FROM player.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
-	mock.ExpectQuery("SELECT item_id, count FROM player_item").WillReturnRows(sqlmock.NewRows([]string{"item_id", "count"}).AddRow(1001, 35))
+	mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WillReturnRows(playerRow(7))
+	mock.ExpectQuery("FROM player_item WHERE player_id = \\?").WillReturnRows(itemRows([2]int32{1001, 35}))
 	mock.ExpectCommit()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

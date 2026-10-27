@@ -12,20 +12,20 @@ import (
 
 // MapBattle map_battle 表
 type MapBattle struct {
-	WorldId            int64  `db:"world_id"`
-	BattleId           string `db:"battle_id"`
-	TargetId           int64  `db:"target_id"`
-	AttackerId         int64  `db:"attacker_id"`
-	DefenderId         int64  `db:"defender_id"`
-	InputHash          string `db:"input_hash"`
-	AttackerStats      string `db:"attacker_stats"`
-	DefenderStats      string `db:"defender_stats"`
-	RuleVersion        string `db:"rule_version"`
-	RandomSeed         int64  `db:"random_seed"`
-	Status             int32  `db:"status"`
-	DeadlineMs         int64  `db:"deadline_ms"`
-	Result             string `db:"result"`
-	AppliedOperationId string `db:"applied_operation_id"`
+	WorldId            int64          `db:"world_id"`
+	BattleId           string         `db:"battle_id"`
+	TargetId           int64          `db:"target_id"`
+	AttackerId         int64          `db:"attacker_id"`
+	DefenderId         int64          `db:"defender_id"`
+	InputHash          string         `db:"input_hash"`
+	AttackerStats      string         `db:"attacker_stats"`
+	DefenderStats      string         `db:"defender_stats"`
+	RuleVersion        string         `db:"rule_version"`
+	RandomSeed         int64          `db:"random_seed"`
+	Status             int32          `db:"status"`
+	DeadlineMs         int64          `db:"deadline_ms"`
+	Result             sql.NullString `db:"result"`
+	AppliedOperationId string         `db:"applied_operation_id"`
 }
 
 // MapBattle 列名

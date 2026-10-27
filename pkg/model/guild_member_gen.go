@@ -79,6 +79,22 @@ func DeleteGuildMemberByPK(ctx context.Context, db Querier, Id int64) (sql.Resul
 	return db.ExecContext(ctx, "DELETE FROM guild_member WHERE id = ?", Id)
 }
 
+// FindGuildMemberByPlayerId 按 (player_id) 查询一行（注解 @findby:player_id 生成，ORDER BY 主键 LIMIT 1）
+func FindGuildMemberByPlayerId(ctx context.Context, db Querier, playerId int64) (*GuildMember, error) {
+	var m GuildMember
+	query := "SELECT id,guild_id,player_id,title,contributed,joined_at FROM guild_member WHERE player_id = ? ORDER BY id LIMIT 1"
+	row := db.QueryRowContext(ctx, query, playerId)
+	if err := scanGuildMember(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// DeleteGuildMemberByGuildId 按 (guild_id) 删除（注解 @deleteby:guild_id 生成）
+func DeleteGuildMemberByGuildId(ctx context.Context, db Querier, guildId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM guild_member WHERE guild_id = ?", guildId)
+}
+
 // upsertGuildMemberCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertGuildMemberCols = []string{"guild_id", "player_id", "title", "contributed"}
 

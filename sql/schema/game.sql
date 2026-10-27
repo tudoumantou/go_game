@@ -198,6 +198,9 @@ CREATE TABLE `copy_record` (
 -- ============================================================================
 -- sql/schema/friend.sql
 -- 好友表 + 申请表（游戏服，分表键：player_id % 512；Redis idx:friend:{pid}）
+-- @findby:player_id,friend_id
+-- @deleteby:player_id,friend_id
+-- @locklistby:player_id
 CREATE TABLE `friend` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '关系ID',
   `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '归属玩家',
@@ -209,6 +212,10 @@ CREATE TABLE `friend` (
   KEY `idx_friend` (`player_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='好友表';
 
+-- @lockby:from_id,to_id
+-- @countby:from_id,status
+-- @updateby:status status from_id,to_id
+-- @updateby:reapply status,created_at from_id,to_id
 CREATE TABLE `friend_apply` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '申请ID',
   `from_id`    BIGINT UNSIGNED NOT NULL COMMENT '申请方玩家ID',
@@ -224,6 +231,8 @@ CREATE TABLE `friend_apply` (
 -- ============================================================================
 -- sql/schema/guild.sql
 -- 公会表 + 成员表（游戏服，分表键：guild_id % 64；低频聚合数据，直连 Model CRUD）
+-- @lockby:id
+-- @update:memberCount member_count
 CREATE TABLE `guild` (
   `id`           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '公会ID',
   `name`         VARCHAR(64)  NOT NULL COMMENT '公会名(全局唯一)',
@@ -238,6 +247,8 @@ CREATE TABLE `guild` (
   UNIQUE KEY `uk_name` (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='公会表';
 
+-- @findby:player_id
+-- @deleteby:guild_id
 CREATE TABLE `guild_member` (
   `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '成员记录ID',
   `guild_id`    BIGINT UNSIGNED NOT NULL COMMENT '公会ID',
@@ -274,6 +285,9 @@ CREATE TABLE `login_log` (
 -- ============================================================================
 -- sql/schema/mail.sql
 -- 邮件表 + 附件表（游戏服，分表键：player_id % 512；Kafka gs.mail 消费落库）
+-- @update:status status
+-- @countby:player_id,status
+-- @deleteby:id,player_id
 CREATE TABLE `mail` (
   `id`          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '邮件ID',
   `player_id`   BIGINT UNSIGNED NOT NULL COMMENT '归属玩家',
@@ -291,6 +305,10 @@ CREATE TABLE `mail` (
   KEY `idx_player_status` (`player_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='邮件表';
 
+-- @listby:mail_id
+-- @listby:mail_id,claimed
+-- @deleteby:mail_id
+-- @updateby:claimed claimed mail_id
 CREATE TABLE `mail_attachment` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '附件ID',
   `mail_id`    BIGINT UNSIGNED NOT NULL COMMENT '所属邮件',
@@ -693,6 +711,9 @@ CREATE TABLE `map_world` (
 -- ============================================================================
 -- sql/schema/player.sql
 -- 玩家表（游戏服，分表键：id % 512，依据 12.3 表清单）
+-- @findby:account_id
+-- @update:progress level,exp,coin,scene_id
+-- @lockby:id
 CREATE TABLE `player` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '玩家ID',
   `account_id` BIGINT UNSIGNED NOT NULL COMMENT '账号ID',
@@ -815,8 +836,8 @@ CREATE TABLE `player_quest` (
 -- ============================================================================
 -- 七日签到：周一为一周起点，状态只有「已领取天数 + 已领取奖励汇总」。
 --
--- 周切换的清零由周期回调模块负责，本表不含周锚点；-- @flat:signin 让 gendb
--- 生成 FlatOps，模块侧一行 RegisterFlat 完成持久化接入。
+-- 周切换的清零由周期回调模块负责，本表不含周锚点。
+-- @flat:signin
 CREATE TABLE `player_signin` (
   `player_id` BIGINT UNSIGNED NOT NULL,
   `claimed_days` TEXT NOT NULL COMMENT '已领取天数 JSON 数组，1=周一…7=周日',
@@ -916,6 +937,8 @@ CREATE TABLE `shop_record` (
 -- sql/schema/team.sql
 -- 组队表 + 成员表（游戏服，分表键：无 —— 短期数据，文档注明可只存 Redis，
 -- 落库仅作崩溃恢复兜底；P0 建表备用）
+-- @lockby:id
+-- @update:status status
 CREATE TABLE `team` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '队伍ID',
   `leader_id`  BIGINT UNSIGNED NOT NULL COMMENT '队长玩家ID',
@@ -926,6 +949,9 @@ CREATE TABLE `team` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='组队表';
 
+-- @countby:team_id
+-- @deleteby:team_id,player_id
+-- @deleteby:team_id
 CREATE TABLE `team_member` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '成员记录ID',
   `team_id`    BIGINT UNSIGNED NOT NULL COMMENT '队伍ID',

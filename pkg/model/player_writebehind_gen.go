@@ -12,9 +12,9 @@ import (
 
 // PlayerWritebehind player_writebehind 表
 type PlayerWritebehind struct {
-	PlayerId      int64  `db:"player_id"`
-	Version       int64  `db:"version"`
-	AppliedGrants string `db:"applied_grants"`
+	PlayerId      int64          `db:"player_id"`
+	Version       int64          `db:"version"`
+	AppliedGrants sql.NullString `db:"applied_grants"`
 }
 
 // PlayerWritebehind 列名

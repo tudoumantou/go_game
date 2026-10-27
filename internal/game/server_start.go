@@ -91,7 +91,9 @@ func (s *Server) initMySQL() error {
 		}
 		s.database = database
 		s.repo = player.NewRepository(database)
-		s.roleSvc = service.NewRoleService(database, s.logger)
+		// 创角服务只依赖持久化契约：SQL 与驱动在 player.RoleStore 内部，
+		// service 层不再持有 *db.DB（本轮整改的边界）
+		s.roleSvc = service.NewRoleService(player.NewRoleStore(database), s.logger)
 	}
 	return nil
 }

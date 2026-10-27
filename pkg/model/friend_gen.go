@@ -76,6 +76,40 @@ func DeleteFriendByPK(ctx context.Context, db Querier, Id int64) (sql.Result, er
 	return db.ExecContext(ctx, "DELETE FROM friend WHERE id = ?", Id)
 }
 
+// FindFriendByPlayerIdFriendId 按 (player_id,friend_id) 查询一行（注解 @findby:player_id,friend_id 生成，ORDER BY 主键 LIMIT 1）
+func FindFriendByPlayerIdFriendId(ctx context.Context, db Querier, playerId int64, friendId int64) (*Friend, error) {
+	var m Friend
+	query := "SELECT id,player_id,friend_id,intimacy,created_at FROM friend WHERE player_id = ? AND friend_id = ? ORDER BY id LIMIT 1"
+	row := db.QueryRowContext(ctx, query, playerId, friendId)
+	if err := scanFriend(&m, row); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// LockListFriendByPlayerId 按 (player_id) 加范围锁并取多行（注解 @locklistby:player_id 生成；不带 LIMIT，锁住整个匹配区间，用于计数上限类并发防护）
+func LockListFriendByPlayerId(ctx context.Context, db Querier, playerId int64) ([]Friend, error) {
+	rows, err := db.QueryContext(ctx, "SELECT id,player_id,friend_id,intimacy,created_at FROM friend WHERE player_id = ? ORDER BY id FOR UPDATE", playerId)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Friend
+	for rows.Next() {
+		var m Friend
+		if err := scanFriend(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// DeleteFriendByPlayerIdFriendId 按 (player_id,friend_id) 删除（注解 @deleteby:player_id,friend_id 生成）
+func DeleteFriendByPlayerIdFriendId(ctx context.Context, db Querier, playerId int64, friendId int64) (sql.Result, error) {
+	return db.ExecContext(ctx, "DELETE FROM friend WHERE player_id = ? AND friend_id = ?", playerId, friendId)
+}
+
 // upsertFriendCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
 var upsertFriendCols = []string{"player_id", "friend_id", "intimacy"}
 
