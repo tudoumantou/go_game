@@ -18,6 +18,7 @@ import (
 
 	"game_study/internal/cross/battle"
 	"game_study/internal/cross/rpc"
+	"game_study/internal/cross/seat"
 	"game_study/pkg/actor"
 	"game_study/pkg/config"
 	"game_study/pkg/log"
@@ -39,6 +40,7 @@ type Server struct {
 	metricsSrv *metrics.Server
 	actorSys   *actor.System
 	rooms      *battle.Manager
+	seatRooms  *seat.Manager
 	crossRPC   *rpc.Server
 	rpcServer  *rpcpkg.Server
 }
@@ -84,6 +86,11 @@ func (s *Server) Start(ctx context.Context) error {
 	s.crossRPC = rpc.NewServer(s.cfg.Server.Name, nil, s.logger)
 	s.rooms = battle.NewManager(s.actorSys, s.crossRPC, s.logger)
 	s.crossRPC.AttachRooms(s.rooms)
+
+	// 抢位置房间：常驻设施，启动即拉起；所有游戏服统一把座位流量发到
+	// 配置指定的那个 cross 节点（cross.seat_addr），这里才承载共享座位。
+	s.seatRooms = seat.NewManager(s.actorSys, s.crossRPC, s.logger)
+	s.crossRPC.AttachSeats(s.seatRooms)
 
 	// ④ gRPC server
 	s.rpcServer = rpcpkg.NewServer(s.cfg.Server.GRPCAddr, s.logger)

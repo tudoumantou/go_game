@@ -126,6 +126,14 @@ var wireBaseline = map[string]uint32{
 	"FriendUnblockResp":      6812,
 	"EquipEnhanceReq":        3107,
 	"EquipEnhanceResp":       3108,
+	// 抢位置（8000 段）
+	"SeatOccupyReq":  8001,
+	"SeatOccupyResp": 8002,
+	"SeatLeaveReq":   8003,
+	"SeatLeaveResp":  8004,
+	"SeatQueryReq":   8005,
+	"SeatQueryResp":  8006,
+	"SeatRewardNotify": 8010,
 }
 
 // TestMsgIDsMatchWireBaseline 逐条比对 wireBaseline：生成表里的号必须与

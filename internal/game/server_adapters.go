@@ -18,9 +18,13 @@ import (
 	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
+	"game_study/pkg/codec"
 	pkgmq "game_study/pkg/mq"
+	pkgseat "game_study/pkg/seat"
 
+	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"google.golang.org/protobuf/proto"
 )
 
 type chatMessenger struct {
@@ -156,6 +160,67 @@ func (h crossHandler) OnBattleResult(res *internalv2.BattleResult) {
 	if h.srv.crossPool != nil {
 		h.srv.crossPool.OnRoomClosed(res.GetRoomId())
 	}
+}
+
+// OnSeatReward 实现 cross.Handler：跨服座位奖励回推。
+//
+// 在线 → 向玩家 Actor 投递 GrantItemsMsg（BizID 幂等，重投不二次发奖）；
+// 离线 → 写 seat_pending_reward，登录时由 seat 模块补发。
+func (h crossHandler) OnSeatReward(rw *internalv2.SeatReward) {
+	if rw == nil || rw.GetPlayerId() == 0 || rw.GetAmount() <= 0 {
+		return
+	}
+	playerID := rw.GetPlayerId()
+	items := []player.GrantItem{{ItemID: pkgseat.RewardItem, Count: rw.GetAmount()}}
+
+	if pid, ok := h.srv.players.Get(playerID); ok {
+		_ = h.srv.actorSys.Send(pid, &player.GrantItemsMsg{
+			BizID:  fmt.Sprintf("%d", rw.GetSeq()),
+			Source: "seat",
+			Items:  items,
+		})
+		if raw, err := proto.Marshal(&gamev1.SeatRewardNotify{
+			Tier: rw.GetTier(), Minutes: rw.GetMinutes(), Reward: rw.GetAmount(),
+		}); err == nil {
+			_ = h.srv.actorSys.Send(pid, &player.PushMsg{MsgID: codec.MsgSeatRewardNotify, Body: raw})
+		}
+		return
+	}
+
+	if h.srv.seatMgr != nil {
+		if err := h.srv.seatMgr.PendReward(context.Background(), playerID, rw.GetSeq(), rw.GetTier(), rw.GetMinutes()); err != nil {
+			h.srv.logger.Warn("seat cross reward pending failed",
+				"player_id", playerID, "seq", rw.GetSeq(), "err", err)
+		}
+	}
+}
+
+// OnSeatState 实现 cross.Handler：把跨服座位全量快照写入本服缓存。
+//
+// 查询走本地缓存而不是跨服往返：座位变更低频、快照小，广播 + 缓存让
+// 查询零 RTT，也避免为「请求-响应」维护一条 pending 关联链路。
+func (h crossHandler) OnSeatState(st *internalv2.SeatState) {
+	if st == nil || h.srv.seatCache == nil {
+		return
+	}
+	rooms := make([]pkgseat.RoomSnapshot, 0, len(st.GetRooms()))
+	for _, r := range st.GetRooms() {
+		snap := pkgseat.RoomSnapshot{
+			Tier:      r.GetTier(),
+			RoomIndex: int(r.GetRoomIndex()),
+		}
+		for _, sv := range r.GetSeats() {
+			snap.Seats = append(snap.Seats, pkgseat.SeatView{
+				Index:      int(sv.GetIndex()),
+				State:      pkgseat.SeatState(sv.GetState()),
+				Occupant:   sv.GetOccupant(),
+				OccupiedAt: sv.GetOccupiedAt(),
+				RemainSec:  sv.GetRemainSec(),
+			})
+		}
+		rooms = append(rooms, snap)
+	}
+	h.srv.seatCache.Set(rooms)
 }
 
 // CrossReady 已就绪的跨服节点数（测试/运维探针用）。

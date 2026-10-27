@@ -35,6 +35,7 @@ import (
 	"game_study/internal/game/player"
 	"game_study/internal/game/rpc"
 	"game_study/internal/game/scene"
+	"game_study/internal/game/seat"
 	"game_study/internal/game/service"
 	"game_study/pkg/actor"
 	"game_study/pkg/cache"
@@ -98,6 +99,8 @@ type Server struct {
 	crossPool *gamecross.Pool    // 到跨服节点的连接池
 	centerCli *gamecenter.Client // 到中心服的 Report 流
 	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
+	seatMgr   *seat.Manager      // 抢位置房间管理器（单服座位 + 离线奖励）
+	seatCache *seat.Cache        // 跨服座位快照缓存（跨服模式下查询用）
 
 	// mu 保护下面三张会话映射表的全部读写；players2sess 是
 	// player→session 的唯一权威映射，顶号判定与下行路由都读它，
@@ -170,6 +173,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.initPlayerManager()
+	s.initSeat()
 
 	// ④ 外部系统：Kafka 消费者 → etcd 注册 → gRPC + 长连接
 	if err := s.startKafkaConsumers(deduper); err != nil {

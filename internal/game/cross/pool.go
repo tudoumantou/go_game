@@ -53,6 +53,9 @@ type Pool struct {
 	clients map[string]*Client          // addr -> client
 	conns   map[string]*grpc.ClientConn // addr -> 连接（Stop 时关闭，否则对端 GracefulStop 会一直等）
 	rooms   map[uint64]string           // room_id -> addr（建房时记录）
+	// seatAddr 承载跨服座位房间的指定节点地址；空表示未启用跨服座位。
+	// 座位必须集中在一个节点，所有游戏服共享同一批房间。
+	seatAddr string
 
 	pendingMu sync.Mutex
 	pending   map[string]chan *internalv2.RoomCreateResp
@@ -262,6 +265,33 @@ func (p *Pool) SendResult(roomID uint64, playerID int64, token string, result in
 		BattleToken: token,
 		FinishedAt:  time.Now().Unix(),
 	})
+}
+
+// SetSeatAddr 指定承载跨服座位房间的跨服节点地址（空表示禁用跨服座位）。
+//
+// 必须在 Start 之前调用（组装层读配置时一次性设置），之后只读。
+func (p *Pool) SetSeatAddr(addr string) {
+	p.mu.Lock()
+	p.seatAddr = addr
+	p.mu.Unlock()
+}
+
+// SendSeatOp 把座位操作发往指定的跨服座位节点。
+//
+// 与战斗的 clientOfRoom 不同：座位房间固定在 seatAddr 一个节点上，
+// 不存在「按 room_id 动态路由」——所有档位/房间号都由该节点承载。
+func (p *Pool) SendSeatOp(op *internalv2.SeatOp) error {
+	if op == nil {
+		return fmt.Errorf("nil seat op")
+	}
+	p.mu.RLock()
+	addr := p.seatAddr
+	c := p.clients[addr]
+	p.mu.RUnlock()
+	if addr == "" || c == nil {
+		return fmt.Errorf("seat cross node unavailable")
+	}
+	return c.Send(&internalv2.CrossFrame{Data: &internalv2.CrossFrame_Seat{Seat: op}})
 }
 
 // OnRoomClosed 房间结算后清理路由。

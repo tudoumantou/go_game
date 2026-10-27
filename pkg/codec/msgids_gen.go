@@ -117,6 +117,13 @@ const (
 	MsgQuestAcceptResp        uint32 = 7104
 	MsgQuestClaimReq          uint32 = 7105
 	MsgQuestClaimResp         uint32 = 7106
+	MsgSeatOccupyReq          uint32 = 8001
+	MsgSeatOccupyResp         uint32 = 8002
+	MsgSeatLeaveReq           uint32 = 8003
+	MsgSeatLeaveResp          uint32 = 8004
+	MsgSeatQueryReq           uint32 = 8005
+	MsgSeatQueryResp          uint32 = 8006
+	MsgSeatRewardNotify       uint32 = 8010
 )
 
 // msgNames 消息号 → message 名（日志与排障用，避免只看到数字）
@@ -231,6 +238,13 @@ var msgNames = map[uint32]string{
 	7104: "QuestAcceptResp",
 	7105: "QuestClaimReq",
 	7106: "QuestClaimResp",
+	8001: "SeatOccupyReq",
+	8002: "SeatOccupyResp",
+	8003: "SeatLeaveReq",
+	8004: "SeatLeaveResp",
+	8005: "SeatQueryReq",
+	8006: "SeatQueryResp",
+	8010: "SeatRewardNotify",
 }
 
 // msgIDs message 名 → 消息号
@@ -345,6 +359,13 @@ var msgIDs = map[string]uint32{
 	"QuestAcceptResp":        7104,
 	"QuestClaimReq":          7105,
 	"QuestClaimResp":         7106,
+	"SeatOccupyReq":          8001,
+	"SeatOccupyResp":         8002,
+	"SeatLeaveReq":           8003,
+	"SeatLeaveResp":          8004,
+	"SeatQueryReq":           8005,
+	"SeatQueryResp":          8006,
+	"SeatRewardNotify":       8010,
 }
 
 // MsgName 返回消息号对应的 message 名。
@@ -360,4 +381,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 110 }
+func MsgCount() int { return 117 }

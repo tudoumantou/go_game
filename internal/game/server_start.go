@@ -34,6 +34,7 @@ import (
 	"game_study/internal/game/module/quest"
 	rankmodule "game_study/internal/game/module/rank"
 	scenemod "game_study/internal/game/module/scene"
+	seatmod "game_study/internal/game/module/seat"
 	"game_study/internal/game/module/shop"
 	"game_study/internal/game/module/signin"
 	"game_study/internal/game/module/skill"
@@ -43,6 +44,7 @@ import (
 	gameremote "game_study/internal/game/remote"
 	"game_study/internal/game/rpc"
 	"game_study/internal/game/scene"
+	"game_study/internal/game/seat"
 	"game_study/internal/game/service"
 	"game_study/pkg/actor"
 	"game_study/pkg/cache"
@@ -245,6 +247,8 @@ func (s *Server) initBattleAndProducer() {
 	// 跨服连接池（P13）：在模块注册前建好，battle 模块依赖它
 	if len(s.cfg.Cross.Nodes) > 0 {
 		s.crossPool = gamecross.NewPool(s.cfg.Server.Name, crossHandler{srv: s}, s.logger)
+		// 跨服座位固定在一个指定节点；未配置则只走单服座位。
+		s.crossPool.SetSeatAddr(s.cfg.Cross.SeatAddr)
 	}
 	s.battleMod = battle.New(s.crossPool, centerMatchAdapter{cli: s.centerCli}, gamePusher{srv: s}, s.logger)
 	if d, err := config.ParseDuration(s.cfg.Cross.BattleTimeout); err == nil && d > 0 {
@@ -279,6 +283,9 @@ func (s *Server) initModules() {
 	s.modules.Register(bag.New(s.logger))
 	s.modules.Register(item.New(s.logger))
 	s.modules.Register(s.battleMod)
+	// 抢位置：房间 Actor 与玩家同节点，不依赖 MySQL 也能玩（在线发奖）；
+	// 离线奖励表在 initSeat 里按 database 是否可用决定是否注入。
+	s.modules.Register(seatmod.M)
 
 	// 以下模块依赖 MySQL：mail/chat/guild/team 直写库，quest/equip/skill/copy/
 	// shop/activity/signin/loginreward/rank/friend/partner 经 Persister 落库。
@@ -373,6 +380,32 @@ func (s *Server) initPlayerManager() {
 		s.players.SetPreloader(player.NewPreloader(s.database, s.logger, preloadTimeout))
 	}
 }
+
+// initSeat 拉起单服抢位置房间，并把路由器/离线奖励表注入 seat 模块。
+//
+// 必须在 initPlayerManager 之后：在线发奖要用玩家管理器的本地索引；
+// 但要在开始接收连接之前（Boot 里紧跟 initPlayerManager），保证首个玩家
+// 登录时模块依赖已就绪。
+func (s *Server) initSeat() {
+	var pending *seat.PendingStore
+	if s.database != nil {
+		pending = seat.NewPendingStore(s.database)
+	}
+	s.seatMgr = seat.NewManager(s.actorSys, s.players, pending, s.logger)
+	s.seatCache = seat.NewCache()
+	seatmod.SetRouter(s.seatMgr)
+	if pending != nil {
+		seatmod.SetPending(pending)
+	}
+	// 配置了跨服座位节点：座位操作改走 cross 节点，查询读本服缓存。
+	// 未配置则保持单服模式（操作与查询都走本节点房间 Actor）。
+	if s.cfg.Cross.SeatAddr != "" && s.crossPool != nil {
+		seatmod.SetCross(s.crossPool, s.seatCache)
+		s.logger.Info("seat using cross mode", "seat_addr", s.cfg.Cross.SeatAddr)
+	}
+	s.logger.Info("seat rooms initialized", "rooms", s.seatMgr.Count())
+}
+
 
 // startKafkaConsumers 启动充值/邮件/跨服私聊的消费组。
 func (s *Server) startKafkaConsumers(deduper pkgmq.Deduper) error {

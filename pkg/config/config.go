@@ -392,6 +392,10 @@ type CrossConfig struct {
 	Nodes         []string `yaml:"nodes"`          // 跨服节点 gRPC 地址
 	BattleTimeout string   `yaml:"battle_timeout"` // 单场战斗时限（超时平局兜底）
 	ReconnectMax  string   `yaml:"reconnect_max"`  // 断流重连最大退避
+	// SeatAddr 承载跨服抢位置房间的节点地址（须是 nodes 中的一个）。
+	// 为空表示只启用单服座位、不启用跨服座位——跨服座位必须集中在一个
+	// 节点，所有游戏服共享同一批房间，否则各服看到各自的座位。
+	SeatAddr string `yaml:"seat_addr"`
 }
 
 type XServiceConfig struct {

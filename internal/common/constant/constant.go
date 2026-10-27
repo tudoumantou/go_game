@@ -40,6 +40,8 @@ const (
 	MsgIDSocialMax   = 6999
 	MsgIDMailMin     = 7000 // 邮件/任务
 	MsgIDMailMax     = 7999
+	MsgIDSeatMin     = 8000 // 抢位置房间
+	MsgIDSeatMax     = 8999
 	MsgIDInternalMin = 9000 // 内部 gRPC（不暴露给客户端）
 	MsgIDInternalMax = 9999
 )

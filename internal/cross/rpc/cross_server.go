@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"game_study/internal/cross/battle"
+	"game_study/internal/cross/seat"
 	"game_study/pkg/log"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -40,6 +41,7 @@ type Server struct {
 
 	logger *log.Logger
 	rooms  *battle.Manager
+	seats  *seat.Manager
 	nodeID string // 本跨服节点 ID（日志/指标）
 
 	// tokenKey 准入令牌签名密钥（进程内随机：房间纯内存，重启后房间与令牌同时失效）
@@ -99,6 +101,10 @@ func (p *peer) close() {
 // （另一种是引入第三个 mediator，这里没必要）。
 func (s *Server) AttachRooms(rooms *battle.Manager) { s.rooms = rooms }
 
+// AttachSeats 注入座位管理器（与 AttachRooms 同款两段式初始化：
+// seat.Manager 需要本 Server 作 Sink，本 Server 又需要它分发 SeatOp）。
+func (s *Server) AttachSeats(seats *seat.Manager) { s.seats = seats }
+
 // NewServer 创建 CrossService 服务端。
 // tokenKey 进程内随机生成（32 字节）：房间纯内存，重启后房间与令牌
 // 同时失效——不需要持久化密钥，随机反而是最小暴露面。rand 失败时
@@ -153,6 +159,14 @@ func (s *Server) Channel(stream internalv2.CrossService_ChannelServer) error {
 	// 下行泵：把房间推来的帧写到流里（Send 不能并发调用，必须单 goroutine）
 	writeErr := make(chan error, 1)
 	go func() { writeErr <- s.writeLoop(p, stream) }()
+
+	// 新连上的游戏服先拿一份当前座位状态：游戏服本地缓存据此回答查询。
+	// 放在 writeLoop 启动之后——先有消费者再入队，避免多占一格队列。
+	if s.seats != nil {
+		_ = p.send(&internalv2.CrossFrame{
+			Data: &internalv2.CrossFrame_SeatState{SeatState: s.seats.BuildState()},
+		})
+	}
 
 	defer func() {
 		// defer 里做四件收尾：关通道 → 摘 peer（带身份比对）→
@@ -221,6 +235,11 @@ func (s *Server) Channel(stream internalv2.CrossService_ChannelServer) error {
 			}
 			if err := s.rooms.Report(nodeID, data.Result); err != nil {
 				s.logger.Debug("report result failed", "room_id", data.Result.RoomId, "err", err)
+			}
+
+		case *internalv2.CrossFrame_Seat:
+			if data.Seat != nil {
+				s.onSeatOp(nodeID, data.Seat)
 			}
 
 		case *internalv2.CrossFrame_Ctrl:
@@ -341,6 +360,66 @@ func (s *Server) NodeOf(playerID int64) (string, bool) {
 // 当前仅作钩子存在：清理类动作已由 peer 断开时的
 // cleanupNode 兜底，这里留给后续扩展（如通知中心服回收房间号）。
 func (s *Server) RoomClosed(roomID uint64) { s.rooms.RoomClosed(roomID) }
+
+// onSeatOp 处理座位操作帧（游戏服 → 跨服节点）。
+//
+// 先登记 playerNode 再投递：奖励回推必须知道玩家属于哪个游戏服；漏登记
+// 的后果是座位释放时找不到节点、奖励被丢弃。这里与 battle 的 Snapshot
+// 预登记同一思路。
+func (s *Server) onSeatOp(nodeID string, op *internalv2.SeatOp) {
+	if s.seats == nil || op == nil || op.GetPlayerId() == 0 {
+		return
+	}
+	s.playerNode.Store(op.GetPlayerId(), nodeID)
+
+	switch op.GetAction() {
+	case internalv2.SeatOp_OCCUPY:
+		s.seats.Occupy(op.GetTier(), int(op.GetRoomIndex()), int(op.GetSeatIndex()), op.GetPlayerId(), nodeID)
+	case internalv2.SeatOp_LEAVE:
+		s.seats.Leave(op.GetTier(), int(op.GetRoomIndex()), int(op.GetSeatIndex()), op.GetPlayerId())
+	}
+}
+
+// SendReward 实现 seat.Sink：把座位奖励精确推回玩家所在游戏服节点。
+//
+// 复用 SendToGame 的精确投递（按 BIND 的 node_id 找 peer），不做全网广播——
+// 广播会把 A 玩家的奖励发给所有游戏服。投递失败不重试：座位奖励由离线
+// 挂起表兜底（游戏服收不到就落库，登录补发）。
+func (s *Server) SendReward(nodeID string, playerID int64, tier string, minutes, amount, seq int64) error {
+	return s.SendToGame(nodeID, &internalv2.CrossFrame{
+		Data: &internalv2.CrossFrame_SeatReward{SeatReward: &internalv2.SeatReward{
+			PlayerId: playerID,
+			Tier:     tier,
+			Minutes:  minutes,
+			Amount:   amount,
+			Seq:      seq,
+		}},
+	})
+}
+
+// BroadcastState 实现 seat.Sink：把全量座位快照广播给所有已连接游戏服。
+//
+// 为什么广播而不是按需请求：座位总数固定 100、变更低频，全量快照很小；
+// 各游戏服缓存后即可本地回答查询，省掉一条「请求 ID + pending 等待」链路。
+// 投递是尽力而为（peer 队列满丢帧），下一次房间变更会带来新的全量快照，
+// 丢一帧只会让某个游戏服的缓存短暂滞后。
+func (s *Server) BroadcastState(st *internalv2.SeatState) error {
+	if st == nil {
+		return nil
+	}
+	s.mu.RLock()
+	peers := make([]*peer, 0, len(s.peers))
+	for _, p := range s.peers {
+		peers = append(peers, p)
+	}
+	s.mu.RUnlock()
+
+	frame := &internalv2.CrossFrame{Data: &internalv2.CrossFrame_SeatState{SeatState: st}}
+	for _, p := range peers {
+		_ = p.send(frame)
+	}
+	return nil
+}
 
 // CloseAllPeers 主动断开所有游戏服流（优雅关闭用）。
 //
