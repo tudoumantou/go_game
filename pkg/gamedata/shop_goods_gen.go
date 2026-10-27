@@ -10,6 +10,7 @@ type ShopGoodsCfg struct {
 	Col2 int64 `json:"col2"`
 	Col3 int64 `json:"col3"`
 	Col4 int64 `json:"col4"`
+	Col5 int64 `json:"col5"`
 }
 
 // ShopGoodsTable shop_goods.xml 的只读视图，随快照整体替换，不做原地修改
@@ -21,7 +22,7 @@ func newShopGoodsTable(list []ShopGoodsCfg) (ShopGoodsTable, error) {
 
 // shop_goodsRows 内嵌快照的行数据
 var shop_goodsRows = []ShopGoodsCfg{
-	{Id: 1, Col1: 1, Col2: 1002, Col3: 10, Col4: 50},
+	{Id: 1, Col1: 1, Col2: 1002, Col3: 10, Col4: 50, Col5: 5},
 }
 
 // ShopGoodsCfgList 当前快照的全量行（等价于 Cur().ShopGoods.List()）

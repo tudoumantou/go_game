@@ -3,8 +3,11 @@ package main
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/require"
+	"go/parser"
+	"go/token"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestParseMsgs 协议对解析：显式响应、按约定推导、非法输入。
@@ -16,6 +19,10 @@ func TestParseMsgs(t *testing.T) {
 	require.EqualValues(t, "MailboxListResp", got[0].resp)
 	// 省略响应时按 XxxReq → XxxResp 推导
 	require.EqualValues(t, "MailboxClaimResp", got[1].resp, fmt.Sprintf("[1].resp = %q", got[1].resp))
+
+	// 经推导的处理器名：去掉 Req 后缀加 on 前缀
+	require.EqualValues(t, "onMailboxList", got[0].handlerName())
+	require.EqualValues(t, "onMailboxClaim", got[1].handlerName())
 
 	// 既不给响应又不以 Req 结尾：无法推导，必须报错而不是猜
 	_, err = parseMsgs("SomethingWeird")
@@ -41,10 +48,11 @@ func TestNamingHelpers(t *testing.T) {
 	}
 }
 
-// TestModuleTemplate 模板必须生成「能编译的骨架」而不是留占位符。
+// TestModuleTemplate 装配文件必须用现役写法（Define + module.Route）。
 //
-// 这条断言的价值：脚手架生成的代码若不可编译，使用者第一件事就是修生成器，
-// 反而比手写更慢。
+// 这条断言守的是一个真实退化：模板曾经生成 NewStateful + HandleR + Typed +
+// msgID 常量，而仓库里 8 个模块早已全部迁到 Define + HandleRoute。生成的骨架
+// 与现役代码不同形态，使用者第一件事就得先改写法——比手写更慢。
 func TestModuleTemplate(t *testing.T) {
 	out := moduleTmpl("mailbox", []msgPair{
 		{req: "MailboxListReq", resp: "MailboxListResp"},
@@ -52,27 +60,109 @@ func TestModuleTemplate(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`stateKey = "mailbox"`,
-		"codeSystem int32 = 1",
-		"msgIDMailboxListReq  = codec.MsgMailboxListReq",
-		"module.Typed(msgIDMailboxListResp, m.onMailboxList)",
-		"module.Typed(msgIDMailboxClaimResp, m.onMailboxClaim)",
-		"func (m *Module) onMailboxList(ctx *module.Context",
-		"*module.Stateful[Data]",
+		`const stateKey = "mailbox"`,
+		"module.Define[Data](stateKey, newData)",
+		"Guard(module.RequireCache)",
+		"module.Route(M, &gamev1.MailboxListReq{}, onMailboxList)",
+		"module.Route(M, &gamev1.MailboxClaimReq{}, onMailboxClaim)",
 	} {
 		require.Contains(t, out, want, fmt.Sprintf("模板缺少片段 %q\n---\n%s", want, out))
 	}
-	// 不能出现未定义的标识符或占位符
-	for _, bad := range []string{"<TODO>", "msgIDMailboxListRespResp"} {
-		require.NotContains(t, out, bad, fmt.Sprintf("模板含非法片段 %q", bad))
+	// 旧写法不能再出现（出现即说明模板又退回去了）
+	for _, bad := range []string{"NewStateful", "HandleR(", "Typed(", "codec.Msg", "<TODO>"} {
+		require.NotContains(t, out, bad, fmt.Sprintf("模板含过时写法 %q", bad))
 	}
+	requireParses(t, "module.go", out)
 }
 
-// TestPersistTemplate persist 骨架用推导出的 model 类型（可编译），而非 <TODO>。
-func TestPersistTemplate(t *testing.T) {
-	out := persistTmpl("mailbox", "player_mailbox")
-	for _, want := range []string{"model.PlayerMailboxFlat", "model.PlayerMailbox,", "*model.PlayerMailbox"} {
+// TestModuleTemplateNoMsgs 无协议时也要能编译：不 import gamev1、不生成 init。
+func TestModuleTemplateNoMsgs(t *testing.T) {
+	out := moduleTmpl("mailbox", nil)
+	require.NotContains(t, out, "gamev1", "无协议时不应 import gamev1（会 unused import 编译失败）")
+	require.NotContains(t, out, "func init()")
+	requireParses(t, "module.go", out)
+}
+
+// TestTypesTemplate 持久化形态：带表走 @codec + db tag，不带表走 json tag。
+func TestTypesTemplate(t *testing.T) {
+	withTable := typesTmpl("mailbox", "player_mailbox")
+	require.Contains(t, withTable, "@codec table=player_mailbox")
+	require.Contains(t, withTable, "`db:\"counter\"`")
+	requireParses(t, "types.go", withTable)
+
+	without := typesTmpl("mailbox", "")
+	require.NotContains(t, without, "@codec")
+	require.Contains(t, without, "`json:\"counter\"`")
+	requireParses(t, "types.go", without)
+}
+
+// TestHandlerTemplate 处理器必须是可编译骨架，且不手写错误码赋值。
+func TestHandlerTemplate(t *testing.T) {
+	out := handlerTmpl("mailbox", []msgPair{
+		{req: "MailboxListReq", resp: "MailboxListResp"},
+		{req: "MailboxClaimReq", resp: "MailboxClaimResp"},
+	})
+	for _, want := range []string{
+		"func onMailboxList(c *module.Ctx[Data], req *gamev1.MailboxListReq) error {",
+		"func onMailboxClaim(c *module.Ctx[Data], req *gamev1.MailboxClaimReq) error {",
+		"c.Reply(&gamev1.MailboxListResp{})",
+		"errcode.ErrSystem",
+	} {
 		require.Contains(t, out, want, fmt.Sprintf("缺少 %q\n%s", want, out))
 	}
-	require.NotContains(t, out, "<TODO>", "persist 模板不应留 <TODO>（那不是合法 Go）")
+	// 新写法：错误分支只写 FailCode / Fail，不手写 Code 赋值
+	require.NotContains(t, out, "Code = int32(errcode.")
+	requireParses(t, "handler.go", out)
+}
+
+// TestThinModuleTemplate Thin 形态（有独立表、无内存态）的装配。
+//
+// 与 Define 形态的关键差别：数据不在内存里，所以没有 Guard(RequireCache)，
+// 处理器走 module.Handle（签名带 resp，写字段即回包）。
+func TestThinModuleTemplate(t *testing.T) {
+	out := thinModuleTmpl("mailbox", []msgPair{
+		{req: "MailboxListReq", resp: "MailboxListResp"},
+		{req: "MailboxClaimReq", resp: "MailboxClaimResp"},
+	})
+	for _, want := range []string{
+		"type Module struct {",
+		"*module.Thin",
+		"module.NewThin(\"mailbox\", module.ThinLogger(logger))",
+		"module.Handle(m.Thin, m.onMailboxList)",
+		"module.Handle(m.Thin, m.onMailboxClaim)",
+		"func New(database *db.DB, logger *log.Logger) *Module",
+	} {
+		require.Contains(t, out, want, fmt.Sprintf("缺少 %q\n%s", want, out))
+	}
+	// 无内存态就不该有快照守卫：有 Guard 说明形态搞混了
+	require.NotContains(t, out, "RequireCache", "Thin 形态不参与快照 CAS，不该有 RequireCache")
+	requireParses(t, "module.go", out)
+}
+
+// TestThinHandlerTemplate Thin 形态处理器的签名必须带 resp。
+func TestThinHandlerTemplate(t *testing.T) {
+	out := thinHandlerTmpl("mailbox", []msgPair{{req: "MailboxListReq", resp: "MailboxListResp"}})
+	require.Contains(t, out, "func (m *Module) onMailboxList(ctx *module.Context, req *gamev1.MailboxListReq, resp *gamev1.MailboxListResp) error {")
+	require.Contains(t, out, "*resp = gamev1.MailboxListResp{}")
+	requireParses(t, "handler.go", out)
+}
+
+// TestStoreTemplate 独立表骨架：驱动只在这一层出现。
+func TestStoreTemplate(t *testing.T) {
+	out := storeTmpl("mailbox", "mail")
+	for _, want := range []string{"type store struct", "func newStore(database *db.DB)", "model.ListMailByPlayer"} {
+		require.Contains(t, out, want, fmt.Sprintf("缺少 %q\n%s", want, out))
+	}
+	requireParses(t, "store.go", out)
+}
+
+// requireParses 断言生成物是合法 Go 语法。
+//
+// 只查语法不查类型：类型检查要能解析 import 的目标包，测试环境里代价太大。
+// 但「语法都错」是最常见的模板事故（漏括号、格式化占位符错位），这一层足够拦下。
+func requireParses(t *testing.T, name, src string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	_, err := parser.ParseFile(fset, name, src, parser.AllErrors)
+	require.NoError(t, err, fmt.Sprintf("%s 不是合法 Go：\n%s", name, src))
 }

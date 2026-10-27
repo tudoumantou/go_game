@@ -7,8 +7,9 @@
 // 模块只记录「本周期已购次数」。
 // Ext 槽位：shop_record（Day + Bought JSON 列）。
 // 事件订阅：产出方。购买成功 Emit "buy"（Key=商品 ID），驱动任务。
-// 配置表：shop.xml / shop_goods.xml（Col2=道具，Col3=单价，Col4=数量）、
-// shop_refresh.xml（col2=daily 表示按日刷新）。
+// 配置表：shop.xml / shop_goods.xml（Col2=道具，Col3=单价，Col4=每份数量，
+// Col5=每周期限购份数，0 或负数表示不限）、shop_refresh.xml（col2=daily
+// 表示按日刷新）。
 // 懒初始化：从未购买返回空 Data；跨天清零发生在**读取路径**上
 // （Get 之后按 Day 比较），不需要全服定时任务，也不怕玩家离线几天漏刷。
 //
@@ -88,7 +89,7 @@ func onList(c *module.Ctx[Data]) error {
 			Price:   int32(cfg.Col3),
 			Count:   int32(cfg.Col4),
 			Bought:  d.Bought[goodsKey(shopID, int32(cfg.Id))],
-			Limit:   0, // 配置表暂无「周期限购」列，接上后按列填
+			Limit:   int32(cfg.Col5), // 0 = 不限购（配置缺列时的零值即「不限」）
 		})
 	}
 	return c.Reply(resp)
@@ -101,7 +102,7 @@ func onList(c *module.Ctx[Data]) error {
 func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 	cfg, ok := gamedata.GetShopGoodsCfg(int64(req.GoodsId))
 	if !ok {
-		return c.Reply(&gamev1.ShopBuyResp{Code: int32(errcode.ErrShopGoodsNotExist)})
+		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopGoodsNotExist)
 	}
 	count := int64(req.Count)
 	// 数量裁剪到 1-999：0/负数按 1，上限防单次请求买穿限购与造成大额扣费。
@@ -111,9 +112,10 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 	if count > 999 {
 		count = 999
 	}
-	if shopID := int32(cfg.Col1); !shopExists(shopID) {
+	shopID := int32(cfg.Col1)
+	if !shopExists(shopID) {
 		// 与列表同一条规则：归属商店不存在就不能买（防绕过下架）
-		return c.Reply(&gamev1.ShopBuyResp{Code: int32(errcode.ErrShopGoodsNotExist)})
+		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopGoodsNotExist)
 	}
 
 	d, err := c.Repo.Get()
@@ -121,24 +123,36 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 		return c.Fail(&gamev1.ShopBuyResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 
+	// 先跨天归零再读已购次数：否则「昨天买满了今天买不了」。
+	// 这里改了内存但失败路径不 Save——下次读会按新的一天重算，行为一致。
+	today := businessDay(time.Now())
+	normalize(d, today)
+	key := goodsKey(shopID, req.GoodsId)
+
+	// 周期限购：必须在扣费之前判。放到扣费之后就会出现
+	// 「钱扣了、货被限购挡下」，只能客服补偿。
+	//
+	// 限购的计量单位是「份」（一份 = Col4 个道具），与 Bought 的口径一致；
+	// 0 表示不限购，兼容没配这一列的旧配置。
+	if !withinLimit(d.Bought[key], int32(count), int32(cfg.Col5)) {
+		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopLimitExceeded)
+	}
+
 	itemID := int32(cfg.Col2)
 	grants := []module.ItemGrant{{ItemID: itemID, Count: int64(cfg.Col4) * count}}
 	if err := module.PrecheckGrant(c.State, grants); err != nil {
-		return c.Reply(&gamev1.ShopBuyResp{Code: int32(errcode.ErrShopBagFull)})
+		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopBagFull)
 	}
 	price := int64(cfg.Col3) * count
 	if err := module.Spend(c.State, itemDiamond, price); err != nil {
-		return c.Reply(&gamev1.ShopBuyResp{Code: int32(errcode.ErrShopDiamondNotEnough)})
+		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopDiamondNotEnough)
 	}
 	// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
 	changes, grantErr := module.Grant(c.State, grants)
 	if grantErr != nil {
-		return c.Reply(&gamev1.ShopBuyResp{Code: int32(errcode.ErrShopBagFull)})
+		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopBagFull)
 	}
 
-	today := businessDay(time.Now())
-	normalize(d, today)
-	key := goodsKey(int32(cfg.Col1), req.GoodsId)
 	d.Bought[key] += int32(count)
 	bought := d.Bought[key]
 	if err := c.Repo.Save(d); err != nil {
@@ -158,6 +172,17 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 		c.Emit(module.Event{Type: "buy", Key: fmt.Sprintf("%d", req.GoodsId), Delta: count})
 	}
 	return c.Reply(&gamev1.ShopBuyResp{Bought: bought})
+}
+
+// withinLimit 判断本次购买后是否仍在周期限购内。
+//
+// limit <= 0 表示不限购：这是「配置没填这一列」的兼容语义——新增列之前
+// 的配置全是 0，若把 0 当作「一件都不能买」，热更配置会瞬间让商店停摆。
+//
+// 计量单位是「份」而非「个」：Bought 记的是购买份数（一份 = Col4 个道具），
+// 两者口径必须一致，否则一次买 50 个道具会被算成 50 份。
+func withinLimit(bought, want, limit int32) bool {
+	return limit <= 0 || bought+want <= limit
 }
 
 // goodsKey 组合商店与商品 ID，作为快照内的稳定键。

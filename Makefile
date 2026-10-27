@@ -54,9 +54,9 @@ db-init: ## DDL → MySQL 建表（首次部署）
 db-seed: ## sql/seed → 初始数据（道具/等级等安全表 + 测试账号）
 	./scripts/db-seed.sh
 
-new-module: ## 生成模块骨架（NAME=mailbox [MSGS=MailboxListReq:MailboxListResp,...] [TABLE=player_mailbox]）
-	@test -n "$(NAME)" || (echo "用法: make new-module NAME=mailbox [MSGS=Req:Resp,...] [TABLE=player_mailbox]"; exit 1)
-	@go run ./tools/newmodule -name=$(NAME) -msgs="$(MSGS)" -table="$(TABLE)"
+new-module: ## 生成模块骨架（NAME=mailbox [MSGS=Req:Resp,...] [TABLE=player_mailbox | STORE=mail]）
+	@test -n "$(NAME)" || (echo "用法: make new-module NAME=mailbox [MSGS=Req:Resp,...] [TABLE=player_mailbox | STORE=mail]"; exit 1)
+	@go run ./tools/newmodule -name=$(NAME) -msgs="$(MSGS)" -table="$(TABLE)" -store="$(STORE)"
 
 build: ## 交叉编译六进程（五个服务 + map）→ bin/
 	./scripts/build.sh

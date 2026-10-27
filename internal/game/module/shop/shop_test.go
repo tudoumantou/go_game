@@ -215,3 +215,80 @@ func TestGoodsInMissingShopHiddenAndUnbuyable(t *testing.T) {
 	require.EqualValues(t, int32(errcode.ErrShopGoodsNotExist), resp.Code)
 	require.EqualValues(t, 10000, st.GetItemCount(itemDiamond), "拒绝时不能扣钱")
 }
+
+// TestWithinLimit 限购判定边界：0 表示不限、恰好买满允许、多一份拒绝。
+//
+// 抽成纯函数单测，是因为「0 = 不限」这条兼容语义最容易写反：新增 col5 之前
+// 线上配置全是 0，若把 0 当成「一件都不能买」，热更配置会瞬间让商店停摆。
+func TestWithinLimit(t *testing.T) {
+	cases := []struct {
+		name                string
+		bought, want, limit int32
+		allow               bool
+	}{
+		{"未配置限购列", 999, 999, 0, true},
+		{"负数按不限处理", 5, 5, -1, true},
+		{"首次购买在限内", 0, 1, 5, true},
+		{"恰好买满", 4, 1, 5, true},
+		{"已买满再买一份", 5, 1, 5, false},
+		{"单次请求买超", 0, 6, 5, false},
+		{"已超限（配置调小）再加", 6, 1, 5, false},
+	}
+	for _, c := range cases {
+		require.Equal(t, c.allow, withinLimit(c.bought, c.want, c.limit), c.name)
+	}
+}
+
+// TestBuyRejectsOverLimit 买满限购次数后拒绝，且不扣钱、不发货。
+//
+// 顺序即正确性：限购判定必须在扣费之前。放到扣费之后会变成
+// 「钱扣了、货被限购挡下」，只能客服补偿。
+func TestBuyRejectsOverLimit(t *testing.T) {
+	swapConfig(t,
+		`[{"id":1,"col1":"道具商店"}]`,
+		`[{"id":1,"col1":1,"col2":1002,"col3":10,"col4":1,"col5":2}]`)
+
+	m, st, rec, ctx := newTestModule()
+	st.AddItem(itemDiamond, 1000)
+
+	require.EqualValues(t, int32(errcode.OK), buy(t, m, ctx, rec, 1, 2).Code, "买满 2 份应当成功")
+	diamondAfterBuy := st.GetItemCount(itemDiamond)
+
+	resp := buy(t, m, ctx, rec, 1, 1)
+	require.EqualValues(t, int32(errcode.ErrShopLimitExceeded), resp.Code, fmt.Sprintf("got %+v", resp))
+	require.EqualValues(t, diamondAfterBuy, st.GetItemCount(itemDiamond), "被限购拒绝时不能扣钱")
+	require.EqualValues(t, 2, st.GetItemCount(1002), "也不能多发货")
+}
+
+// TestBuySingleRequestOverLimit 一次请求就超过限购：整笔拒绝，不是「买满为止」。
+//
+// 不做部分成交：发一半货、扣一半钱的语义会让客户端难以展示，
+// 且玩家会反复重试期望买到剩下的——直接拒绝最清晰。
+func TestBuySingleRequestOverLimit(t *testing.T) {
+	swapConfig(t,
+		`[{"id":1,"col1":"道具商店"}]`,
+		`[{"id":1,"col1":1,"col2":1002,"col3":10,"col4":1,"col5":2}]`)
+
+	m, st, rec, ctx := newTestModule()
+	st.AddItem(itemDiamond, 1000)
+
+	resp := buy(t, m, ctx, rec, 1, 3) // 一次要 3 份，限购 2
+	require.EqualValues(t, int32(errcode.ErrShopLimitExceeded), resp.Code)
+	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond), "拒绝时一分钱都不能扣")
+	require.EqualValues(t, 0, st.GetItemCount(1002))
+}
+
+// TestListShowsLimit 列表把配置的限购次数带给客户端（客户端据此置灰按钮）。
+func TestListShowsLimit(t *testing.T) {
+	swapConfig(t,
+		`[{"id":1,"col1":"道具商店"}]`,
+		`[{"id":1,"col1":1,"col2":1002,"col3":10,"col4":1,"col5":7}]`)
+
+	m, _, rec, ctx := newTestModule()
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgShopListReq, codec.MsgShopListResp, &gamev1.ShopListReq{})
+	require.NoError(t, err)
+	resp := &gamev1.ShopListResp{}
+	require.NoError(t, proto.Unmarshal(raw, resp))
+	require.NotEmpty(t, resp.Goods)
+	require.EqualValues(t, 7, resp.Goods[0].Limit, "Limit 必须来自配置 col5，不能写死 0")
+}

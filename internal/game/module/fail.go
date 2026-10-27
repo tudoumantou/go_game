@@ -32,6 +32,21 @@ func (c *Context) FailCode(msg proto.Message, code errcode.Code) error {
 	return nil
 }
 
+// FailCode 在 Define 形态（Ctx[D]）里置码**并回包**。
+//
+// 与 Context.FailCode 的行为差异不是笔误，是两种底座的必然：
+//   - Thin 形态（module.Handle）提前绑定了一对 req/resp，处理器返回 nil 时
+//     包装器自动下发 resp，所以只需置码，不能再 Reply（否则回两个包）；
+//   - Define 形态（module.Route）的处理器没有 resp 形参，基座不知道要回什么，
+//     必须由这里显式 Reply——只置码会「静默不回包」，客户端一直等到超时。
+//
+// 这个区别曾经真的踩过：把 `c.Reply(&Resp{Code: X})` 机械替换成
+// `c.FailCode(&Resp{}, X)` 后，商店的每个错误分支都变成不回包。
+func (c *Ctx[D]) FailCode(msg proto.Message, code errcode.Code) error {
+	setRespCode(msg, int32(code))
+	return c.Reply(msg)
+}
+
 // setRespCode 按字段名把 code 写进任意响应消息；没有该字段时静默跳过。
 //
 // 为什么用反射：proto 生成类型只有 `GetCode()` 没有 `SetCode()`，而各模块的
