@@ -6,8 +6,12 @@
 //
 //	go test -tags=integration ./test/integration/ -v -count=1
 //
-// 环境：testcontainers 拉起真实 MySQL 8.0 + Redis 7，执行 sql/schema 建表、
-// sql/seed 灌初始数据，再用 pkg/model CRUD 验证终态。
+// 环境：TestMain 用 testcontainers 起**一套**真实 MySQL 8.0 + Redis 7 + etcd，
+// 全包 30 个用例共用；每个用例通过 freshEnv 拿到「独立数据库 + 清空 Redis/etcd」。
+//
+// 为什么不每用例起一套：MySQL 冷启动 20~30 秒，10 个重型用例就是 250 秒纯等待，
+// CI 上还会把 docker daemon 拖到不响应（exec inspect 超时），表现为「etcd 起不
+// 来」的假故障。容器共享后整包从超时打满（>15min）降到约 7 分钟。
 //
 // P0 覆盖范围（骨架期）：容器环境 → 建表 → 灌数 → CRUD 闭环 → 幂等防线。
 // 模块级主链路（登录→进游戏→聊天→跨服战斗，23.3 的 6 步）待对应模块落地后
@@ -24,7 +28,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql" // 注册 mysql driver
+	mysqlDriver "github.com/go-sql-driver/mysql" // 注册 driver + ParseDSN
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mysql"
 	"github.com/testcontainers/testcontainers-go/modules/redis"
@@ -38,12 +42,32 @@ var (
 	testDB        *sql.DB
 	testDSN       string
 	testRedisAddr string
+	// testEtcdAddr 共享 etcd 的 client 地址（TestMain 起一次，
+	// 由 p1_p4/p6b/p7/p8/p12/p13/p14 共用）。leader_test 例外：
+	// 选举用例需要独占的 key 空间，它自己起。
+	testEtcdAddr string
+
+	// testRootDB root 连接（无默认库）：isolatedDSN 要给每个用例
+	// CREATE DATABASE，而 testcontainers 的默认用户在初始化时只被授权了
+	// MYSQL_DATABASE 指定的那一个库，建库会 Access denied。
+	testRootDB *sql.DB
 )
 
 const (
 	testDBName = "game_study"
 	testDBUser = "root"
 	testDBPass = "game_study"
+
+	// testMySQLRootPass testcontainers mysql 模块的 root 密码。
+	//
+	// 模块的 ContainerRequest 只设 MYSQL_USER/MYSQL_PASSWORD/MYSQL_DATABASE
+	// （默认都是 test），之后 WithDefaultCredentials 把 MYSQL_PASSWORD 复制给
+	// MYSQL_ROOT_PASSWORD——所以 root 密码恒等于 MYSQL_PASSWORD 的默认值，
+	// 而 CustomizeRequest 里设的 MYSQL_ROOT_PASSWORD 会被这步覆盖。
+	//
+	// 模块没导出这个常量，只能写死；升级模块改了默认值时，TestMain 的
+	// root ping 会立刻报 1045，不会静默降级。
+	testMySQLRootPass = "test"
 )
 
 // TestMain 起一套容器环境（23.3 第 1 步：起环境 → 建表 → 灌数）
@@ -85,8 +109,44 @@ func TestMain(m *testing.M) {
 	}
 	testRedisAddr = fmt.Sprintf("%s:%s", host, port.Port())
 
+	// --- etcd ---
+	//
+	// 起一次给所有用例共用：etcd 单节点启动只要几秒，但 7 个用例各起一次
+	// 就是几十秒的纯等待，且每个容器都要拉一遍镜像。
+	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "quay.io/coreos/etcd:v3.5.10",
+			ExposedPorts: []string{"2379/tcp"},
+			Cmd: []string{
+				"/usr/local/bin/etcd",
+				"--advertise-client-urls=http://0.0.0.0:2379",
+				"--listen-client-urls=http://0.0.0.0:2379",
+			},
+			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(3 * time.Minute),
+		},
+		Started: true,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start etcd container:", err)
+		os.Exit(1)
+	}
+	defer func() { _ = etcdC.Terminate(context.Background()) }()
+	etcdHost, err := etcdC.Host(ctx)
+	if err != nil {
+		panic(err)
+	}
+	etcdPort, err := etcdC.MappedPort(ctx, "2379/tcp")
+	if err != nil {
+		panic(err)
+	}
+	testEtcdAddr = fmt.Sprintf("%s:%s", etcdHost, etcdPort.Port())
+
 	// 连接串（multiStatements 支持整文件执行 DDL；parseTime 支持时间列扫描）
-	dsn, err := mysqlC.ConnectionString(ctx, "multiStatements=true", "parseTime=true", "loc=Local")
+	// 不写 loc：让 pkg/db.normalizeDSN 补 time_zone='+00:00'，与驱动默认的
+	// loc=UTC 对齐。写 loc=Local 时，宿主是 +0800 而容器是 UTC，读出来的时间
+	// 整整早 8 小时——那是测试自己造的偏差，不是产品问题，但会让本地跑出的
+	// 「时间列差 8 小时」看起来像真 bug（owner_index_test 正是在测这件事）。
+	dsn, err := mysqlC.ConnectionString(ctx, "multiStatements=true", "parseTime=true")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mysql connection string:", err)
 		os.Exit(1)
@@ -108,6 +168,25 @@ func TestMain(m *testing.M) {
 	}
 	testDB = db
 	testDSN = dsn
+
+	rootCfg, err := mysqlDriver.ParseDSN(dsn)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "parse dsn for root:", err)
+		os.Exit(1)
+	}
+	rootCfg.User = "root"
+	rootCfg.Passwd = testMySQLRootPass
+	rootCfg.DBName = ""
+	rootDB, err := sql.Open("mysql", rootCfg.FormatDSN())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "open root connection:", err)
+		os.Exit(1)
+	}
+	if err := rootDB.Ping(); err != nil {
+		fmt.Fprintln(os.Stderr, "root ping:", err)
+		os.Exit(1)
+	}
+	testRootDB = rootDB
 	defer func() { _ = db.Close() }()
 
 	// 建表 + 灌数（19.5 清单第 4 步的容器等价物）

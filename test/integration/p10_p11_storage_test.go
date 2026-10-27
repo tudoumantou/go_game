@@ -28,50 +28,20 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/mysql"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 // startStorage 起 MySQL + Redis 并初始化 schema，返回 DB、Redis 客户端与 DSN。
 func startStorage(t *testing.T) (*db.DB, *redis.Client, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
-	defer cancel()
 
-	mysqlC, err := mysql.Run(ctx, "mysql:8.0",
-		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
-			ContainerRequest: testcontainers.ContainerRequest{
-				Env: map[string]string{
-					"MYSQL_ROOT_PASSWORD": "root",
-					"MYSQL_DATABASE":      "game_study",
-					"MYSQL_USER":          "game",
-					"MYSQL_PASSWORD":      "game_study",
-				},
-			},
-		}),
-	)
-	require.NoError(t, err, "start mysql")
-	t.Cleanup(func() { _ = mysqlC.Terminate(context.Background()) })
-
-	redisC, err := tcredis.Run(ctx, "redis:7-alpine")
-	require.NoError(t, err, "start redis")
-	t.Cleanup(func() { _ = redisC.Terminate(context.Background()) })
-
-	// 不写 loc：让 pkg/db.normalizeDSN 补 time_zone='+00:00'，与驱动默认的
-	// loc=UTC 对齐。之前这里写 loc=Local，宿主是 +0800 而容器是 UTC，
-	// 读出来的时间整整早 8 小时——那是测试自己造的偏差，不是产品问题。
-	dsn, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true")
-	require.NoError(t, err, "mysql dsn")
-	initSchema(t, dsn)
+	// 容器与 Redis 由 TestMain 起一次共享；这里只取本用例的独立库。
+	dsn := freshEnv(t)
 
 	database, err := db.New(db.Config{DSN: dsn, MaxOpen: 10, MaxIdle: 5})
 	require.NoError(t, err, "connect mysql")
 	t.Cleanup(func() { _ = database.Close() })
 
-	host, _ := redisC.Host(ctx)
-	port, _ := redisC.MappedPort(ctx, "6379/tcp")
-	rdb := redis.NewClient(&redis.Options{Addr: host + ":" + port.Port()})
+	rdb := redis.NewClient(&redis.Options{Addr: testRedisAddr})
 	t.Cleanup(func() { _ = rdb.Close() })
 
 	return database, rdb, dsn

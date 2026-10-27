@@ -12,6 +12,7 @@ package integration
 import (
 	"context"
 	"fmt"
+	"github.com/redis/go-redis/v9"
 	"io"
 	"testing"
 	"time"
@@ -24,11 +25,6 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 
-	"github.com/redis/go-redis/v9"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/mysql"
-	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
@@ -40,51 +36,11 @@ func TestP14RankAndLeader(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	mysqlC, err := mysql.Run(ctx, "mysql:8.0",
-		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
-			ContainerRequest: testcontainers.ContainerRequest{
-				Env: map[string]string{
-					"MYSQL_ROOT_PASSWORD": "root",
-					"MYSQL_DATABASE":      "game_study",
-					"MYSQL_USER":          "game",
-					"MYSQL_PASSWORD":      "game_study",
-				},
-			},
-		}),
-	)
-	require.NoError(t, err, "start mysql")
-	defer func() { _ = mysqlC.Terminate(context.Background()) }()
-
-	redisC, err := tcredis.Run(ctx, "redis:7-alpine")
-	require.NoError(t, err, "start redis")
-	defer func() { _ = redisC.Terminate(context.Background()) }()
-
-	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "quay.io/coreos/etcd:v3.5.10",
-			ExposedPorts: []string{"2379/tcp"},
-			Cmd: []string{
-				"/usr/local/bin/etcd",
-				"--advertise-client-urls=http://0.0.0.0:2379",
-				"--listen-client-urls=http://0.0.0.0:2379",
-			},
-			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(3 * time.Minute),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start etcd")
-	defer func() { _ = etcdC.Terminate(context.Background()) }()
-
-	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	require.NoError(t, err, "mysql dsn")
-	redisHost, _ := redisC.Host(ctx)
-	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
-	etcdHost, _ := etcdC.Host(ctx)
-	etcdPort, _ := etcdC.MappedPort(ctx, "2379/tcp")
-	redisAddr := fmt.Sprintf("%s:%s", redisHost, redisPort.Port())
-	etcdAddr := fmt.Sprintf("%s:%s", etcdHost, etcdPort.Port())
-
-	initSchema(t, mysqlDSN)
+	// 容器由 TestMain 起一次共享（见 support_test.go 的 isolatedDSN 说明），
+	// 这里只取一条指向本用例独立库的 DSN：库独立才是「建表不撞车」的关键。
+	mysqlDSN := freshEnv(t)
+	redisAddr := testRedisAddr
+	etcdAddr := testEtcdAddr
 
 	database, err := db.New(db.Config{DSN: mysqlDSN, MaxOpen: 10, MaxIdle: 3})
 	require.NoError(t, err, "connect mysql")

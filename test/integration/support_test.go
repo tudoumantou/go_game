@@ -2,8 +2,9 @@
 
 // test/integration/support_test.go —— 集成测试的共用前置条件
 //
-// 这里只放「每个系统级测试都要做、漏做就起不来」的准备动作。目前只有一件：
-// 切到项目根目录，并保证 keys/ 下的 RSA 密钥对存在。
+// 这里只放「每个系统级测试都要做、漏做就起不来」的准备动作：
+//   - 切到项目根目录 + 保证 keys/ 下的 RSA 密钥对存在；
+//   - 给需要用独立数据库的用例分配一个全新库（isolatedDSN）。
 //
 // 为什么需要它：网关按**相对路径** `keys/gateway_rsa.pem` 加载握手密钥，而
 // `keys/*.pem` 被 .gitignore 排除（私钥不入库，这是对的）。于是本地有 keys/
@@ -24,9 +25,16 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"context"
+	"time"
+
+	mysqlDriver "github.com/go-sql-driver/mysql"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 // keyNames 网关与登录服各自需要的两对 PEM（私钥 + 公钥）。
@@ -97,4 +105,104 @@ func writeTestKeyPair(t *testing.T, dir, base string) {
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 	require.NoError(t, os.WriteFile(filepath.Join(dir, base+"_pub.pem"), pubPEM, 0o644),
 		"写公钥")
+}
+
+// isolatedDSN 为单个用例准备一个全新数据库，返回该库的 DSN。
+//
+// 为什么每个用例要独立库：sql/schema 的建表语句不带 IF NOT EXISTS，
+// 同一个库上跑第二次就报「table already exists」。过去每个用例各自起一个
+// MySQL 容器来绕开这件事——代价是 10 个用例 10 次容器启动，CI 上把
+// 15 分钟超时打满、docker daemon 也被拖垮（exec inspect 超时）。
+//
+// 现在改成「容器共享 + 库独立」：DROP+CREATE 一个按用例名命名的库，
+// 既保证干净，也让有 COUNT(*) 断言的用例不会看到别人留下的数据。
+//
+// 库名由测试函数名派生（TestP12LoginPreload → t_p12loginpreload）：
+// 固定可预测，失败后可以直接连上去看现场。
+func isolatedDSN(t *testing.T) string {
+	t.Helper()
+	require.NotNil(t, testRootDB, "TestMain 未初始化 root 连接")
+
+	name := isolatedDBName(t)
+	cfg, err := mysqlDriver.ParseDSN(testDSN)
+	require.NoError(t, err, "解析 testDSN")
+
+	// 先删后建：重跑测试也拿到空库，不需要手工清理。
+	//
+	// GRANT 不能省：testcontainers 的默认用户只在容器初始化时被授予了
+	// MYSQL_DATABASE 指定的那一个库，新建的库连不进去（1044 Access denied）。
+	for _, stmt := range []string{
+		"DROP DATABASE IF EXISTS `" + name + "`",
+		"CREATE DATABASE `" + name + "`",
+		"GRANT ALL PRIVILEGES ON `" + name + "`.* TO '" + cfg.User + "'@'%'",
+	} {
+		_, err := testRootDB.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+
+	cfg.DBName = name
+	dsn := cfg.FormatDSN()
+
+	initSchema(t, dsn)
+	return dsn
+}
+
+// isolatedDBName 由测试函数名生成合法库名（只留小写字母数字，加 t_ 前缀）。
+//
+// 过滤而不是转义：库名会被拼进 DDL，而 t.Name() 可能带斜杠（子测试）。
+// 只保留 [a-z0-9] 是最省事的安全做法，最长也不会超过 MySQL 的 64 字符限制。
+func isolatedDBName(t *testing.T) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(t.Name()) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return "t_" + b.String()
+}
+
+// freshEnv 为一个用例准备干净环境：独立数据库 + 清空共享 Redis 与 etcd。
+//
+// 三者必须一起做。只给独立库是不够的——Redis 里还有 IDTable 的发号游标和
+// 玩家快照，etcd 里还有上一个用例残留的 /services 注册与 leader key。
+// 残留的典型症状：新用例拿到一个 account，而库里已经有这个 account 的角色
+// （发号游标被前一个用例推进过）；或者 center 一启动就 lost leadership
+// （读到了别人留下的 leader key）。
+//
+// 过去每个用例起一套容器，天然没有这个问题；容器共享之后必须显式清理。
+func freshEnv(t *testing.T) string {
+	t.Helper()
+
+	dsn := isolatedDSN(t)
+	resetSharedRedis(t)
+	resetSharedEtcd(t)
+	return dsn
+}
+
+// resetSharedRedis 清空共享 Redis（串行执行，不会踩到别的用例）。
+func resetSharedRedis(t *testing.T) {
+	t.Helper()
+	rdb := redis.NewClient(&redis.Options{Addr: testRedisAddr})
+	defer func() { _ = rdb.Close() }()
+	require.NoError(t, rdb.FlushAll(context.Background()).Err(), "清空共享 Redis")
+}
+
+// resetSharedEtcd 清空共享 etcd 的全部 key。
+//
+// 用空前缀 + WithPrefix 删全部：用例串行，不存在误删并发用例数据的问题。
+// 只删 /services 不够——leader 选举用的是另一个前缀，残留会让新的 center
+// 以为自己不是 leader。
+func resetSharedEtcd(t *testing.T) {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{testEtcdAddr},
+		DialTimeout: 5 * time.Second,
+	})
+	require.NoError(t, err, "连接 etcd")
+	defer func() { _ = cli.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err = cli.Delete(ctx, "", clientv3.WithPrefix())
+	require.NoError(t, err, "清空共享 etcd")
 }

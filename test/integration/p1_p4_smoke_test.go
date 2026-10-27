@@ -20,17 +20,13 @@ import (
 	"game_study/test/robot"
 
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/modules/mysql"
-	"github.com/testcontainers/testcontainers-go/modules/redis"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // TestP1toP4Smoke P1-P4 全链路冒烟：三服务（login/game/gateway）+ 三中间件
 // （MySQL/Redis/etcd）全部真实拉起，机器人走「游客登录 → 网关握手 → 心跳」。
 //
 // 编排要点：
-//   - 中间件用 testcontainers，测试结束 defer Terminate，不在开发机留残留进程；
+//   - 中间件（MySQL/Redis/etcd）由 TestMain 起一次共享，本用例只领独立库；
 //   - 端口全部随机（freePort），避免与已跑的服务冲突；
 //   - 服务在测试进程内启动（非子进程），收尾走各服务 Shutdown —— 优雅关闭链路
 //     本身也是被验证的一环；
@@ -43,51 +39,11 @@ func TestP1toP4Smoke(t *testing.T) {
 	defer cancel()
 
 	// ① 中间件
-	mysqlC, err := mysql.Run(ctx, "mysql:8.0",
-		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
-			ContainerRequest: testcontainers.ContainerRequest{
-				Env: map[string]string{
-					"MYSQL_ROOT_PASSWORD": "root",
-					"MYSQL_DATABASE":      "game_study",
-					"MYSQL_USER":          "game",
-					"MYSQL_PASSWORD":      "game_study",
-				},
-			},
-		}),
-	)
-	require.NoError(t, err, "start mysql")
-	defer func() { _ = mysqlC.Terminate(context.Background()) }()
-
-	redisC, err := redis.Run(ctx, "redis:7-alpine")
-	require.NoError(t, err, "start redis")
-	defer func() { _ = redisC.Terminate(context.Background()) }()
-
-	etcdC, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        "quay.io/coreos/etcd:v3.5.10",
-			ExposedPorts: []string{"2379/tcp"},
-			Cmd: []string{
-				"/usr/local/bin/etcd",
-				"--advertise-client-urls=http://0.0.0.0:2379",
-				"--listen-client-urls=http://0.0.0.0:2379",
-			},
-			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(3 * time.Minute),
-		},
-		Started: true,
-	})
-	require.NoError(t, err, "start etcd")
-	defer func() { _ = etcdC.Terminate(context.Background()) }()
-
-	// ② DSN
-	mysqlDSN, err := mysqlC.ConnectionString(ctx, "parseTime=true", "multiStatements=true", "loc=Local")
-	require.NoError(t, err, "mysql dsn")
-	redisHost, _ := redisC.Host(ctx)
-	redisPort, _ := redisC.MappedPort(ctx, "6379/tcp")
-	etcdHost, _ := etcdC.Host(ctx)
-	etcdPort, _ := etcdC.MappedPort(ctx, "2379/tcp")
-
-	// ③ 初始化 schema
-	initSchema(t, mysqlDSN)
+	// 容器由 TestMain 起一次共享（见 support_test.go 的 isolatedDSN 说明），
+	// 这里只取一条指向本用例独立库的 DSN：库独立才是「建表不撞车」的关键。
+	mysqlDSN := freshEnv(t)
+	redisAddr := testRedisAddr
+	etcdEndpoint := testEtcdAddr
 
 	// ④ 构造配置（端口用随机可用端口）
 	loginPort := freePort(t)
@@ -99,10 +55,10 @@ func TestP1toP4Smoke(t *testing.T) {
 	baseCfg.MySQL.DSN = mysqlDSN
 	baseCfg.MySQL.MaxOpenConns = 20
 	baseCfg.MySQL.MaxIdleConns = 5
-	baseCfg.Redis.Addrs = []string{fmt.Sprintf("%s:%s", redisHost, redisPort.Port())}
+	baseCfg.Redis.Addrs = []string{redisAddr}
 	baseCfg.Redis.PoolSize = 20
 	baseCfg.Redis.MinIdleConn = 5
-	baseCfg.Etcd.Endpoints = []string{fmt.Sprintf("%s:%s", etcdHost, etcdPort.Port())}
+	baseCfg.Etcd.Endpoints = []string{etcdEndpoint}
 	baseCfg.Etcd.LeaseTTL = 10
 	baseCfg.Log.Level = "info"
 	baseCfg.Actor.ShardCount = 64
@@ -151,7 +107,7 @@ func TestP1toP4Smoke(t *testing.T) {
 
 	// ⑥ 机器人全链路
 	r := robot.New(fmt.Sprintf("http://127.0.0.1:%d", loginPort), fmt.Sprintf("127.0.0.1:%d", gwPort))
-	err = r.GuestLogin("robot-device-1")
+	err := r.GuestLogin("robot-device-1")
 	require.NoError(t, err, fmt.Sprintf("guest login: %v", err))
 	err = r.Connect()
 	require.NoError(t, err, fmt.Sprintf("connect gateway: %v", err))
