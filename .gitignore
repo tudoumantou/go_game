@@ -26,3 +26,6 @@ coverage.txt
 
 # GitHub 凭证（严禁入库）
 .git-credentials
+
+# 文档单独维护在 go_game_docs 仓库，公开代码仓不纳入
+/docs/
