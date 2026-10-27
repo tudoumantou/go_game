@@ -43,4 +43,12 @@ for m in "$CUR_MONTH" "$NEXT_MONTH"; do
   "${MYSQL[@]}" -e "CREATE TABLE IF NOT EXISTS \`login_log_$m\` LIKE \`login_log\`;"
 done
 
+echo "==> 账号中心分表: acc_summary_0..31 / user_role_0..14（LIKE 模板，与 login_log 同范式）"
+for i in $(seq 0 31); do
+  "${MYSQL[@]}" -e "CREATE TABLE IF NOT EXISTS \`acc_summary_$i\` LIKE \`acc_summary\`;"
+done
+for i in $(seq 0 14); do
+  "${MYSQL[@]}" -e "CREATE TABLE IF NOT EXISTS \`user_role_$i\` LIKE \`user_role\`;"
+done
+
 echo "db-init done（$MYSQL_DATABASE @ $MYSQL_HOST:$MYSQL_PORT）"
