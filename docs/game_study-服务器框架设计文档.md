@@ -17,7 +17,7 @@
 | v3.1 | 交互模型修订 | **CrossServer 不连网关**（战斗消息经主游戏服 CrossService 流中转，取消会话迁移）、跨服聊天改 Kafka 扇出 + Redis 双端历史、go:embed 路径修复、MySQL 连接容量规划、进程启动顺序 |
 | v3.2 | 命名统一与工程修复 | XServer 统一更名 **CrossServer**（CrossService/cross.proto）、分时落库改为 10 worker 共享连接池（不独占）、K8s 编排规划、端口规划表、Redis key 登记补全、CI 卡点落地、compose 配置挂载 |
 | v3.3 | Demo 契约与质量保障 | 新增 [4.9](#49-demo-客户端协议契约首批) Demo 客户端协议契约（首批 32 条消息清单 + protobuf 定义 + **战斗职责划分：演算在客户端，服务端只通知发起/透传/收结果**）、[4.10](#410-错误码规范首批) 错误码规范（首批 27 个）、[第 23 章](#23-测试策略) 测试策略（金字塔/关键单测点/集成/压测/故障演练/对账）；战斗防作弊验证后置 |
-| v3.4 | 跨节点 Actor 投递（P0） | 新增 [8.7](#87-跨节点-actor-投递p0)：`PID.Node` + `RemoteSender` + `RemoteMessage` 显式契约 + JSON 信封 + presence 位置解析，远程投递经中心服中转（零新 proto）；登录入口 `TrySetOnline` 与投递入口跨节点守卫构成纵深，根治双 Actor 双写分叉。详见 [R2.4](R2.4-跨节点Actor投递设计.md) |
+| v3.4 | 跨节点 Actor 投递（P0） | 新增 [8.7](#87-跨节点-actor-投递p0)：`PID.Node` + `RemoteSender` + `RemoteMessage` 显式契约 + JSON 信封 + presence 位置解析，远程投递经中心服中转（零新 proto）；登录入口 `TrySetOnline` 与投递入口跨节点守卫构成纵深，根治双 Actor 双写分叉。详见 R2.4 |
 | v3.4.1 | 薄模块基座 | 新增 [17.2.1](#1721-薄模块基座thin)：预装配 Module 接口 + 失败回包 + 缓存守卫，业务只写处理器（签到等五模块合计省约 500 行样板） |
 | v3.4.13 | 装配层拆分 + 脚手架 | `server.go` 1397 → 465 行，拆为 `server_start.go`（14 个 initXxx）/ `server_session.go`（会话绑定）/ `server_adapters.go`（层间适配器）；新增 `make new-module` 生成模块骨架（业务文件 + persist 骨架 + 注册提示），生成物可直接编译 |
 | v3.14 | 补玩法缺口 | 装备强化：`equip_enhance.col3` 提供每级攻击加成，上限用「配置缺失」判定（加一行配置即放开一级，不发版）；抽 `equipBonus(equipID, enhanceLevel)` 四处共用（登录/穿戴/卸下/强化增量）——任一处算法不同，反复穿脱就能刷攻击力。好友黑名单：新表 `friend_block` + 6809–6812，拉黑即解双向好友（同事务，只删一边会留单向好友），`Apply` 双向拦截。背包容量确认早已实现（`capacityFor` + `CanHold`），真正缺的堆叠/过期属架构级（要改背包模型），单独立项 |
@@ -1559,7 +1559,7 @@ type Module interface {
 
 ### 8.7 跨节点 Actor 投递（P0）
 
-多节点部署后，「玩家 Actor 在哪、消息怎么送到」由一套显式契约回答，完整设计见 [R2.4 跨节点 Actor 投递设计](R2.4-跨节点Actor投递设计.md)：
+多节点部署后，「玩家 Actor 在哪、消息怎么送到」由一套显式契约回答，完整设计见 R2.4 跨节点 Actor 投递设计：
 
 | 契约层 | 机制 | 要点 |
 |---|---|---|
@@ -3930,7 +3930,7 @@ CI 中的测试部分即 [16.4](#164-生成物管理约定) 五步卡点的第 �
 | 单个落库 worker panic | 注入 panic | 仅影响 1/10 分片；recover + 下周期重试，不扩散 |
 
 **P15 已补齐前 4 项的自动化演练**（`make drill-suite` + `make drill-crash`），实测结果见
-[docs/P15-全链路演练报告.md](P15-全链路演练报告.md)：
+docs/P15-全链路演练报告.md：
 
 | 演练项 | 自动化 | 实测结论 |
 | --- | --- | --- |

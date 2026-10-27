@@ -9,7 +9,7 @@
 - **Tier-1（MySQL 权威）**：账号、充值订单、跨服结算等必须对账的资产，直接写库，见 R2.3 充值双栅栏设计；
 - **Tier-2（Redis 权威）**：玩家玩法热状态（档案、属性、背包、各模块 Ext 状态），写 Redis 即算生效，MySQL 只是异步投影。
 
-Tier-2 的核心契约来自 [`../docs/R2.1-缓存原子变更契约.md`](../../docs/R2.1-缓存原子变更契约.md)：**一次 Actor 消息 = 一份 Snapshot = 一次 CAS**，业务 handler 只允许改内存，写库是 Write-Behind 的事。会话所有权（谁能写）由 [`../docs/R2.5-会话所有权与提交通道设计.md`](../../docs/R2.5-会话所有权与提交通道设计.md) 的 epoch 令牌回答。模块侧如何接入（Ext 槽位、persist.go）见 [`../50-游戏服/05-持久化Stateful.md`](../50-游戏服/05-持久化Stateful.md)，本文讲框架侧。
+Tier-2 的核心契约来自 `../docs/R2.1-缓存原子变更契约.md`：**一次 Actor 消息 = 一份 Snapshot = 一次 CAS**，业务 handler 只允许改内存，写库是 Write-Behind 的事。会话所有权（谁能写）由 `../docs/R2.5-会话所有权与提交通道设计.md` 的 epoch 令牌回答。模块侧如何接入（Ext 槽位、persist.go）见 [`../50-游戏服/05-持久化Stateful.md`](../50-游戏服/05-持久化Stateful.md)，本文讲框架侧。
 
 两个包的分工：
 
@@ -248,7 +248,7 @@ tx.Commit()
 
 `Persister` 四方法（`pkg/writebehind/registry.go:47`）：`Name`（= Ext 键，全局唯一且版本间稳定）、`Validate`、`PersistBatch`（只准用传入的 tx，不得自己 Commit——事务边界由 worker 统一控制）、`Load`。注册通常在模块包的 `init` 中：只要包被 import（协议注册保证它会被 import），数据链路即生效，杜绝「协议通了但数据不落库」的半接入状态；重名直接 panic，与 module 协议号冲突处理一致。
 
-三条接入路径，判定树见 [`../docs/FlatPersister-模块持久化第三轮简化设计方案.md`](../../docs/FlatPersister-模块持久化第三轮简化设计方案.md)：
+三条接入路径，判定树见 [`../docs/FlatPersister-模块持久化第三轮简化设计方案.md`](../../FlatPersister-模块持久化第三轮简化设计方案.md)：
 
 - **`RegisterFlat[T]`**（`pkg/writebehind/flat.go:36`）：「一个玩家一行」的单行状态表。内部构造标准 Persister 注册进同一张表，worker/Redis 提交一行不改——语法糖，不是新链路。复杂了可随时删注册改手写，JSON 槽位格式不变，无数据迁移。
 - **`RegisterStateful[Row, Data]`**（`pkg/writebehind/stateful.go:45`）：Ext 存业务结构 D，落库时经 `StateCodec` 转表行 R。业务结构可以自由设计（签到用 `{Days, Rewards}`，表里是 `claimed_days`/`claimed_rewards` 两个 JSON 列），代价是多一次转换。

@@ -8,7 +8,7 @@
 
 在此之上还有两层设计。**分片（shard）而非一线程一 Actor**：goroutine 虽轻，万级在线玩家仍是万级 goroutine，调度与内存开销不可忽视——按 `actorID` 哈希取模编入 1024 个分片，每分片一个 goroutine 轮转处理名下所有 Actor，片内串行免锁、片间并行。**有界信箱与背压**：信箱是容量 1024 的 channel，满时拒绝新消息并返回 `ErrMailboxFull`，由调用方决策重试/降级，而不是无限堆积直到 OOM。
 
-P0 阶段补充跨节点投递：多游戏服部署时玩家按 `player_id % 节点数` 分布，「给玩家 X 发消息」必须能投到别的进程。方案是 `PID.Node` + `RemoteSender` 接口 + 显式序列化契约，经中心服中转，设计文档见 [`../docs/R2.4-跨节点Actor投递设计.md`](../../docs/R2.4-跨节点Actor投递设计.md)。
+P0 阶段补充跨节点投递：多游戏服部署时玩家按 `player_id % 节点数` 分布，「给玩家 X 发消息」必须能投到别的进程。方案是 `PID.Node` + `RemoteSender` 接口 + 显式序列化契约，经中心服中转，设计文档见 `../docs/R2.4-跨节点Actor投递设计.md`。
 
 ## 2. 涉及文件
 
@@ -305,7 +305,7 @@ func (a *Actor) Receive(ctx *actor.Context) {
 
 - 纯下行（推送/场景广播/心跳）：不改状态，直接进 `receive`；
 - 无状态模块协议（`canBypassCache`）：跳过 clone/CAS——榜单查询、聊天转发这类不碰 State 的请求占相当比例，而 clone 一份含背包/属性/Ext 的 State 并不便宜；
-- 其余消息进 `receiveCached` 的「克隆 → 业务 → diff → CAS → 回滚/保留」流程，契约见 [`../docs/R2.1-缓存原子变更契约.md`](../../docs/R2.1-缓存原子变更契约.md)。
+- 其余消息进 `receiveCached` 的「克隆 → 业务 → diff → CAS → 回滚/保留」流程，契约见 `../docs/R2.1-缓存原子变更契约.md`。
 
 `canBypassCache`（`internal/game/player/actor.go:314`）三个前提缺一不可：
 
@@ -389,4 +389,4 @@ func (m *Manager) GetOrSpawn(ctx context.Context, playerID int64) (*actor.PID, e
 3. **inflight 计数 + Drain**：停机时等到「真的处理完」而不是「信箱空」，保住玩家最后一段进度；
 4. **PID.Node + RemoteMessage 契约**：同一套模型从单进程延伸到多节点，跨节点投递显式声明、启动期注册、失败不静默。
 
-对业务方（玩家 Actor）而言契约只有三条：Receive 不阻塞、消息类型自己断言、想改状态就发消息。缓存权威模式下的「克隆 → 业务 → CAS」流程见 [`../docs/R2.1-缓存原子变更契约.md`](../../docs/R2.1-缓存原子变更契约.md)，数据落库全链路见 [`06-缓存cache与writebehind.md`](06-缓存cache与writebehind.md)，进程关闭时序见 [`07-限流shutdown与工具包.md`](07-限流shutdown与工具包.md)。
+对业务方（玩家 Actor）而言契约只有三条：Receive 不阻塞、消息类型自己断言、想改状态就发消息。缓存权威模式下的「克隆 → 业务 → CAS」流程见 `../docs/R2.1-缓存原子变更契约.md`，数据落库全链路见 [`06-缓存cache与writebehind.md`](06-缓存cache与writebehind.md)，进程关闭时序见 [`07-限流shutdown与工具包.md`](07-限流shutdown与工具包.md)。
