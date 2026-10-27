@@ -245,22 +245,18 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	*resp = gamev1.ChatSendResp{}
 	// channel=0 按私聊兼容（老客户端不传频道字段），其余频道 P6 未开放
 	if req.Channel != channelPrivate && req.Channel != 0 {
-		resp.Code = int32(errcode.ErrChannelClosed) // P6 仅开放私聊
-		return nil
+		return ctx.FailCode(resp, errcode.ErrChannelClosed) // P6 仅开放私聊
 	}
 	if req.Content == "" || req.PeerId <= 0 {
-		resp.Code = int32(errcode.ErrContentEmpty)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrContentEmpty)
 	}
 	if len(req.Content) > maxContentBytes || utf8.RuneCountInString(req.Content) > maxContentRunes {
-		resp.Code = int32(errcode.ErrContentTooLong)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrContentTooLong)
 	}
 	// 频控放在内容校验之后：被拒绝的脏请求不占用额度（否则玩家打字打错
 	// 一次就要等一秒），只有真正要发出去的才计数。
 	if m.chatLimiter != nil && !m.chatLimiter.Allow(strconv.FormatInt(ctx.State.PlayerID(), 10)) {
-		resp.Code = int32(errcode.ErrChatTooFast)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrChatTooFast)
 	}
 
 	// msgID 先于一切 IO 生成：历史行与投递消息必须共用同一个 ID，

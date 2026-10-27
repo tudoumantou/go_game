@@ -117,12 +117,10 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *game
 // 既省一次往返，也避免把无意义查询打到 DB。
 func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *gamev1.FriendApplyResp) error {
 	if req.PlayerId <= 0 {
-		resp.Code = int32(errcode.ErrFriendTargetNotFound)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
 	if req.PlayerId == ctx.State.PlayerID() {
-		resp.Code = int32(errcode.ErrFriendSelf)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrFriendSelf)
 	}
 
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -138,8 +136,7 @@ func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *
 // onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
 func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp *gamev1.FriendHandleResp) error {
 	if req.PlayerId <= 0 || req.PlayerId == ctx.State.PlayerID() {
-		resp.Code = int32(errcode.ErrFriendApplyNotFound)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrFriendApplyNotFound)
 	}
 
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -155,8 +152,7 @@ func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp
 // onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
 func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp *gamev1.FriendDeleteResp) error {
 	if req.PlayerId <= 0 {
-		resp.Code = int32(errcode.ErrFriendTargetNotFound)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
 
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)

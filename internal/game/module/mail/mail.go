@@ -708,29 +708,26 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 	*resp = gamev1.MailTakeAttachmentResp{}
 	// 前置挡掉非正 id：省一次 DB 往返，也防负 id 扫表
 	if req.MailId <= 0 {
-		resp.Code = int32(errcode.ErrMailNotFound)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrMailNotFound)
 	}
 
 	// 已领过直接返回 5002：SQL 的 claimed 只是展示，权威事实在快照业务键上。
 	// 先查键再查附件，否则 MarkTaken 生效后重复请求会拿到 5003（无附件）而不是 5002。
 	key := fmt.Sprintf("mail:%d", req.MailId)
 	if ctx.State.HasBiz(key) {
-		resp.Code = int32(errcode.ErrMailTaken)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrMailTaken)
 	}
 
 	atts, err := m.repo.FindAttachments(context.Background(), ctx.State.PlayerID(), req.MailId)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrMailNotExist):
-			resp.Code = int32(errcode.ErrMailNotFound)
+			return ctx.FailCode(resp, errcode.ErrMailNotFound)
 		case errors.Is(err, ErrNoAttachment):
-			resp.Code = int32(errcode.ErrNoAttachment)
+			return ctx.FailCode(resp, errcode.ErrNoAttachment)
 		default:
 			return err
 		}
-		return nil
 	}
 
 	applied, err := ctx.ApplyOnce(key, func() error {
@@ -753,16 +750,14 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 		// 满包与数量超限都回「背包满」：玩家侧动作相同（清包再领），
 		// 区分两者只会让客户端多一个用不上的分支。
 		if errors.Is(err, module.ErrBagFull) || errors.Is(err, module.ErrItemLimit) {
-			resp.Code = int32(errcode.ErrBagFull)
-			return nil
+			return ctx.FailCode(resp, errcode.ErrBagFull)
 		}
 		return err
 	}
 	// !applied 是并发双端同时领取的第二道防线：HasBiz 与 CAS 之间被
 	// 抢跑的请求在这里被 ApplyOnce 的版本号判重挡下，同样回 5002
 	if !applied {
-		resp.Code = int32(errcode.ErrMailTaken)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrMailTaken)
 	}
 	if err := m.repo.MarkTaken(context.Background(), req.MailId); err != nil {
 		// 不是错误：快照才是权威，标记只影响列表展示。
@@ -803,8 +798,7 @@ func (m *Module) onTake(ctx *module.Context, req *gamev1.MailTakeAttachmentReq, 
 // 免得出现「缓存说没了、库里还在」。
 func (m *Module) onDelete(c *module.Context, req *gamev1.MailDeleteReq, resp *gamev1.MailDeleteResp) error {
 	if req.MailId <= 0 {
-		resp.Code = int32(errcode.ErrMailNotFound)
-		return nil
+		return c.FailCode(resp, errcode.ErrMailNotFound)
 	}
 	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -814,21 +808,18 @@ func (m *Module) onDelete(c *module.Context, req *gamev1.MailDeleteReq, resp *ga
 	atts, err := m.repo.FindAttachments(ctxDB, playerID, req.MailId)
 	switch {
 	case errors.Is(err, ErrMailNotExist):
-		resp.Code = int32(errcode.ErrMailNotFound)
-		return nil
+		return c.FailCode(resp, errcode.ErrMailNotFound)
 	case errors.Is(err, ErrNoAttachment):
 		// 没有未领附件 → 放行
 	case err != nil:
 		return err
 	case len(atts) > 0:
-		resp.Code = int32(errcode.ErrMailHasUnclaimed)
-		return nil
+		return c.FailCode(resp, errcode.ErrMailHasUnclaimed)
 	}
 
 	if err := m.repo.Delete(ctxDB, playerID, req.MailId); err != nil {
 		if errors.Is(err, ErrMailNotExist) {
-			resp.Code = int32(errcode.ErrMailNotFound)
-			return nil
+			return c.FailCode(resp, errcode.ErrMailNotFound)
 		}
 		return err
 	}

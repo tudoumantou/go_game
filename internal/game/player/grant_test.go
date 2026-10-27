@@ -2,8 +2,6 @@ package player
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -39,58 +37,6 @@ func itemRows(items ...[2]int32) *sqlmock.Rows {
 	return r
 }
 
-func TestCommitItemsAtomic(t *testing.T) {
-	for _, fail := range []string{"", "business", "items", "commit"} {
-		t.Run(fail, func(t *testing.T) {
-			sqlDB, mock, err := sqlmock.New()
-			require.NoError(t, err)
-			defer sqlDB.Close()
-			r := NewRepository(&db.DB{DB: sqlDB})
-			s := NewState(7)
-			s.SeedItem(1001, 10)
-			s.AddItem(1001, 5) // 尚未落库的已有背包变化也必须一起保存。
-			boom := errors.New("injected failure")
-			mock.ExpectBegin()
-			mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WithArgs(int64(7)).WillReturnRows(playerRow(7))
-			business := mock.ExpectExec("INSERT INTO claim_test").WithArgs(int64(7))
-			if fail == "business" {
-				business.WillReturnError(boom)
-				mock.ExpectRollback()
-			} else {
-				business.WillReturnResult(sqlmock.NewResult(1, 1))
-				items := mock.ExpectExec("INSERT INTO player_item \\(player_id, item_id, count\\)").WithArgs(int64(7), int32(1001), int64(35))
-				if fail == "items" {
-					items.WillReturnError(boom)
-					mock.ExpectRollback()
-				} else {
-					items.WillReturnResult(sqlmock.NewResult(1, 1))
-					if fail == "commit" {
-						mock.ExpectCommit().WillReturnError(boom)
-					} else {
-						mock.ExpectCommit()
-					}
-				}
-			}
-			err = r.CommitItems(context.Background(), s, []module.ItemGrant{{ItemID: 1001, Count: 20}}, func(tx *sql.Tx) error {
-				_, err := tx.Exec("INSERT INTO claim_test (player_id) VALUES (?)", int64(7))
-				return err
-			})
-			if fail == "" {
-				require.NoError(t, err)
-				require.EqualValues(t, 35, s.GetItemCount(1001), "committed reward not synchronized")
-				require.Empty(t, s.DirtyItems())
-			} else {
-				require.Error(t, err, "expected failure")
-				require.EqualValues(t, 15, s.GetItemCount(1001), "failed transaction mutated memory")
-				require.EqualValues(t, 15, s.DirtyItems()[1001])
-				require.EqualValues(t, errors.Is(err, ErrCommitUnknown), (fail == "commit"))
-			}
-			err = mock.ExpectationsWereMet()
-			require.NoError(t, err)
-		})
-	}
-}
-
 func TestReloadItemsPreservesOtherActorState(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -115,7 +61,14 @@ func TestReloadItemsPreservesOtherActorState(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
+// TestNeedsReloadGateSkipsSaveAndRecoversBeforeNextPacket 上次提交结果未知时，
+// SaveMsg 必须被拒——那批内存可能落在「其实没提交」的一侧，写回去会覆盖库里的
+// 新值；下一条业务包先 ReloadItems 把背包对齐，再进业务。
+//
+// 历史注记：这个闸门原来由 CommitItems 的 COMMIT 异常触发。v3.13.2 删掉
+// CommitItems（业务后门）后，触发点只剩 grantSync 的 SaveForce 失败，这里直接
+// 置位 needsReload 来验证闸门本身，不再绕经发奖路径。
+func TestNeedsReloadGateSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	sqlDB, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer sqlDB.Close()
@@ -139,19 +92,9 @@ func TestActorUnknownCommitSkipsSaveAndRecoversBeforeNextPacket(t *testing.T) {
 	a.sessionID = 1
 	a.state.SeedItem(1001, 15)
 	a.state.AddBonus("atk", 77)
-	// 发奖前保存已经存在的状态。
-	mock.ExpectBegin()
-	mock.ExpectExec("UPDATE player SET").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO player_attr").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit()
-	// 模拟服务端可能成功、客户端收到 COMMIT 错误。
-	mock.ExpectBegin()
-	mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WillReturnRows(playerRow(7))
-	mock.ExpectExec("INSERT INTO claim_test").WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec("INSERT INTO player_item").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectCommit().WillReturnError(errors.New("connection lost"))
-	err = a.moduleCtx(nil).CommitItems(context.Background(), []module.ItemGrant{{ItemID: 1001, Count: 20}}, func(tx *sql.Tx) error { _, err := tx.Exec("INSERT INTO claim_test VALUES (7)"); return err })
-	require.False(t, !errors.Is(err, ErrCommitUnknown) || !a.needsReload, fmt.Sprintf("uncertainty not retained: %v", err))
+	// 模拟「上次提交结果未知」：闸门应当拒绝后续的 Save。
+	a.needsReload = true
+
 	// SaveMsg 必须跳过。下一条背包请求先锁行恢复，再读取新数量。
 	mock.ExpectBegin()
 	mock.ExpectQuery("FROM player WHERE id = \\? ORDER BY id LIMIT 1 FOR UPDATE").WillReturnRows(playerRow(7))

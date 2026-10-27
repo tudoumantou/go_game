@@ -174,21 +174,18 @@ func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1
 
 	// 跨服节点全挂时直接拒绝：不给玩家「进了队列却永远匹配不到」的希望
 	if !m.cross.Available() {
-		resp.Code = int32(errcode.ErrBattleModeClosed)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrBattleModeClosed)
 	}
 
 	m.mu.Lock()
 	if m.queued[playerID] {
 		m.mu.Unlock()
-		resp.Code = int32(errcode.ErrBattleAlreadyIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrBattleAlreadyIn)
 	}
 	if s, inBattle := m.sessions[playerID]; inBattle {
 		if !s.Settled {
 			m.mu.Unlock()
-			resp.Code = int32(errcode.ErrBattleAlreadyIn)
-			return nil
+			return ctx.FailCode(resp, errcode.ErrBattleAlreadyIn)
 		}
 		// 已结算但会话还未回收（结算到清理之间有短暂窗口）：
 		// 立即清掉残留，允许重新匹配 —— 否则玩家打完一场要等 2s 才能再排。
@@ -203,8 +200,7 @@ func (m *Module) onMatch(ctx *module.Context, req *gamev1.MatchReq, resp *gamev1
 		elo := ctx.State.Profile().Level * 100
 		if err := m.center.Match(playerID, mode, elo, m.buildSnapshot(playerID)); err != nil {
 			m.logger.Warn("center match failed", "player_id", playerID, "err", err)
-			resp.Code = int32(errcode.ErrBattleModeClosed)
-			return nil
+			return ctx.FailCode(resp, errcode.ErrBattleModeClosed)
 		}
 		resp.Code = int32(errcode.OK)
 		resp.Queued = 1 // 中心服匹配池不回传精确人数，客户端按「已入队」处理
@@ -369,18 +365,15 @@ func (m *Module) onResultReport(ctx *module.Context, req *gamev1.BattleResultRep
 	// 房间不匹配视同令牌无效：会话里的 room 是建房时绑定的，
 	// 客户端改报别的房间，等价于拿着别房的信物来冒领
 	if s == nil || s.RoomID != req.RoomId {
-		resp.Code = int32(errcode.ErrBattleTokenInvalid) // 房间不匹配视同令牌无效
-		return nil
+		return ctx.FailCode(resp, errcode.ErrBattleTokenInvalid) // 房间不匹配视同令牌无效
 	}
 	// 令牌逐个比对：防玩家 A 用自己房间的令牌给 B 的房间冒领结算
 	if req.BattleToken != s.Token {
-		resp.Code = int32(errcode.ErrBattleTokenInvalid)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrBattleTokenInvalid)
 	}
 	// 已结算 → 6003：客户端重发/双端重复上报的幂等回执
 	if s.Settled {
-		resp.Code = int32(errcode.ErrResultReported)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrResultReported)
 	}
 
 	// 幂等标记（先在内存置位，避免并发重复上报）

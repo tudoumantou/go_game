@@ -7,6 +7,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
@@ -40,4 +41,25 @@ func TestNormalizeDSNKeepsExplicitTimeZone(t *testing.T) {
 func TestNormalizeDSNInvalidPassthrough(t *testing.T) {
 	const bad = "not-a-dsn"
 	require.Equal(t, bad, normalizeDSN(bad))
+}
+
+// TestNormalizeDSNInjectsQueryTimeouts 缺省注入读写超时。
+//
+// 守的是「一个卡住的查询永久占住玩家 Actor」这个可用性问题：Actor 串行，
+// 一条没有超时的 SQL 会让该玩家的所有后续消息排队等待。驱动层的
+// readTimeout/writeTimeout 是唯一能「零遗漏」兜住所有仓储调用位置的地方。
+func TestNormalizeDSNInjectsQueryTimeouts(t *testing.T) {
+	cfg, err := mysql.ParseDSN(normalizeDSN("game:pw@tcp(127.0.0.1:3306)/game_study?parseTime=true"))
+	require.NoError(t, err)
+	require.Equal(t, defaultQueryTimeout, cfg.ReadTimeout)
+	require.Equal(t, defaultQueryTimeout, cfg.WriteTimeout)
+}
+
+// TestNormalizeDSNKeepsExplicitTimeouts 显式配置优先（例如压测环境想放宽到 30s）。
+func TestNormalizeDSNKeepsExplicitTimeouts(t *testing.T) {
+	in := "game:pw@tcp(127.0.0.1:3306)/game_study?readTimeout=30s&writeTimeout=20s"
+	cfg, err := mysql.ParseDSN(normalizeDSN(in))
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, cfg.ReadTimeout)
+	require.Equal(t, 20*time.Second, cfg.WriteTimeout)
 }

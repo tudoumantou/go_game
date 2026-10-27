@@ -9,7 +9,6 @@ package module
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -119,9 +118,6 @@ type Context struct {
 	Emit         func(evt Event) // 事件广播（nil 表示无订阅方，产生方需判空）
 	AddExp       AddExpFunc      // 加经验回调（nil 表示玩家层未注入，模块需判空）
 	CacheEnabled bool            // Redis 权威状态已接入，成功响应在缓存提交后发送。
-	// CommitItems 在玩家 Actor 内将业务操作与背包奖励放入同一事务。
-	// 只有事务提交成功后才修改内存；业务操作必须仅通过传入的 tx 写库。
-	CommitItems func(context.Context, []ItemGrant, func(*sql.Tx) error) error
 	// Clock 取当前时间；nil 表示用系统时间。测试注入假时钟验证跨天/跨周边界，
 	// 业务不再各自持有一个 now 字段。
 	Clock func() time.Time

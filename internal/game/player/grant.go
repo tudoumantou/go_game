@@ -1,93 +1,32 @@
-// internal/game/player/grant.go —— 非缓存路径的事务发奖（直连 MySQL 形态）
+// internal/game/player/grant.go —— 非缓存路径的背包重载
 //
-// 架构职责：CommitItems 把「业务事实」与「背包变更」钉在同一个 SQL 事务里，
-// ReloadItems 在 COMMIT 结果未知后恢复背包。二者只服务非缓存权威模式；
-// 缓存模式的等价物是快照 CAS（cache_actor.go）。
+// 架构职责：ReloadItems 在「提交结果未知」后恢复背包——先拿同一行锁等待
+// 在途事务结束，再重读道具表。只服务非缓存权威模式；缓存模式的等价物是
+// 快照 CAS（cache_actor.go）。
 //
-// 协作关系：由 actor.go 的 moduleCtx 闭包调用（模块的 CommitItems 钩子）。
+// 历史注记（v3.13.2）：这里原本还有 CommitItems——把「业务事实」与「背包
+// 变更」钉在同一个 SQL 事务里，并通过 module.Context.CommitItems 暴露给业务。
+// 已删除，两个原因：
+//  1. 它把 *sql.Tx 塞进业务上下文，等于给模块开了「直接写库」的后门；
+//  2. 全仓零调用方——缓存模式下玩家的唯一写入口是快照 CAS，直连 SQL 只会
+//     造成「库已扣、快照未扣」的双写分歧。
 //
-// 设计取舍：
-//   - 为什么 SELECT ... FOR UPDATE：两个购买请求并发打到同一行背包时，
-//     行锁让第二个事务等第一个提交后再读，避免「都读到旧数量、都写回
-//     新数量」的丢失更新；锁范围只有 player 一行，不扩大；
-//   - 为什么 Commit 失败要包成 ErrCommitUnknown：MySQL 在 COMMIT 报文
-//     丢失时可能已提交，调用方无法区分「没成功」与「成功了但没收到确认」，
-//     必须按「未知」处理——先重载再继续，宁可慢一步不能重复发奖；
-//   - ReloadItems 只换背包：装备派生属性与其它模块的在线内存状态不属于
-//     本次未知事务的范围，整体重载会把它们打回旧值。
+// 需要「业务事实与资产原子生效」的场景走 A 类同步发奖：GrantItemsMsg +
+// SaveForce（幂等键与资产同一事务）。
 package player
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
-	"math"
 
-	"game_study/internal/game/module"
 	"game_study/pkg/model"
 )
 
-// ErrCommitUnknown 表示 COMMIT 返回错误，数据库可能已提交，必须重载后再处理消息。
-//
-// 哨兵错误：调用方用 errors.Is 判定（见 actor.go moduleCtx 闭包），不要
-// 用字符串比较——包装链会随时间变化。
-var ErrCommitUnknown = errors.New("transaction commit outcome unknown")
-
-// CommitItems 由玩家 Actor 同步调用，业务事实与背包同事务持久化。
-// 调用期间不会有该 Actor 的其他消息或 Write-Behind 保存交错执行。
-//
-// 前置校验（item/count/上溢）放在开事务前：非法参数不该浪费一次加锁。
-func (r *Repository) CommitItems(ctx context.Context, state *State, grants []module.ItemGrant, business func(*sql.Tx) error) error {
-	if r.CacheEnabled() {
-		return fmt.Errorf("direct SQL grant disabled for cached player")
-	}
-	dirty := state.DirtyItems()
-	counts := make(map[int32]int64)
-	for _, grant := range grants {
-		current, ok := counts[grant.ItemID]
-		if !ok {
-			current = state.GetItemCount(grant.ItemID)
-		}
-		if grant.ItemID <= 0 || grant.Count <= 0 || current < 0 || grant.Count > math.MaxInt32-current {
-			return fmt.Errorf("invalid item grant: item=%d count=%d", grant.ItemID, grant.Count)
-		}
-		counts[grant.ItemID] = current + grant.Count
-		dirty[grant.ItemID] = counts[grant.ItemID]
-	}
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	// 锁角色行（生成的 @lockby:id）：锁范围只有 player 一行，不扩大；
-	// 行不存在（角色被删）时 ErrNoRows 直接上抛，与手写 SELECT 语义一致。
-	if _, err := model.LockPlayerById(ctx, tx, state.PlayerID()); err != nil {
-		return err
-	}
-	if err := business(tx); err != nil {
-		return err
-	}
-	if err := saveDirtyItems(ctx, tx, state.PlayerID(), dirty); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		// %w 包装哨兵错误：errors.Is(err, ErrCommitUnknown) 仍为真
-		return fmt.Errorf("%w: %v", ErrCommitUnknown, err)
-	}
-	for id, count := range counts {
-		state.SeedItem(id, count)
-	}
-	state.ClearItemsDirty()
-	return nil
-}
-
-// ReloadItems 在未知提交后获取相同角色行锁，等待旧发奖事务结束再读取背包。
+// ReloadItems 在未知提交后获取相同角色行锁，等待旧事务结束再读取背包。
 // 只替换背包，保留装备派生属性和其他模块的在线内存状态。
 //
-// 行锁在这里的用途与 CommitItems 不同：不是为了互斥，而是为了**等待**——
-// 上一个结果未知的事务可能还在提交中，FOR UPDATE 会让本事务排到它后面，
-// 读到的背包必然包含那次发奖的结果。
+// 行锁在这里的用途不是互斥，而是**等待**——上一个结果未知的事务可能还在
+// 提交中，FOR UPDATE 会让本事务排到它后面，读到的背包必然包含那次写入。
 func (r *Repository) ReloadItems(ctx context.Context, state *State) error {
 	if r.CacheEnabled() {
 		return fmt.Errorf("use Redis recovery for cached player")

@@ -17,9 +17,7 @@ package player
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -823,21 +821,6 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 	if a.repo != nil {
 		// 跨玩家只读：模块拿到的只有 View/ViewMany，拿不到别人的 State
 		mctx.Peers = a.repo
-	}
-	if a.repo != nil && !a.repo.CacheEnabled() {
-		// 闭包捕获 a 与 a.state：事务内业务与背包共享同一份内存快照，
-		// 提交结果未知时置 needsReload，下一条消息先 ReloadItems 再进业务。
-		mctx.CommitItems = func(ctx context.Context, grants []module.ItemGrant, business func(*sql.Tx) error) error {
-			// 先保存已有玩法变更，提交结果未知后重载也不会丢掉此前的背包进度。
-			if err := a.repo.Save(ctx, a.state); err != nil {
-				return err
-			}
-			err := a.repo.CommitItems(ctx, a.state, grants, business)
-			if errors.Is(err, ErrCommitUnknown) {
-				a.needsReload = true
-			}
-			return err
-		}
 	}
 	mctx.Emit = func(evt module.Event) {
 		a.registry.DispatchEvent(mctx, evt)

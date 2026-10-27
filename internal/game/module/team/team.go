@@ -324,16 +324,14 @@ func (m *Module) onLogout(ctx *module.Context) error {
 func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1.TeamInfoResp) error {
 	if m.repo == nil {
 		// 无 DB 环境按「不在队」回：与 (nil, nil) 同码
-		resp.Code = int32(errcode.ErrTeamNotIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrTeamNotIn)
 	}
 	t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID())
 	if err != nil {
 		return err
 	}
 	if t == nil {
-		resp.Code = int32(errcode.ErrTeamNotIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrTeamNotIn)
 	}
 	members, err := m.repo.Members(context.Background(), t.ID)
 	if err != nil {
@@ -365,8 +363,7 @@ func (m *Module) onCreate(ctx *module.Context, req *gamev1.TeamCreateReq, resp *
 	if t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if t != nil {
-		resp.Code = int32(errcode.ErrTeamAlreadyIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrTeamAlreadyIn)
 	}
 	teamID, err := m.repo.Create(context.Background(), ctx.State.PlayerID(), req.CopyId)
 	if err != nil {
@@ -390,21 +387,19 @@ func (m *Module) onJoin(ctx *module.Context, req *gamev1.TeamJoinReq, resp *game
 	if t, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if t != nil {
-		resp.Code = int32(errcode.ErrTeamAlreadyIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrTeamAlreadyIn)
 	}
 	if err := m.repo.Join(context.Background(), req.TeamId, ctx.State.PlayerID()); err != nil {
 		switch {
 		case errors.Is(err, ErrTeamNotExist):
-			resp.Code = int32(errcode.ErrTeamNotExist)
+			return ctx.FailCode(resp, errcode.ErrTeamNotExist)
 		case errors.Is(err, ErrTeamFull):
-			resp.Code = int32(errcode.ErrTeamFull)
+			return ctx.FailCode(resp, errcode.ErrTeamFull)
 		case errors.Is(err, ErrAlreadyIn):
-			resp.Code = int32(errcode.ErrTeamAlreadyIn)
+			return ctx.FailCode(resp, errcode.ErrTeamAlreadyIn)
 		default:
 			return err
 		}
-		return nil
 	}
 	resp.Code = int32(errcode.OK)
 	return nil
@@ -421,8 +416,7 @@ func (m *Module) onLeave(ctx *module.Context, _ *gamev1.TeamLeaveReq, resp *game
 	}
 	if err := m.repo.Leave(context.Background(), ctx.State.PlayerID()); err != nil {
 		if errors.Is(err, ErrNotInTeam) {
-			resp.Code = int32(errcode.ErrTeamNotIn)
-			return nil
+			return ctx.FailCode(resp, errcode.ErrTeamNotIn)
 		}
 		return err
 	}

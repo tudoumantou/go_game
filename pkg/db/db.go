@@ -105,16 +105,36 @@ func New(cfg Config) (*DB, error) {
 //
 // 显式写了 `time_zone` 的 DSN 不动——那是调用方的显式选择。解析失败原样
 // 返回，让 sql.Open/Ping 报出真实的 DSN 错误（不吞掉拼写问题）。
+// defaultQueryTimeout 单条 SQL 的读写超时（驱动层兜底，见 normalizeDSN）。
+//
+// 5s 的取舍：正常查询在毫秒级，5s 只兜「网络黑洞 / 锁等待异常」这类卡死；
+// 再短会误杀冷启动的批量读，再长则一个卡住的玩家要等太久才恢复。
+const defaultQueryTimeout = 5 * time.Second
+
 func normalizeDSN(dsn string) string {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return dsn
 	}
 	if cfg.Params == nil {
-		cfg.Params = make(map[string]string, 1)
+		cfg.Params = make(map[string]string, 3)
 	}
 	if _, ok := cfg.Params["time_zone"]; !ok {
 		cfg.Params["time_zone"] = "'+00:00'"
+	}
+	// 读写超时兜底：没有它，一条卡住的查询会永久占住玩家 Actor 线程
+	// （Actor 串行，一个玩家的所有消息都排在后面）。调用方显式配了就不覆盖。
+	//
+	// 为什么放在 DSN 而不是逐个 handler 包 context：模块里的仓储调用有二十多处，
+	// 逐个加 WithTimeout 既啰嗦又容易漏；驱动层的 readTimeout 覆盖「所有查询」，
+	// 是零遗漏的兜底。handler 里更紧的 3s 仍然有效（谁先到谁生效）。
+	// 用 Config 的字段而不是 Params：ParseDSN 会把 readTimeout/writeTimeout
+	// 解析进这两个 time.Duration 字段，塞 Params 里反而会拼出无效参数。
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = defaultQueryTimeout
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = defaultQueryTimeout
 	}
 	return cfg.FormatDSN()
 }

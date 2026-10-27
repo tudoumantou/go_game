@@ -111,8 +111,7 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 	// 长度预检在打到中心服之前：超长 rankType 既是无效输入也是潜在滥用
 	// （会变成 Redis key 的一部分），本地挡掉最便宜
 	if len(rankType) > maxRankTypeLen {
-		resp.Code = int32(errcode.ErrRankBadType)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrRankBadType)
 	}
 	if m.q == nil {
 		resp.Code = int32(errcode.ErrRankUnavailable)

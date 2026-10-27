@@ -103,13 +103,11 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 
 	cfg, ok := gamedata.GetItemCfg(int64(itemID))
 	if !ok {
-		resp.Code = int32(errcode.ErrItemNotExist)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrItemNotExist)
 	}
 	// 配置约定：Col3 = 单次可使用数量上限，<=0 表示不可主动使用（P7 接 item_type.xml）
 	if cfg.Col3 <= 0 {
-		resp.Code = int32(errcode.ErrItemNotUsable)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrItemNotUsable)
 	}
 	// 请求数量超过单次上限时截断，而不是报错：与客户端的批量使用体验一致。
 	if int64(count) > cfg.Col3 {
@@ -118,14 +116,12 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 
 	have := ctx.State.GetItemCount(itemID)
 	if have < int64(count) {
-		resp.Code = int32(errcode.ErrItemNotEnough)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrItemNotEnough)
 	}
 	// RemoveItem 自带原子性：数量不足返回 false 且不做部分扣减；
 	// Actor 单线程下上面的 have 检查已足够，这次是纵深防御。
 	if !ctx.State.RemoveItem(itemID, int64(count)) {
-		resp.Code = int32(errcode.ErrItemNotEnough)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrItemNotEnough)
 	}
 	ctx.State.MarkDirty(m.Name())
 	// 事件：驱动任务/成就（use_item，Key=道具 ID）

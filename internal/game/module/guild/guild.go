@@ -310,16 +310,14 @@ func (m *Module) OnLogout(ctx *module.Context) error { return nil }
 func (m *Module) onInfo(ctx *module.Context, _ *gamev1.GuildInfoReq, resp *gamev1.GuildInfoResp) error {
 	// 无 DB 环境按「未入会」回：与 (nil, nil) 同码，客户端行为一致
 	if m.repo == nil {
-		resp.Code = int32(errcode.ErrGuildNotIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrGuildNotIn)
 	}
 	g, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID())
 	if err != nil {
 		return err
 	}
 	if g == nil {
-		resp.Code = int32(errcode.ErrGuildNotIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrGuildNotIn)
 	}
 	resp.Code = int32(errcode.OK)
 	resp.GuildId = g.ID
@@ -338,8 +336,7 @@ func (m *Module) onInfo(ctx *module.Context, _ *gamev1.GuildInfoReq, resp *gamev
 func (m *Module) onCreate(ctx *module.Context, req *gamev1.GuildCreateReq, resp *gamev1.GuildCreateResp) error {
 	name := strings.TrimSpace(req.Name)
 	if utf8.RuneCountInString(name) < 2 || utf8.RuneCountInString(name) > 16 {
-		resp.Code = int32(errcode.ErrGuildNameIllegal)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrGuildNameIllegal)
 	}
 	if m.repo == nil {
 		// 无 DB 环境：降级直接成功（演示模式，guild_id 留 0）
@@ -350,15 +347,13 @@ func (m *Module) onCreate(ctx *module.Context, req *gamev1.GuildCreateReq, resp 
 		return err
 	} else if g != nil {
 		// 已有公会再创建：int32(errcode.ErrGuildAlreadyIn)（一个人只能在一个公会）
-		resp.Code = int32(errcode.ErrGuildAlreadyIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrGuildAlreadyIn)
 	}
 	guildID, err := m.repo.Create(context.Background(), name, ctx.State.PlayerID())
 	if err != nil {
 		// 哨兵错误转业务码；其余 err 是 DB 真故障，走 error 通道
 		if errors.Is(err, ErrNameUsed) {
-			resp.Code = int32(errcode.ErrGuildNameUsed)
-			return nil
+			return ctx.FailCode(resp, errcode.ErrGuildNameUsed)
 		}
 		return err
 	}
@@ -381,21 +376,19 @@ func (m *Module) onJoin(ctx *module.Context, req *gamev1.GuildJoinReq, resp *gam
 	if g, err := m.repo.FindByPlayer(context.Background(), ctx.State.PlayerID()); err != nil {
 		return err
 	} else if g != nil {
-		resp.Code = int32(errcode.ErrGuildAlreadyIn)
-		return nil
+		return ctx.FailCode(resp, errcode.ErrGuildAlreadyIn)
 	}
 	if err := m.repo.Join(context.Background(), req.GuildId, ctx.State.PlayerID()); err != nil {
 		switch {
 		case errors.Is(err, ErrGuildNotExist):
-			resp.Code = int32(errcode.ErrGuildNotIn)
+			return ctx.FailCode(resp, errcode.ErrGuildNotIn)
 		case errors.Is(err, ErrGuildFull):
-			resp.Code = int32(errcode.ErrGuildFull)
+			return ctx.FailCode(resp, errcode.ErrGuildFull)
 		case errors.Is(err, ErrAlreadyIn):
-			resp.Code = int32(errcode.ErrGuildAlreadyIn)
+			return ctx.FailCode(resp, errcode.ErrGuildAlreadyIn)
 		default:
 			return err
 		}
-		return nil
 	}
 	resp.Code = int32(errcode.OK)
 	return nil
@@ -412,8 +405,7 @@ func (m *Module) onQuit(ctx *module.Context, _ *gamev1.GuildQuitReq, resp *gamev
 	}
 	if err := m.repo.Quit(context.Background(), ctx.State.PlayerID()); err != nil {
 		if errors.Is(err, ErrNotInGuild) {
-			resp.Code = int32(errcode.ErrGuildNotIn)
-			return nil
+			return ctx.FailCode(resp, errcode.ErrGuildNotIn)
 		}
 		return err
 	}
