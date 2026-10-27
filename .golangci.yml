@@ -10,4 +10,29 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - depguard      # 按文件限制 import：把「业务层不许碰存储」变成 CI 卡点
   # disable 留空：errcheck 的显式忽略（_ = f()）由默认配置覆盖，无需禁用
+
+linters-settings:
+  depguard:
+    rules:
+      # handler 只写业务。
+      #
+      # 这条规则是「拆文件」的全部意义所在：文件不分开，规则就写不出来
+      # （禁了 db 会把同文件里的 Repo 一起打红）；文件分开之后，
+      # 「业务层偷写 SQL / 直接拿驱动」就从「review 靠人盯」变成 CI 红。
+      #
+      # 覆盖范围用通配而非写死 mail：以后拆 battle/friend/team/guild/chat
+      # 时规则自动生效，不需要再改配置。
+      handler-is-business-only:
+        files:
+          - "**/module/*/handler.go"
+        deny:
+          - pkg: "database/sql"
+            desc: "handler 不写 SQL——查询放 store.go，由 gendb 生成函数提供"
+          - pkg: "game_study/pkg/db"
+            desc: "handler 不持数据库驱动——驱动只在 store.go 与装配层出现"
+          - pkg: "game_study/pkg/model"
+            desc: "handler 不接触表行——用 types.go 里的领域类型，转换放 view.go"
+          - pkg: "game_study/pkg/writebehind"
+            desc: "handler 不直接操作落库队列——那属于基座的职责"
