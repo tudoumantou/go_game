@@ -515,6 +515,21 @@ func (c *Config) Validate() error {
 		}
 		seen[m.Table] = struct{}{}
 	}
+	// 跨服座位：seat_addr 必须是 nodes 中的一个，否则游戏服拿不到该节点的
+	// 连接，座位操作会持续失败（表现为「点击座位无反应」）。放启动校验，
+	// 让配置错误第一秒就暴露，而不是等玩家反馈。
+	if c.Cross.SeatAddr != "" {
+		found := false
+		for _, n := range c.Cross.Nodes {
+			if n == c.Cross.SeatAddr {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("cross.seat_addr(%s) 必须是 cross.nodes 中的一个", c.Cross.SeatAddr)
+		}
+	}
 	return nil
 }
 
