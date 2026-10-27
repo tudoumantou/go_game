@@ -57,6 +57,8 @@ func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
 	module.Handle(m.Thin, m.onApply)
 	module.Handle(m.Thin, m.onHandle)
 	module.Handle(m.Thin, m.onDelete)
+	module.Handle(m.Thin, m.onBlock)
+	module.Handle(m.Thin, m.onUnblock)
 	return m
 }
 

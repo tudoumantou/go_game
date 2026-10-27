@@ -226,6 +226,19 @@ CREATE TABLE `friend_apply` (
   KEY `idx_to_status` (`to_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='好友申请表';
 
+-- @findby:player_id,blocked_id
+-- @listby:player_id
+-- @deleteby:player_id,blocked_id
+CREATE TABLE `friend_block` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '拉黑记录ID',
+  `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '归属玩家',
+  `blocked_id` BIGINT UNSIGNED NOT NULL COMMENT '被拉黑的玩家',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_block` (`player_id`, `blocked_id`),
+  KEY `idx_player` (`player_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='好友黑名单表';
+
 -- ============================================================================
 -- guild.sql
 -- ============================================================================

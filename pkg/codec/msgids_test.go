@@ -120,6 +120,12 @@ var wireBaseline = map[string]uint32{
 	"QuestAcceptResp":        7104,
 	"QuestClaimReq":          7105,
 	"QuestClaimResp":         7106,
+	"FriendBlockReq":         6809,
+	"FriendBlockResp":        6810,
+	"FriendUnblockReq":       6811,
+	"FriendUnblockResp":      6812,
+	"EquipEnhanceReq":        3107,
+	"EquipEnhanceResp":       3108,
 }
 
 // TestMsgIDsMatchWireBaseline 逐条比对 wireBaseline：生成表里的号必须与

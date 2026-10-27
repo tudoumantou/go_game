@@ -171,6 +171,18 @@ message EquipTakeOffResp { // MsgID: 3106
   repeated AttrPair attrs = 2;
 }
 
+// @msg 3107
+message EquipEnhanceReq { // MsgID: 3107
+  int64 uid = 1; // 装备实例 UID
+}
+
+// @msg 3108
+message EquipEnhanceResp { // MsgID: 3108
+  int32 code = 1;          // 3101 不存在 / 3105 已满级 / 3106 材料不足
+  int32 enhance_level = 2; // 强化后的等级
+  repeated AttrPair attrs = 3; // 强化后属性全量（客户端刷新面板）
+}
+
 // ---------- skill.proto ----------
 message SkillEntry {
   int32  skill_id = 1;
@@ -664,6 +676,7 @@ message FriendListResp {
   repeated FriendEntry friends = 2;
   repeated FriendApplyEntry applies = 3; // 待我处理的申请
   int32  limit = 4;                      // 好友上限（配置），客户端据此提示
+  repeated FriendEntry blocks = 5;       // 黑名单（拉黑即解除好友关系）
 }
 
 // @msg 6803
@@ -694,6 +707,26 @@ message FriendDeleteReq {
 
 // @msg 6808
 message FriendDeleteResp {
+  int32 code = 1;
+}
+
+// @msg 6809
+message FriendBlockReq {
+  int64 player_id = 1; // 要拉黑的玩家（拉黑会同时解除好友关系）
+}
+
+// @msg 6810
+message FriendBlockResp {
+  int32 code = 1; // 0 成功 / 6809 不能拉黑自己 / 6810 已在黑名单
+}
+
+// @msg 6811
+message FriendUnblockReq {
+  int64 player_id = 1;
+}
+
+// @msg 6812
+message FriendUnblockResp {
   int32 code = 1;
 }
 

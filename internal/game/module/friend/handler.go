@@ -51,6 +51,53 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *game
 			CreatedAt: a.CreatedAt.Unix(),
 		})
 	}
+
+	// 黑名单单独一段查：它与好友/申请不是同一张表，合进 List 会让那条
+	// 已经够长的函数更难读。在线状态对黑名单没意义，Online 恒为 false。
+	blocks, err := m.repo.Blocks(ctxDB, ctx.State.PlayerID())
+	if err != nil {
+		return fmt.Errorf("list blocked: %w", err)
+	}
+	for _, b := range blocks {
+		resp.Blocks = append(resp.Blocks, &gamev1.FriendEntry{
+			PlayerId:  b.PlayerID,
+			Name:      b.Name,
+			Level:     b.Level,
+			CreatedAt: b.CreatedAt.Unix(),
+		})
+	}
+	return nil
+}
+
+// onBlock 拉黑：写黑名单并解除双向好友。
+func (m *Module) onBlock(ctx *module.Context, req *gamev1.FriendBlockReq, resp *gamev1.FriendBlockResp) error {
+	if req.PlayerId <= 0 {
+		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
+	}
+	me := ctx.State.PlayerID()
+	if req.PlayerId == me {
+		return ctx.FailCode(resp, errcode.ErrFriendBlockSelf)
+	}
+
+	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := m.repo.Block(ctxDB, me, req.PlayerId); err != nil {
+		return fmt.Errorf("block player %d: %w", req.PlayerId, err)
+	}
+	return nil
+}
+
+// onUnblock 取消拉黑（幂等）。
+func (m *Module) onUnblock(ctx *module.Context, req *gamev1.FriendUnblockReq, resp *gamev1.FriendUnblockResp) error {
+	if req.PlayerId <= 0 {
+		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
+	}
+
+	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := m.repo.Unblock(ctxDB, ctx.State.PlayerID(), req.PlayerId); err != nil {
+		return fmt.Errorf("unblock player %d: %w", req.PlayerId, err)
+	}
 	return nil
 }
 

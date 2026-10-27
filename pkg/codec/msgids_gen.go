@@ -22,6 +22,8 @@ const (
 	MsgEquipWearResp          uint32 = 3104
 	MsgEquipTakeOffReq        uint32 = 3105
 	MsgEquipTakeOffResp       uint32 = 3106
+	MsgEquipEnhanceReq        uint32 = 3107
+	MsgEquipEnhanceResp       uint32 = 3108
 	MsgSkillListReq           uint32 = 3201
 	MsgSkillListResp          uint32 = 3202
 	MsgSkillLearnReq          uint32 = 3203
@@ -91,6 +93,10 @@ const (
 	MsgFriendHandleResp       uint32 = 6806
 	MsgFriendDeleteReq        uint32 = 6807
 	MsgFriendDeleteResp       uint32 = 6808
+	MsgFriendBlockReq         uint32 = 6809
+	MsgFriendBlockResp        uint32 = 6810
+	MsgFriendUnblockReq       uint32 = 6811
+	MsgFriendUnblockResp      uint32 = 6812
 	MsgPartnerListReq         uint32 = 6901
 	MsgPartnerListResp        uint32 = 6902
 	MsgPartnerActivateReq     uint32 = 6903
@@ -130,6 +136,8 @@ var msgNames = map[uint32]string{
 	3104: "EquipWearResp",
 	3105: "EquipTakeOffReq",
 	3106: "EquipTakeOffResp",
+	3107: "EquipEnhanceReq",
+	3108: "EquipEnhanceResp",
 	3201: "SkillListReq",
 	3202: "SkillListResp",
 	3203: "SkillLearnReq",
@@ -199,6 +207,10 @@ var msgNames = map[uint32]string{
 	6806: "FriendHandleResp",
 	6807: "FriendDeleteReq",
 	6808: "FriendDeleteResp",
+	6809: "FriendBlockReq",
+	6810: "FriendBlockResp",
+	6811: "FriendUnblockReq",
+	6812: "FriendUnblockResp",
 	6901: "PartnerListReq",
 	6902: "PartnerListResp",
 	6903: "PartnerActivateReq",
@@ -238,6 +250,8 @@ var msgIDs = map[string]uint32{
 	"EquipWearResp":          3104,
 	"EquipTakeOffReq":        3105,
 	"EquipTakeOffResp":       3106,
+	"EquipEnhanceReq":        3107,
+	"EquipEnhanceResp":       3108,
 	"SkillListReq":           3201,
 	"SkillListResp":          3202,
 	"SkillLearnReq":          3203,
@@ -307,6 +321,10 @@ var msgIDs = map[string]uint32{
 	"FriendHandleResp":       6806,
 	"FriendDeleteReq":        6807,
 	"FriendDeleteResp":       6808,
+	"FriendBlockReq":         6809,
+	"FriendBlockResp":        6810,
+	"FriendUnblockReq":       6811,
+	"FriendUnblockResp":      6812,
 	"PartnerListReq":         6901,
 	"PartnerListResp":        6902,
 	"PartnerActivateReq":     6903,
@@ -342,4 +360,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 104 }
+func MsgCount() int { return 110 }

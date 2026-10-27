@@ -23,6 +23,9 @@ import (
 // 三处共用同一个字符串，改一处即可全局一致（各玩法模块的同一约定）。
 const stateKey = "equip"
 
+// itemDiamond 强化消耗的货币（钻石）。与 shop/skill/quest 共用 1001。
+const itemDiamond int32 = 1001
+
 // Entry 装备实例。
 //
 // 字段语义：
@@ -58,6 +61,7 @@ func init() {
 	M.HandleRoute(&gamev1.EquipListReq{}, onList)
 	module.Route(M, &gamev1.EquipWearReq{}, onWear)
 	module.Route(M, &gamev1.EquipTakeOffReq{}, onTakeOff)
+	module.Route(M, &gamev1.EquipEnhanceReq{}, onEnhance)
 }
 
 // onLogin 按已穿戴装备重算属性加成。
@@ -75,8 +79,8 @@ func onLogin(c *module.Ctx[Data]) error {
 		if !e.Equipped {
 			continue
 		}
-		if cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID)); ok {
-			c.State.AddBonus("atk", cfg.Col4)
+		if b := equipBonus(e.EquipID, e.EnhanceLevel); b != 0 {
+			c.State.AddBonus("atk", b)
 		}
 	}
 	return nil
@@ -144,8 +148,8 @@ func onWear(c *module.Ctx[Data], req *gamev1.EquipWearReq) error {
 	}
 	// 加成只改内存，与 Equipped 在同一条消息的快照 CAS 里一起生效：
 	// CAS 失败则属性与状态一起回滚，不会「状态说穿了、属性没加」。
-	if cfg.Col4 != 0 {
-		c.State.AddBonus("atk", cfg.Col4)
+	if b := equipBonus(e.EquipID, e.EnhanceLevel); b != 0 {
+		c.State.AddBonus("atk", b)
 	}
 	return c.Reply(&gamev1.EquipWearResp{Attrs: attrPairs(c.State)})
 }
@@ -167,18 +171,14 @@ func onTakeOff(c *module.Ctx[Data], req *gamev1.EquipTakeOffReq) error {
 	if !e.Equipped {
 		return c.FailCode(&gamev1.EquipTakeOffResp{}, errcode.ErrEquipNotEquipped)
 	}
-	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
-	if !ok {
-		return c.FailCode(&gamev1.EquipTakeOffResp{}, errcode.ErrEquipNotExist)
-	}
 	e.Equipped = false
 	d.Equips[idx] = e
 	if err := c.Repo.Save(d); err != nil {
 		return c.Fail(&gamev1.EquipTakeOffResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	// 取负扣回：与穿戴时的 +Col4 精确对冲，登录重算前不会残留。
-	if cfg.Col4 != 0 {
-		c.State.AddBonus("atk", -cfg.Col4)
+	// 取负扣回：与穿戴时加的 equipBonus 精确对冲，登录重算前不会残留。
+	if b := equipBonus(e.EquipID, e.EnhanceLevel); b != 0 {
+		c.State.AddBonus("atk", -b)
 	}
 	return c.Reply(&gamev1.EquipTakeOffResp{Attrs: attrPairs(c.State)})
 }
@@ -219,4 +219,68 @@ func attrPairs(st module.PlayerState) []*gamev1.AttrPair {
 		{AttrId: 4, Value: st.GetAttr("def")},
 		{AttrId: 5, Value: st.GetAttr("spd")},
 	}
+}
+
+// equipBonus 一件装备提供的攻击加成 = 配置基础值 + 强化加成。
+//
+// 四处必须用同一个函数（登录重算 / 穿戴 / 卸下 / 强化的增量）：
+// 只要有一处算法不同，就会出现「穿上加了基础值、卸下扣了基础+强化」这类
+// 不对称，属性越用越偏，而且只在反复穿脱后才看得出来。
+func equipBonus(equipID, enhanceLevel int32) int64 {
+	cfg, ok := gamedata.GetEquipCfg(int64(equipID))
+	if !ok {
+		return 0
+	}
+	total := cfg.Col4
+	if enhanceLevel > 0 {
+		if ec, ok := gamedata.GetEquipEnhanceCfg(int64(enhanceLevel)); ok {
+			total += ec.Col3
+		}
+	}
+	return total
+}
+
+// onEnhance 强化一件装备：校验 → 扣材料 → 等级 +1 → 已穿戴则补加成。
+//
+// 顺序即正确性：先校验（存在 / 未满级）→ 再扣费 → 最后改状态。反过来做
+// 就会出现「扣了材料但等级没涨」或「等级涨了但没扣材料」，两种都要客服补偿。
+//
+// 上限用「配置缺失」判定而不是硬编码常量：运营往 equip_enhance.xml 加一行
+// 就能放开一级，不需要改代码发版。
+func onEnhance(c *module.Ctx[Data], req *gamev1.EquipEnhanceReq) error {
+	d, err := c.Repo.Get()
+	if err != nil {
+		return c.Fail(&gamev1.EquipEnhanceResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	idx := findEquip(d, req.Uid)
+	if idx < 0 {
+		return c.FailCode(&gamev1.EquipEnhanceResp{}, errcode.ErrEquipNotExist)
+	}
+	e := d.Equips[idx]
+	next := e.EnhanceLevel + 1
+	cfg, ok := gamedata.GetEquipEnhanceCfg(int64(next))
+	if !ok {
+		return c.FailCode(&gamev1.EquipEnhanceResp{}, errcode.ErrEquipMaxEnhance)
+	}
+	if err := module.Spend(c.State, itemDiamond, cfg.Col2); err != nil {
+		return c.FailCode(&gamev1.EquipEnhanceResp{}, errcode.ErrEquipNoMaterial)
+	}
+
+	before := equipBonus(e.EquipID, e.EnhanceLevel)
+	e.EnhanceLevel = next
+	d.Equips[idx] = e
+	if err := c.Repo.Save(d); err != nil {
+		return c.Fail(&gamev1.EquipEnhanceResp{Code: int32(errcode.ErrSystem)}, err)
+	}
+	// 只有已穿戴的装备影响面板；未穿戴的强化在穿上的那一刻按 equipBonus
+	// 自然生效，不需要在这里补。
+	if e.Equipped {
+		if delta := equipBonus(e.EquipID, next) - before; delta != 0 {
+			c.State.AddBonus("atk", delta)
+		}
+	}
+	return c.Reply(&gamev1.EquipEnhanceResp{
+		EnhanceLevel: next,
+		Attrs:        attrPairs(c.State),
+	})
 }

@@ -14,7 +14,7 @@ import (
 var rawXML embed.FS
 
 // embeddedVersion 编译期内嵌配置的内容哈希（启动日志与线上核对用）
-const embeddedVersion = "fb36265fa0aa4e35"
+const embeddedVersion = "8f6299c73c93f7a2"
 
 // Tables 一份不可变配置快照：热更新整体替换，读取方永远看到自洽的一套表。
 type Tables struct {

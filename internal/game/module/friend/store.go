@@ -103,6 +103,18 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 			return err
 		}
 
+		// 黑名单双向检查：任一方拉黑都不允许建立关系。
+		// 用两次单行查（走唯一键）而不是一条 OR 手写 SQL——生成器表达不了 OR，
+		// 而这里两次查的代价可以忽略（点「加好友」是低频操作）。
+		for _, pair := range [][2]int64{{to, from}, {from, to}} {
+			if _, err := model.FindFriendBlockByPlayerIdBlockedId(ctx, tx, pair[0], pair[1]); err == nil {
+				code = int32(errcode.ErrFriendBlocked)
+				return nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+		}
+
 		if _, err := model.FindFriendByPlayerIdFriendId(ctx, tx, from, to); err == nil {
 			code = int32(errcode.ErrFriendAlready)
 			return nil
@@ -326,4 +338,59 @@ func (r *Repo) Delete(ctx context.Context, a, b int64) error {
 		}
 		return nil
 	})
+}
+
+// Block 拉黑一个玩家：写黑名单 + 解除双向好友关系（同一事务）。
+//
+// 拉黑必须顺带解好友——否则会出现「已拉黑但仍是好友」，好友列表里还能
+// 看到对方，与玩家的直觉相反，而且这类残留状态没有任何入口能清理掉。
+//
+// 已拉黑按成功处理（唯一键冲突忽略）：玩家重复点「拉黑」不该看到报错。
+func (r *Repo) Block(ctx context.Context, playerID, targetID int64) error {
+	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+		if _, err := model.InsertFriendBlock(ctx, tx, &model.FriendBlock{
+			PlayerId:  playerID,
+			BlockedId: targetID,
+		}); err != nil && !db.IsDuplicate(err) {
+			return err
+		}
+		// 双向删：好友关系是两行（各自一份），只删一边会留下单向好友。
+		for _, pair := range [][2]int64{{playerID, targetID}, {targetID, playerID}} {
+			if _, err := model.DeleteFriendByPlayerIdFriendId(ctx, tx, pair[0], pair[1]); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Unblock 取消拉黑（幂等：本来不在黑名单也返回成功）。
+func (r *Repo) Unblock(ctx context.Context, playerID, targetID int64) error {
+	_, err := model.DeleteFriendBlockByPlayerIdBlockedId(ctx, r.db.DB, playerID, targetID)
+	return err
+}
+
+// Blocks 黑名单列表（带名字与等级，需要 JOIN player）。
+//
+// 这是本模块第二条手写的只读 JOIN（第一条是 List）——gendb 表达不了关联查询，
+// 已登记进 docs/功能实现状态.md 的例外清单。
+func (r *Repo) Blocks(ctx context.Context, playerID int64) ([]FriendRow, error) {
+	rows, err := r.db.DB.QueryContext(ctx, `
+		SELECT b.blocked_id, p.name, p.level, b.created_at
+		FROM friend_block b JOIN player p ON p.id = b.blocked_id
+		WHERE b.player_id = ? ORDER BY b.created_at DESC`, playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []FriendRow
+	for rows.Next() {
+		var f FriendRow
+		if err := rows.Scan(&f.PlayerID, &f.Name, &f.Level, &f.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }

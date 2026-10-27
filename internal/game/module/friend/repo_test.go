@@ -36,6 +36,16 @@ func expectPlayer(mock sqlmock.Sqlmock, id int64) {
 			AddRow(id, int64(1), "p", 1, 0, 0, 0, now, now))
 }
 
+// expectNoBlock 期望两次「黑名单里没有这条关系」（Apply 双向各查一次）。
+//
+// 空行集 → QueryRow.Scan 返回 sql.ErrNoRows，正是「没被拉黑」的信号。
+func expectNoBlock(mock sqlmock.Sqlmock) {
+	for i := 0; i < 2; i++ {
+		mock.ExpectQuery(`FROM friend_block`).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "player_id", "blocked_id", "created_at"}))
+	}
+}
+
 func emptyFriendRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "player_id", "friend_id", "intimacy", "created_at"})
 }
@@ -64,6 +74,7 @@ func TestRepoApplyAlreadyFriends(t *testing.T) {
 	repo, mock := newTestRepo(t)
 	mock.ExpectBegin()
 	expectPlayer(mock, 2)
+	expectNoBlock(mock)
 	now := time.Now()
 	mock.ExpectQuery(`FROM friend WHERE player_id = \? AND friend_id = \?`).
 		WithArgs(int64(1), int64(2)).
@@ -83,6 +94,7 @@ func TestRepoApplyCreates(t *testing.T) {
 	repo, mock := newTestRepo(t)
 	mock.ExpectBegin()
 	expectPlayer(mock, 2)
+	expectNoBlock(mock)
 	mock.ExpectQuery(`FROM friend WHERE player_id = \? AND friend_id = \?`).WillReturnRows(emptyFriendRows())
 	// 对方是否申请过我
 	mock.ExpectQuery(`FROM friend_apply WHERE from_id = \? AND to_id = \?`).WillReturnRows(emptyApplyRows())
@@ -110,6 +122,7 @@ func TestRepoApplyReapplyRevivesRow(t *testing.T) {
 	repo, mock := newTestRepo(t)
 	mock.ExpectBegin()
 	expectPlayer(mock, 2)
+	expectNoBlock(mock)
 	mock.ExpectQuery(`FROM friend WHERE player_id = \? AND friend_id = \?`).WillReturnRows(emptyFriendRows())
 	mock.ExpectQuery(`FROM friend_apply WHERE from_id = \? AND to_id = \?`).WillReturnRows(emptyApplyRows())
 	// 我上次被拒（status=2）：锁查返回一行，但状态不是 0，继续走新申请
@@ -187,5 +200,67 @@ func TestRepoDeleteIdempotent(t *testing.T) {
 	mock.ExpectCommit()
 
 	require.NoError(t, repo.Delete(context.Background(), 1, 2))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestBlockInsertsAndRemovesFriends 拉黑：写黑名单 + 双向删好友，同一事务。
+//
+// 双向删是重点：好友关系存两行（各自一份），只删一边会留下单向好友——
+// 拉黑方看不到对方了，被拉黑方的列表里还有你，还能给你发申请。
+func TestBlockInsertsAndRemovesFriends(t *testing.T) {
+	repo, mock := newTestRepo(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO friend_block`).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(`DELETE FROM friend`).WithArgs(int64(7), int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`DELETE FROM friend`).WithArgs(int64(9), int64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.Block(context.Background(), 7, 9))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestBlockIgnoresDuplicate 重复拉黑按成功处理（唯一键 1062 不算错）。
+func TestBlockIgnoresDuplicate(t *testing.T) {
+	repo, mock := newTestRepo(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO friend_block`).WillReturnError(&mysqlErr1062)
+	mock.ExpectExec(`DELETE FROM friend`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`DELETE FROM friend`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	require.NoError(t, repo.Block(context.Background(), 7, 9), "重复拉黑不应当报错")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestUnblockDeletes 取消拉黑：一条 DELETE，本来不在黑名单也成功（幂等）。
+func TestUnblockDeletes(t *testing.T) {
+	repo, mock := newTestRepo(t)
+
+	mock.ExpectExec(`DELETE FROM friend_block`).WithArgs(int64(7), int64(9)).
+		WillReturnResult(sqlmock.NewResult(0, 0)) // 影响 0 行也是成功
+
+	require.NoError(t, repo.Unblock(context.Background(), 7, 9))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestApplyRejectsBlocked 被拉黑的人不能加好友：命中黑名单直接回 6810。
+//
+// 双向都要拦：A 拉黑 B 之后，B 加不了 A（对方拉黑我），A 也加不了 B
+// （我拉黑了对方，多半是误点，但放行就等于绕过黑名单）。
+func TestApplyRejectsBlocked(t *testing.T) {
+	repo, mock := newTestRepo(t)
+
+	mock.ExpectBegin()
+	expectPlayer(mock, 9) // 目标存在
+	mock.ExpectQuery(`FROM friend_block`).WithArgs(int64(9), int64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "player_id", "blocked_id", "created_at"}).
+			AddRow(1, 9, 7, time.Now()))
+	mock.ExpectCommit()
+
+	code, err := repo.Apply(context.Background(), 7, 9)
+	require.NoError(t, err)
+	require.EqualValues(t, int32(errcode.ErrFriendBlocked), code)
 	require.NoError(t, mock.ExpectationsWereMet())
 }

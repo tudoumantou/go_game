@@ -112,6 +112,8 @@ const (
 	ErrEquipLevelLow        = commonv1.ErrCode_ERR_CODE_EQUIP_LEVEL_LOW
 	ErrEquipSlotConflict    = commonv1.ErrCode_ERR_CODE_EQUIP_SLOT_CONFLICT
 	ErrEquipNotEquipped     = commonv1.ErrCode_ERR_CODE_EQUIP_NOT_EQUIPPED
+	ErrEquipMaxEnhance      = commonv1.ErrCode_ERR_CODE_EQUIP_MAX_ENHANCE
+	ErrEquipNoMaterial      = commonv1.ErrCode_ERR_CODE_EQUIP_NO_MATERIAL
 	ErrSkillNotExist        = commonv1.ErrCode_ERR_CODE_SKILL_NOT_EXIST
 	ErrSkillLevelLow        = commonv1.ErrCode_ERR_CODE_SKILL_LEVEL_LOW
 	ErrSkillLearned         = commonv1.ErrCode_ERR_CODE_SKILL_LEARNED
@@ -138,6 +140,8 @@ const (
 	ErrFriendApplyNotFound  = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_NOT_FOUND
 	ErrFriendApplyFull      = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_FULL
 	ErrFriendApplyExpired   = commonv1.ErrCode_ERR_CODE_FRIEND_APPLY_EXPIRED
+	ErrFriendBlockSelf      = commonv1.ErrCode_ERR_CODE_FRIEND_BLOCK_SELF
+	ErrFriendBlocked        = commonv1.ErrCode_ERR_CODE_FRIEND_BLOCKED
 	ErrPartnerNotFound      = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_FOUND
 	ErrPartnerOwned         = commonv1.ErrCode_ERR_CODE_PARTNER_OWNED
 	ErrPartnerNotOwned      = commonv1.ErrCode_ERR_CODE_PARTNER_NOT_OWNED
@@ -212,6 +216,8 @@ var messages = map[Code]string{
 	ErrEquipLevelLow:        "等级不足，无法穿戴",
 	ErrEquipSlotConflict:    "该部位已有装备",
 	ErrEquipNotEquipped:     "该装备未穿戴",
+	ErrEquipMaxEnhance:      "强化已满级",
+	ErrEquipNoMaterial:      "强化材料不足",
 	ErrSkillNotExist:        "技能配置不存在",
 	ErrSkillLevelLow:        "等级不足，无法学习",
 	ErrSkillLearned:         "该技能已学习",
@@ -238,6 +244,8 @@ var messages = map[Code]string{
 	ErrFriendApplyNotFound:  "申请不存在或已处理",
 	ErrFriendApplyFull:      "待处理申请过多",
 	ErrFriendApplyExpired:   "申请已过期",
+	ErrFriendBlockSelf:      "不能拉黑自己",
+	ErrFriendBlocked:        "已在黑名单（或对方已将你拉黑）",
 	ErrPartnerNotFound:      "伙伴配置不存在",
 	ErrPartnerOwned:         "已拥有该伙伴",
 	ErrPartnerNotOwned:      "尚未拥有该伙伴",

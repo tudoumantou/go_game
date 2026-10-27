@@ -310,3 +310,101 @@ func withExtraEquipCfg(t *testing.T, extra ...gamedata.EquipCfg) {
 		require.NoError(t, err)
 	})
 }
+
+func enhance(t *testing.T, m *module.Bound[Data], ctx *module.Context, rec *moduletest.Recorder, uid int64) *gamev1.EquipEnhanceResp {
+	t.Helper()
+	raw, err := moduletest.Call(m, ctx, rec, codec.MsgEquipEnhanceReq, codec.MsgEquipEnhanceResp, &gamev1.EquipEnhanceReq{Uid: uid})
+	require.NoError(t, err)
+	require.NotNil(t, raw, "强化没有回包")
+	resp := &gamev1.EquipEnhanceResp{}
+	require.NoError(t, proto.Unmarshal(raw, resp))
+	return resp
+}
+
+// TestEnhanceChargesAndLevelsUp 未穿戴的装备强化：扣钻石、等级 +1、面板不变。
+//
+// 面板不变是刻意的：未穿戴的装备不提供加成，提前加会在穿上的那一刻
+// 再加一次，玩家白赚一份攻击力。
+func TestEnhanceChargesAndLevelsUp(t *testing.T) {
+	m, st, rec, ctx := newTestModule(t)
+	st.AddItem(itemDiamond, 1000)
+	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
+
+	resp := enhance(t, m, ctx, rec, 100)
+	require.EqualValues(t, int32(errcode.OK), resp.Code, "强化应当成功")
+	require.EqualValues(t, 1, resp.EnhanceLevel)
+	require.EqualValues(t, 1000-100, st.GetItemCount(itemDiamond), "要扣一级的强化消耗")
+	require.EqualValues(t, 0, st.GetAttr("atk"), "未穿戴的装备不提供加成")
+
+	d, err := m.State(ctx)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, d.Equips[0].EnhanceLevel, "等级要写回快照")
+}
+
+// TestEnhanceEquippedUpdatesBonus 已穿戴的装备强化：攻击立刻按新等级重算。
+func TestEnhanceEquippedUpdatesBonus(t *testing.T) {
+	m, st, rec, ctx := newTestModule(t)
+	st.AddItem(itemDiamond, 1000)
+	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
+	require.EqualValues(t, int32(errcode.OK), wear(t, m, ctx, rec, 100).Code, "先穿上")
+	require.EqualValues(t, 10, st.GetAttr("atk"), "基础攻击来自装备配置")
+
+	resp := enhance(t, m, ctx, rec, 100)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
+	require.EqualValues(t, 1, resp.EnhanceLevel)
+	require.EqualValues(t, 15, st.GetAttr("atk"), "1 级强化加 5 点攻击")
+	require.NotEmpty(t, resp.Attrs, "强化后要回属性面板")
+}
+
+// TestEnhanceNoMaterial 材料不足：回 3106，等级与钻石都不变。
+func TestEnhanceNoMaterial(t *testing.T) {
+	m, st, rec, ctx := newTestModule(t)
+	st.AddItem(itemDiamond, 99) // 差 1 个
+	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
+
+	resp := enhance(t, m, ctx, rec, 100)
+	require.EqualValues(t, int32(errcode.ErrEquipNoMaterial), resp.Code)
+	require.EqualValues(t, 99, st.GetItemCount(itemDiamond), "失败不能扣钱")
+	d, _ := m.State(ctx)
+	require.EqualValues(t, 0, d.Equips[0].EnhanceLevel, "失败不能涨等级")
+}
+
+// TestEnhanceMaxLevel 配置里没有下一级 = 已满级：回 3105，不扣钱。
+//
+// 上限判定用「配置缺失」而不是常量：运营加一行配置就放开一级。
+func TestEnhanceMaxLevel(t *testing.T) {
+	m, st, rec, ctx := newTestModule(t)
+	st.AddItem(itemDiamond, 10000)
+	// 配置的等级是 1..3，seed 一个已到 3 级的实例
+	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword, EnhanceLevel: 3})
+
+	resp := enhance(t, m, ctx, rec, 100)
+	require.EqualValues(t, int32(errcode.ErrEquipMaxEnhance), resp.Code)
+	require.EqualValues(t, 10000, st.GetItemCount(itemDiamond), "满级不能再扣钱")
+}
+
+// TestEnhanceUnknownUID 不存在的实例：回 3101，不扣钱。
+func TestEnhanceUnknownUID(t *testing.T) {
+	m, st, rec, ctx := newTestModule(t)
+	st.AddItem(itemDiamond, 1000)
+	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword})
+
+	resp := enhance(t, m, ctx, rec, 999)
+	require.EqualValues(t, int32(errcode.ErrEquipNotExist), resp.Code)
+	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond))
+}
+
+// TestTakeOffRevertsEnhancedBonus 强化过的装备卸下时，扣回的是「基础+强化」。
+//
+// 这是 equipBonus 必须四处共用的原因：只要卸下时只扣基础值，
+// 反复穿脱就能把攻击力刷上去。
+func TestTakeOffRevertsEnhancedBonus(t *testing.T) {
+	m, st, rec, ctx := newTestModule(t)
+	seed(t, m, ctx, Entry{UID: 100, EquipID: equipSword, EnhanceLevel: 2, Equipped: true})
+	require.NoError(t, m.OnLogin(ctx))
+	require.EqualValues(t, 22, st.GetAttr("atk"), "基础 10 + 2 级强化 12")
+
+	resp := takeOff(t, m, ctx, rec, 100)
+	require.EqualValues(t, int32(errcode.OK), resp.Code)
+	require.EqualValues(t, 0, st.GetAttr("atk"), "卸下必须扣干净，不能剩强化那部分")
+}

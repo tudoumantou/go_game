@@ -8,6 +8,7 @@ type EquipEnhanceCfg struct {
 	Id   int64 `json:"id"`
 	Col1 int64 `json:"col1"`
 	Col2 int64 `json:"col2"`
+	Col3 int64 `json:"col3"`
 }
 
 // EquipEnhanceTable equip_enhance.xml 的只读视图，随快照整体替换，不做原地修改
@@ -19,8 +20,9 @@ func newEquipEnhanceTable(list []EquipEnhanceCfg) (EquipEnhanceTable, error) {
 
 // equip_enhanceRows 内嵌快照的行数据
 var equip_enhanceRows = []EquipEnhanceCfg{
-	{Id: 1, Col1: 1, Col2: 100},
-	{Id: 2, Col1: 2, Col2: 300},
+	{Id: 1, Col1: 1, Col2: 100, Col3: 5},
+	{Id: 2, Col1: 2, Col2: 300, Col3: 12},
+	{Id: 3, Col1: 3, Col2: 600, Col3: 22},
 }
 
 // EquipEnhanceCfgList 当前快照的全量行（等价于 Cur().EquipEnhance.List()）

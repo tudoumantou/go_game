@@ -102,6 +102,8 @@ enum ErrCode {
   ERR_CODE_FRIEND_APPLY_NOT_FOUND  = 6806; // 申请不存在/已处理/已过期
   ERR_CODE_FRIEND_APPLY_FULL       = 6807; // 待处理申请过多
   ERR_CODE_FRIEND_APPLY_EXPIRED    = 6808; // 申请已过期
+  ERR_CODE_FRIEND_BLOCK_SELF       = 6809; // 不能拉黑自己
+  ERR_CODE_FRIEND_BLOCKED          = 6810; // 已在黑名单（或对方已将你拉黑）
 
   // ===== 71xx 任务 =====
   ERR_CODE_QUEST_NOT_EXIST   = 7101; // 任务配置不存在
@@ -115,6 +117,8 @@ enum ErrCode {
   ERR_CODE_EQUIP_LEVEL_LOW     = 3102; // 等级不足，无法穿戴
   ERR_CODE_EQUIP_SLOT_CONFLICT = 3103; // 同部位已有装备
   ERR_CODE_EQUIP_NOT_EQUIPPED  = 3104; // 该装备未穿戴
+  ERR_CODE_EQUIP_MAX_ENHANCE   = 3105; // 强化已满级
+  ERR_CODE_EQUIP_NO_MATERIAL   = 3106; // 强化材料不足
 
   // ===== 32xx 技能 =====
   ERR_CODE_SKILL_NOT_EXIST    = 3201; // 技能配置不存在
