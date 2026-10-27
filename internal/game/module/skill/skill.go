@@ -91,18 +91,18 @@ func onList(c *module.Ctx[Data]) error {
 func onLearn(c *module.Ctx[Data], req *gamev1.SkillLearnReq) error {
 	cfg, ok := gamedata.GetSkillCfg(int64(req.SkillId))
 	if !ok {
-		return c.Reply(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSkillNotExist)})
+		return c.FailCode(&gamev1.SkillLearnResp{}, errcode.ErrSkillNotExist)
 	}
 	// 等级门槛是只读判断，放在读状态之前，省一次解码。
 	if c.State.Profile().Level < int32(cfg.Col2) {
-		return c.Reply(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSkillLevelLow)})
+		return c.FailCode(&gamev1.SkillLearnResp{}, errcode.ErrSkillLevelLow)
 	}
 	d, err := c.Repo.Get()
 	if err != nil {
 		return c.Fail(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 	if _, learned := d.Levels[req.SkillId]; learned {
-		return c.Reply(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSkillLearned)})
+		return c.FailCode(&gamev1.SkillLearnResp{}, errcode.ErrSkillLearned)
 	}
 	d.Levels[req.SkillId] = 1
 	if err := c.Repo.Save(d); err != nil {
@@ -118,7 +118,7 @@ func onLearn(c *module.Ctx[Data], req *gamev1.SkillLearnReq) error {
 // 不会「扣了钻石没升级」。
 func onUpgrade(c *module.Ctx[Data], req *gamev1.SkillUpgradeReq) error {
 	if _, ok := gamedata.GetSkillCfg(int64(req.SkillId)); !ok {
-		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillNotExist)})
+		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillNotExist)
 	}
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -126,17 +126,17 @@ func onUpgrade(c *module.Ctx[Data], req *gamev1.SkillUpgradeReq) error {
 	}
 	level, learned := d.Levels[req.SkillId]
 	if !learned {
-		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillNotLearned)})
+		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillNotLearned)
 	}
 	// 消耗读 skill_upgrade 表（Col1=当前等级，Col2=升到下一级的消耗）。
 	// 查不到该等级的行即已满级——旧实现是 skill.Col3 * level，没有上限，
 	// 技能可以无限升级；运营也没有任何可调的地方（那张表纯摆设）。
 	cost, up := skillUpgradeCost(level)
 	if !up {
-		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillMaxLevel)})
+		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillMaxLevel)
 	}
 	if err := module.Spend(c.State, upgradeItemID, cost); err != nil {
-		return c.Reply(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSkillNoResource)})
+		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillNoResource)
 	}
 	next := level + 1
 	d.Levels[req.SkillId] = next

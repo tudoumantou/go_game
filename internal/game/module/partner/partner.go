@@ -115,18 +115,18 @@ func onList(c *module.Ctx[Data]) error {
 func onActivate(c *module.Ctx[Data], req *gamev1.PartnerActivateReq) error {
 	cfg, ok := gamedata.GetPartnerCfg(int64(req.PartnerId))
 	if !ok {
-		return c.Reply(&gamev1.PartnerActivateResp{Code: int32(errcode.ErrPartnerNotFound)})
+		return c.FailCode(&gamev1.PartnerActivateResp{}, errcode.ErrPartnerNotFound)
 	}
 	d, err := c.Repo.Get()
 	if err != nil {
 		return c.Fail(&gamev1.PartnerActivateResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 	if d.Stars[req.PartnerId] > 0 {
-		return c.Reply(&gamev1.PartnerActivateResp{Code: int32(errcode.ErrPartnerOwned)})
+		return c.FailCode(&gamev1.PartnerActivateResp{}, errcode.ErrPartnerOwned)
 	}
 	// 扣费与置星在同一份内存状态里：提交失败一起回滚。
 	if err := module.Spend(c.State, itemCoin, cfg.Col3); err != nil {
-		return c.Reply(&gamev1.PartnerActivateResp{Code: int32(errcode.ErrPartnerNoCoin)})
+		return c.FailCode(&gamev1.PartnerActivateResp{}, errcode.ErrPartnerNoCoin)
 	}
 	d.Stars[req.PartnerId] = 1
 	if err := c.Repo.Save(d); err != nil {
@@ -147,16 +147,16 @@ func onStarUp(c *module.Ctx[Data], req *gamev1.PartnerStarUpReq) error {
 	}
 	star := d.Stars[req.PartnerId]
 	if star <= 0 {
-		return c.Reply(&gamev1.PartnerStarUpResp{Code: int32(errcode.ErrPartnerNotOwned)})
+		return c.FailCode(&gamev1.PartnerStarUpResp{}, errcode.ErrPartnerNotOwned)
 	}
 	cost, ok := starCost(req.PartnerId, star)
 	if !ok {
 		// 配置里没有「当前星 → 下一星」行 = 已满星
-		return c.Reply(&gamev1.PartnerStarUpResp{Code: int32(errcode.ErrPartnerMaxStar)})
+		return c.FailCode(&gamev1.PartnerStarUpResp{}, errcode.ErrPartnerMaxStar)
 	}
 	// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
 	if err := module.Spend(c.State, itemCoin, cost); err != nil {
-		return c.Reply(&gamev1.PartnerStarUpResp{Code: int32(errcode.ErrPartnerNoCoin)})
+		return c.FailCode(&gamev1.PartnerStarUpResp{}, errcode.ErrPartnerNoCoin)
 	}
 	wasOnField := contains(d.Field, req.PartnerId)
 	oldBonus := atkBonus(req.PartnerId, star)
@@ -185,7 +185,7 @@ func onField(c *module.Ctx[Data], req *gamev1.PartnerFieldReq) error {
 	}
 	star := d.Stars[req.PartnerId]
 	if star <= 0 {
-		return c.Reply(&gamev1.PartnerFieldResp{Code: int32(errcode.ErrPartnerNotOwned)})
+		return c.FailCode(&gamev1.PartnerFieldResp{}, errcode.ErrPartnerNotOwned)
 	}
 	on := contains(d.Field, req.PartnerId)
 	switch {
@@ -194,7 +194,7 @@ func onField(c *module.Ctx[Data], req *gamev1.PartnerFieldReq) error {
 		return c.Reply(&gamev1.PartnerFieldResp{AtkBonus: totalBonus(d)})
 	case req.On && !on:
 		if len(d.Field) >= fieldLimit {
-			return c.Reply(&gamev1.PartnerFieldResp{Code: int32(errcode.ErrPartnerFieldFull)})
+			return c.FailCode(&gamev1.PartnerFieldResp{}, errcode.ErrPartnerFieldFull)
 		}
 		d.Field = append(d.Field, req.PartnerId)
 		c.State.AddBonus("atk", atkBonus(req.PartnerId, star))

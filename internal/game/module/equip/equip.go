@@ -110,7 +110,7 @@ func onWear(c *module.Ctx[Data], req *gamev1.EquipWearReq) error {
 	}
 	idx := findEquip(d, req.Uid)
 	if idx < 0 {
-		return c.Reply(&gamev1.EquipWearResp{Code: int32(errcode.ErrEquipNotExist)})
+		return c.FailCode(&gamev1.EquipWearResp{}, errcode.ErrEquipNotExist)
 	}
 	e := d.Equips[idx]
 	// 已穿戴再穿：幂等成功，直接回当前属性，不重复叠加 atk 加成。
@@ -119,10 +119,10 @@ func onWear(c *module.Ctx[Data], req *gamev1.EquipWearReq) error {
 	}
 	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
 	if !ok {
-		return c.Reply(&gamev1.EquipWearResp{Code: int32(errcode.ErrEquipNotExist)})
+		return c.FailCode(&gamev1.EquipWearResp{}, errcode.ErrEquipNotExist)
 	}
 	if c.State.Profile().Level < int32(cfg.Col2) {
-		return c.Reply(&gamev1.EquipWearResp{Code: int32(errcode.ErrEquipLevelLow)})
+		return c.FailCode(&gamev1.EquipWearResp{}, errcode.ErrEquipLevelLow)
 	}
 	// 同部位冲突检查（Col3=部位）：反查同部位配置 ID 集合，一次遍历。
 	sameSlot := sameSlotEquipIDs(cfg.Col3)
@@ -132,7 +132,7 @@ func onWear(c *module.Ctx[Data], req *gamev1.EquipWearReq) error {
 		}
 		for _, id := range sameSlot {
 			if other.EquipID == id {
-				return c.Reply(&gamev1.EquipWearResp{Code: int32(errcode.ErrEquipSlotConflict)})
+				return c.FailCode(&gamev1.EquipWearResp{}, errcode.ErrEquipSlotConflict)
 			}
 		}
 	}
@@ -161,15 +161,15 @@ func onTakeOff(c *module.Ctx[Data], req *gamev1.EquipTakeOffReq) error {
 	}
 	idx := findEquip(d, req.Uid)
 	if idx < 0 {
-		return c.Reply(&gamev1.EquipTakeOffResp{Code: int32(errcode.ErrEquipNotExist)})
+		return c.FailCode(&gamev1.EquipTakeOffResp{}, errcode.ErrEquipNotExist)
 	}
 	e := d.Equips[idx]
 	if !e.Equipped {
-		return c.Reply(&gamev1.EquipTakeOffResp{Code: int32(errcode.ErrEquipNotEquipped)})
+		return c.FailCode(&gamev1.EquipTakeOffResp{}, errcode.ErrEquipNotEquipped)
 	}
 	cfg, ok := gamedata.GetEquipCfg(int64(e.EquipID))
 	if !ok {
-		return c.Reply(&gamev1.EquipTakeOffResp{Code: int32(errcode.ErrEquipNotExist)})
+		return c.FailCode(&gamev1.EquipTakeOffResp{}, errcode.ErrEquipNotExist)
 	}
 	e.Equipped = false
 	d.Equips[idx] = e

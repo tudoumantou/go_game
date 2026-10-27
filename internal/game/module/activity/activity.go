@@ -247,12 +247,12 @@ func onList(c *module.Ctx[Data]) error {
 func onClaim(c *module.Ctx[Data], req *gamev1.ActivityClaimReq) error {
 	cfg, ok := gamedata.GetActivityCfg(int64(req.ActivityId))
 	if !ok {
-		return c.Reply(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrActivityNotExist)})
+		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityNotExist)
 	}
 	// 领取同样校验开放期：不能依赖客户端「恰好没收到结束通知」。
 	// 服务端权威原则——客户端的任何展示状态都不能当准入条件。
 	if !openNow(req.ActivityId, time.Now().Unix()) {
-		return c.Reply(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrActivityNotOpen)})
+		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityNotOpen)
 	}
 
 	d, err := c.Repo.Get()
@@ -261,17 +261,17 @@ func onClaim(c *module.Ctx[Data], req *gamev1.ActivityClaimReq) error {
 	}
 	rec := d.Records[req.ActivityId]
 	if rec.Progress < int32(cfg.Col3) {
-		return c.Reply(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrActivityNotFinish)})
+		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityNotFinish)
 	}
 	// 位图判重：bit0=已领。活动天生多档位，枚举会爆炸。
 	if rec.RewardMask&1 != 0 {
-		return c.Reply(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrActivityClaimed)})
+		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityClaimed)
 	}
 	// 发奖：target * 20 钻石；满包/超限时不发也不置领取位。
 	gain := int64(cfg.Col3) * 20
 	bagChanges, grantErr := module.Grant(c.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
 	if grantErr != nil {
-		return c.Reply(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrActivityBagFull)})
+		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityBagFull)
 	}
 	rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
 	d.Records[req.ActivityId] = rec

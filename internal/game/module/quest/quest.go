@@ -168,7 +168,7 @@ func onList(c *module.Ctx[Data]) error {
 // 时覆盖为 doing 并清零进度，实现「每日刷新」而不需要删键。
 func onAccept(c *module.Ctx[Data], req *gamev1.QuestAcceptReq) error {
 	if _, ok := gamedata.GetQuestCfg(int64(req.QuestId)); !ok {
-		return c.Reply(&gamev1.QuestAcceptResp{Code: int32(errcode.ErrQuestNotExist)})
+		return c.FailCode(&gamev1.QuestAcceptResp{}, errcode.ErrQuestNotExist)
 	}
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -176,7 +176,7 @@ func onAccept(c *module.Ctx[Data], req *gamev1.QuestAcceptReq) error {
 	}
 	if rec, ok := d.Quests[req.QuestId]; ok && rec.Status != statusClaimed {
 		// 已在进行中：不改状态，也不产生提交。
-		return c.Reply(&gamev1.QuestAcceptResp{Code: int32(errcode.ErrQuestAccepted)})
+		return c.FailCode(&gamev1.QuestAcceptResp{}, errcode.ErrQuestAccepted)
 	}
 	d.Quests[req.QuestId] = Record{Status: statusDoing}
 	if err := c.Repo.Save(d); err != nil {
@@ -192,7 +192,7 @@ func onAccept(c *module.Ctx[Data], req *gamev1.QuestAcceptReq) error {
 func onClaim(c *module.Ctx[Data], req *gamev1.QuestClaimReq) error {
 	cfg, ok := gamedata.GetQuestCfg(int64(req.QuestId))
 	if !ok {
-		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestNotExist)})
+		return c.FailCode(&gamev1.QuestClaimResp{}, errcode.ErrQuestNotExist)
 	}
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -200,13 +200,13 @@ func onClaim(c *module.Ctx[Data], req *gamev1.QuestClaimReq) error {
 	}
 	rec, ok := d.Quests[req.QuestId]
 	if !ok {
-		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestUnfinished)})
+		return c.FailCode(&gamev1.QuestClaimResp{}, errcode.ErrQuestUnfinished)
 	}
 	if rec.Status == statusClaimed {
-		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestClaimed)})
+		return c.FailCode(&gamev1.QuestClaimResp{}, errcode.ErrQuestClaimed)
 	}
 	if rec.Progress < int32(cfg.Col3) {
-		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestUnfinished)})
+		return c.FailCode(&gamev1.QuestClaimResp{}, errcode.ErrQuestUnfinished)
 	}
 
 	// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）。
@@ -214,7 +214,7 @@ func onClaim(c *module.Ctx[Data], req *gamev1.QuestClaimReq) error {
 	grants := []module.ItemGrant{{ItemID: 1001, Count: int64(cfg.Col3) * 10}}
 	bagChanges, grantErr := module.Grant(c.State, grants)
 	if grantErr != nil {
-		return c.Reply(&gamev1.QuestClaimResp{Code: int32(errcode.ErrQuestBagFull)})
+		return c.FailCode(&gamev1.QuestClaimResp{}, errcode.ErrQuestBagFull)
 	}
 	expGain := int64(cfg.Col3) * 100
 	rec.Status = statusClaimed

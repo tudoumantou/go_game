@@ -103,8 +103,9 @@ func onClaim(c *module.Ctx[SignIn]) error {
 
 	grants, cfgErr := rewardsForDay(today)
 	if cfgErr != nil {
-		resp.Code = int32(errcode.ErrSigninConfig)
-		return c.Reply(resp)
+		// resp 里已经填好了 Day/ClaimedDays/ClaimedRewards，
+		// 用 FailCode 只改 Code 再回包，别清空重建（客户端要靠这些字段刷新界面）。
+		return c.FailCode(resp, errcode.ErrSigninConfig)
 	}
 	resp.Rewards = protoRewards(grants)
 

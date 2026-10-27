@@ -92,10 +92,10 @@ func onList(c *module.Ctx[Data]) error {
 func onSettle(c *module.Ctx[Data], req *gamev1.CopySettleReq) error {
 	cfg, ok := gamedata.GetCopyCfg(int64(req.CopyId))
 	if !ok {
-		return c.Reply(&gamev1.CopySettleResp{Code: int32(errcode.ErrCopyNotFound)})
+		return c.FailCode(&gamev1.CopySettleResp{}, errcode.ErrCopyNotFound)
 	}
 	if c.State.Profile().Level < int32(cfg.Col2) {
-		return c.Reply(&gamev1.CopySettleResp{Code: int32(errcode.ErrCopyLevelNotEnough)})
+		return c.FailCode(&gamev1.CopySettleResp{}, errcode.ErrCopyLevelNotEnough)
 	}
 	star := req.Star
 	// 客户端上报的星级裁剪到 1-3：0/负数按 1 星，超高按 3 星，防止脏数据落库。
@@ -133,7 +133,7 @@ func onSettle(c *module.Ctx[Data], req *gamev1.CopySettleReq) error {
 		}
 		bagChanges, grantErr := module.Grant(c.State, grants)
 		if grantErr != nil {
-			return c.Reply(&gamev1.CopySettleResp{Code: int32(errcode.ErrCopyBagFull)})
+			return c.FailCode(&gamev1.CopySettleResp{}, errcode.ErrCopyBagFull)
 		}
 		changes = module.ToItemChanges(bagChanges)
 	}

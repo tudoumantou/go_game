@@ -114,9 +114,8 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 		return ctx.FailCode(resp, errcode.ErrRankBadType)
 	}
 	if m.q == nil {
-		resp.Code = int32(errcode.ErrRankUnavailable)
 		resp.RankType = rankType
-		return nil
+		return ctx.FailCode(resp, errcode.ErrRankUnavailable)
 	}
 
 	// WithTimeout 给中心服 RPC 加超时；cancel 必须 defer——
@@ -130,9 +129,8 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 	if err != nil {
 		// 中心服断连/超时：明确告诉客户端稍后重试，不伪造空榜。
 		m.logger.Debug("rank query failed", "rank_type", rankType, "err", err)
-		resp.Code = int32(errcode.ErrRankUnavailable)
 		resp.RankType = rankType
-		return nil
+		return ctx.FailCode(resp, errcode.ErrRankUnavailable)
 	}
 
 	*resp = gamev1.RankListResp{
