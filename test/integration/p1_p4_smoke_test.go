@@ -71,7 +71,7 @@ func TestP1toP4Smoke(t *testing.T) {
 				"--advertise-client-urls=http://0.0.0.0:2379",
 				"--listen-client-urls=http://0.0.0.0:2379",
 			},
-			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(60 * time.Second),
+			WaitingFor: wait.ForListeningPort("2379/tcp").WithStartupTimeout(3 * time.Minute),
 		},
 		Started: true,
 	})
