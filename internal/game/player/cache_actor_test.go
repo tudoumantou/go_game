@@ -287,3 +287,34 @@ func TestSigninCacheFailureAndUnknownResult(t *testing.T) {
 		})
 	}
 }
+
+// TestResyncCacheKeepsSnapshotComplete 同步落库后必须「重建」而不是只删。
+//
+// 背景：只 Drop 的话，下一次提交走 cache_actor 的 DirtyFields，只会写
+// 这次变化的那几个字段——于是 hash 以「有 profile、没 items」的形态重建。
+// 快照残缺对本人加载无害（加载侧会用库版本判定并重建），但跨玩家只读
+// 会读到空背包，且无法与「真的没有道具」区分。
+func TestResyncCacheKeepsSnapshotComplete(t *testing.T) {
+	sqlDB, _, err := sqlmock.New()
+	require.NoError(t, err)
+	defer sqlDB.Close()
+
+	repo := NewRepository(&db.DB{DB: sqlDB})
+	store := newTestStore(t)
+	repo.SetCache(store)
+
+	logger := log.New("resync-test", log.WithLevel("error"))
+	a := NewActor(7, module.NewRegistry(), logger, repo, nil, nil)
+	a.state.SetProfile(module.Profile{Name: "hero", Level: 5})
+	a.state.SeedItem(1001, 10)
+
+	require.NoError(t, a.resyncCache(11))
+
+	rec, err := store.Load(context.Background(), 7)
+	require.NoError(t, err)
+	require.EqualValues(t, 11, rec.Version)
+	require.Equal(t, "hero", rec.State.Profile.Name)
+	require.EqualValues(t, 10, rec.State.Items[1001],
+		"快照必须整份重建：只删不建会让下一次提交写出残缺 hash")
+	require.EqualValues(t, 11, a.cacheVersion)
+}

@@ -714,6 +714,7 @@ CREATE TABLE `map_world` (
 -- @findby:account_id
 -- @update:progress level,exp,coin,scene_id
 -- @lockby:id
+-- @listin:id
 CREATE TABLE `player` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '玩家ID',
   `account_id` BIGINT UNSIGNED NOT NULL COMMENT '账号ID',

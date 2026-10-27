@@ -72,6 +72,8 @@ type annoSet struct {
 	LockListBy [][]string
 	DeleteBy   [][]string
 	CountBy    [][]string
+	// ListIn 是「按单列 IN 批量查」（@listin:<col>），供跨玩家批量读取。
+	ListIn [][]string
 	// Updates 是「按 PK 只更新声明列」（@update:<Name> <cols>）。
 	Updates []updateAnno
 	// UpdateBys 是「按非 PK 列更新」（@updateby:<Name> <setcols> <wherecols>）。
@@ -184,6 +186,7 @@ var (
 	//	@flat:<模块名>                       生成 flush.FlatOps 适配
 	//	@findby:col[,col...]                按列查一行（ORDER BY PK LIMIT 1）
 	//	@listby:col[,col...]                按列查多行
+	//	@listin:col                         按单列 IN (?,?,...) 批量查
 	//	@lockby:col[,col...]                按列锁一行（SELECT ... FOR UPDATE）
 	//	@locklistby:col[,col...]            按列锁多行（范围锁，不 LIMIT）
 	//	@deleteby:col[,col...]              按列删
@@ -193,7 +196,7 @@ var (
 	//
 	// 参数里不含空格（列名逗号分隔），冒号后多余的空格与尾随文字会被忽略，
 	// 允许「@findby:account_id 账号归属查询」这种带说明的写法。
-	annoRe = regexp.MustCompile(`@(flat|findby|listby|lockby|locklistby|deleteby|countby|update|updateby):([^\n]*)`)
+	annoRe = regexp.MustCompile(`@(flat|findby|listby|listin|lockby|locklistby|deleteby|countby|update|updateby):([^\n]*)`)
 )
 
 // anno 一条解析出的注解：kind 是注解名，arg 是冒号后的原文。
@@ -232,6 +235,9 @@ func annoSuffix(t table) string {
 	}
 	for range t.Anno.ListBy {
 		parts = append(parts, "@listby")
+	}
+	for range t.Anno.ListIn {
+		parts = append(parts, "@listin")
 	}
 	for range t.Anno.LockBy {
 		parts = append(parts, "@lockby")
@@ -427,7 +433,7 @@ func (t *table) resolveAnnos() error {
 				return fmt.Errorf("%s: @flat 缺少模块名", t.Name)
 			}
 			t.FlatModule = fields[0]
-		case "findby", "listby", "lockby", "locklistby", "deleteby", "countby":
+		case "findby", "listby", "listin", "lockby", "locklistby", "deleteby", "countby":
 			cols, err := t.requireCols(a)
 			if err != nil {
 				return err
@@ -437,6 +443,11 @@ func (t *table) resolveAnnos() error {
 				t.Anno.FindBy = append(t.Anno.FindBy, cols)
 			case "listby":
 				t.Anno.ListBy = append(t.Anno.ListBy, cols)
+			case "listin":
+				if len(cols) != 1 {
+					return fmt.Errorf("%s: @listin 只接受单列，实际 %v", t.Name, cols)
+				}
+				t.Anno.ListIn = append(t.Anno.ListIn, cols)
 			case "lockby":
 				t.Anno.LockBy = append(t.Anno.LockBy, cols)
 			case "locklistby":
@@ -594,9 +605,15 @@ func genModel(outDir string, t table) error {
 			needTime = true
 		}
 	}
+	// strings 只被 @listin 的 IN 占位符拼接用到；无条件 import 会让没有
+	// 该注解的表编不过（Go 对未使用 import 是硬错误）。
+	needStrings := len(t.Anno.ListIn) > 0
 	b.WriteString("import (\n\t\"context\"\n\t\"database/sql\"\n")
 	if needTime {
 		b.WriteString("\t\"time\"\n")
+	}
+	if needStrings {
+		b.WriteString("\t\"strings\"\n")
 	}
 	b.WriteString("\n\t\"game_study/pkg/flush\"\n)\n\n")
 
@@ -793,6 +810,26 @@ func genAnnotated(b *strings.Builder, t table) error {
 			strings.Join(cols, ",") + " 生成；不带 LIMIT，锁住整个匹配区间，用于计数上限类并发防护）\n")
 		b.WriteString("func " + fn + "(ctx context.Context, db Querier, " + paramsOf(t, cols) + ") ([]" + tn + ", error) {\n")
 		b.WriteString("\trows, err := db.QueryContext(ctx, \"SELECT " + allCols + " FROM " + t.Name + " WHERE " + whereCols(cols) + order + " FOR UPDATE\", " + argNames(cols) + ")\n")
+		b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer func() { _ = rows.Close() }()\n")
+		b.WriteString("\tvar out []" + tn + "\n")
+		b.WriteString("\tfor rows.Next() {\n\t\tvar m " + tn + "\n\t\tif err := scan" + tn + "(&m, rows); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tout = append(out, m)\n\t}\n")
+		b.WriteString("\treturn out, rows.Err()\n}\n")
+	}
+
+	for _, cols := range t.Anno.ListIn {
+		c, ok := t.col(cols[0])
+		if !ok {
+			return fmt.Errorf("%s: @listin 列 %q 不存在", t.Name, cols[0])
+		}
+		fn := "List" + tn + "By" + upperCamel(c.Name) + "s"
+		b.WriteString("\n// " + fn + " 按 (" + c.Name + ") 批量查（注解 @listin:" + c.Name +
+			" 生成；IN 占位符个数运行时决定，供跨玩家/跨实体批量读取）\n")
+		b.WriteString("func " + fn + "(ctx context.Context, db Querier, ids []" + c.GoType + ") ([]" + tn + ", error) {\n")
+		b.WriteString("\tif len(ids) == 0 {\n\t\treturn nil, nil\n\t}\n")
+		b.WriteString("\tmarks := make([]string, len(ids))\n\targs := make([]any, len(ids))\n")
+		b.WriteString("\tfor i, v := range ids {\n\t\tmarks[i] = \"?\"\n\t\targs[i] = v\n\t}\n")
+		b.WriteString("\trows, err := db.QueryContext(ctx, \"SELECT " + allCols + " FROM " + t.Name +
+			" WHERE " + c.Name + " IN (\"+strings.Join(marks, \",\")+\")\", args...)\n")
 		b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n\tdefer func() { _ = rows.Close() }()\n")
 		b.WriteString("\tvar out []" + tn + "\n")
 		b.WriteString("\tfor rows.Next() {\n\t\tvar m " + tn + "\n\t\tif err := scan" + tn + "(&m, rows); err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tout = append(out, m)\n\t}\n")

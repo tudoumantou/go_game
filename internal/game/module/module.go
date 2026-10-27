@@ -125,6 +125,9 @@ type Context struct {
 	// Clock 取当前时间；nil 表示用系统时间。测试注入假时钟验证跨天/跨周边界，
 	// 业务不再各自持有一个 now 字段。
 	Clock func() time.Time
+	// Peers 跨玩家只读访问（好友/公会列表展示对方信息）。
+	// nil 表示未注入——单测与无 DB 环境；业务侧需判空或回落默认展示。
+	Peers PeerReader
 }
 
 // Now 返回当前时间：优先注入的时钟，否则系统时间。

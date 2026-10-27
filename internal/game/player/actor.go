@@ -621,7 +621,10 @@ func (a *Actor) onGrantItems(ctx *actor.Context, msg *GrantItemsMsg) {
 			// 幂等命中：货已发过。但可能是「上次 DB 提交成功、删缓存失败」
 			// 导致的重投——补一次清理，让它自愈。
 			if msg.Sync {
-				if err := a.dropCache(); err != nil {
+				// 自愈：上次「库已提交、删缓存失败」会留下旧副本，必须清掉重写。
+				// 只删不重建的话，下一次提交按脏字段拼出来的快照是残缺的
+				// （见 resyncCache 的说明）。
+				if err := a.rebuildCacheFromDB(); err != nil {
 					a.replyGrant(msg, err)
 					return
 				}
@@ -706,8 +709,8 @@ func (a *Actor) grantSync(msg *GrantItemsMsg) {
 	a.state.ClearDirtyFields()
 	a.state.ClearItemsDirty()
 
-	if err := a.dropCache(); err != nil {
-		a.logger.Error("drop cache after sync grant failed",
+	if err := a.resyncCache(version); err != nil {
+		a.logger.Error("resync cache after sync grant failed",
 			"source", msg.Source, "biz_id", msg.BizID, "err", err)
 		a.replyGrant(msg, err)
 		return
@@ -717,14 +720,47 @@ func (a *Actor) grantSync(msg *GrantItemsMsg) {
 	a.replyGrant(msg, nil)
 }
 
-// dropCache 删除本玩家的热快照（同步落库后的缓存失效）。
-func (a *Actor) dropCache() error {
+// resyncCache 用当前内存重建热快照（Drop 后立刻 Seed 一整份）。
+//
+// 为什么不能只 Drop：Drop 之后的下一次提交只写「脏字段」（cache_actor 的
+// DirtyFields），于是 hash 会以「有 profile、没 items」的残缺形态重建。
+// 残缺比缺失更难发现——跨玩家只读（PeerReader）读到的是空背包，而不是
+// 可回源的 miss。重建一整份的代价只有一次 HSET 批量，换来副本永远完整。
+//
+// 失败语义：先 Drop 后 Seed，Seed 失败时 key 仍处于删除态（下一次加载走
+// 冷启动从库读，跨玩家读回源库），不会留下半份数据。
+func (a *Actor) resyncCache(version int64) error {
 	if a.repo == nil || a.repo.cache == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	return a.repo.cache.Drop(ctx, a.playerID)
+	if err := a.repo.cache.Drop(ctx, a.playerID); err != nil {
+		return err
+	}
+	rec, err := a.repo.cache.Seed(ctx, a.state.snapshot(), version)
+	if err != nil {
+		return err
+	}
+	a.cacheVersion = rec.Version
+	return nil
+}
+
+// rebuildCacheFromDB 读库里的已落库版本，再用内存重建快照。
+//
+// 用于「上次同步落库成功、但删缓存失败」的自愈路径：本地的 cacheVersion
+// 可能落后于库，以库为准重建才不会让下一次加载反复判定「副本落后」。
+func (a *Actor) rebuildCacheFromDB() error {
+	if a.repo == nil || a.repo.cache == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ver, err := a.repo.writebehindVersion(ctx, a.playerID)
+	if err != nil {
+		return err
+	}
+	return a.resyncCache(ver)
 }
 
 // onSave 执行保存并回执真实结果；没有 Done 时保持 fire-and-forget。
@@ -784,6 +820,10 @@ func (a *Actor) moduleCtx(actx *actor.Context) *module.Context {
 	}
 	mctx.AddExp = a.addExp
 	mctx.CacheEnabled = a.repo.CacheEnabled()
+	if a.repo != nil {
+		// 跨玩家只读：模块拿到的只有 View/ViewMany，拿不到别人的 State
+		mctx.Peers = a.repo
+	}
 	if a.repo != nil && !a.repo.CacheEnabled() {
 		// 闭包捕获 a 与 a.state：事务内业务与背包共享同一份内存快照，
 		// 提交结果未知时置 needsReload，下一条消息先 ReloadItems 再进业务。

@@ -210,6 +210,55 @@ func (s *Store) Load(ctx context.Context, id int64) (Record, error) {
 	if len(values) == 0 {
 		return Record{}, ErrMiss
 	}
+	return parseRecord(id, values)
+}
+
+// LoadMany 批量读快照（pipeline，一次 RTT）。
+//
+// 为什么需要它：跨玩家只读（好友列表、公会成员）最容易写成 N 次 HGETALL，
+// 50 个好友就是 50 次往返。pipeline 把它们合并成一次。
+//
+// 未命中的 id 不出现在返回值里（调用方据此回源库）；单条坏数据只跳过
+// 该条而不是整批失败——展示类读取不该被一个损坏的快照拖死。
+func (s *Store) LoadMany(ctx context.Context, ids []int64) (map[int64]Record, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	pipe := s.rdb.Pipeline()
+	cmds := make(map[int64]*redis.MapStringStringCmd, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
+		cmds[id] = pipe.HGetAll(ctx, s.stateKey(id))
+	}
+	if len(cmds) == 0 {
+		return nil, nil
+	}
+	// Exec 在任一命令报错时返回该错误；单条 key 不存在不算错（空 map）。
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	out := make(map[int64]Record, len(cmds))
+	for id, cmd := range cmds {
+		values, err := cmd.Result()
+		if err != nil || len(values) == 0 {
+			continue
+		}
+		rec, err := parseRecord(id, values)
+		if err != nil {
+			continue
+		}
+		out[id] = rec
+	}
+	return out, nil
+}
+
+// parseRecord 把一份 HGETALL 结果解析成 Record（Load/LoadMany 共用）。
+//
+// 抽出来的目的：两个入口的字段布局必须完全一致——分字段格式一旦在
+// 一处漏掉新字段，就会出现「单个读得到、批量读不到」的诡异现象。
+func parseRecord(id int64, values map[string]string) (Record, error) {
 	version, err := strconv.ParseInt(values["version"], 10, 64)
 	if err != nil || version < 0 {
 		return Record{}, fmt.Errorf("invalid cached version")

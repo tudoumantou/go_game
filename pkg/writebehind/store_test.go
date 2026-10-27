@@ -65,3 +65,37 @@ func TestCorruptCacheDoesNotBecomeColdMiss(t *testing.T) {
 	_, err = s.Load(ctx, 8)
 	require.False(t, err == nil || errors.Is(err, ErrMiss), fmt.Sprintf("corrupt cache hidden: %v", err))
 }
+
+// TestLoadManyPipeline 批量读：命中返回完整快照，未命中不出现在结果里。
+//
+// 这条路径专门服务「跨玩家只读」（好友列表）：50 个 id 必须一次往返拿完，
+// 且不能因为某个 id 不存在就整批失败。
+func TestLoadManyPipeline(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewStore(rdb)
+
+	// 两个有快照的玩家 + 一个没有的
+	for _, id := range []int64{7, 8} {
+		_, err := store.Seed(ctx, Snapshot{
+			PlayerID: id,
+			Profile:  Profile{Name: fmt.Sprintf("p%d", id), Level: int32(id)},
+			Items:    map[int32]int64{1001: id},
+		}, 1)
+		require.NoError(t, err)
+	}
+
+	recs, err := store.LoadMany(ctx, []int64{7, 8, 9, 0})
+	require.NoError(t, err)
+	require.Len(t, recs, 2, "只有 7/8 有快照，9 与 0 不应出现")
+	require.Equal(t, "p7", recs[7].State.Profile.Name)
+	require.EqualValues(t, 7, recs[7].State.Items[1001])
+	require.Equal(t, "p8", recs[8].State.Profile.Name)
+
+	// 空入参直接返回，不产生 Redis 调用
+	empty, err := store.LoadMany(ctx, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty)
+}

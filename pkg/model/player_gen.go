@@ -6,6 +6,7 @@ package model
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"game_study/pkg/flush"
@@ -108,6 +109,33 @@ func LockPlayerById(ctx context.Context, db Querier, id int64) (*Player, error) 
 		return nil, err
 	}
 	return &m, nil
+}
+
+// ListPlayerByIds 按 (id) 批量查（注解 @listin:id 生成；IN 占位符个数运行时决定，供跨玩家/跨实体批量读取）
+func ListPlayerByIds(ctx context.Context, db Querier, ids []int64) ([]Player, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	marks := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, v := range ids {
+		marks[i] = "?"
+		args[i] = v
+	}
+	rows, err := db.QueryContext(ctx, "SELECT id,account_id,name,level,exp,coin,scene_id,created_at,updated_at FROM player WHERE id IN ("+strings.Join(marks, ",")+")", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Player
+	for rows.Next() {
+		var m Player
+		if err := scanPlayer(&m, rows); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // UpdatePlayerProgressByPK 按主键只更新 (level,exp,coin,scene_id)（注解 @update:progress 生成；其余列保持库里现值，避免全列覆盖把并发写入的字段冲掉）

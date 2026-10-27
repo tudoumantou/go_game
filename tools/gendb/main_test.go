@@ -118,6 +118,7 @@ const annoDDL = `
 -- @update:progress level,exp
 -- @countby:account_id,level
 -- @listby:account_id
+-- @listin:id
 -- @deleteby:account_id
 -- @updateby:bump level account_id
 CREATE TABLE player_probe (
@@ -202,6 +203,8 @@ func TestGenModelGeneratesAnnotatedFuncs(t *testing.T) {
 		"func LockPlayerProbeById(",
 		"LIMIT 1 FOR UPDATE",
 		"func ListPlayerProbeByAccountId(",
+		"func ListPlayerProbeByIds(ctx context.Context, db Querier, ids []int64) ([]PlayerProbe, error)",
+		"WHERE id IN (\"+strings.Join(marks, \",\")+\")\"",
 		"func DeletePlayerProbeByAccountId(",
 		"func CountPlayerProbeByAccountIdLevel(ctx context.Context, db Querier, accountId int64, level int32) (int64, error)",
 		"func UpdatePlayerProbeProgressByPK(",
