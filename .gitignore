@@ -26,3 +26,6 @@ coverage.txt
 
 # GitHub 凭证（严禁入库）
 .git-credentials
+
+# 文档不对外开源（仅本地/私有库保留，公开仓库不含）
+/docs/
