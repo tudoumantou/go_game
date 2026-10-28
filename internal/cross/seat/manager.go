@@ -39,8 +39,11 @@ type Manager struct {
 	logger *log.Logger
 
 	pids  map[string]*actor.PID
-	rooms map[string]*pkgseat.Room
 	order []string
+
+	// occ 一人一座登记：房间在 cross 进程，登记也必须放在这里——
+	// 游戏服侧无法跨进程裁决唯一性。
+	occ *pkgseat.Occupancy
 
 	// mu 保护 snaps：房间 Actor 在自己的 goroutine 里写，RPC 线程读。
 	mu    sync.RWMutex
@@ -54,8 +57,8 @@ func NewManager(sys *actor.System, sink Sink, logger *log.Logger) *Manager {
 		sink:   sink,
 		logger: logger,
 		pids:   make(map[string]*actor.PID),
-		rooms:  make(map[string]*pkgseat.Room),
 		snaps:  make(map[string]pkgseat.RoomSnapshot),
+		occ:    pkgseat.NewOccupancy(),
 	}
 
 	emit := func(rw pkgseat.Reward) {
@@ -75,6 +78,7 @@ func NewManager(sys *actor.System, sink Sink, logger *log.Logger) *Manager {
 			name := pkgseat.RoomName(tier, i)
 			room := pkgseat.NewRoom(tier, i, emit, logger)
 			room.SetOnChange(m.onChange)
+			room.SetOnRelease(m.onRelease)
 			pid, err := sys.Spawn(name, room)
 			if err != nil {
 				logger.Error("spawn cross seat room failed", "name", name, "err", err)
@@ -82,7 +86,6 @@ func NewManager(sys *actor.System, sink Sink, logger *log.Logger) *Manager {
 			}
 			room.SetPID(pid)
 			m.pids[name] = pid
-			m.rooms[name] = room
 			m.order = append(m.order, name)
 			// 启动期无并发操作：直接取初始快照，供新连上的游戏服首帧同步。
 			m.snaps[name] = room.Snapshot()
@@ -141,10 +144,21 @@ func (m *Manager) BuildState() *internalv2.SeatState {
 }
 
 // Occupy 占用/抢夺（由 rpc 层按 BIND 的 nodeID 调用）。
+//
+// 一人一座：玩家已在别处有座时先释放旧座（照常结算奖励）再占新座，
+// 即「自动换座」——避免单人占满 100 座按座叠加奖励。
 func (m *Manager) Occupy(tier string, roomIndex, seatIndex int, playerID int64, node string) {
-	pid := m.pids[pkgseat.RoomName(tier, roomIndex)]
-	if pid == nil || playerID == 0 {
+	if playerID == 0 || !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		return
+	}
+	pid := m.pids[pkgseat.RoomName(tier, roomIndex)]
+	if pid == nil {
+		return
+	}
+	ref := pkgseat.SeatRef{Tier: tier, RoomIndex: roomIndex, SeatIndex: seatIndex}
+	// 先登记再投递：旧座释放回调晚于此处到达，靠 ref 比对不会误删新登记。
+	if old, had := m.occ.Claim(playerID, ref); had {
+		m.sendLeave(old, playerID)
 	}
 	_ = m.sys.Send(pid, &pkgseat.OccupyMsg{
 		PlayerID:  playerID,
@@ -155,14 +169,36 @@ func (m *Manager) Occupy(tier string, roomIndex, seatIndex int, playerID int64, 
 
 // Leave 主动离开。
 func (m *Manager) Leave(tier string, roomIndex, seatIndex int, playerID int64) {
+	if playerID == 0 || !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
+		return
+	}
 	pid := m.pids[pkgseat.RoomName(tier, roomIndex)]
-	if pid == nil || playerID == 0 {
+	if pid == nil {
 		return
 	}
 	_ = m.sys.Send(pid, &pkgseat.LeaveMsg{
 		PlayerID:  playerID,
 		SeatIndex: seatIndex,
 	})
+}
+
+// sendLeave 向指定座位投递离开消息（换座时释放旧座用）。
+func (m *Manager) sendLeave(ref pkgseat.SeatRef, playerID int64) {
+	pid := m.pids[pkgseat.RoomName(ref.Tier, ref.RoomIndex)]
+	if pid == nil {
+		return
+	}
+	_ = m.sys.Send(pid, &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: ref.SeatIndex})
+}
+
+// onRelease 座位释放回调：清理一人一座登记。
+func (m *Manager) onRelease(playerID int64, ref pkgseat.SeatRef) {
+	m.occ.Release(playerID, ref)
+}
+
+// CurrentSeat 查询玩家当前占用的座位（调试/指标用）。
+func (m *Manager) CurrentSeat(playerID int64) (pkgseat.SeatRef, bool) {
+	return m.occ.Get(playerID)
 }
 
 // Count 房间总数（指标/日志用）。

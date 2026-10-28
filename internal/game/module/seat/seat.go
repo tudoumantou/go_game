@@ -19,7 +19,6 @@ import (
 
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
-	"game_study/pkg/actor"
 	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
 	pkgseat "game_study/pkg/seat"
@@ -27,7 +26,8 @@ import (
 
 // RoomRouter 单服房间寻址与只读快照（由 internal/game/seat.Manager 实现）。
 type RoomRouter interface {
-	RoomPID(tier string, index int) *actor.PID
+	Occupy(tier string, roomIndex, seatIndex int, playerID int64) bool
+	Leave(tier string, roomIndex, seatIndex int, playerID int64) bool
 	AllSnapshots() []pkgseat.RoomSnapshot
 }
 
@@ -81,19 +81,23 @@ func init() {
 // onOccupy 占用/抢夺。
 func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 	resp := &gamev1.SeatOccupyResp{Code: int32(errcode.OK)}
-	if req.GetSeatIndex() < 0 || int(req.GetSeatIndex()) >= pkgseat.SeatsPerRoom {
+	tier, roomIndex, seatIndex := req.GetTier(), int(req.GetRoomIndex()), int(req.GetSeatIndex())
+
+	// 坐标校验必须放在最前：跨服模式下非法坐标的帧发出去后，对端只会
+	// 静默丢弃，玩家却收到成功回包——表现为「点了没反应」。
+	if !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		resp.Code = int32(errcode.ErrParam)
 		return c.Reply(resp)
 	}
 	playerID := c.State.PlayerID()
 
-	// 跨服模式：发往指定 cross 节点（房间在那边）。
+	// 跨服模式：发往指定 cross 节点（房间在那边，一人一座由那边裁决）。
 	if sender != nil {
 		if err := sender.SendSeatOp(&internalv2.SeatOp{
 			Action:    internalv2.SeatOp_OCCUPY,
-			Tier:      req.GetTier(),
-			RoomIndex: req.GetRoomIndex(),
-			SeatIndex: req.GetSeatIndex(),
+			Tier:      tier,
+			RoomIndex: int32(roomIndex),
+			SeatIndex: int32(seatIndex),
 			PlayerId:  playerID,
 		}); err != nil {
 			resp.Code = int32(errcode.ErrServerBusy)
@@ -101,20 +105,12 @@ func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 		return c.Reply(resp)
 	}
 
-	// 单服模式：投递本节点房间 Actor。
+	// 单服模式：交给本节点管理器（含一人一座裁决与自动换座）。
 	if router == nil {
 		resp.Code = int32(errcode.ErrSystem)
 		return c.Reply(resp)
 	}
-	pid := router.RoomPID(req.GetTier(), int(req.GetRoomIndex()))
-	if pid == nil {
-		resp.Code = int32(errcode.ErrParam)
-		return c.Reply(resp)
-	}
-	if err := c.Actor.Send(pid, &pkgseat.OccupyMsg{
-		PlayerID:  playerID,
-		SeatIndex: int(req.GetSeatIndex()),
-	}); err != nil {
+	if !router.Occupy(tier, roomIndex, seatIndex, playerID) {
 		resp.Code = int32(errcode.ErrServerBusy)
 	}
 	return c.Reply(resp)
@@ -123,7 +119,8 @@ func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 // onLeave 主动离开。
 func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 	resp := &gamev1.SeatLeaveResp{Code: int32(errcode.OK)}
-	if req.GetSeatIndex() < 0 || int(req.GetSeatIndex()) >= pkgseat.SeatsPerRoom {
+	tier, roomIndex, seatIndex := req.GetTier(), int(req.GetRoomIndex()), int(req.GetSeatIndex())
+	if !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		resp.Code = int32(errcode.ErrParam)
 		return c.Reply(resp)
 	}
@@ -132,9 +129,9 @@ func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 	if sender != nil {
 		if err := sender.SendSeatOp(&internalv2.SeatOp{
 			Action:    internalv2.SeatOp_LEAVE,
-			Tier:      req.GetTier(),
-			RoomIndex: req.GetRoomIndex(),
-			SeatIndex: req.GetSeatIndex(),
+			Tier:      tier,
+			RoomIndex: int32(roomIndex),
+			SeatIndex: int32(seatIndex),
 			PlayerId:  playerID,
 		}); err != nil {
 			resp.Code = int32(errcode.ErrServerBusy)
@@ -146,15 +143,7 @@ func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 		resp.Code = int32(errcode.ErrSystem)
 		return c.Reply(resp)
 	}
-	pid := router.RoomPID(req.GetTier(), int(req.GetRoomIndex()))
-	if pid == nil {
-		resp.Code = int32(errcode.ErrParam)
-		return c.Reply(resp)
-	}
-	if err := c.Actor.Send(pid, &pkgseat.LeaveMsg{
-		PlayerID:  playerID,
-		SeatIndex: int(req.GetSeatIndex()),
-	}); err != nil {
+	if !router.Leave(tier, roomIndex, seatIndex, playerID) {
 		resp.Code = int32(errcode.ErrServerBusy)
 	}
 	return c.Reply(resp)

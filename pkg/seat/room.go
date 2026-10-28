@@ -47,11 +47,13 @@ type Room struct {
 	// onChange 状态变更回调（跨服用它把房间快照广播给游戏服；单服可为 nil）。
 	// 在 Actor 内调用并传入本房间快照——快照在 Actor 串行上下文中生成，无竞态。
 	onChange func(RoomSnapshot)
-	logger   *log.Logger
-	pid      *actor.PID
-
-	// lastSeq 保证本房间产生的释放序号严格单调，跨重启也不会小于历史值太多。
-	lastSeq int64
+	// onRelease 座位释放回调：无论是否产生奖励都会调用。
+	//
+	// 管理器用它清理「一人一座」登记——不足 1 分钟没奖也必须清，
+	// 否则该玩家会永远被判定为「已有座位」，再也占不了新座。
+	onRelease func(playerID int64, ref SeatRef)
+	logger    *log.Logger
+	pid       *actor.PID
 }
 
 // NewRoom 创建房间 Actor（尚未 Spawn）。
@@ -73,6 +75,9 @@ func (r *Room) SetPID(pid *actor.PID) { r.pid = pid }
 
 // SetOnChange 注入状态变更回调（跨服广播用；须在 Spawn 前设置）。
 func (r *Room) SetOnChange(fn func(RoomSnapshot)) { r.onChange = fn }
+
+// SetOnRelease 注入座位释放回调（须在 Spawn 前设置）。
+func (r *Room) SetOnRelease(fn func(playerID int64, ref SeatRef)) { r.onRelease = fn }
 
 // Tier 房间档位。
 func (r *Room) Tier() string { return r.tier }
@@ -161,12 +166,19 @@ func (r *Room) release(s *Seat, now time.Time) {
 	mins := OccupancyMinutes(s.OccupiedAt, now)
 	occupant := s.Occupant
 	node := s.Node
-	seq := r.nextSeq()
+	seq := nextSeq()
+	ref := SeatRef{Tier: r.tier, RoomIndex: r.index, SeatIndex: s.Index}
 
 	s.State = SeatEmpty
 	s.Occupant = 0
 	s.Node = ""
 	s.OccupiedAt = time.Time{}
+
+	// 无条件通知管理器清登记：不足 1 分钟不发奖，但座位确实空了，
+	// 不清理会让该玩家被永久判定为「已有座位」。
+	if occupant > 0 && r.onRelease != nil {
+		r.onRelease(occupant, ref)
+	}
 
 	if mins <= 0 || occupant <= 0 {
 		return // 不足 1 分钟不发奖（但座位照常释放）
@@ -185,16 +197,6 @@ func (r *Room) release(s *Seat, now time.Time) {
 	})
 	r.logger.Info("seat released", "tier", r.tier, "room", r.index,
 		"seat", s.Index, "player_id", occupant, "minutes", mins, "amount", amount)
-}
-
-// nextSeq 生成释放事件序号：按纳秒取，严格递增兜底同纳秒。
-func (r *Room) nextSeq() int64 {
-	seq := time.Now().UnixNano()
-	if seq <= r.lastSeq {
-		seq = r.lastSeq + 1
-	}
-	r.lastSeq = seq
-	return seq
 }
 
 // Snapshot 返回房间只读快照（查询协议用）。

@@ -12,6 +12,7 @@ package game
 import (
 	"context"
 	"fmt"
+	"time"
 
 	gamecenter "game_study/internal/game/center"
 	"game_study/internal/game/module/battle"
@@ -188,7 +189,11 @@ func (h crossHandler) OnSeatReward(rw *internalv2.SeatReward) {
 	}
 
 	if h.srv.seatMgr != nil {
-		if err := h.srv.seatMgr.PendReward(context.Background(), playerID, rw.GetSeq(), rw.GetTier(), rw.GetMinutes()); err != nil {
+		// 这里在 cross 客户端的收帧 goroutine 上同步写库：MySQL 慢时必须
+		// 有超时，否则一条卡住的 INSERT 会把整条下行流堵死。
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := h.srv.seatMgr.PendReward(ctx, playerID, rw.GetSeq(), rw.GetTier(), rw.GetMinutes()); err != nil {
 			h.srv.logger.Warn("seat cross reward pending failed",
 				"player_id", playerID, "seq", rw.GetSeq(), "err", err)
 		}
