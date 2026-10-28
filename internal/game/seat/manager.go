@@ -1,48 +1,57 @@
 // internal/game/seat/manager.go —— 房间管理器
 //
-// 只做三件事：拉起 10 个房间、把请求转发给对应房间、把房间的回调落到库/发奖。
+// 只做三件事：拉起 10 个房间、把请求转发给对应房间、把房间回调落到自己的表。
 //
-// 管理器不存状态副本：
+// 管理器不判断「玩家是否在线」——那是角色管理器的职责。奖励只通过 Rewarder
+// 端口交出去，在线直投还是离线落表由实现方决定；本包因此不依赖 player 包。
+//
+// 管理器也不存状态副本：
 //   - 房间快照由 Room 自己用 atomic.Value 持有，查询直接读房间；
-//   - 「玩家占哪」也不另建登记表，占座前扫一遍房间快照即可（10 房 × 10 座）；
-//   - 因此没有锁、没有缓存、没有遍历顺序表。
+//   - 「玩家占哪」不做反向索引，占座前扫一遍房间快照即可（10 房 × 10 座）。
+//   - 因此没有锁、没有缓存、没有顺序表。
 //
-// 唯一的并发前提：玩家的占座请求由玩家 Actor 串行发起，同一玩家不会同时
-// 发出两个占座；跨玩家冲突由房间 Actor 串行裁决（后到者视为抢夺）。
+// 并发前提：同一玩家的占座请求由玩家 Actor 串行发出；跨玩家冲突由房间
+// Actor 串行裁决（后到者视为抢夺）。
 package seat
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"game_study/internal/game/player"
 	"game_study/pkg/actor"
-	"game_study/pkg/codec"
 	"game_study/pkg/log"
-	gamev1 "game_study/pkg/pb/game/v1"
 	pkgseat "game_study/pkg/seat"
-
-	"google.golang.org/protobuf/proto"
 )
+
+// Rewarder 座位奖励投递端口。
+//
+// 实现方（角色/玩家域）决定怎么送达：在线直接投递到玩家 Actor、离线写
+// 待补发表等下次登录。座位管理器只负责「产生事件」，不关心玩家状态。
+type Rewarder interface {
+	Reward(ctx context.Context, rel pkgseat.Release) error
+}
 
 // Manager 房间管理器。
 type Manager struct {
-	sys     *actor.System
-	players *player.Manager
-	store   *Store
-	logger  *log.Logger
-	rooms   map[int32]*pkgseat.Room // room_id → 房间
+	sys      *actor.System
+	rewarder Rewarder
+	store    *Store
+	logger   *log.Logger
+
+	rooms map[int32]*pkgseat.Room // room_id → 房间
 }
 
-// NewManager 创建管理器；store/pending 可为 nil（无 MySQL 环境退化为纯内存）。
-func NewManager(sys *actor.System, players *player.Manager, store *Store, logger *log.Logger) *Manager {
+// NewManager 创建管理器。
+//
+// store/rewarder 可为 nil（无 MySQL、无玩家域）：此时只保留内存房间，
+// 占座与查询照常，奖励不投递。
+func NewManager(sys *actor.System, rewarder Rewarder, store *Store, logger *log.Logger) *Manager {
 	m := &Manager{
-		sys:     sys,
-		players: players,
-		store:   store,
-		logger:  logger,
-		rooms:   make(map[int32]*pkgseat.Room),
+		sys:      sys,
+		rewarder: rewarder,
+		store:    store,
+		logger:   logger,
+		rooms:    make(map[int32]*pkgseat.Room),
 	}
 
 	saved := m.load() // 先把上次的占用读出来，房间收到 RestoreMsg 才能立即结算
@@ -152,47 +161,21 @@ func (m *Manager) onSeat(roomID int32, playerID int64, seatIndex int, occupied b
 	}
 }
 
-// onRelease 座位释放：有奖则结算。
+// onRelease 座位释放：把奖励事件交给 Rewarder 端口。
 func (m *Manager) onRelease(rel pkgseat.Release) {
-	if rel.PlayerID > 0 && rel.Amount > 0 {
-		m.settle(rel)
+	if rel.PlayerID <= 0 || rel.Amount <= 0 {
+		return
 	}
-}
-
-// settle 发奖：在线直发，离线/投递失败写 outbox 等登录补发。
-//
-// 不需要「先写 outbox 再发奖」：occupy_id 在占座时就随房间快照落库了，
-// 重启后重放结算拿到的仍是同一个 ID，BizID 幂等天然挡住重复发放。
-func (m *Manager) settle(rel pkgseat.Release) {
-	if m.players != nil {
-		if pid, ok := m.players.Get(rel.PlayerID); ok {
-			err := m.sys.Send(pid, &player.GrantItemsMsg{
-				BizID:  fmt.Sprintf("%d", rel.OccupyID),
-				Source: "seat",
-				Items:  []player.GrantItem{{ItemID: pkgseat.RewardItem, Count: rel.Amount}},
-			})
-			if err == nil {
-				if raw, e := proto.Marshal(&gamev1.SeatRewardNotify{
-					Tier: int32(rel.Tier), Minutes: rel.Minutes, Reward: rel.Amount,
-				}); e == nil {
-					_ = m.sys.Send(pid, &player.PushMsg{MsgID: codec.MsgSeatRewardNotify, Body: raw})
-				}
-				return
-			}
-			m.logger.Warn("seat reward send failed, fallback to outbox",
-				"player_id", rel.PlayerID, "err", err)
-		}
-	}
-
-	if m.store == nil {
-		m.logger.Warn("seat reward dropped: offline and no store",
+	if m.rewarder == nil {
+		m.logger.Warn("seat reward dropped: no rewarder",
 			"player_id", rel.PlayerID, "occupy_id", rel.OccupyID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := m.store.AddPending(ctx, rel.PlayerID, rel.OccupyID, rel.Tier, rel.Minutes); err != nil {
-		m.logger.Warn("seat outbox write failed", "player_id", rel.PlayerID, "err", err)
+	if err := m.rewarder.Reward(ctx, rel); err != nil {
+		m.logger.Warn("seat reward failed",
+			"player_id", rel.PlayerID, "occupy_id", rel.OccupyID, "err", err)
 	}
 }
 

@@ -389,7 +389,8 @@ func (s *Server) initSeat() {
 	if s.database != nil {
 		store = seat.NewStore(s.database)
 	}
-	s.seatMgr = seat.NewManager(s.actorSys, s.players, store, s.logger)
+	rewarder := seatRewarder{players: s.players, sys: s.actorSys, store: store, logger: s.logger}
+	s.seatMgr = seat.NewManager(s.actorSys, rewarder, store, s.logger)
 	seatmod.SetRouter(s.seatMgr)
 	if store != nil {
 		seatmod.SetPending(store) // Store 同时实现待补发奖励表

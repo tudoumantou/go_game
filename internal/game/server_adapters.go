@@ -17,10 +17,16 @@ import (
 	"game_study/internal/game/module/battle"
 	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/player"
+	seatpkg "game_study/internal/game/seat"
 	"game_study/pkg/actor"
+	"game_study/pkg/codec"
+	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
+	pkgseat "game_study/pkg/seat"
 
+	gamev1 "game_study/pkg/pb/game/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"google.golang.org/protobuf/proto"
 )
 
 type chatMessenger struct {
@@ -302,3 +308,42 @@ func (q rankQuerier) Query(ctx context.Context, rankType string, playerID int64,
 //
 // 必须先建热表（player/player_equip/mail）再建其余表：热表决定登录与穿戴是否
 // 能走 Redis 快路径，冷表（如 friend）缺失只影响对应功能的性能。
+
+// seatRewarder 座位奖励投递（实现 seatpkg.Rewarder）。
+//
+// 座位管理器只负责产生奖励事件，是否在线由这里判断：在线直投玩家 Actor，
+// 离线（或投递失败）写 seat_pending_reward，等下次登录由 seat 模块补发。
+// 放在适配器层的理由与其它 adapter 一致——它翻译的是「座位域的事件」到
+// 「玩家域的投递方式」，两边都不该知道对方。
+type seatRewarder struct {
+	players *player.Manager
+	sys     *actor.System
+	store   *seatpkg.Store
+	logger  *log.Logger
+}
+
+func (r seatRewarder) Reward(ctx context.Context, rel pkgseat.Release) error {
+	if r.players != nil {
+		if pid, ok := r.players.Get(rel.PlayerID); ok {
+			err := r.sys.Send(pid, &player.GrantItemsMsg{
+				BizID:  fmt.Sprintf("%d", rel.OccupyID),
+				Source: "seat",
+				Items:  []player.GrantItem{{ItemID: pkgseat.RewardItem, Count: rel.Amount}},
+			})
+			if err == nil {
+				if raw, e := proto.Marshal(&gamev1.SeatRewardNotify{
+					Tier: int32(rel.Tier), Minutes: rel.Minutes, Reward: rel.Amount,
+				}); e == nil {
+					_ = r.sys.Send(pid, &player.PushMsg{MsgID: codec.MsgSeatRewardNotify, Body: raw})
+				}
+				return nil
+			}
+			r.logger.Warn("seat reward send failed, fallback to outbox",
+				"player_id", rel.PlayerID, "err", err)
+		}
+	}
+	if r.store == nil {
+		return fmt.Errorf("seat: 玩家 %d 不在线且无持久化，奖励未投递", rel.PlayerID)
+	}
+	return r.store.AddPending(ctx, rel.PlayerID, rel.OccupyID, rel.Tier, rel.Minutes)
+}
