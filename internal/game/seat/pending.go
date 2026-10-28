@@ -42,7 +42,7 @@ func (s *PendingStore) Add(ctx context.Context, playerID, occupyID int64, tier p
 }
 
 // List 读取某玩家全部待结算奖励（按占用实例升序，保证补发顺序稳定）。
-func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.PendingReward, error) {
+func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.Pending, error) {
 	rows, err := s.db.QueryContext(ctx,
 		"SELECT occupy_id, tier, minutes FROM seat_pending_reward WHERE player_id = ? ORDER BY occupy_id", playerID)
 	if err != nil {
@@ -50,7 +50,7 @@ func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.Pend
 	}
 	defer rows.Close()
 
-	var out []pkgseat.PendingReward
+	var out []pkgseat.Pending
 	for rows.Next() {
 		var (
 			occupyID int64
@@ -60,7 +60,7 @@ func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.Pend
 		if err := rows.Scan(&occupyID, &tier, &minutes); err != nil {
 			return nil, err
 		}
-		out = append(out, pkgseat.PendingReward{
+		out = append(out, pkgseat.Pending{
 			OccupyID: occupyID,
 			Tier:     pkgseat.Tier(tier),
 			Minutes:  minutes,

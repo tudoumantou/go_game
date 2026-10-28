@@ -45,10 +45,6 @@ type Handler interface {
 	OnBattleSync(msg *internalv2.BattleMsg)
 	// OnBattleResult 收到兜底结算（超时平局等）。
 	OnBattleResult(res *internalv2.BattleResult)
-	// OnSeatReward 收到跨服座位奖励回推。
-	OnSeatReward(res *internalv2.SeatReward)
-	// OnSeatState 收到跨服座位状态全量快照。
-	OnSeatState(st *internalv2.SeatState)
 }
 
 // Client 到单个跨服节点的连接。
@@ -174,14 +170,6 @@ func (c *Client) dispatch(frame *internalv2.CrossFrame) {
 	case *internalv2.CrossFrame_CreateResp:
 		if data.CreateResp != nil {
 			c.h.OnCreateResp(data.CreateResp)
-		}
-	case *internalv2.CrossFrame_SeatReward:
-		if data.SeatReward != nil {
-			c.h.OnSeatReward(data.SeatReward)
-		}
-	case *internalv2.CrossFrame_SeatState:
-		if data.SeatState != nil {
-			c.h.OnSeatState(data.SeatState)
 		}
 	}
 }

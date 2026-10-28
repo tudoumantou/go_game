@@ -1059,7 +1059,7 @@ CREATE TABLE `user_role` (
 -- ============================================================================
 -- 两张表的分工：
 --   seat_room            房间 + 座位状态（10 行；slots JSON 收纳 10 个座位），
---                        启动幂等补齐，status 预留运营关房
+--                        启动幂等补齐
 --   seat_pending_reward  结算 outbox，崩溃/离线时留待玩家登录补发
 -- 跨服版本暂不落库，见 internal/cross/seat/manager.go 的说明。
 
@@ -1077,7 +1077,6 @@ CREATE TABLE `user_role` (
 CREATE TABLE `seat_room` (
   `tier`       TINYINT NOT NULL COMMENT '档位 1=高 2=中 3=低',
   `room_index` INT NOT NULL COMMENT '档位内房号（0 基）',
-  `status`     TINYINT NOT NULL DEFAULT 0 COMMENT '0=开放 1=关闭',
   `slots`      JSON NOT NULL COMMENT '10 个座位状态（按 index 升序）',
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`tier`, `room_index`)

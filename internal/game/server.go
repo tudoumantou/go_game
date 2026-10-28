@@ -100,7 +100,6 @@ type Server struct {
 	centerCli *gamecenter.Client // 到中心服的 Report 流
 	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
 	seatMgr   *seat.Manager      // 抢位置房间管理器（单服座位 + 离线奖励）
-	seatCache *seat.Cache        // 跨服座位快照缓存（跨服模式下查询用）
 
 	// mu 保护下面三张会话映射表的全部读写；players2sess 是
 	// player→session 的唯一权威映射，顶号判定与下行路由都读它，
@@ -283,11 +282,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("flusher: %w", err))
 			}
 			s.flusher.Stop()
-		}
-		// 座位快照走自己的合并落库器：关闭时刷最后一次，避免丢掉退出前
-		// 合并窗口内的占座变更（Close 内部幂等，重复调用安全）。
-		if s.seatMgr != nil {
-			s.seatMgr.Close()
 		}
 		return errors.Join(errs...)
 	})

@@ -392,10 +392,6 @@ type CrossConfig struct {
 	Nodes         []string `yaml:"nodes"`          // 跨服节点 gRPC 地址
 	BattleTimeout string   `yaml:"battle_timeout"` // 单场战斗时限（超时平局兜底）
 	ReconnectMax  string   `yaml:"reconnect_max"`  // 断流重连最大退避
-	// SeatAddr 承载跨服抢位置房间的节点地址（须是 nodes 中的一个）。
-	// 为空表示只启用单服座位、不启用跨服座位——跨服座位必须集中在一个
-	// 节点，所有游戏服共享同一批房间，否则各服看到各自的座位。
-	SeatAddr string `yaml:"seat_addr"`
 }
 
 type XServiceConfig struct {
@@ -514,21 +510,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("idtab.mappings: 表 %s 重复声明", m.Table)
 		}
 		seen[m.Table] = struct{}{}
-	}
-	// 跨服座位：seat_addr 必须是 nodes 中的一个，否则游戏服拿不到该节点的
-	// 连接，座位操作会持续失败（表现为「点击座位无反应」）。放启动校验，
-	// 让配置错误第一秒就暴露，而不是等玩家反馈。
-	if c.Cross.SeatAddr != "" {
-		found := false
-		for _, n := range c.Cross.Nodes {
-			if n == c.Cross.SeatAddr {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("cross.seat_addr(%s) 必须是 cross.nodes 中的一个", c.Cross.SeatAddr)
-		}
 	}
 	return nil
 }

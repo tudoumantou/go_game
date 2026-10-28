@@ -247,8 +247,6 @@ func (s *Server) initBattleAndProducer() {
 	// 跨服连接池（P13）：在模块注册前建好，battle 模块依赖它
 	if len(s.cfg.Cross.Nodes) > 0 {
 		s.crossPool = gamecross.NewPool(s.cfg.Server.Name, crossHandler{srv: s}, s.logger)
-		// 跨服座位固定在一个指定节点；未配置则只走单服座位。
-		s.crossPool.SetSeatAddr(s.cfg.Cross.SeatAddr)
 	}
 	s.battleMod = battle.New(s.crossPool, centerMatchAdapter{cli: s.centerCli}, gamePusher{srv: s}, s.logger)
 	if d, err := config.ParseDuration(s.cfg.Cross.BattleTimeout); err == nil && d > 0 {
@@ -395,21 +393,10 @@ func (s *Server) initSeat() {
 		pending = seat.NewPendingStore(s.database)
 		store = seat.NewStore(s.database)
 	}
-	// 跨服模式：房间在 cross 节点，本服不承载座位，也不该恢复本地座位表
-	// （否则会和 cross 上的房间争同一批数据）；只保留 outbox 做离线补发。
-	crossMode := s.cfg.Cross.SeatAddr != "" && s.crossPool != nil
-	if crossMode {
-		store = nil
-	}
-	s.seatMgr = seat.NewManager(s.actorSys, s.players, pending, store, s.logger)
-	s.seatCache = seat.NewCache()
+	s.seatMgr = seat.NewManager(s.actorSys, s.players, store, pending, s.logger)
 	seatmod.SetRouter(s.seatMgr)
 	if pending != nil {
 		seatmod.SetPending(pending)
-	}
-	if crossMode {
-		seatmod.SetCross(s.crossPool, s.seatCache)
-		s.logger.Info("seat using cross mode", "seat_addr", s.cfg.Cross.SeatAddr)
 	}
 	s.logger.Info("seat rooms initialized", "rooms", s.seatMgr.Count())
 }
