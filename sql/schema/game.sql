@@ -2,6 +2,7 @@
 -- 增量变更仍写 sql/migrations/00xx_*.sql；全量与迁移的一致性由 CI 重建校验。
 --
 -- 表目录：
+--   acc_summary
 --   account
 --   activity_record
 --   activity_grant_task
@@ -13,6 +14,7 @@
 --   copy_record
 --   friend
 --   friend_apply
+--   friend_block
 --   guild
 --   guild_member
 --   login_log
@@ -50,9 +52,14 @@
 --   rank_archive_task
 --   recharge_order
 --   recharge_record
+--   seat_pending_reward
+--   seat_room
+--   seat_slot
+--   serv_info
 --   shop_record
 --   team
 --   team_member
+--   user_role
 
 -- ============================================================================
 -- account.sql
@@ -976,3 +983,137 @@ CREATE TABLE `team_member` (
   UNIQUE KEY `uk_team_player` (`team_id`, `player_id`),
   KEY `idx_player` (`player_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='队伍成员表';
+
+-- ============================================================================
+-- account_center.sql（账号中心：serv_info / acc_summary / user_role）
+-- ============================================================================
+-- 账号中心表结构（登录服）。
+-- 物理分片不在本 schema：acc_summary_0..31、user_role_0..14 由
+-- scripts/db-init.sh 用「CREATE TABLE ... LIKE 模板」批量建出，
+-- 不进 gendb 解析范围——与 login_log 按月分表的既有范式一致
+-- （见 db-init.sh 的 login_log_YYYYMM LIKE login_log）。
+--
+-- 分片约定见 go_game_docs/架构设计/数据归属与分表边界.md（冻结版）：
+--   acc_summary  按 accuid % 32 路由（accuid == account.id）
+--   user_role    按 account_id % 15 路由（0..14，与 acc_summary 同款 0 索引）
+-- 两张逻辑模板表只作分片的列定义来源与 gendb 的模型来源；
+-- 运行时读写一律落到分片物理表，逻辑表本身不承载业务数据。
+
+-- ============================================================================
+-- serv_info.sql
+-- ============================================================================
+-- 服务器列表（账号中心，全局少量配置，Redis 全量预热）
+-- 真源 MySQL，缓存 cache-aside；低频读，可整表预热进 Redis。
+CREATE TABLE `serv_info` (
+  `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '区服ID',
+  `name`       VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '区服名',
+  `ip`         VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '服务器IP',
+  `port`       INT          NOT NULL DEFAULT 0  COMMENT '端口',
+  `open_time`  DATETIME     NULL     DEFAULT NULL COMMENT '开服时间',
+  `status`     TINYINT      NOT NULL DEFAULT 0  COMMENT '后台状态 0维护 1正常 2火爆 3停服',
+  `recommend`  TINYINT      NOT NULL DEFAULT 0  COMMENT '推荐标记 0否 1是',
+  `created_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_recommend` (`recommend`),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='服务器列表';
+
+-- ============================================================================
+-- acc_summary.sql（逻辑模板，物理分片 acc_summary_0..31 LIKE 本表）
+-- ============================================================================
+-- 账号摘要（登录服，按 accuid % 32 物理分片）
+-- 真源 MySQL，Redis cache-aside。控制单表 B+ 树规模，避免账号表无限膨胀。
+-- accuid 即 account.id（账号中心账号表主键），见数据归属文档 §4。
+CREATE TABLE `acc_summary` (
+  `accuid`        BIGINT UNSIGNED NOT NULL COMMENT '账号ID（== account.id）',
+  `nickname`      VARCHAR(64)  NOT NULL DEFAULT '' COMMENT '昵称',
+  `avatar`        VARCHAR(255) NOT NULL DEFAULT '' COMMENT '头像URL',
+  `level`         INT          NOT NULL DEFAULT 1  COMMENT '等级（展示用摘要）',
+  `last_login_at` DATETIME     NULL     DEFAULT NULL COMMENT '最近登录时间',
+  `created_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`accuid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='账号摘要（逻辑模板，分片 acc_summary_0..31）';
+
+-- ============================================================================
+-- user_role.sql（逻辑模板，物理分片 user_role_0..14 LIKE 本表）
+-- ============================================================================
+-- 角色索引（登录服，按 account_id % 15 物理分片）
+-- 真源在游戏服（角色真源），本表是经 MQ 同步 + 回源兜底的轻量展示副本，
+-- 用于选角界面列出某账号全部角色而无需回源游戏服。
+-- 分片键 account_id % 15；同一账号的全部角色落在同一分片，选角只需查一张表。
+CREATE TABLE `user_role` (
+  `account_id` BIGINT UNSIGNED NOT NULL COMMENT '账号ID（分片键）',
+  `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '角色ID（全局唯一，游戏服真源）',
+  `server_id`  INT            NOT NULL DEFAULT 0  COMMENT '角色所在区服ID',
+  `nickname`   VARCHAR(64)    NOT NULL DEFAULT '' COMMENT '角色昵称（冗余展示，避免选角回源）',
+  `level`      INT            NOT NULL DEFAULT 1  COMMENT '角色等级（冗余展示）',
+  `created_at` TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`account_id`, `player_id`),
+  UNIQUE KEY `uk_player` (`player_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色索引（逻辑模板，分片 user_role_0..14）';
+
+-- ============================================================================
+-- 抢位置（单服）：seat_room / seat_slot / seat_pending_reward
+-- ============================================================================
+-- 三张表的分工：
+--   seat_room            房间状态（10 行），启动幂等补齐，status 预留运营关房
+--   seat_slot            座位状态（100 行），重启恢复 + occupy_id 结算幂等
+--   seat_pending_reward  结算 outbox，崩溃/离线时留待玩家登录补发
+-- 跨服版本暂不落库，见 internal/cross/seat/manager.go 的说明。
+
+-- ============================================================================
+-- seat_room.sql
+-- ============================================================================
+-- 房间是固定设施（高 1 / 中 3 / 低 6），行由进程启动时幂等补齐；
+-- 这里只落「可变状态」——目前是开放/关闭，留给运营临时关房。
+CREATE TABLE `seat_room` (
+  `tier`       TINYINT NOT NULL COMMENT '档位 1=高 2=中 3=低',
+  `room_index` INT NOT NULL COMMENT '档位内房号（0 基）',
+  `status`     TINYINT NOT NULL DEFAULT 0 COMMENT '0=开放 1=关闭',
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`tier`, `room_index`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置房间状态';
+
+-- ============================================================================
+-- seat_slot.sql
+-- ============================================================================
+-- 每行一个座位（10 房 × 10 座 = 100 行）。内存仍是权威，这张表解决两件事：
+--  1. 进程重启后恢复「谁坐着、从什么时候开始坐」；
+--  2. 用 occupy_id 标识「本次占用实例」——结算奖励以它为幂等键，
+--     重启后重放同一笔结算不会重复发奖（用结算时刻当键做不到这点，
+--     因为重放会生成新的时间戳）。
+CREATE TABLE `seat_slot` (
+  `tier`        TINYINT NOT NULL COMMENT '档位 1=高 2=中 3=低',
+  `room_index`  INT NOT NULL COMMENT '档位内房号（0 基）',
+  `seat_index`  INT NOT NULL COMMENT '座号 0..9',
+  `state`       TINYINT NOT NULL DEFAULT 0 COMMENT '0=空 1=占用',
+  `occupant`    BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '占用者 player_id；空为 0',
+  `occupy_id`   BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '本次占用实例ID（结算幂等键）',
+  `occupied_at` BIGINT NOT NULL DEFAULT 0 COMMENT '占用起始 unix 秒；空为 0',
+  `updated_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`tier`, `room_index`, `seat_index`),
+  KEY `idx_occupant` (`occupant`),
+  KEY `idx_state_occupied` (`state`, `occupied_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置座位状态';
+
+-- ============================================================================
+-- seat_pending_reward.sql
+-- ============================================================================
+-- 座位释放（超时/被抢夺）时玩家可能已离线，玩家 Actor 不在内存；即使在线，
+-- 「先落库释放座位、再发奖」之间也可能崩溃。因此结算统一走 outbox：
+--   写本表（幂等）→ 座位置空并落库 → 尝试在线发奖 → 成功则删本行。
+-- 任何一步崩溃，玩家下次登录由 seat 模块按 occupy_id 补发。
+--
+-- 主键 (player_id, occupy_id)：occupy_id 是「本次占用实例」的 ID，重启后
+-- 重放同一笔结算仍然是同一个 ID，天然幂等；用结算时刻当键则做不到。
+CREATE TABLE `seat_pending_reward` (
+  `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '玩家ID',
+  `occupy_id`  BIGINT UNSIGNED NOT NULL COMMENT '占用实例ID（结算幂等键）',
+  `tier`       TINYINT NOT NULL DEFAULT 0 COMMENT '档位 1=高 2=中 3=低（0 非法）',
+  `minutes`    INT NOT NULL DEFAULT 0 COMMENT '占据分钟数',
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`player_id`, `occupy_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='座位待结算奖励（outbox）';
