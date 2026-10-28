@@ -108,3 +108,49 @@ func (s *Store) DeletePlayer(ctx context.Context, playerID int64, roomID int32) 
 		"DELETE FROM seat_player WHERE player_id = ? AND room_id = ?", playerID, roomID)
 	return err
 }
+
+// ---- 待补发奖励（seat_pending_reward）----
+
+// AddPending 写入一笔待补发奖励；同一 occupy_id 重复写只留一行。
+func (s *Store) AddPending(ctx context.Context, playerID, occupyID int64, tier pkgseat.Tier, minutes int64) error {
+	_, err := s.db.ExecContext(ctx,
+		"INSERT INTO seat_pending_reward (player_id, occupy_id, tier, minutes) VALUES (?, ?, ?, ?) "+
+			"ON DUPLICATE KEY UPDATE tier = VALUES(tier), minutes = VALUES(minutes)",
+		playerID, occupyID, int32(tier), minutes)
+	return err
+}
+
+// ListPending 读取某玩家全部待补发奖励（按占用实例升序，补发顺序稳定）。
+func (s *Store) ListPending(ctx context.Context, playerID int64) ([]pkgseat.Pending, error) {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT occupy_id, tier, minutes FROM seat_pending_reward WHERE player_id = ? ORDER BY occupy_id", playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []pkgseat.Pending
+	for rows.Next() {
+		var (
+			occupyID int64
+			tier     int32
+			minutes  int64
+		)
+		if err := rows.Scan(&occupyID, &tier, &minutes); err != nil {
+			return nil, err
+		}
+		out = append(out, pkgseat.Pending{
+			OccupyID: occupyID,
+			Tier:     pkgseat.Tier(tier),
+			Minutes:  minutes,
+		})
+	}
+	return out, rows.Err()
+}
+
+// DeletePending 删除一笔已补发的奖励。
+func (s *Store) DeletePending(ctx context.Context, playerID, occupyID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM seat_pending_reward WHERE player_id = ? AND occupy_id = ?", playerID, occupyID)
+	return err
+}

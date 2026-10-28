@@ -31,18 +31,16 @@ type Manager struct {
 	sys     *actor.System
 	players *player.Manager
 	store   *Store
-	pending *PendingStore
 	logger  *log.Logger
 	rooms   map[int32]*pkgseat.Room // room_id → 房间
 }
 
 // NewManager 创建管理器；store/pending 可为 nil（无 MySQL 环境退化为纯内存）。
-func NewManager(sys *actor.System, players *player.Manager, store *Store, pending *PendingStore, logger *log.Logger) *Manager {
+func NewManager(sys *actor.System, players *player.Manager, store *Store, logger *log.Logger) *Manager {
 	m := &Manager{
 		sys:     sys,
 		players: players,
 		store:   store,
-		pending: pending,
 		logger:  logger,
 		rooms:   make(map[int32]*pkgseat.Room),
 	}
@@ -186,24 +184,16 @@ func (m *Manager) settle(rel pkgseat.Release) {
 		}
 	}
 
-	if m.pending == nil {
-		m.logger.Warn("seat reward dropped: offline and no outbox",
+	if m.store == nil {
+		m.logger.Warn("seat reward dropped: offline and no store",
 			"player_id", rel.PlayerID, "occupy_id", rel.OccupyID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if err := m.pending.Add(ctx, rel.PlayerID, rel.OccupyID, rel.Tier, rel.Minutes); err != nil {
+	if err := m.store.AddPending(ctx, rel.PlayerID, rel.OccupyID, rel.Tier, rel.Minutes); err != nil {
 		m.logger.Warn("seat outbox write failed", "player_id", rel.PlayerID, "err", err)
 	}
-}
-
-// PendReward 供跨服路径写入待补发奖励。
-func (m *Manager) PendReward(ctx context.Context, playerID, occupyID int64, tier pkgseat.Tier, minutes int64) error {
-	if m.pending == nil {
-		return nil
-	}
-	return m.pending.Add(ctx, playerID, occupyID, tier, minutes)
 }
 
 // Occupy 占座/抢夺；玩家已在别处有座则先释放旧座（自动换座）。

@@ -27,8 +27,8 @@ type Router interface {
 
 // PendingStore 待补发奖励表（由 internal/game/seat.PendingStore 实现）。
 type PendingStore interface {
-	List(ctx context.Context, playerID int64) ([]pkgseat.Pending, error)
-	Delete(ctx context.Context, playerID, occupyID int64) error
+	ListPending(ctx context.Context, playerID int64) ([]pkgseat.Pending, error)
+	DeletePending(ctx context.Context, playerID, occupyID int64) error
 }
 
 var (
@@ -137,7 +137,7 @@ func onLogin(c *module.Ctx[struct{}]) error {
 	ctx := c.Actor.Context()
 	playerID := c.State.PlayerID()
 
-	rows, err := pending.List(ctx, playerID)
+	rows, err := pending.ListPending(ctx, playerID)
 	if err != nil {
 		c.Log().Warn("seat pending list failed", "player_id", playerID, "err", err)
 		return nil
@@ -145,7 +145,7 @@ func onLogin(c *module.Ctx[struct{}]) error {
 	for _, r := range rows {
 		reward := pkgseat.RewardOf(r.Tier, r.Minutes)
 		if reward <= 0 {
-			_ = pending.Delete(ctx, playerID, r.OccupyID)
+			_ = pending.DeletePending(ctx, playerID, r.OccupyID)
 			continue
 		}
 		applied, gerr := c.ApplyOnce(fmt.Sprintf("seat:%d", r.OccupyID), func() error {
@@ -158,7 +158,7 @@ func onLogin(c *module.Ctx[struct{}]) error {
 			continue // 满包/超限：保留挂起行，下次登录再补
 		}
 		if applied {
-			_ = pending.Delete(ctx, playerID, r.OccupyID)
+			_ = pending.DeletePending(ctx, playerID, r.OccupyID)
 		}
 	}
 	return nil

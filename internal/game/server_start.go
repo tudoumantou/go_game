@@ -385,18 +385,14 @@ func (s *Server) initPlayerManager() {
 // 但要在开始接收连接之前（Boot 里紧跟 initPlayerManager），保证首个玩家
 // 登录时模块依赖已就绪。
 func (s *Server) initSeat() {
-	var (
-		pending *seat.PendingStore
-		store   *seat.Store
-	)
+	var store *seat.Store
 	if s.database != nil {
-		pending = seat.NewPendingStore(s.database)
 		store = seat.NewStore(s.database)
 	}
-	s.seatMgr = seat.NewManager(s.actorSys, s.players, store, pending, s.logger)
+	s.seatMgr = seat.NewManager(s.actorSys, s.players, store, s.logger)
 	seatmod.SetRouter(s.seatMgr)
-	if pending != nil {
-		seatmod.SetPending(pending)
+	if store != nil {
+		seatmod.SetPending(store) // Store 同时实现待补发奖励表
 	}
 	s.logger.Info("seat rooms initialized", "rooms", s.seatMgr.Count())
 }
