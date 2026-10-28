@@ -165,6 +165,24 @@ func TestRoomIDUniqueAndReversible(t *testing.T) {
 	require.Len(t, seen, 10, "高 1 + 中 3 + 低 6")
 }
 
+// 房间自己持有快照（atomic），管理器无需再存副本。
+func TestSnapshotReflectsOccupancy(t *testing.T) {
+	r, _ := newTestRoom(TierHigh)
+
+	empty := r.Snapshot()
+	require.Equal(t, RoomID(TierHigh, 0), empty.ID)
+	require.Len(t, empty.Slots, SeatsPerRoom, "Spawn 前就要有完整空快照")
+
+	r.onOccupy(nil, &OccupyMsg{PlayerID: 3, SeatIndex: 2})
+
+	snap := r.Snapshot()
+	require.Equal(t, SeatOccupied, snap.Slots[2].State)
+	require.Equal(t, int64(3), snap.Slots[2].Occupant)
+	require.NotZero(t, snap.Slots[2].OccupyID)
+	require.NotZero(t, snap.Slots[2].OccupiedAt)
+	require.Equal(t, SeatEmpty, snap.Slots[0].State)
+}
+
 func TestNextSeqUnique(t *testing.T) {
 	seen := map[int64]struct{}{}
 	for i := 0; i < 1000; i++ {

@@ -1,20 +1,19 @@
-// internal/game/seat/manager.go —— 房间管理器（房间 / 一人一座 / 落库 / 结算）
+// internal/game/seat/manager.go —— 房间管理器
 //
-// 结构：Manager 管 10 个房间（按 room_id 索引），Room 管 10 个座位。
-// Manager 做四件事：
-//   1. 启动按「高 1 / 中 3 / 低 6」Spawn 房间，把上次落库的占用灌回去；
-//   2. 裁决「一人一座」（玩家同时只能占一个座，换座自动释放旧座）；
-//   3. 房间状态变更时整房落库，并按差异同步玩家数据（seat_player）；
-//   4. 座位释放时发奖：在线直发，离线写 outbox 等登录补发。
+// 只做三件事：拉起 10 个房间、把请求转发给对应房间、把房间的回调落到库/发奖。
 //
-// 玩家数据（占哪个房哪个座、从何时起）归这里管，不进玩家 Actor：
-// 座位是房间的，不是玩家的私有状态；塞进玩家快照会变成 N 份副本。
+// 管理器不存状态副本：
+//   - 房间快照由 Room 自己用 atomic.Value 持有，查询直接读房间；
+//   - 「玩家占哪」也不另建登记表，占座前扫一遍房间快照即可（10 房 × 10 座）；
+//   - 因此没有锁、没有缓存、没有遍历顺序表。
+//
+// 唯一的并发前提：玩家的占座请求由玩家 Actor 串行发起，同一玩家不会同时
+// 发出两个占座；跨玩家冲突由房间 Actor 串行裁决（后到者视为抢夺）。
 package seat
 
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"game_study/internal/game/player"
@@ -34,13 +33,7 @@ type Manager struct {
 	store   *Store
 	pending *PendingStore
 	logger  *log.Logger
-
-	rooms map[int32]*actor.PID // room_id → PID
-	order []int32              // 稳定遍历顺序
-
-	mu    sync.RWMutex
-	snaps map[int32]pkgseat.RoomSnapshot
-	occ   map[int64]pkgseat.SeatRef // 玩家 → 当前座位（一人一座）
+	rooms   map[int32]*pkgseat.Room // room_id → 房间
 }
 
 // NewManager 创建管理器；store/pending 可为 nil（无 MySQL 环境退化为纯内存）。
@@ -51,9 +44,7 @@ func NewManager(sys *actor.System, players *player.Manager, store *Store, pendin
 		store:   store,
 		pending: pending,
 		logger:  logger,
-		rooms:   make(map[int32]*actor.PID),
-		snaps:   make(map[int32]pkgseat.RoomSnapshot),
-		occ:     make(map[int64]pkgseat.SeatRef),
+		rooms:   make(map[int32]*pkgseat.Room),
 	}
 
 	saved := m.load() // 先把上次的占用读出来，房间收到 RestoreMsg 才能立即结算
@@ -62,28 +53,25 @@ func NewManager(sys *actor.System, players *player.Manager, store *Store, pendin
 		for i := 0; i < pkgseat.RoomCounts[tier]; i++ {
 			room := pkgseat.NewRoom(tier, i, logger)
 			id := room.ID()
+
 			room.SetOnChange(m.onChange)
 			room.SetOnRelease(m.onRelease)
+			room.SetOnSeat(func(playerID int64, seatIndex int, occupied bool, at time.Time) {
+				m.onSeat(id, playerID, seatIndex, occupied, at)
+			})
+
 			pid, err := sys.Spawn(pkgseat.RoomName(id), room)
 			if err != nil {
 				logger.Error("spawn seat room failed", "room_id", id, "err", err)
 				continue
 			}
 			room.SetPID(pid)
-			m.rooms[id] = pid
-			m.order = append(m.order, id)
-			m.snaps[id] = room.Snapshot()
+			m.rooms[id] = room
 
-			slots := saved[id]
-			if len(slots) == 0 {
-				continue
-			}
-			// 先重建一人一座登记，再灌回房间；超时结算会经 onRelease 清掉。
-			for _, sl := range slots {
-				m.occ[sl.Occupant] = pkgseat.SeatRef{RoomID: id, SeatIndex: sl.Index}
-			}
-			if err := sys.Send(pid, &pkgseat.RestoreMsg{Slots: slots}); err != nil {
-				logger.Warn("seat restore failed", "room_id", id, "err", err)
+			if slots := saved[id]; len(slots) > 0 {
+				if err := sys.Send(pid, &pkgseat.RestoreMsg{Slots: slots}); err != nil {
+					logger.Warn("seat restore failed", "room_id", id, "err", err)
+				}
 			}
 		}
 	}
@@ -102,10 +90,9 @@ func (m *Manager) load() map[int32][]pkgseat.Slot {
 	defer cancel()
 
 	empty := make([]pkgseat.RoomSnapshot, 0, 16)
-	for _, tier := range pkgseat.TierOrder {
-		for i := 0; i < pkgseat.RoomCounts[tier]; i++ {
-			empty = append(empty, pkgseat.RoomSnapshot{ID: pkgseat.RoomID(tier, i), Tier: tier, Index: i})
-		}
+	for _, id := range m.roomIDs() {
+		tier, index := pkgseat.SplitRoomID(id)
+		empty = append(empty, pkgseat.RoomSnapshot{ID: id, Tier: tier, Index: index})
 	}
 	if err := m.store.EnsureRooms(ctx, empty); err != nil {
 		m.logger.Warn("seat ensure rooms failed", "err", err)
@@ -135,87 +122,41 @@ func (m *Manager) load() map[int32][]pkgseat.Slot {
 	return out
 }
 
-// onChange 状态变更：更新查询缓存 → 整房落库 → 按差异同步玩家数据。
-//
-// 同步写而不是异步合并：座位变更是玩家点出来的低频操作，两条 upsert 只有
-// 几毫秒；加超时兜底就够，不值得为它引入合并器与后台协程。
+// onChange 房间状态变更：整房落库。
 func (m *Manager) onChange(snap pkgseat.RoomSnapshot) {
-	m.mu.Lock()
-	old, had := m.snaps[snap.ID]
-	m.snaps[snap.ID] = snap
-	m.mu.Unlock()
-
 	if m.store == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
 	if err := m.store.Save(ctx, snap); err != nil {
 		m.logger.Warn("seat room save failed", "room_id", snap.ID, "err", err)
-		return // 房间都没写成功，玩家索引也没必要写（下次变更会一起补）
-	}
-	if had {
-		m.syncPlayers(ctx, old, snap)
 	}
 }
 
-// syncPlayers 按快照差异维护 seat_player（房间维度 → 玩家维度的投影）。
-func (m *Manager) syncPlayers(ctx context.Context, old, cur pkgseat.RoomSnapshot) {
-	prev, next := occupants(old), occupants(cur)
-
-	for pid, seat := range next {
-		if s, ok := prev[pid]; ok && s == seat {
-			continue // 没变化
-		}
-		ref := pkgseat.SeatRef{RoomID: cur.ID, SeatIndex: seat}
-		if err := m.store.SavePlayer(ctx, pid, ref, occupiedAt(cur, seat)); err != nil {
-			m.logger.Warn("seat player save failed", "player_id", pid, "err", err)
-		}
-	}
-	for pid := range prev {
-		if _, ok := next[pid]; ok {
-			continue
-		}
-		if err := m.store.DeletePlayer(ctx, pid, cur.ID); err != nil {
-			m.logger.Warn("seat player delete failed", "player_id", pid, "err", err)
-		}
-	}
-}
-
-// occupants 座位号 → 玩家，返回 玩家 → 座位 的反查表。
-func occupants(snap pkgseat.RoomSnapshot) map[int64]int {
-	out := make(map[int64]int, len(snap.Slots))
-	for _, sl := range snap.Slots {
-		if sl.State == pkgseat.SeatOccupied && sl.Occupant > 0 {
-			out[sl.Occupant] = sl.Index
-		}
-	}
-	return out
-}
-
-func occupiedAt(snap pkgseat.RoomSnapshot, seatIndex int) int64 {
-	for _, sl := range snap.Slots {
-		if sl.Index == seatIndex {
-			return sl.OccupiedAt
-		}
-	}
-	return 0
-}
-
-// onRelease 座位释放：清一人一座登记，有奖则结算。
-func (m *Manager) onRelease(rel pkgseat.Release) {
-	if rel.PlayerID <= 0 {
+// onSeat 座位归属变化：同步玩家数据（seat_player）。
+func (m *Manager) onSeat(roomID int32, playerID int64, seatIndex int, occupied bool, at time.Time) {
+	if m.store == nil || playerID <= 0 {
 		return
 	}
-	cur := pkgseat.SeatRef{RoomID: pkgseat.RoomID(rel.Tier, rel.RoomIndex), SeatIndex: rel.SeatIndex}
-	m.mu.Lock()
-	if ref, ok := m.occ[rel.PlayerID]; ok && ref == cur {
-		delete(m.occ, rel.PlayerID)
-	}
-	m.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	if rel.Amount > 0 {
+	if occupied {
+		ref := pkgseat.SeatRef{RoomID: roomID, SeatIndex: seatIndex}
+		if err := m.store.SavePlayer(ctx, playerID, ref, at.Unix()); err != nil {
+			m.logger.Warn("seat player save failed", "player_id", playerID, "err", err)
+		}
+		return
+	}
+	if err := m.store.DeletePlayer(ctx, playerID, roomID); err != nil {
+		m.logger.Warn("seat player delete failed", "player_id", playerID, "err", err)
+	}
+}
+
+// onRelease 座位释放：有奖则结算。
+func (m *Manager) onRelease(rel pkgseat.Release) {
+	if rel.PlayerID > 0 && rel.Amount > 0 {
 		m.settle(rel)
 	}
 }
@@ -267,54 +208,74 @@ func (m *Manager) PendReward(ctx context.Context, playerID, occupyID int64, tier
 
 // Occupy 占座/抢夺；玩家已在别处有座则先释放旧座（自动换座）。
 func (m *Manager) Occupy(roomID int32, seatIndex int, playerID int64) bool {
-	pid := m.rooms[roomID]
-	if pid == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
+	room := m.rooms[roomID]
+	if room == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
 		return false
 	}
-
-	ref := pkgseat.SeatRef{RoomID: roomID, SeatIndex: seatIndex}
-	m.mu.Lock()
-	old, had := m.occ[playerID]
-	m.occ[playerID] = ref
-	m.mu.Unlock()
-
-	if had && old != ref {
-		if oldPid := m.rooms[old.RoomID]; oldPid != nil {
-			_ = m.sys.Send(oldPid, &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: old.SeatIndex})
+	target := pkgseat.SeatRef{RoomID: roomID, SeatIndex: seatIndex}
+	if old, ok := m.findSeat(playerID); ok && old != target {
+		if oldRoom := m.rooms[old.RoomID]; oldRoom != nil {
+			_ = m.sys.Send(oldRoom.PID(), &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: old.SeatIndex})
 		}
 	}
-	return m.sys.Send(pid, &pkgseat.OccupyMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
+	return m.sys.Send(room.PID(), &pkgseat.OccupyMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
 }
 
 // Leave 主动离开。
 func (m *Manager) Leave(roomID int32, seatIndex int, playerID int64) bool {
-	pid := m.rooms[roomID]
-	if pid == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
+	room := m.rooms[roomID]
+	if room == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
 		return false
 	}
-	return m.sys.Send(pid, &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
+	return m.sys.Send(room.PID(), &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
 }
 
-// Snapshot 单间房快照（读缓存）。
+// findSeat 查玩家当前坐哪（扫 10 房 × 10 座，占座是低频操作，不值得为它维护反向索引）。
+func (m *Manager) findSeat(playerID int64) (pkgseat.SeatRef, bool) {
+	for _, id := range m.roomIDs() {
+		room := m.rooms[id]
+		if room == nil {
+			continue
+		}
+		for _, sl := range room.Snapshot().Slots {
+			if sl.State == pkgseat.SeatOccupied && sl.Occupant == playerID {
+				return pkgseat.SeatRef{RoomID: id, SeatIndex: sl.Index}, true
+			}
+		}
+	}
+	return pkgseat.SeatRef{}, false
+}
+
+// roomIDs 全部房间 ID（按档位/房号顺序，保证遍历结果稳定）。
+func (m *Manager) roomIDs() []int32 {
+	ids := make([]int32, 0, 16)
+	for _, tier := range pkgseat.TierOrder {
+		for i := 0; i < pkgseat.RoomCounts[tier]; i++ {
+			ids = append(ids, pkgseat.RoomID(tier, i))
+		}
+	}
+	return ids
+}
+
+// Snapshot 单间房快照。
 func (m *Manager) Snapshot(roomID int32) (pkgseat.RoomSnapshot, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	snap, ok := m.snaps[roomID]
-	return snap, ok
+	room := m.rooms[roomID]
+	if room == nil {
+		return pkgseat.RoomSnapshot{}, false
+	}
+	return room.Snapshot(), true
 }
 
-// AllSnapshots 全部房间快照（按稳定顺序）。
+// AllSnapshots 全部房间快照。
 func (m *Manager) AllSnapshots() []pkgseat.RoomSnapshot {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	out := make([]pkgseat.RoomSnapshot, 0, len(m.order))
-	for _, id := range m.order {
-		if snap, ok := m.snaps[id]; ok {
-			out = append(out, snap)
+	out := make([]pkgseat.RoomSnapshot, 0, len(m.rooms))
+	for _, id := range m.roomIDs() {
+		if room := m.rooms[id]; room != nil {
+			out = append(out, room.Snapshot())
 		}
 	}
 	return out
 }
 
 // Count 房间总数。
-func (m *Manager) Count() int { return len(m.order) }
+func (m *Manager) Count() int { return len(m.rooms) }

@@ -6,6 +6,7 @@
 package seat
 
 import (
+	"sync/atomic"
 	"time"
 
 	"game_study/pkg/actor"
@@ -41,8 +42,13 @@ type Room struct {
 	index int
 	seats [SeatsPerRoom]*Seat
 
-	onChange  func(RoomSnapshot) // 状态变更（落库 + 查询缓存）
-	onRelease func(Release)      // 座位释放（结算 + 清一人一座登记）
+	// snap 房间快照：Actor 内重建后 Store，外部无锁 Load。
+	// 查询方直接读它，管理器不必再存一份副本。
+	snap atomic.Value // RoomSnapshot（Slots 每次重建，不共享底层数组）
+
+	onChange  func(RoomSnapshot) // 状态变更（落库）
+	onSeat    func(playerID int64, seatIndex int, occupied bool, at time.Time) // 座位归属变化（同步玩家数据）
+	onRelease func(Release)      // 座位释放（结算）
 
 	logger *log.Logger
 	pid    *actor.PID
@@ -54,17 +60,26 @@ func NewRoom(tier Tier, index int, logger *log.Logger) *Room {
 	for i := range r.seats {
 		r.seats[i] = &Seat{Index: i}
 	}
+	r.refresh() // 先放一份空快照：Spawn 前就可能有查询
 	return r
 }
 
 // ID 房间唯一 ID。
 func (r *Room) ID() int32 { return r.id }
 
+// PID 房间 Actor 的 PID（Spawn 后可用）。
+func (r *Room) PID() *actor.PID { return r.pid }
+
 // SetPID 注入自身 PID（Spawn 后调用，挂定时器需要）。
 func (r *Room) SetPID(pid *actor.PID) { r.pid = pid }
 
 // SetOnChange 注入状态变更回调（Spawn 前设置）。
 func (r *Room) SetOnChange(fn func(RoomSnapshot)) { r.onChange = fn }
+
+// SetOnSeat 注入座位归属变化回调（Spawn 前设置）。
+func (r *Room) SetOnSeat(fn func(playerID int64, seatIndex int, occupied bool, at time.Time)) {
+	r.onSeat = fn
+}
 
 // SetOnRelease 注入释放回调（Spawn 前设置）。
 func (r *Room) SetOnRelease(fn func(Release)) { r.onRelease = fn }
@@ -108,6 +123,9 @@ func (r *Room) onOccupy(ctx *actor.Context, msg *OccupyMsg) {
 	}
 	r.logger.Info("seat occupied", "tier", r.tier.String(), "room", r.index,
 		"seat", msg.SeatIndex, "player_id", msg.PlayerID)
+	if r.onSeat != nil {
+		r.onSeat(msg.PlayerID, msg.SeatIndex, true, now)
+	}
 	r.notifyChange()
 }
 
@@ -143,8 +161,11 @@ func (r *Room) onRestore(ctx *actor.Context, msg *RestoreMsg) {
 
 		deadline := s.OccupiedAt.Add(HoldLimit)
 		if !deadline.After(now) {
-			r.release(s, now)
+			r.release(s, now) // 内部会回调 onSeat(false)
 			continue
+		}
+		if r.onSeat != nil {
+			r.onSeat(s.Occupant, s.Index, true, s.OccupiedAt) // 重建玩家数据索引
 		}
 		if r.pid != nil {
 			ctx.ScheduleOnce(deadline.Sub(now), r.pid, &timeoutMsg{
@@ -168,10 +189,37 @@ func (r *Room) onTimeout(msg *timeoutMsg) {
 	r.notifyChange()
 }
 
+// notifyChange 重建快照并回调（先 Store 再通知，读方永远看到一致状态）。
 func (r *Room) notifyChange() {
+	snap := r.refresh()
 	if r.onChange != nil {
-		r.onChange(r.Snapshot())
+		r.onChange(snap)
 	}
+}
+
+// refresh 按当前座位重建快照并发布。
+//
+// 每次新建 Slots 切片而不是复用：快照会交给外部无锁读取，
+// 复用底层数组等于让读方看到正在被改写的元素。
+func (r *Room) refresh() RoomSnapshot {
+	snap := RoomSnapshot{ID: r.id, Tier: r.tier, Index: r.index, Slots: make([]Slot, 0, SeatsPerRoom)}
+	for _, s := range r.seats {
+		sl := Slot{Index: s.Index, State: s.State, Occupant: s.Occupant, OccupyID: s.OccupyID}
+		if s.State == SeatOccupied {
+			sl.OccupiedAt = s.OccupiedAt.Unix()
+		}
+		snap.Slots = append(snap.Slots, sl)
+	}
+	r.snap.Store(snap)
+	return snap
+}
+
+// Snapshot 房间快照（无锁读，供管理器和查询路径使用）。
+func (r *Room) Snapshot() RoomSnapshot {
+	if v, ok := r.snap.Load().(RoomSnapshot); ok {
+		return v
+	}
+	return RoomSnapshot{ID: r.id, Tier: r.tier, Index: r.index}
 }
 
 // release 结算并清空座位（调用方保证 s 处于占用态）。
@@ -190,6 +238,9 @@ func (r *Room) release(s *Seat, now time.Time) {
 
 	s.State, s.Occupant, s.OccupyID, s.OccupiedAt = SeatEmpty, 0, 0, time.Time{}
 
+	if rel.PlayerID > 0 && r.onSeat != nil {
+		r.onSeat(rel.PlayerID, rel.SeatIndex, false, time.Time{})
+	}
 	if rel.PlayerID > 0 && r.onRelease != nil {
 		r.onRelease(rel)
 	}
@@ -198,17 +249,4 @@ func (r *Room) release(s *Seat, now time.Time) {
 			"seat", rel.SeatIndex, "player_id", rel.PlayerID,
 			"minutes", rel.Minutes, "amount", rel.Amount)
 	}
-}
-
-// Snapshot 房间快照（Actor 内调用；组装层另有缓存供查询）。
-func (r *Room) Snapshot() RoomSnapshot {
-	snap := RoomSnapshot{ID: r.id, Tier: r.tier, Index: r.index, Slots: make([]Slot, 0, SeatsPerRoom)}
-	for _, s := range r.seats {
-		sl := Slot{Index: s.Index, State: s.State, Occupant: s.Occupant, OccupyID: s.OccupyID}
-		if s.State == SeatOccupied {
-			sl.OccupiedAt = s.OccupiedAt.Unix()
-		}
-		snap.Slots = append(snap.Slots, sl)
-	}
-	return snap
 }
