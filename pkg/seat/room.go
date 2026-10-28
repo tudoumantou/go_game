@@ -51,7 +51,6 @@ type Room struct {
 	onRelease func(Release)      // 座位释放（结算）
 
 	logger *log.Logger
-	pid    *actor.PID
 }
 
 // NewRoom 创建房间（尚未 Spawn）。
@@ -66,12 +65,6 @@ func NewRoom(tier Tier, index int, logger *log.Logger) *Room {
 
 // ID 房间唯一 ID。
 func (r *Room) ID() int32 { return r.id }
-
-// PID 房间 Actor 的 PID（Spawn 后可用）。
-func (r *Room) PID() *actor.PID { return r.pid }
-
-// SetPID 注入自身 PID（Spawn 后调用，挂定时器需要）。
-func (r *Room) SetPID(pid *actor.PID) { r.pid = pid }
 
 // SetOnChange 注入状态变更回调（Spawn 前设置）。
 func (r *Room) SetOnChange(fn func(RoomSnapshot)) { r.onChange = fn }
@@ -118,8 +111,12 @@ func (r *Room) onOccupy(ctx *actor.Context, msg *OccupyMsg) {
 	s.OccupyID = nextSeq()
 	s.OccupiedAt = now
 
-	if r.pid != nil {
-		ctx.ScheduleOnce(HoldLimit, r.pid, &timeoutMsg{SeatIndex: msg.SeatIndex, OccupiedAt: now})
+	// 自投定时器：用 ctx.PID() 即可，不必自己存一份 PID。
+	// ctx 为 nil 只出现在单测里（直接调处理函数，不挂定时器）。
+	if ctx != nil {
+		if self := ctx.PID(); self != nil {
+			ctx.ScheduleOnce(HoldLimit, self, &timeoutMsg{SeatIndex: msg.SeatIndex, OccupiedAt: now})
+		}
 	}
 	r.logger.Info("seat occupied", "tier", r.tier.String(), "room", r.index,
 		"seat", msg.SeatIndex, "player_id", msg.PlayerID)
@@ -167,10 +164,12 @@ func (r *Room) onRestore(ctx *actor.Context, msg *RestoreMsg) {
 		if r.onSeat != nil {
 			r.onSeat(s.Occupant, s.Index, true, s.OccupiedAt) // 重建玩家数据索引
 		}
-		if r.pid != nil {
-			ctx.ScheduleOnce(deadline.Sub(now), r.pid, &timeoutMsg{
-				SeatIndex: sl.Index, OccupiedAt: s.OccupiedAt,
-			})
+		if ctx != nil {
+			if self := ctx.PID(); self != nil {
+				ctx.ScheduleOnce(deadline.Sub(now), self, &timeoutMsg{
+					SeatIndex: sl.Index, OccupiedAt: s.OccupiedAt,
+				})
+			}
 		}
 	}
 	r.notifyChange()

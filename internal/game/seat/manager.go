@@ -57,16 +57,15 @@ func NewManager(sys *actor.System, store *Store, logger *log.Logger, onSettle fu
 				m.onSeat(id, playerID, seatIndex, occupied, at)
 			})
 
-			pid, err := sys.Spawn(pkgseat.RoomName(id), room)
-			if err != nil {
+			name := pkgseat.RoomName(id)
+			if _, err := sys.Spawn(name, room); err != nil {
 				logger.Error("spawn seat room failed", "room_id", id, "err", err)
 				continue
 			}
-			room.SetPID(pid)
 			m.rooms[id] = room
 
 			if slots := saved[id]; len(slots) > 0 {
-				if err := sys.Send(pid, &pkgseat.RestoreMsg{Slots: slots}); err != nil {
+				if err := sys.DeliverRemote(name, &pkgseat.RestoreMsg{Slots: slots}); err != nil {
 					logger.Warn("seat restore failed", "room_id", id, "err", err)
 				}
 			}
@@ -174,6 +173,9 @@ func (m *Manager) onRelease(rel pkgseat.Release) {
 }
 
 // Occupy 占座/抢夺；玩家已在别处有座则先释放旧座（自动换座）。
+//
+// 投递走 DeliverRemote（按 actorID 投递、sender 为 nil）：房间消息不需要
+// Respond，因此不必为了发消息而保存一份 PID。
 func (m *Manager) Occupy(roomID int32, seatIndex int, playerID int64) bool {
 	room := m.rooms[roomID]
 	if room == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
@@ -181,11 +183,13 @@ func (m *Manager) Occupy(roomID int32, seatIndex int, playerID int64) bool {
 	}
 	target := pkgseat.SeatRef{RoomID: roomID, SeatIndex: seatIndex}
 	if old, ok := m.Seat(playerID); ok && old != target {
-		if oldRoom := m.rooms[old.RoomID]; oldRoom != nil {
-			_ = m.sys.Send(oldRoom.PID(), &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: old.SeatIndex})
+		if _, exists := m.rooms[old.RoomID]; exists {
+			_ = m.sys.DeliverRemote(pkgseat.RoomName(old.RoomID),
+				&pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: old.SeatIndex})
 		}
 	}
-	return m.sys.Send(room.PID(), &pkgseat.OccupyMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
+	return m.sys.DeliverRemote(pkgseat.RoomName(roomID),
+		&pkgseat.OccupyMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
 }
 
 // Leave 主动离开。
@@ -194,7 +198,8 @@ func (m *Manager) Leave(roomID int32, seatIndex int, playerID int64) bool {
 	if room == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
 		return false
 	}
-	return m.sys.Send(room.PID(), &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
+	return m.sys.DeliverRemote(pkgseat.RoomName(roomID),
+		&pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
 }
 
 // Seat 查玩家当前坐哪（玩家参与数据，O(1)）。
