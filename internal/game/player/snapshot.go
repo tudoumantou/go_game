@@ -87,6 +87,61 @@ func (s *State) Fields() []string {
 	return out
 }
 
+// clone 深拷贝一份状态，供落库线程独占使用。
+//
+// 为什么需要：A 类同步落库（充值）原本在 Actor 内跑事务，一个 5s 的
+// DB 抖动会把同分片的其它玩家一起卡住。改成工作线程执行后，必须给它
+// 一份与 Actor 解耦的副本——否则 Actor 继续处理后续消息，落库读到的是
+// 被改到一半的状态（脏写），还会撞上 map 并发读写。
+//
+// 与 snapshot() 的区别：snapshot 只带持久化字段，clone 额外保留脏标记
+// 与 appliedGrants——SaveForce 依赖它们决定「写哪些道具/模块」以及幂等键。
+// dirtyHook 刻意不复制：副本不是活的 Actor 状态，不应再触发 flusher。
+func (s *State) clone() *State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := &State{
+		playerID: s.playerID,
+		profile:  s.profile,
+		attr:     s.attr,
+		baseAttr: s.baseAttr,
+		bonus:    s.bonus,
+		ext:      cloneExt(s.ext),
+		changed:  s.changed,
+		items:    make(map[int32]int64, len(s.items)),
+		dirty:    make(map[string]bool, len(s.dirty)),
+		// 容量按来源给足，避免落库线程扩容时再分配。
+		dirtyItems:  make(map[int32]bool, len(s.dirtyItems)),
+		dirtyFields: make(map[string]bool, len(s.dirtyFields)),
+	}
+	for id, count := range s.items {
+		out.items[id] = count
+	}
+	if len(s.appliedGrants) > 0 {
+		out.appliedGrants = make(map[string]bool, len(s.appliedGrants))
+		for key, v := range s.appliedGrants {
+			out.appliedGrants[key] = v
+		}
+	}
+	for name, v := range s.dirty {
+		out.dirty[name] = v
+	}
+	for id, v := range s.dirtyItems {
+		out.dirtyItems[id] = v
+	}
+	for field, v := range s.dirtyFields {
+		out.dirtyFields[field] = v
+	}
+	if len(s.removedExt) > 0 {
+		out.removedExt = make(map[string]bool, len(s.removedExt))
+		for name, v := range s.removedExt {
+			out.removedExt[name] = v
+		}
+	}
+	return out
+}
+
 func (s *State) snapshot() writebehind.Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

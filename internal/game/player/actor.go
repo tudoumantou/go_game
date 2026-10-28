@@ -232,6 +232,18 @@ type Actor struct {
 	// gate 提交通道：缓存提交窗口内的下行先暂存，提交成功才刷出（R2.5）。
 	// 提交策略集中在这里，业务与流程都不再感知「延迟发送」的存在。
 	gate commitGate
+
+	// self 自己的 PID（Receive 时记录一次）：异步落库完成后要往自己信箱
+	// 回投结果，Actor 内部拿不到 PID，只能在消息处理时留一份。
+	self *actor.PID
+	// post 自投通道（组装层注入 sys.Send）。为空时（单测直接调用）
+	// 同步发货退化为内联执行，保持旧语义。
+	post func(pid *actor.PID, msg any) error
+	// syncBusy 有一笔 A 类落库在跑；syncQueue 是它后面排队的。
+	// 同一玩家的同步发货必须串行：并发事务会各自用内存里的 applied_grants
+	// 覆盖对方，幂等键丢一个就可能在重投时二次发放。
+	syncBusy  bool
+	syncQueue []*GrantItemsMsg
 }
 
 // NewActor 创建玩家 Actor。
@@ -283,6 +295,13 @@ func (a *Actor) State() *State { return a.state }
 // 消息在 mailbox channel 上 FIFO 串行——这是「业务无锁」的前提；类型
 // switch 的 default 分支兜住未知消息，避免新增消息类型时静默丢包。
 func (a *Actor) Receive(ctx *actor.Context) {
+	// 记下自己的 PID：异步落库结果要靠它回投（见 syncgrant.go）。
+	a.self = ctx.PID()
+	// 落库结果不参与「克隆快照 → 提交」流程：它只更新版本、重建缓存、回执。
+	if done, ok := ctx.Message().(*grantDoneMsg); ok {
+		a.finishSyncGrant(done)
+		return
+	}
 	if a.repo.CacheEnabled() {
 		switch msg := ctx.Message().(type) {
 		case *PushMsg, *ScenePush, *sceneHeartbeatTick:
@@ -665,57 +684,6 @@ func (a *Actor) replyGrant(msg *GrantItemsMsg, err error) {
 		return
 	}
 	_ = a.gate.Send(func() error { msg.Done <- err; return nil })
-}
-
-// grantSync 同步落库后发货（A 类数据）。
-//
-// 顺序与每一步的理由：
-//  1. MySQL 事务提交（资产 + 幂等键同事务）：回执一旦发出客户端就认为
-//     货已到账，钱必须在库里；同事务推进的 version 让异步落库的栅栏
-//     判定缓存里的旧快照过期，旧值写不回库；
-//  2. 清脏标记：本路径不发 Commit，留着标记会让 receiveCached 在返回后
-//     补一次提交，把内存里的快照重新写回刚清理过的缓存；
-//  3. 删缓存：事务推进了 version，旧快照虽然写不回库，但玩家重登仍会
-//     读到它。删掉让加载走冷启动，读到刚提交的数据。
-//
-// 失败处理分两段：
-//   - 落库失败：内存已改，标记重载让下一条消息从库重读；回执 err，
-//     Kafka 重投时幂等键（同事务，没写成）会重新走一遍发货；
-//   - 删缓存失败：**也要回执 err**。不清理的话「重登读到旧值」会一直
-//     持续到有人手动删 key；上抛让 Kafka 重投，重投走幂等命中分支再补
-//     一次清理，形成自愈闭环。
-func (a *Actor) grantSync(msg *GrantItemsMsg) {
-	if a.repo == nil {
-		// 只在测试装配里出现；同步发货必须能落库，宁可明确失败。
-		a.replyGrant(msg, fmt.Errorf("player %d sync grant without repository", a.playerID))
-		return
-	}
-	saveCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	version, err := a.repo.SaveForce(saveCtx, a.state)
-	cancel()
-	if err != nil {
-		a.needsReload = true
-		a.logger.Error("sync grant save failed",
-			"source", msg.Source, "biz_id", msg.BizID, "err", err)
-		a.replyGrant(msg, err)
-		return
-	}
-	a.cacheVersion = version
-
-	// 数据已在库里：脏标记作废，且不能触发 Commit（会把旧内存快照写回缓存）。
-	a.state.ClearChanged()
-	a.state.ClearDirtyFields()
-	a.state.ClearItemsDirty()
-
-	if err := a.resyncCache(version); err != nil {
-		a.logger.Error("resync cache after sync grant failed",
-			"source", msg.Source, "biz_id", msg.BizID, "err", err)
-		a.replyGrant(msg, err)
-		return
-	}
-	a.logger.Info("sync grant committed",
-		"source", msg.Source, "biz_id", msg.BizID, "version", version)
-	a.replyGrant(msg, nil)
 }
 
 // resyncCache 用当前内存重建热快照（Drop 后立刻 Seed 一整份）。

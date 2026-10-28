@@ -136,6 +136,8 @@ func (m *Manager) GetOrSpawn(ctx context.Context, playerID int64) (*actor.PID, e
 
 	id := playerPID(playerID)
 	actor := NewActor(playerID, m.registry, m.logger, m.repo, m.onDirty, m.sendFunc)
+	// 自投通道：A 类同步落库在工作线程完成，结果靠它回投给本 Actor。
+	actor.WithPost(m.postTo)
 	if m.onKick != nil {
 		actor.SetKickHook(m.onKick)
 	}
@@ -212,3 +214,6 @@ func (m *Manager) ForEach(f func(playerID int64, pid *actor.PID)) {
 		f(id, pid)
 	}
 }
+
+// postTo 向本节点上的 Actor 投递一条消息（A 类落库结果回投用）。
+func (m *Manager) postTo(pid *actor.PID, msg any) error { return m.sys.Send(pid, msg) }
