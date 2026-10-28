@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ import (
 	"game_study/internal/gateway/session"
 	"game_study/pkg/cache"
 	"game_study/pkg/config"
+	"game_study/pkg/consistent"
 	"game_study/pkg/crypto"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
@@ -287,8 +289,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 // bindToGame 鉴权成功后把会话绑定到游戏服。
 //
-// 选路策略：按 account_id 对存活 game 节点取模——同一账号始终落到同一节点，
-// 玩家数据（Actor）无需跨节点迁移；节点列表来自 etcd（故障节点已被摘除）。
+// 选路策略：account_id 走一致性哈希环——同一账号稳定落到同一节点，且节点
+// 增删只迁移该节点负责的那一段（取模法会让几乎所有账号跳变，表现为大规模
+// 顶号重连）；节点列表来自 etcd（故障节点已被摘除）。
 // 绑定即建流：首帧 BIND 随 stream 一起发出（4.5），失败必须断客户端连接，
 // 否则玩家会对着一个「永远进不去」的会话反复发包。
 // 注意：本函数由 router.handleHandshakeReq 在读循环线程同步调用，
@@ -309,12 +312,24 @@ func (s *Server) bindToGame(sess *session.Session) {
 		s.logger.Warn("no game server available", "err", err)
 		return
 	}
-	// 按 account_id 取模选 game server：选路要跟「账号」绑，不能跟角色绑——
-	// 同一账号换角色重连时应当落回同一节点（Actor 缓存、presence 都在那边）
-	// 一致性哈希的简化版：节点数不变时同一玩家永远落同一节点；
-	// 节点扩缩时取模值跳变，需重连才会迁移（本版本不处理在线迁移）
-	idx := int(sess.AccountID() % int64(len(nodes)))
-	node := nodes[idx]
+	// 选路要跟「账号」绑，不能跟角色绑——同一账号换角色重连时应当落回同一
+	// 节点（Actor 缓存、presence 都在那边）。
+	//
+	// 环只依赖「节点 ID 集合」：节点先排序再去重，所以多个网关实例、不同
+	// etcd 返回顺序下算出的归属完全一致（不一致会导致同一玩家被两个节点
+	// 同时持有，靠 claimOnline 顶号兜底，但那是补救不是设计）。
+	ids := make([]string, 0, len(nodes))
+	byID := make(map[string]gameetcd.Node, len(nodes))
+	for _, n := range nodes {
+		ids = append(ids, n.ID)
+		byID[n.ID] = n
+	}
+	picked, ok := consistent.New(ids).Get(strconv.FormatInt(sess.AccountID(), 10))
+	if !ok {
+		s.logger.Warn("no game node in ring", "nodes", len(nodes))
+		return
+	}
+	node := byID[picked]
 
 	// target 用 etcd resolver scheme 表达，gRPC 目标解析交给 backend.ClientPool
 	target := "etcd:///" + node.Service
