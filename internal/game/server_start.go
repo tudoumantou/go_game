@@ -387,19 +387,27 @@ func (s *Server) initPlayerManager() {
 // 但要在开始接收连接之前（Boot 里紧跟 initPlayerManager），保证首个玩家
 // 登录时模块依赖已就绪。
 func (s *Server) initSeat() {
-	var pending *seat.PendingStore
+	var (
+		pending *seat.PendingStore
+		store   *seat.Store
+	)
 	if s.database != nil {
 		pending = seat.NewPendingStore(s.database)
+		store = seat.NewStore(s.database)
 	}
-	s.seatMgr = seat.NewManager(s.actorSys, s.players, pending, s.logger)
+	// 跨服模式：房间在 cross 节点，本服不承载座位，也不该恢复本地座位表
+	// （否则会和 cross 上的房间争同一批数据）；只保留 outbox 做离线补发。
+	crossMode := s.cfg.Cross.SeatAddr != "" && s.crossPool != nil
+	if crossMode {
+		store = nil
+	}
+	s.seatMgr = seat.NewManager(s.actorSys, s.players, pending, store, s.logger)
 	s.seatCache = seat.NewCache()
 	seatmod.SetRouter(s.seatMgr)
 	if pending != nil {
 		seatmod.SetPending(pending)
 	}
-	// 配置了跨服座位节点：座位操作改走 cross 节点，查询读本服缓存。
-	// 未配置则保持单服模式（操作与查询都走本节点房间 Actor）。
-	if s.cfg.Cross.SeatAddr != "" && s.crossPool != nil {
+	if crossMode {
 		seatmod.SetCross(s.crossPool, s.seatCache)
 		s.logger.Info("seat using cross mode", "seat_addr", s.cfg.Cross.SeatAddr)
 	}

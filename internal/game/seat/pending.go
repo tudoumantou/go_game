@@ -1,11 +1,16 @@
-// internal/game/seat/pending.go —— 离线座位奖励的耐久暂存
+// internal/game/seat/pending.go —— 座位待结算奖励表（outbox）
 //
-// 为什么需要它：座位释放（超时/被抢夺）时玩家往往已离线，玩家 Actor 不在
-// 内存，GrantItemsMsg 无处投递。这里把「玩家、序号、档位、分钟数」落一张
-// 小表，登录时由 seat 模块补发并清理。
+// 为什么需要它：座位释放（超时/被抢夺/重启补结算）时玩家往往已离线，玩家
+// Actor 不在内存；即使在线，「先把座位落库释放、再发奖」之间也可能崩溃。
+// 因此结算统一走 outbox：
 //
-// 为什么不用 writebehind：writebehind 存的是「已加载玩家的快照」，离线玩家
-// 根本不加载；这张表是独立于玩家快照的投递队列，语义更接近 outbox。
+//	写本表（幂等）→ 座位置空并落库 → 尝试在线发奖 → 成功则删本行
+//
+// 任何一步崩溃，玩家下次登录由 seat 模块按 occupy_id 补发。
+//
+// 主键 (player_id, occupy_id)：occupy_id 是「本次占用实例」的 ID，重启后
+// 重放同一笔结算仍是同一个 ID，天然幂等；用结算时刻当键则做不到——
+// 重放会生成新时间戳，于是重复发奖。
 package seat
 
 import (
@@ -15,33 +20,31 @@ import (
 	pkgseat "game_study/pkg/seat"
 )
 
-// PendingStore 座位离线奖励表（seat_pending_reward）读写。
+// PendingStore 座位待结算奖励表读写。
 type PendingStore struct {
 	db *db.DB
 }
 
-// NewPendingStore 创建离线奖励存储。
+// NewPendingStore 创建 outbox 存储。
 func NewPendingStore(database *db.DB) *PendingStore {
 	return &PendingStore{db: database}
 }
 
-// Add 写入一笔挂起奖励。
+// Add 写入一笔待结算奖励。
 //
-// ON DUPLICATE KEY UPDATE：主键 (player_id, seq) 保证同一释放事件重复投递
-// （跨服重推/Actor 重试）只留一行，不会重复发奖。
-// tier 在库里是 TINYINT（1 高 / 2 中 / 3 低），与协议、内存模型保持一致。
-func (s *PendingStore) Add(ctx context.Context, playerID, seq int64, tier pkgseat.Tier, minutes int64) error {
+// ON DUPLICATE KEY UPDATE：同一占用实例重复投递（重启重放/跨服重推）只留一行。
+func (s *PendingStore) Add(ctx context.Context, playerID, occupyID int64, tier pkgseat.Tier, minutes int64) error {
 	_, err := s.db.ExecContext(ctx,
-		"INSERT INTO seat_pending_reward (player_id, seq, tier, minutes) VALUES (?, ?, ?, ?) "+
+		"INSERT INTO seat_pending_reward (player_id, occupy_id, tier, minutes) VALUES (?, ?, ?, ?) "+
 			"ON DUPLICATE KEY UPDATE tier = VALUES(tier), minutes = VALUES(minutes)",
-		playerID, seq, int32(tier), minutes)
+		playerID, occupyID, int32(tier), minutes)
 	return err
 }
 
-// List 读取某玩家全部挂起奖励（按序号升序，保证补发顺序稳定）。
+// List 读取某玩家全部待结算奖励（按占用实例升序，保证补发顺序稳定）。
 func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.PendingReward, error) {
 	rows, err := s.db.QueryContext(ctx,
-		"SELECT seq, tier, minutes FROM seat_pending_reward WHERE player_id = ? ORDER BY seq", playerID)
+		"SELECT occupy_id, tier, minutes FROM seat_pending_reward WHERE player_id = ? ORDER BY occupy_id", playerID)
 	if err != nil {
 		return nil, err
 	}
@@ -50,21 +53,25 @@ func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.Pend
 	var out []pkgseat.PendingReward
 	for rows.Next() {
 		var (
-			seq     int64
-			tier    int32
-			minutes int64
+			occupyID int64
+			tier     int32
+			minutes  int64
 		)
-		if err := rows.Scan(&seq, &tier, &minutes); err != nil {
+		if err := rows.Scan(&occupyID, &tier, &minutes); err != nil {
 			return nil, err
 		}
-		out = append(out, pkgseat.PendingReward{Seq: seq, Tier: pkgseat.Tier(tier), Minutes: minutes})
+		out = append(out, pkgseat.PendingReward{
+			OccupyID: occupyID,
+			Tier:     pkgseat.Tier(tier),
+			Minutes:  minutes,
+		})
 	}
 	return out, rows.Err()
 }
 
-// Delete 删除一笔已补发的挂起奖励。
-func (s *PendingStore) Delete(ctx context.Context, playerID, seq int64) error {
+// Delete 删除一笔已补发的待结算奖励。
+func (s *PendingStore) Delete(ctx context.Context, playerID, occupyID int64) error {
 	_, err := s.db.ExecContext(ctx,
-		"DELETE FROM seat_pending_reward WHERE player_id = ? AND seq = ?", playerID, seq)
+		"DELETE FROM seat_pending_reward WHERE player_id = ? AND occupy_id = ?", playerID, occupyID)
 	return err
 }

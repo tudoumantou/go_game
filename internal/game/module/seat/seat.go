@@ -218,10 +218,10 @@ func onLogin(c *module.Ctx[struct{}]) error {
 	for _, r := range rows {
 		reward := pkgseat.RewardOf(r.Tier, r.Minutes)
 		if reward <= 0 {
-			_ = pending.Delete(ctx, playerID, r.Seq)
+			_ = pending.Delete(ctx, playerID, r.OccupyID)
 			continue
 		}
-		key := fmt.Sprintf("seat_pending:%d", r.Seq)
+		key := fmt.Sprintf("seat_pending:%d", r.OccupyID)
 		applied, gerr := c.ApplyOnce(key, func() error {
 			_, e := module.Grant(c.State, []module.ItemGrant{
 				{ItemID: pkgseat.RewardItem, Count: reward},
@@ -232,7 +232,7 @@ func onLogin(c *module.Ctx[struct{}]) error {
 			continue // 满包/超限：保留挂起行，下次登录再补
 		}
 		if applied {
-			_ = pending.Delete(ctx, playerID, r.Seq)
+			_ = pending.Delete(ctx, playerID, r.OccupyID)
 		}
 	}
 	return nil

@@ -284,6 +284,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			}
 			s.flusher.Stop()
 		}
+		// 座位快照走自己的合并落库器：关闭时刷最后一次，避免丢掉退出前
+		// 合并窗口内的占座变更（Close 内部幂等，重复调用安全）。
+		if s.seatMgr != nil {
+			s.seatMgr.Close()
+		}
 		return errors.Join(errs...)
 	})
 

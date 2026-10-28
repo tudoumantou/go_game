@@ -14,7 +14,7 @@ import (
 // SeatPendingReward seat_pending_reward 表
 type SeatPendingReward struct {
 	PlayerId  int64     `db:"player_id"`
-	Seq       int64     `db:"seq"`
+	OccupyId  int64     `db:"occupy_id"`
 	Tier      int32     `db:"tier"`
 	Minutes   int32     `db:"minutes"`
 	CreatedAt time.Time `db:"created_at"`
@@ -23,7 +23,7 @@ type SeatPendingReward struct {
 // SeatPendingReward 列名
 const (
 	ColSeatPendingRewardPlayerId  = "player_id"
-	ColSeatPendingRewardSeq       = "seq"
+	ColSeatPendingRewardOccupyId  = "occupy_id"
 	ColSeatPendingRewardTier      = "tier"
 	ColSeatPendingRewardMinutes   = "minutes"
 	ColSeatPendingRewardCreatedAt = "created_at"
@@ -35,7 +35,7 @@ func (m *SeatPendingReward) TableName() string { return "seat_pending_reward" }
 // SeatPendingRewardColumns 全部列（扫描用）
 var SeatPendingRewardColumns = []string{
 	ColSeatPendingRewardPlayerId,
-	ColSeatPendingRewardSeq,
+	ColSeatPendingRewardOccupyId,
 	ColSeatPendingRewardTier,
 	ColSeatPendingRewardMinutes,
 	ColSeatPendingRewardCreatedAt,
@@ -43,13 +43,13 @@ var SeatPendingRewardColumns = []string{
 
 // Insert 插入（自增列由数据库生成）
 func InsertSeatPendingReward(ctx context.Context, db Querier, m *SeatPendingReward) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO seat_pending_reward (player_id,seq,tier,minutes) VALUES (?,?,?,?)", m.PlayerId, m.Seq, m.Tier, m.Minutes)
+	return db.ExecContext(ctx, "INSERT INTO seat_pending_reward (player_id,occupy_id,tier,minutes) VALUES (?,?,?,?)", m.PlayerId, m.OccupyId, m.Tier, m.Minutes)
 }
 
 // FindSeatPendingRewardByPK 按主键查询
 func FindSeatPendingRewardByPK(ctx context.Context, db Querier, PlayerId int64) (*SeatPendingReward, error) {
 	var m SeatPendingReward
-	query := "SELECT player_id,seq,tier,minutes,created_at FROM seat_pending_reward WHERE player_id = ?"
+	query := "SELECT player_id,occupy_id,tier,minutes,created_at FROM seat_pending_reward WHERE player_id = ?"
 	row := db.QueryRowContext(ctx, query, PlayerId)
 	if err := scanSeatPendingReward(&m, row); err != nil {
 		return nil, err
@@ -58,17 +58,17 @@ func FindSeatPendingRewardByPK(ctx context.Context, db Querier, PlayerId int64) 
 }
 
 func scanSeatPendingReward(m *SeatPendingReward, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.PlayerId, &m.Seq, &m.Tier, &m.Minutes, &m.CreatedAt)
+	return sc.Scan(&m.PlayerId, &m.OccupyId, &m.Tier, &m.Minutes, &m.CreatedAt)
 }
 
 // UpdateSeatPendingRewardByPK 按主键更新（幂等）
 func UpdateSeatPendingRewardByPK(ctx context.Context, db Querier, m *SeatPendingReward) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE seat_pending_reward SET seq = ?, tier = ?, minutes = ? WHERE player_id = ?", m.Seq, m.Tier, m.Minutes, m.PlayerId)
+	return db.ExecContext(ctx, "UPDATE seat_pending_reward SET occupy_id = ?, tier = ?, minutes = ? WHERE player_id = ?", m.OccupyId, m.Tier, m.Minutes, m.PlayerId)
 }
 
 // UpsertSeatPendingRewardByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertSeatPendingRewardByPK(ctx context.Context, db Querier, m *SeatPendingReward) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO seat_pending_reward (player_id,seq,tier,minutes) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE seq = VALUES(seq), tier = VALUES(tier), minutes = VALUES(minutes)", m.PlayerId, m.Seq, m.Tier, m.Minutes)
+	return db.ExecContext(ctx, "INSERT INTO seat_pending_reward (player_id,occupy_id,tier,minutes) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE occupy_id = VALUES(occupy_id), tier = VALUES(tier), minutes = VALUES(minutes)", m.PlayerId, m.OccupyId, m.Tier, m.Minutes)
 }
 
 // DeleteSeatPendingRewardByPK 按主键删除
@@ -77,12 +77,12 @@ func DeleteSeatPendingRewardByPK(ctx context.Context, db Querier, PlayerId int64
 }
 
 // upsertSeatPendingRewardCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertSeatPendingRewardCols = []string{"player_id", "seq", "tier", "minutes"}
+var upsertSeatPendingRewardCols = []string{"player_id", "occupy_id", "tier", "minutes"}
 
 // UpsertSeatPendingRewardBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertSeatPendingRewardBatch(ctx context.Context, tx *sql.Tx, rows []SeatPendingReward) error {
 	return flush.UpsertBatch(ctx, tx, "seat_pending_reward", upsertSeatPendingRewardCols, rows, func(m SeatPendingReward) []any {
-		return []any{m.PlayerId, m.Seq, m.Tier, m.Minutes}
+		return []any{m.PlayerId, m.OccupyId, m.Tier, m.Minutes}
 	})
 }
 
@@ -93,7 +93,7 @@ func DeleteSeatPendingRewardByPlayer(ctx context.Context, tx *sql.Tx, playerID i
 
 // ListSeatPendingRewardByPlayer 按玩家列出全部行（冷启动读取用）
 func ListSeatPendingRewardByPlayer(ctx context.Context, db Querier, playerID int64) ([]SeatPendingReward, error) {
-	rows, err := db.QueryContext(ctx, "SELECT player_id,seq,tier,minutes,created_at FROM seat_pending_reward WHERE player_id = ?", playerID)
+	rows, err := db.QueryContext(ctx, "SELECT player_id,occupy_id,tier,minutes,created_at FROM seat_pending_reward WHERE player_id = ?", playerID)
 	if err != nil {
 		return nil, err
 	}

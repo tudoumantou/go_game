@@ -2,10 +2,13 @@
 //
 // 并发模型：房间状态全部在 Actor 内，Receive 由分片 goroutine 串行调用，
 // 业务侧无锁。跨 Actor 只通过消息：玩家侧发 Occupy/Leave，超时由
-// ScheduleOnce 投递 timeoutMsg。
+// ScheduleOnce 投递 timeoutMsg，重启恢复由 RestoreMsg 灌入。
 //
 // 与 battle.Room 的差异：战斗房随结算销毁，座位房是常驻设施（进程生命周期内
 // 一直存在），因此没有 RoomClosed 回调，也不做「结算后拒绝入内」。
+//
+// 持久化边界：本文件不碰数据库。状态变更通过 onChange 把快照交给组装层落库，
+// 座位释放通过 onRelease 把结算事件交给组装层（发奖 + 清挂起表）。
 package seat
 
 import (
@@ -28,6 +31,14 @@ type (
 		PlayerID  int64
 		SeatIndex int
 	}
+	// RestoreMsg 进程启动时从库里恢复座位占用。
+	//
+	// 恢复不是简单回填：已到期的占用必须立刻结算（重启期间定时器丢了），
+	// 未到期的按剩余时长重新挂 ScheduleOnce，否则玩家会白占一个不受
+	// 1h 上限约束的座位。
+	RestoreMsg struct {
+		Slots []RestoredSlot
+	}
 	// timeoutMsg 占用满 1h 的到期消息。
 	//
 	// 带 OccupiedAt：同一座位可能在 1h 内被释放并重新占用，旧定时器随后才到，
@@ -40,28 +51,28 @@ type (
 
 // Room 单个座位房间。
 type Room struct {
-	tier   Tier
-	index  int
-	seats  [SeatsPerRoom]*Seat
-	emit   func(Reward)
-	// onChange 状态变更回调（跨服用它把房间快照广播给游戏服；单服可为 nil）。
+	tier  Tier
+	index int
+	seats [SeatsPerRoom]*Seat
+
+	// onChange 状态变更回调（组装层用它落库、跨服用它广播给游戏服）。
 	// 在 Actor 内调用并传入本房间快照——快照在 Actor 串行上下文中生成，无竞态。
 	onChange func(RoomSnapshot)
 	// onRelease 座位释放回调：无论是否产生奖励都会调用。
 	//
-	// 管理器用它清理「一人一座」登记——不足 1 分钟没奖也必须清，
-	// 否则该玩家会永远被判定为「已有座位」，再也占不了新座。
-	onRelease func(playerID int64, ref SeatRef)
-	logger    *log.Logger
-	pid       *actor.PID
+	// 组装层用它做两件事：清「一人一座」登记（不足 1 分钟没奖也必须清，
+	// 否则该玩家会永远被判定为已有座位）；结算奖励（Amount>0 才有）。
+	onRelease func(ReleaseEvent)
+
+	logger *log.Logger
+	pid    *actor.PID
 }
 
 // NewRoom 创建房间 Actor（尚未 Spawn）。
-func NewRoom(tier Tier, index int, emit func(Reward), logger *log.Logger) *Room {
+func NewRoom(tier Tier, index int, logger *log.Logger) *Room {
 	r := &Room{
 		tier:   tier,
 		index:  index,
-		emit:   emit,
 		logger: logger,
 	}
 	for i := 0; i < SeatsPerRoom; i++ {
@@ -73,11 +84,11 @@ func NewRoom(tier Tier, index int, emit func(Reward), logger *log.Logger) *Room 
 // SetPID 注入自身 PID（Spawn 之后调用，ScheduleOnce 需要它）。
 func (r *Room) SetPID(pid *actor.PID) { r.pid = pid }
 
-// SetOnChange 注入状态变更回调（跨服广播用；须在 Spawn 前设置）。
+// SetOnChange 注入状态变更回调（须在 Spawn 前设置）。
 func (r *Room) SetOnChange(fn func(RoomSnapshot)) { r.onChange = fn }
 
 // SetOnRelease 注入座位释放回调（须在 Spawn 前设置）。
-func (r *Room) SetOnRelease(fn func(playerID int64, ref SeatRef)) { r.onRelease = fn }
+func (r *Room) SetOnRelease(fn func(ReleaseEvent)) { r.onRelease = fn }
 
 // Tier 房间档位。
 func (r *Room) Tier() Tier { return r.tier }
@@ -89,6 +100,8 @@ func (r *Room) Receive(ctx *actor.Context) {
 		r.onOccupy(ctx, msg)
 	case *LeaveMsg:
 		r.onLeave(msg)
+	case *RestoreMsg:
+		r.onRestore(ctx, msg)
 	case *timeoutMsg:
 		r.onTimeout(msg)
 	}
@@ -111,6 +124,7 @@ func (r *Room) onOccupy(ctx *actor.Context, msg *OccupyMsg) {
 
 	s.State = SeatOccupied
 	s.Occupant = msg.PlayerID
+	s.OccupyID = nextSeq() // 本次占用实例 ID，结算幂等键
 	s.Node = msg.Node
 	s.OccupiedAt = now
 
@@ -120,7 +134,7 @@ func (r *Room) onOccupy(ctx *actor.Context, msg *OccupyMsg) {
 	}
 
 	r.logger.Info("seat occupied", "tier", r.tier.String(), "room", r.index,
-		"seat", msg.SeatIndex, "player_id", msg.PlayerID, "node", msg.Node)
+		"seat", msg.SeatIndex, "player_id", msg.PlayerID, "occupy_id", s.OccupyID)
 	r.notifyChange()
 }
 
@@ -134,6 +148,49 @@ func (r *Room) onLeave(msg *LeaveMsg) {
 		return // fail-closed：不是你的座位，拒绝
 	}
 	r.release(s, time.Now())
+	r.notifyChange()
+}
+
+// onRestore 重启恢复：回填占用状态，已到期立即结算，未到期重挂定时器。
+func (r *Room) onRestore(ctx *actor.Context, msg *RestoreMsg) {
+	if len(msg.Slots) == 0 {
+		return
+	}
+	now := time.Now()
+	settled := 0
+	for _, rs := range msg.Slots {
+		if rs.SeatIndex < 0 || rs.SeatIndex >= SeatsPerRoom || rs.Occupant <= 0 {
+			continue
+		}
+		s := r.seats[rs.SeatIndex]
+		s.State = SeatOccupied
+		s.Occupant = rs.Occupant
+		s.OccupyID = rs.OccupyID
+		if s.OccupyID <= 0 {
+			// 兜底：库里缺 ID（历史数据/人工插入）时补一个。
+			// 否则结算幂等键会是 0，同一玩家所有奖励共用一个 BizID，只发得出第一笔。
+			s.OccupyID = nextSeq()
+		}
+		s.Node = rs.Node
+		s.OccupiedAt = rs.OccupiedAt
+
+		deadline := rs.OccupiedAt.Add(HoldLimit)
+		if !deadline.After(now) {
+			// 重启期间已经到期：定时器早已丢失，必须在这里补结算，
+			// 否则这个座位会永久占住且不再受 1h 上限约束。
+			r.release(s, now)
+			settled++
+			continue
+		}
+		if r.pid != nil {
+			ctx.ScheduleOnce(deadline.Sub(now), r.pid, &timeoutMsg{
+				SeatIndex:  rs.SeatIndex,
+				OccupiedAt: rs.OccupiedAt,
+			})
+		}
+	}
+	r.logger.Info("seat room restored", "tier", r.tier.String(), "room", r.index,
+		"slots", len(msg.Slots), "settled_on_restore", settled)
 	r.notifyChange()
 }
 
@@ -164,46 +221,40 @@ func (r *Room) notifyChange() {
 // release 结算并清空座位。调用方保证 s 当前处于占用态。
 func (r *Room) release(s *Seat, now time.Time) {
 	mins := OccupancyMinutes(s.OccupiedAt, now)
-	occupant := s.Occupant
-	node := s.Node
-	seq := nextSeq()
-	ref := SeatRef{Tier: r.tier, RoomIndex: r.index, SeatIndex: s.Index}
+	ev := ReleaseEvent{
+		PlayerID:  s.Occupant,
+		Tier:      r.tier,
+		RoomIndex: r.index,
+		SeatIndex: s.Index,
+		OccupyID:  s.OccupyID,
+		Minutes:   mins,
+		Node:      s.Node,
+	}
+	if mins > 0 && ev.PlayerID > 0 {
+		ev.Amount = RewardOf(r.tier, mins)
+	}
 
 	s.State = SeatEmpty
 	s.Occupant = 0
+	s.OccupyID = 0
 	s.Node = ""
 	s.OccupiedAt = time.Time{}
 
-	// 无条件通知管理器清登记：不足 1 分钟不发奖，但座位确实空了，
-	// 不清理会让该玩家被永久判定为「已有座位」。
-	if occupant > 0 && r.onRelease != nil {
-		r.onRelease(occupant, ref)
+	if ev.PlayerID > 0 && r.onRelease != nil {
+		r.onRelease(ev)
 	}
-
-	if mins <= 0 || occupant <= 0 {
-		return // 不足 1 分钟不发奖（但座位照常释放）
+	if ev.Amount > 0 {
+		r.logger.Info("seat released", "tier", r.tier.String(), "room", r.index,
+			"seat", ev.SeatIndex, "player_id", ev.PlayerID,
+			"minutes", ev.Minutes, "amount", ev.Amount, "occupy_id", ev.OccupyID)
 	}
-	amount := RewardOf(r.tier, mins)
-	if amount <= 0 || r.emit == nil {
-		return
-	}
-	r.emit(Reward{
-		PlayerID: occupant,
-		Tier:     r.tier,
-		Minutes:  mins,
-		Amount:   amount,
-		Seq:      seq,
-		Node:     node,
-	})
-	r.logger.Info("seat released", "tier", r.tier.String(), "room", r.index,
-		"seat", s.Index, "player_id", occupant, "minutes", mins, "amount", amount)
 }
 
-// Snapshot 返回房间只读快照（查询协议用）。
+// Snapshot 返回房间只读快照（查询协议与落库的数据源）。
 //
-// 由管理器/查询路径在 Actor 之外直接调用，读到的是「近似值」（可能与 Actor
-// 内实时状态差一拍）。与 battle.Manager.Stats 同一取舍：查询是低频只读路径，
-// 为它引入「请求-响应」消息对不值当，可接受近似。
+// 由组装层在 Actor 之外直接调用，读到的是「近似值」（可能与 Actor 内实时
+// 状态差一拍）。查询路径实际读的是组装层缓存，不会走到这里；落库用的是
+// Actor 内生成并传出的快照，因此不存在并发读。
 func (r *Room) Snapshot() RoomSnapshot {
 	out := RoomSnapshot{
 		Tier:      r.tier,
@@ -223,6 +274,7 @@ func (r *Room) Snapshot() RoomSnapshot {
 			Index:      s.Index,
 			State:      s.State,
 			Occupant:   s.Occupant,
+			OccupyID:   s.OccupyID,
 			OccupiedAt: occupiedAt,
 			RemainSec:  remain,
 		})

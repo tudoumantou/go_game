@@ -61,22 +61,10 @@ func NewManager(sys *actor.System, sink Sink, logger *log.Logger) *Manager {
 		occ:    pkgseat.NewOccupancy(),
 	}
 
-	emit := func(rw pkgseat.Reward) {
-		if rw.Node == "" {
-			logger.Warn("seat reward without node, dropped",
-				"player_id", rw.PlayerID, "seq", rw.Seq)
-			return
-		}
-		if err := sink.SendReward(rw.Node, rw.PlayerID, rw.Tier, rw.Minutes, rw.Amount, rw.Seq); err != nil {
-			logger.Warn("seat reward push failed",
-				"player_id", rw.PlayerID, "node", rw.Node, "seq", rw.Seq, "err", err)
-		}
-	}
-
 	for _, tier := range pkgseat.TierOrder {
 		for i := 0; i < pkgseat.RoomCounts[tier]; i++ {
 			name := pkgseat.RoomName(tier, i)
-			room := pkgseat.NewRoom(tier, i, emit, logger)
+			room := pkgseat.NewRoom(tier, i, logger)
 			room.SetOnChange(m.onChange)
 			room.SetOnRelease(m.onRelease)
 			pid, err := sys.Spawn(name, room)
@@ -191,9 +179,32 @@ func (m *Manager) sendLeave(ref pkgseat.SeatRef, playerID int64) {
 	_ = m.sys.Send(pid, &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: ref.SeatIndex})
 }
 
-// onRelease 座位释放回调：清理一人一座登记。
-func (m *Manager) onRelease(playerID int64, ref pkgseat.SeatRef) {
-	m.occ.Release(playerID, ref)
+// onRelease 座位释放：清一人一座登记，并把奖励推回玩家所在游戏服。
+//
+// 跨服不做本地落库（本轮只做单服持久化）：奖励靠「游戏服收不到就写 outbox」
+// 兜底，座位状态本身在 cross 节点重启后清空，玩家重抢即可。
+func (m *Manager) onRelease(ev pkgseat.ReleaseEvent) {
+	if ev.PlayerID <= 0 {
+		return
+	}
+	m.occ.Release(ev.PlayerID, pkgseat.SeatRef{
+		Tier: ev.Tier, RoomIndex: ev.RoomIndex, SeatIndex: ev.SeatIndex,
+	})
+	if ev.Amount <= 0 {
+		return
+	}
+	if m.sink == nil {
+		return
+	}
+	if ev.Node == "" {
+		m.logger.Warn("seat reward without node, dropped",
+			"player_id", ev.PlayerID, "occupy_id", ev.OccupyID)
+		return
+	}
+	if err := m.sink.SendReward(ev.Node, ev.PlayerID, ev.Tier, ev.Minutes, ev.Amount, ev.OccupyID); err != nil {
+		m.logger.Warn("seat reward push failed",
+			"player_id", ev.PlayerID, "node", ev.Node, "occupy_id", ev.OccupyID, "err", err)
+	}
 }
 
 // CurrentSeat 查询玩家当前占用的座位（调试/指标用）。

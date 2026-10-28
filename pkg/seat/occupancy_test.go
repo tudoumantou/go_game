@@ -79,9 +79,10 @@ func TestRoomReleaseNotifiesOccupancy(t *testing.T) {
 		gotPlayer int64
 		gotRef    SeatRef
 	)
-	r := NewRoom(TierLow, 2, nil, log.New("seat-test", log.WithLevel("error")))
-	r.SetOnRelease(func(playerID int64, ref SeatRef) {
-		gotPlayer, gotRef = playerID, ref
+	r := NewRoom(TierLow, 2, log.New("seat-test", log.WithLevel("error")))
+	r.SetOnRelease(func(ev ReleaseEvent) {
+		gotPlayer = ev.PlayerID
+		gotRef = SeatRef{Tier: ev.Tier, RoomIndex: ev.RoomIndex, SeatIndex: ev.SeatIndex}
 	})
 
 	r.onOccupy(nil, &OccupyMsg{PlayerID: 9, SeatIndex: 4})
@@ -93,8 +94,8 @@ func TestRoomReleaseNotifiesOccupancy(t *testing.T) {
 
 func TestRoomReleaseNotifiesEvenWithoutReward(t *testing.T) {
 	called := 0
-	r := NewRoom(TierLow, 0, nil, log.New("seat-test", log.WithLevel("error")))
-	r.SetOnRelease(func(int64, SeatRef) { called++ })
+	r := NewRoom(TierLow, 0, log.New("seat-test", log.WithLevel("error")))
+	r.SetOnRelease(func(ReleaseEvent) { called++ })
 
 	// 只占了几毫秒：不足 1 分钟没有奖励，但登记必须清。
 	r.onOccupy(nil, &OccupyMsg{PlayerID: 9, SeatIndex: 0})
