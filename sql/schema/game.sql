@@ -54,7 +54,6 @@
 --   recharge_record
 --   seat_pending_reward
 --   seat_room
---   seat_slot
 --   serv_info
 --   shop_record
 --   team
@@ -1058,9 +1057,9 @@ CREATE TABLE `user_role` (
 -- ============================================================================
 -- 抢位置（单服）：seat_room / seat_slot / seat_pending_reward
 -- ============================================================================
--- 三张表的分工：
---   seat_room            房间状态（10 行），启动幂等补齐，status 预留运营关房
---   seat_slot            座位状态（100 行），重启恢复 + occupy_id 结算幂等
+-- 两张表的分工：
+--   seat_room            房间 + 座位状态（10 行；slots JSON 收纳 10 个座位），
+--                        启动幂等补齐，status 预留运营关房
 --   seat_pending_reward  结算 outbox，崩溃/离线时留待玩家登录补发
 -- 跨服版本暂不落库，见 internal/cross/seat/manager.go 的说明。
 
@@ -1069,35 +1068,20 @@ CREATE TABLE `user_role` (
 -- ============================================================================
 -- 房间是固定设施（高 1 / 中 3 / 低 6），行由进程启动时幂等补齐；
 -- 这里只落「可变状态」——目前是开放/关闭，留给运营临时关房。
+-- 座位落 slots 字段而不是独立子表：座位是房间的组成部分（值对象），
+-- 读写粒度也始终是整房（落库是整房快照、恢复是全量读），拆表只会让
+-- 写入变成 10 行拼接、还要担心部分写入；与 player_equip.equips、
+-- player_quest.quests 等既有 JSON 收纳模式一致。
+-- slots 结构（按 index 升序）：
+--   [{"index":0,"state":1,"occupant":123,"occupy_id":456,"occupied_at":1700000000}]
 CREATE TABLE `seat_room` (
   `tier`       TINYINT NOT NULL COMMENT '档位 1=高 2=中 3=低',
   `room_index` INT NOT NULL COMMENT '档位内房号（0 基）',
   `status`     TINYINT NOT NULL DEFAULT 0 COMMENT '0=开放 1=关闭',
+  `slots`      JSON NOT NULL COMMENT '10 个座位状态（按 index 升序）',
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`tier`, `room_index`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置房间状态';
-
--- ============================================================================
--- seat_slot.sql
--- ============================================================================
--- 每行一个座位（10 房 × 10 座 = 100 行）。内存仍是权威，这张表解决两件事：
---  1. 进程重启后恢复「谁坐着、从什么时候开始坐」；
---  2. 用 occupy_id 标识「本次占用实例」——结算奖励以它为幂等键，
---     重启后重放同一笔结算不会重复发奖（用结算时刻当键做不到这点，
---     因为重放会生成新的时间戳）。
-CREATE TABLE `seat_slot` (
-  `tier`        TINYINT NOT NULL COMMENT '档位 1=高 2=中 3=低',
-  `room_index`  INT NOT NULL COMMENT '档位内房号（0 基）',
-  `seat_index`  INT NOT NULL COMMENT '座号 0..9',
-  `state`       TINYINT NOT NULL DEFAULT 0 COMMENT '0=空 1=占用',
-  `occupant`    BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '占用者 player_id；空为 0',
-  `occupy_id`   BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '本次占用实例ID（结算幂等键）',
-  `occupied_at` BIGINT NOT NULL DEFAULT 0 COMMENT '占用起始 unix 秒；空为 0',
-  `updated_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`tier`, `room_index`, `seat_index`),
-  KEY `idx_occupant` (`occupant`),
-  KEY `idx_state_occupied` (`state`, `occupied_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置座位状态';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置房间状态（含座位）';
 
 -- ============================================================================
 -- seat_pending_reward.sql

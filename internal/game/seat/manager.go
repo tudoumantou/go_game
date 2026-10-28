@@ -128,31 +128,36 @@ func (m *Manager) loadPersisted() map[string][]pkgseat.RestoredSlot {
 		m.logger.Warn("seat room ensure failed", "err", err)
 	}
 
-	rows, err := m.store.LoadSlots(ctx)
+	rows, err := m.store.LoadRooms(ctx)
 	if err != nil {
-		m.logger.Error("seat slot load failed, start with empty state", "err", err)
+		m.logger.Error("seat room load failed, start with empty state", "err", err)
 		return out
 	}
 
 	occupied := 0
 	for _, r := range rows {
-		if r.State != int32(pkgseat.SeatOccupied) || r.Occupant <= 0 || r.OccupiedAt <= 0 {
-			continue
-		}
-		if !pkgseat.ValidSeat(r.Tier, r.RoomIndex, r.SeatIndex) {
-			continue // 脏数据（非法档位/房号/座号）：忽略，不让它污染房间
+		if !pkgseat.ValidSeat(r.Tier, r.RoomIndex, 0) {
+			continue // 脏数据（非法档位/房号）：忽略，不让它污染房间
 		}
 		name := pkgseat.RoomName(r.Tier, r.RoomIndex)
-		out[name] = append(out[name], pkgseat.RestoredSlot{
-			SeatIndex:  r.SeatIndex,
-			Occupant:   r.Occupant,
-			OccupyID:   r.OccupyID,
-			OccupiedAt: time.Unix(r.OccupiedAt, 0),
-		})
-		occupied++
+		for _, sv := range r.Slots {
+			if sv.State != int32(pkgseat.SeatOccupied) || sv.Occupant <= 0 || sv.OccupiedAt <= 0 {
+				continue
+			}
+			if !pkgseat.ValidSeat(r.Tier, r.RoomIndex, sv.Index) {
+				continue // 非法座号
+			}
+			out[name] = append(out[name], pkgseat.RestoredSlot{
+				SeatIndex:  sv.Index,
+				Occupant:   sv.Occupant,
+				OccupyID:   sv.OccupyID,
+				OccupiedAt: time.Unix(sv.OccupiedAt, 0),
+			})
+			occupied++
+		}
 	}
 	if len(rows) > 0 {
-		m.logger.Info("seat state loaded", "rows", len(rows), "occupied", occupied)
+		m.logger.Info("seat state loaded", "rooms", len(rows), "occupied", occupied)
 	}
 	return out
 }

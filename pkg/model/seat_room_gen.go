@@ -16,6 +16,7 @@ type SeatRoom struct {
 	Tier      int32     `db:"tier"`
 	RoomIndex int32     `db:"room_index"`
 	Status    int32     `db:"status"`
+	Slots     string    `db:"slots"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
 
@@ -24,6 +25,7 @@ const (
 	ColSeatRoomTier      = "tier"
 	ColSeatRoomRoomIndex = "room_index"
 	ColSeatRoomStatus    = "status"
+	ColSeatRoomSlots     = "slots"
 	ColSeatRoomUpdatedAt = "updated_at"
 )
 
@@ -35,18 +37,19 @@ var SeatRoomColumns = []string{
 	ColSeatRoomTier,
 	ColSeatRoomRoomIndex,
 	ColSeatRoomStatus,
+	ColSeatRoomSlots,
 	ColSeatRoomUpdatedAt,
 }
 
 // Insert 插入（自增列由数据库生成）
 func InsertSeatRoom(ctx context.Context, db Querier, m *SeatRoom) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO seat_room (tier,room_index,status) VALUES (?,?,?)", m.Tier, m.RoomIndex, m.Status)
+	return db.ExecContext(ctx, "INSERT INTO seat_room (tier,room_index,status,slots) VALUES (?,?,?,?)", m.Tier, m.RoomIndex, m.Status, m.Slots)
 }
 
 // FindSeatRoomByPK 按主键查询
 func FindSeatRoomByPK(ctx context.Context, db Querier, Tier int32) (*SeatRoom, error) {
 	var m SeatRoom
-	query := "SELECT tier,room_index,status,updated_at FROM seat_room WHERE tier = ?"
+	query := "SELECT tier,room_index,status,slots,updated_at FROM seat_room WHERE tier = ?"
 	row := db.QueryRowContext(ctx, query, Tier)
 	if err := scanSeatRoom(&m, row); err != nil {
 		return nil, err
@@ -55,17 +58,17 @@ func FindSeatRoomByPK(ctx context.Context, db Querier, Tier int32) (*SeatRoom, e
 }
 
 func scanSeatRoom(m *SeatRoom, sc interface{ Scan(...any) error }) error {
-	return sc.Scan(&m.Tier, &m.RoomIndex, &m.Status, &m.UpdatedAt)
+	return sc.Scan(&m.Tier, &m.RoomIndex, &m.Status, &m.Slots, &m.UpdatedAt)
 }
 
 // UpdateSeatRoomByPK 按主键更新（幂等）
 func UpdateSeatRoomByPK(ctx context.Context, db Querier, m *SeatRoom) (sql.Result, error) {
-	return db.ExecContext(ctx, "UPDATE seat_room SET room_index = ?, status = ? WHERE tier = ?", m.RoomIndex, m.Status, m.Tier)
+	return db.ExecContext(ctx, "UPDATE seat_room SET room_index = ?, status = ?, slots = ? WHERE tier = ?", m.RoomIndex, m.Status, m.Slots, m.Tier)
 }
 
 // UpsertSeatRoomByPK 插入或更新（落库幂等，18.2 防线②）
 func UpsertSeatRoomByPK(ctx context.Context, db Querier, m *SeatRoom) (sql.Result, error) {
-	return db.ExecContext(ctx, "INSERT INTO seat_room (tier,room_index,status) VALUES (?,?,?) ON DUPLICATE KEY UPDATE room_index = VALUES(room_index), status = VALUES(status)", m.Tier, m.RoomIndex, m.Status)
+	return db.ExecContext(ctx, "INSERT INTO seat_room (tier,room_index,status,slots) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE room_index = VALUES(room_index), status = VALUES(status), slots = VALUES(slots)", m.Tier, m.RoomIndex, m.Status, m.Slots)
 }
 
 // DeleteSeatRoomByPK 按主键删除
@@ -74,11 +77,11 @@ func DeleteSeatRoomByPK(ctx context.Context, db Querier, Tier int32) (sql.Result
 }
 
 // upsertSeatRoomCols 批量 UPSERT 使用的列（不含 DB 生成的时间列）
-var upsertSeatRoomCols = []string{"tier", "room_index", "status"}
+var upsertSeatRoomCols = []string{"tier", "room_index", "status", "slots"}
 
 // UpsertSeatRoomBatch 事务内批量插入或更新（Write-Behind 落库用）
 func UpsertSeatRoomBatch(ctx context.Context, tx *sql.Tx, rows []SeatRoom) error {
 	return flush.UpsertBatch(ctx, tx, "seat_room", upsertSeatRoomCols, rows, func(m SeatRoom) []any {
-		return []any{m.Tier, m.RoomIndex, m.Status}
+		return []any{m.Tier, m.RoomIndex, m.Status, m.Slots}
 	})
 }
