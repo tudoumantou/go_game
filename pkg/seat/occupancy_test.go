@@ -22,7 +22,8 @@ func TestValidSeat(t *testing.T) {
 	require.True(t, ValidSeat(TierMid, 2, 5))
 	require.True(t, ValidSeat(TierLow, 5, 9))
 
-	require.False(t, ValidSeat("hign", 0, 0), "未知档位")
+	require.False(t, ValidSeat(TierNone, 0, 0), "0 是非法档位（协议默认值）")
+	require.False(t, ValidSeat(Tier(99), 0, 0), "未知档位")
 	require.False(t, ValidSeat(TierHigh, 1, 0), "high 只有 1 间房")
 	require.False(t, ValidSeat(TierMid, 3, 0), "mid 只有 3 间房")
 	require.False(t, ValidSeat(TierLow, -1, 0), "负房号")

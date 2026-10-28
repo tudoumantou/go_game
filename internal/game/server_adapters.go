@@ -193,7 +193,7 @@ func (h crossHandler) OnSeatReward(rw *internalv2.SeatReward) {
 		// 有超时，否则一条卡住的 INSERT 会把整条下行流堵死。
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := h.srv.seatMgr.PendReward(ctx, playerID, rw.GetSeq(), rw.GetTier(), rw.GetMinutes()); err != nil {
+		if err := h.srv.seatMgr.PendReward(ctx, playerID, rw.GetSeq(), pkgseat.Tier(rw.GetTier()), rw.GetMinutes()); err != nil {
 			h.srv.logger.Warn("seat cross reward pending failed",
 				"player_id", playerID, "seq", rw.GetSeq(), "err", err)
 		}
@@ -211,7 +211,7 @@ func (h crossHandler) OnSeatState(st *internalv2.SeatState) {
 	rooms := make([]pkgseat.RoomSnapshot, 0, len(st.GetRooms()))
 	for _, r := range st.GetRooms() {
 		snap := pkgseat.RoomSnapshot{
-			Tier:      r.GetTier(),
+			Tier:      pkgseat.Tier(r.GetTier()),
 			RoomIndex: int(r.GetRoomIndex()),
 		}
 		for _, sv := range r.GetSeats() {

@@ -13,12 +13,35 @@ import (
 	"time"
 )
 
-// 档位。
+// Tier 房间档位。
+//
+// 用数字而不是字符串，三个理由：
+//  1. 协议与落库都省带宽：int32/TINYINT 对比变长字符串；
+//  2. 0 天然表示「非法/未填」——proto 默认值就是 0，玩家少传或传错会被
+//     入口校验直接挡掉，不存在 "hign" 这种拼写错误只能靠运行期兜底；
+//  3. 排序/比较/索引都比字符串便宜，日志里再用 String() 转回可读名。
+type Tier int32
+
 const (
-	TierHigh = "high"
-	TierMid  = "mid"
-	TierLow  = "low"
+	TierNone Tier = 0 // 非法值：未指定档位（协议默认值，必须被校验拦下）
+	TierHigh Tier = 1 // 高
+	TierMid  Tier = 2 // 中
+	TierLow  Tier = 3 // 低
 )
+
+// String 返回可读档位名（仅用于日志/报错；协议与存储一律用数字）。
+func (t Tier) String() string {
+	switch t {
+	case TierHigh:
+		return "high"
+	case TierMid:
+		return "mid"
+	case TierLow:
+		return "low"
+	default:
+		return "none"
+	}
+}
 
 // 房间规格与规则常量。
 const (
@@ -34,11 +57,11 @@ const (
 
 var (
 	// RoomCounts 每档房间数：高 1 / 中 3 / 低 6。
-	RoomCounts = map[string]int{TierHigh: 1, TierMid: 3, TierLow: 6}
+	RoomCounts = map[Tier]int{TierHigh: 1, TierMid: 3, TierLow: 6}
 	// TierOrder 遍历顺序（map 无序，查询/初始化用固定顺序保证结果稳定）。
-	TierOrder = []string{TierHigh, TierMid, TierLow}
+	TierOrder = []Tier{TierHigh, TierMid, TierLow}
 	// RatePerMinute 每档每分钟奖励数量（可被组装层按配置覆盖）。
-	RatePerMinute = map[string]int64{TierHigh: 10, TierMid: 5, TierLow: 2}
+	RatePerMinute = map[Tier]int64{TierHigh: 10, TierMid: 5, TierLow: 2}
 )
 
 // SeatState 座位状态。
@@ -74,7 +97,7 @@ func OccupancyMinutes(occupiedAt, now time.Time) int64 {
 }
 
 // RewardOf 奖励数量 = 档位每分钟单价 × 分钟数。
-func RewardOf(tier string, minutes int64) int64 {
+func RewardOf(tier Tier, minutes int64) int64 {
 	if minutes <= 0 {
 		return 0
 	}
@@ -83,10 +106,10 @@ func RewardOf(tier string, minutes int64) int64 {
 
 // RoomName 房间 Actor 的稳定命名：seat:<tier>:<index>。
 //
-// 名字即路由：单服玩家模块按名字拿 PID，跨服管理器按名字索引房间。
+// 名字即路由：单服玩家模块按名字找房间，跨服管理器按名字索引房间。
 // 固定名字让「重启后同一间房仍能被找到」这件事不依赖任何额外注册表。
-func RoomName(tier string, index int) string {
-	return fmt.Sprintf("seat:%s:%d", tier, index)
+func RoomName(tier Tier, index int) string {
+	return fmt.Sprintf("seat:%d:%d", tier, index)
 }
 
 // SeatView 座位只读快照（协议层直接映射）。
@@ -100,7 +123,7 @@ type SeatView struct {
 
 // RoomSnapshot 房间只读快照。
 type RoomSnapshot struct {
-	Tier      string
+	Tier      Tier
 	RoomIndex int
 	Seats     []SeatView
 }
@@ -112,7 +135,7 @@ type RoomSnapshot struct {
 // 离线挂起用它做表主键，重投不会二次发奖。
 type Reward struct {
 	PlayerID int64
-	Tier     string
+	Tier     Tier
 	Minutes  int64
 	Amount   int64
 	Seq      int64
@@ -122,6 +145,6 @@ type Reward struct {
 // PendingReward 离线挂起的一笔座位奖励。
 type PendingReward struct {
 	Seq     int64
-	Tier    string
+	Tier    Tier
 	Minutes int64
 }

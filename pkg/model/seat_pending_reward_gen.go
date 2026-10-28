@@ -15,7 +15,7 @@ import (
 type SeatPendingReward struct {
 	PlayerId  int64     `db:"player_id"`
 	Seq       int64     `db:"seq"`
-	Tier      string    `db:"tier"`
+	Tier      int32     `db:"tier"`
 	Minutes   int32     `db:"minutes"`
 	CreatedAt time.Time `db:"created_at"`
 }

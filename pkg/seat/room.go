@@ -40,7 +40,7 @@ type (
 
 // Room 单个座位房间。
 type Room struct {
-	tier   string
+	tier   Tier
 	index  int
 	seats  [SeatsPerRoom]*Seat
 	emit   func(Reward)
@@ -57,7 +57,7 @@ type Room struct {
 }
 
 // NewRoom 创建房间 Actor（尚未 Spawn）。
-func NewRoom(tier string, index int, emit func(Reward), logger *log.Logger) *Room {
+func NewRoom(tier Tier, index int, emit func(Reward), logger *log.Logger) *Room {
 	r := &Room{
 		tier:   tier,
 		index:  index,
@@ -80,7 +80,7 @@ func (r *Room) SetOnChange(fn func(RoomSnapshot)) { r.onChange = fn }
 func (r *Room) SetOnRelease(fn func(playerID int64, ref SeatRef)) { r.onRelease = fn }
 
 // Tier 房间档位。
-func (r *Room) Tier() string { return r.tier }
+func (r *Room) Tier() Tier { return r.tier }
 
 // Receive 实现 actor.Actor。
 func (r *Room) Receive(ctx *actor.Context) {
@@ -119,7 +119,7 @@ func (r *Room) onOccupy(ctx *actor.Context, msg *OccupyMsg) {
 		ctx.ScheduleOnce(HoldLimit, r.pid, &timeoutMsg{SeatIndex: msg.SeatIndex, OccupiedAt: now})
 	}
 
-	r.logger.Info("seat occupied", "tier", r.tier, "room", r.index,
+	r.logger.Info("seat occupied", "tier", r.tier.String(), "room", r.index,
 		"seat", msg.SeatIndex, "player_id", msg.PlayerID, "node", msg.Node)
 	r.notifyChange()
 }
@@ -195,7 +195,7 @@ func (r *Room) release(s *Seat, now time.Time) {
 		Seq:      seq,
 		Node:     node,
 	})
-	r.logger.Info("seat released", "tier", r.tier, "room", r.index,
+	r.logger.Info("seat released", "tier", r.tier.String(), "room", r.index,
 		"seat", s.Index, "player_id", occupant, "minutes", mins, "amount", amount)
 }
 

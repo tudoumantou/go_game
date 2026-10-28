@@ -26,6 +26,7 @@ import (
 	"game_study/internal/cross/battle"
 	"game_study/internal/cross/seat"
 	"game_study/pkg/log"
+	pkgseat "game_study/pkg/seat"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 )
@@ -374,9 +375,9 @@ func (s *Server) onSeatOp(nodeID string, op *internalv2.SeatOp) {
 
 	switch op.GetAction() {
 	case internalv2.SeatOp_OCCUPY:
-		s.seats.Occupy(op.GetTier(), int(op.GetRoomIndex()), int(op.GetSeatIndex()), op.GetPlayerId(), nodeID)
+		s.seats.Occupy(pkgseat.Tier(op.GetTier()), int(op.GetRoomIndex()), int(op.GetSeatIndex()), op.GetPlayerId(), nodeID)
 	case internalv2.SeatOp_LEAVE:
-		s.seats.Leave(op.GetTier(), int(op.GetRoomIndex()), int(op.GetSeatIndex()), op.GetPlayerId())
+		s.seats.Leave(pkgseat.Tier(op.GetTier()), int(op.GetRoomIndex()), int(op.GetSeatIndex()), op.GetPlayerId())
 	}
 }
 
@@ -385,11 +386,11 @@ func (s *Server) onSeatOp(nodeID string, op *internalv2.SeatOp) {
 // 复用 SendToGame 的精确投递（按 BIND 的 node_id 找 peer），不做全网广播——
 // 广播会把 A 玩家的奖励发给所有游戏服。投递失败不重试：座位奖励由离线
 // 挂起表兜底（游戏服收不到就落库，登录补发）。
-func (s *Server) SendReward(nodeID string, playerID int64, tier string, minutes, amount, seq int64) error {
+func (s *Server) SendReward(nodeID string, playerID int64, tier pkgseat.Tier, minutes, amount, seq int64) error {
 	return s.SendToGame(nodeID, &internalv2.CrossFrame{
 		Data: &internalv2.CrossFrame_SeatReward{SeatReward: &internalv2.SeatReward{
 			PlayerId: playerID,
-			Tier:     tier,
+			Tier:     int32(tier),
 			Minutes:  minutes,
 			Amount:   amount,
 			Seq:      seq,

@@ -890,7 +890,7 @@ message QuestClaimResp { // MsgID: 7106
 // 占用/抢夺座位：空座先到先得；已被他人占用则顶掉原主（原主立即结算）。
 // @msg 8001
 message SeatOccupyReq { // MsgID: 8001
-  string tier       = 1; // high / mid / low
+  int32  tier       = 1; // 1=高 2=中 3=低（0 非法，服务端拒绝）
   int32  room_index = 2; // 档位内房间序号（0 基）
   int32  seat_index = 3; // 座位号 0..9
 }
@@ -903,7 +903,7 @@ message SeatOccupyResp { // MsgID: 8002
 // 主动离开自己的座位。
 // @msg 8003
 message SeatLeaveReq { // MsgID: 8003
-  string tier       = 1;
+  int32  tier       = 1; // 1=高 2=中 3=低
   int32  room_index = 2;
   int32  seat_index = 3;
 }
@@ -924,7 +924,7 @@ message SeatQueryResp { // MsgID: 8006
 }
 
 message SeatRoom { // MsgID: 8006-1（子结构，无独立协议号）
-  string tier       = 1;
+  int32  tier       = 1; // 1=高 2=中 3=低
   int32  room_index = 2;
   repeated SeatSlot seats = 3;
 }
@@ -939,7 +939,7 @@ message SeatSlot {
 // 座位奖励到账推送（发奖成功后下发）。
 // @msg 8010
 message SeatRewardNotify { // MsgID: 8010 [Push]
-  string tier    = 1;
+  int32  tier    = 1; // 1=高 2=中 3=低
   int64  minutes = 2;
   int64  reward  = 3;
 }

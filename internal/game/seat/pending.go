@@ -29,11 +29,12 @@ func NewPendingStore(database *db.DB) *PendingStore {
 //
 // ON DUPLICATE KEY UPDATE：主键 (player_id, seq) 保证同一释放事件重复投递
 // （跨服重推/Actor 重试）只留一行，不会重复发奖。
-func (s *PendingStore) Add(ctx context.Context, playerID, seq int64, tier string, minutes int64) error {
+// tier 在库里是 TINYINT（1 高 / 2 中 / 3 低），与协议、内存模型保持一致。
+func (s *PendingStore) Add(ctx context.Context, playerID, seq int64, tier pkgseat.Tier, minutes int64) error {
 	_, err := s.db.ExecContext(ctx,
 		"INSERT INTO seat_pending_reward (player_id, seq, tier, minutes) VALUES (?, ?, ?, ?) "+
 			"ON DUPLICATE KEY UPDATE tier = VALUES(tier), minutes = VALUES(minutes)",
-		playerID, seq, tier, minutes)
+		playerID, seq, int32(tier), minutes)
 	return err
 }
 
@@ -48,11 +49,15 @@ func (s *PendingStore) List(ctx context.Context, playerID int64) ([]pkgseat.Pend
 
 	var out []pkgseat.PendingReward
 	for rows.Next() {
-		var r pkgseat.PendingReward
-		if err := rows.Scan(&r.Seq, &r.Tier, &r.Minutes); err != nil {
+		var (
+			seq     int64
+			tier    int32
+			minutes int64
+		)
+		if err := rows.Scan(&seq, &tier, &minutes); err != nil {
 			return nil, err
 		}
-		out = append(out, r)
+		out = append(out, pkgseat.PendingReward{Seq: seq, Tier: pkgseat.Tier(tier), Minutes: minutes})
 	}
 	return out, rows.Err()
 }

@@ -14,7 +14,7 @@ import (
 	"game_study/pkg/log"
 )
 
-func newTestRoom(tier string) (*Room, *[]Reward) {
+func newTestRoom(tier Tier) (*Room, *[]Reward) {
 	var got []Reward
 	r := NewRoom(tier, 0, func(rw Reward) { got = append(got, rw) }, log.New("seat-test", log.WithLevel("error")))
 	return r, &got

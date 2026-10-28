@@ -6,7 +6,7 @@
 CREATE TABLE IF NOT EXISTS `seat_pending_reward` (
   `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '玩家ID',
   `seq`        BIGINT NOT NULL COMMENT '释放事件序号（幂等键）',
-  `tier`       VARCHAR(16) NOT NULL DEFAULT '' COMMENT '档位 high/mid/low',
+  `tier`       TINYINT NOT NULL DEFAULT 0 COMMENT '档位 1=高 2=中 3=低（0 非法）',
   `minutes`    INT NOT NULL DEFAULT 0 COMMENT '占据分钟数',
   `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`player_id`, `seq`)

@@ -111,7 +111,7 @@ func (m *Manager) emit(rw pkgseat.Reward) {
 		if err == nil {
 			// 到账通知（best-effort，失败不影响发奖）。
 			if raw, e := proto.Marshal(&gamev1.SeatRewardNotify{
-				Tier: rw.Tier, Minutes: rw.Minutes, Reward: rw.Amount,
+				Tier: int32(rw.Tier), Minutes: rw.Minutes, Reward: rw.Amount,
 			}); e == nil {
 				_ = m.sys.Send(pid, &player.PushMsg{MsgID: codec.MsgSeatRewardNotify, Body: raw})
 			}
@@ -140,7 +140,7 @@ func (m *Manager) emit(rw pkgseat.Reward) {
 }
 
 // PendReward 供跨服回推路径使用：把离线奖励写入挂起表。
-func (m *Manager) PendReward(ctx context.Context, playerID, seq int64, tier string, minutes int64) error {
+func (m *Manager) PendReward(ctx context.Context, playerID, seq int64, tier pkgseat.Tier, minutes int64) error {
 	if m.pending == nil {
 		return nil
 	}
@@ -151,7 +151,7 @@ func (m *Manager) PendReward(ctx context.Context, playerID, seq int64, tier stri
 //
 // 一人一座：若该玩家已在别处有座，先把旧座释放（照常结算奖励），再占新座，
 // 即「自动换座」。玩家只能有一个座位，避免占满 100 座按座叠加奖励。
-func (m *Manager) Occupy(tier string, roomIndex, seatIndex int, playerID int64) bool {
+func (m *Manager) Occupy(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) bool {
 	if playerID == 0 || !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		return false
 	}
@@ -169,7 +169,7 @@ func (m *Manager) Occupy(tier string, roomIndex, seatIndex int, playerID int64) 
 }
 
 // Leave 主动离开座位。
-func (m *Manager) Leave(tier string, roomIndex, seatIndex int, playerID int64) bool {
+func (m *Manager) Leave(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) bool {
 	if playerID == 0 || !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		return false
 	}
@@ -200,7 +200,7 @@ func (m *Manager) CurrentSeat(playerID int64) (pkgseat.SeatRef, bool) {
 }
 
 // Snapshot 取单间房快照（读缓存，不触碰房间 Actor）。
-func (m *Manager) Snapshot(tier string, index int) (pkgseat.RoomSnapshot, bool) {
+func (m *Manager) Snapshot(tier pkgseat.Tier, index int) (pkgseat.RoomSnapshot, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	snap, ok := m.snaps[pkgseat.RoomName(tier, index)]

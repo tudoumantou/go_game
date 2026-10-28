@@ -18,7 +18,7 @@ import (
 
 // SeatRef 一个座位引用（档位 + 房号 + 座号）。
 type SeatRef struct {
-	Tier      string
+	Tier      Tier
 	RoomIndex int
 	SeatIndex int
 }
@@ -28,7 +28,9 @@ type SeatRef struct {
 // 服务端必须自己校验，而不是依赖「查不到房间就返回 nil」兜底：
 // 跨服模式下操作是发给 cross 节点的，房间不存在时对端只会静默丢弃，
 // 玩家却收到「成功」回包——表现为点了没反应。入口处拦住才是正解。
-func ValidSeat(tier string, roomIndex, seatIndex int) bool {
+//
+// 档位传 0（未填/填错）时 RoomCounts 查不到，直接判非法。
+func ValidSeat(tier Tier, roomIndex, seatIndex int) bool {
 	n, ok := RoomCounts[tier]
 	if !ok {
 		return false

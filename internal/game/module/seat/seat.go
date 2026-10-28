@@ -26,8 +26,8 @@ import (
 
 // RoomRouter 单服房间寻址与只读快照（由 internal/game/seat.Manager 实现）。
 type RoomRouter interface {
-	Occupy(tier string, roomIndex, seatIndex int, playerID int64) bool
-	Leave(tier string, roomIndex, seatIndex int, playerID int64) bool
+	Occupy(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) bool
+	Leave(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) bool
 	AllSnapshots() []pkgseat.RoomSnapshot
 }
 
@@ -81,10 +81,12 @@ func init() {
 // onOccupy 占用/抢夺。
 func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 	resp := &gamev1.SeatOccupyResp{Code: int32(errcode.OK)}
-	tier, roomIndex, seatIndex := req.GetTier(), int(req.GetRoomIndex()), int(req.GetSeatIndex())
+	tier := pkgseat.Tier(req.GetTier())
+	roomIndex, seatIndex := int(req.GetRoomIndex()), int(req.GetSeatIndex())
 
 	// 坐标校验必须放在最前：跨服模式下非法坐标的帧发出去后，对端只会
 	// 静默丢弃，玩家却收到成功回包——表现为「点了没反应」。
+	// tier 传 0（未填/填错）同样在这里被拦下。
 	if !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		resp.Code = int32(errcode.ErrParam)
 		return c.Reply(resp)
@@ -95,7 +97,7 @@ func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 	if sender != nil {
 		if err := sender.SendSeatOp(&internalv2.SeatOp{
 			Action:    internalv2.SeatOp_OCCUPY,
-			Tier:      tier,
+			Tier:      int32(tier),
 			RoomIndex: int32(roomIndex),
 			SeatIndex: int32(seatIndex),
 			PlayerId:  playerID,
@@ -119,7 +121,8 @@ func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 // onLeave 主动离开。
 func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 	resp := &gamev1.SeatLeaveResp{Code: int32(errcode.OK)}
-	tier, roomIndex, seatIndex := req.GetTier(), int(req.GetRoomIndex()), int(req.GetSeatIndex())
+	tier := pkgseat.Tier(req.GetTier())
+	roomIndex, seatIndex := int(req.GetRoomIndex()), int(req.GetSeatIndex())
 	if !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		resp.Code = int32(errcode.ErrParam)
 		return c.Reply(resp)
@@ -129,7 +132,7 @@ func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 	if sender != nil {
 		if err := sender.SendSeatOp(&internalv2.SeatOp{
 			Action:    internalv2.SeatOp_LEAVE,
-			Tier:      tier,
+			Tier:      int32(tier),
 			RoomIndex: int32(roomIndex),
 			SeatIndex: int32(seatIndex),
 			PlayerId:  playerID,
@@ -165,7 +168,7 @@ func onQuery(c *module.Ctx[struct{}]) error {
 	}
 
 	for _, snap := range snaps {
-		room := &gamev1.SeatRoom{Tier: snap.Tier, RoomIndex: int32(snap.RoomIndex)}
+		room := &gamev1.SeatRoom{Tier: int32(snap.Tier), RoomIndex: int32(snap.RoomIndex)}
 		for _, sv := range snap.Seats {
 			room.Seats = append(room.Seats, &gamev1.SeatSlot{
 				Index:     int32(sv.Index),

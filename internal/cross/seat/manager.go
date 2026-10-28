@@ -27,7 +27,7 @@ import (
 // Sink 房间下行能力（由 cross/rpc.Server 实现）。
 type Sink interface {
 	// SendReward 把座位奖励推给玩家所在游戏服节点。
-	SendReward(nodeID string, playerID int64, tier string, minutes, amount, seq int64) error
+	SendReward(nodeID string, playerID int64, tier pkgseat.Tier, minutes, amount, seq int64) error
 	// BroadcastState 把全量座位快照广播给所有已连接游戏服。
 	BroadcastState(st *internalv2.SeatState) error
 }
@@ -125,7 +125,7 @@ func (m *Manager) BuildState() *internalv2.SeatState {
 			continue
 		}
 		room := &internalv2.SeatRoomState{
-			Tier:      snap.Tier,
+			Tier:      int32(snap.Tier),
 			RoomIndex: int32(snap.RoomIndex),
 			Seats:     make([]*internalv2.SeatSlotState, 0, len(snap.Seats)),
 		}
@@ -147,7 +147,7 @@ func (m *Manager) BuildState() *internalv2.SeatState {
 //
 // 一人一座：玩家已在别处有座时先释放旧座（照常结算奖励）再占新座，
 // 即「自动换座」——避免单人占满 100 座按座叠加奖励。
-func (m *Manager) Occupy(tier string, roomIndex, seatIndex int, playerID int64, node string) {
+func (m *Manager) Occupy(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64, node string) {
 	if playerID == 0 || !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		return
 	}
@@ -168,7 +168,7 @@ func (m *Manager) Occupy(tier string, roomIndex, seatIndex int, playerID int64, 
 }
 
 // Leave 主动离开。
-func (m *Manager) Leave(tier string, roomIndex, seatIndex int, playerID int64) {
+func (m *Manager) Leave(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) {
 	if playerID == 0 || !pkgseat.ValidSeat(tier, roomIndex, seatIndex) {
 		return
 	}
