@@ -11,16 +11,16 @@ package game
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"time"
 
 	gamecenter "game_study/internal/game/center"
 	"game_study/internal/game/module/battle"
 	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/player"
-	seatpkg "game_study/internal/game/seat"
 	"game_study/pkg/actor"
 	"game_study/pkg/codec"
-	"game_study/pkg/log"
 	pkgmq "game_study/pkg/mq"
 	pkgseat "game_study/pkg/seat"
 
@@ -309,23 +309,14 @@ func (q rankQuerier) Query(ctx context.Context, rankType string, playerID int64,
 // 必须先建热表（player/player_equip/mail）再建其余表：热表决定登录与穿戴是否
 // 能走 Redis 快路径，冷表（如 friend）缺失只影响对应功能的性能。
 
-// seatRewarder 座位奖励投递（实现 seatpkg.Rewarder）。
+// deliverSeatReward 座位奖励投递：在线直投玩家 Actor，离线进 pend 队列。
 //
-// 座位管理器只负责产生奖励事件，是否在线由这里判断：在线直投玩家 Actor，
-// 离线（或投递失败）写 seat_pending_reward，等下次登录由 seat 模块补发。
-// 放在适配器层的理由与其它 adapter 一致——它翻译的是「座位域的事件」到
-// 「玩家域的投递方式」，两边都不该知道对方。
-type seatRewarder struct {
-	players *player.Manager
-	sys     *actor.System
-	store   *seatpkg.Store
-	logger  *log.Logger
-}
-
-func (r seatRewarder) Reward(ctx context.Context, rel pkgseat.Release) error {
-	if r.players != nil {
-		if pid, ok := r.players.Get(rel.PlayerID); ok {
-			err := r.sys.Send(pid, &player.GrantItemsMsg{
+// 座位管理器只把 Release 事件回调出来，不判断玩家在线与否——这是玩家域
+// 的职责，也是这里存在的原因（与其它 adapter 一样，做「层间翻译」）。
+func (s *Server) deliverSeatReward(rel pkgseat.Release) {
+	if s.players != nil {
+		if pid, ok := s.players.Get(rel.PlayerID); ok {
+			err := s.actorSys.Send(pid, &player.GrantItemsMsg{
 				BizID:  fmt.Sprintf("%d", rel.OccupyID),
 				Source: "seat",
 				Items:  []player.GrantItem{{ItemID: pkgseat.RewardItem, Count: rel.Amount}},
@@ -334,16 +325,42 @@ func (r seatRewarder) Reward(ctx context.Context, rel pkgseat.Release) error {
 				if raw, e := proto.Marshal(&gamev1.SeatRewardNotify{
 					Tier: int32(rel.Tier), Minutes: rel.Minutes, Reward: rel.Amount,
 				}); e == nil {
-					_ = r.sys.Send(pid, &player.PushMsg{MsgID: codec.MsgSeatRewardNotify, Body: raw})
+					_ = s.actorSys.Send(pid, &player.PushMsg{MsgID: codec.MsgSeatRewardNotify, Body: raw})
 				}
-				return nil
+				return
 			}
-			r.logger.Warn("seat reward send failed, fallback to outbox",
+			s.logger.Warn("seat reward send failed, fallback to offline queue",
 				"player_id", rel.PlayerID, "err", err)
 		}
 	}
-	if r.store == nil {
-		return fmt.Errorf("seat: 玩家 %d 不在线且无持久化，奖励未投递", rel.PlayerID)
+	s.pendSeatReward(rel)
+}
+
+// pendSeatReward 把座位奖励塞进离线事件队列（pend:seat:{pid}）。
+//
+// 复用 chat 已经在用的离线暂存通道，登录时由 drainOffline 统一消费，
+// 不再为座位单独维护一张表。
+func (s *Server) pendSeatReward(rel pkgseat.Release) {
+	if s.presence == nil {
+		s.logger.Warn("seat reward dropped: no presence for offline queue",
+			"player_id", rel.PlayerID, "occupy_id", rel.OccupyID)
+		return
 	}
-	return r.store.AddPending(ctx, rel.PlayerID, rel.OccupyID, rel.Tier, rel.Minutes)
+	raw, err := json.Marshal(offlineSeatReward{
+		PlayerID: rel.PlayerID,
+		OccupyID: rel.OccupyID,
+		Tier:     int32(rel.Tier),
+		Minutes:  rel.Minutes,
+		Amount:   rel.Amount,
+	})
+	if err != nil {
+		s.logger.Warn("marshal seat reward failed", "player_id", rel.PlayerID, "err", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// maxLen 50：一人一座，积压 50 条已远超正常范围，超出丢弃最旧的。
+	if err := s.presence.PendPush(ctx, pendBizSeat, rel.PlayerID, raw, 50, 0); err != nil {
+		s.logger.Warn("pend seat reward failed", "player_id", rel.PlayerID, "err", err)
+	}
 }

@@ -17,10 +17,13 @@ package game
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 
+	"game_study/internal/game/player"
 	pkgmq "game_study/pkg/mq"
+	pkgseat "game_study/pkg/seat"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -29,7 +32,18 @@ import (
 // 离线暂存队列的业务标识（与 mq 层的 PendPush 保持一致）。
 const (
 	pendBizChat = "chat"
+	pendBizSeat = "seat"
 )
+
+// offlineSeatReward 座位奖励的离线载荷：与在线投递同一份字段，
+// 登录时按 occupy_id 做幂等键重放。
+type offlineSeatReward struct {
+	PlayerID int64 `json:"player_id"`
+	OccupyID int64 `json:"occupy_id"`
+	Tier     int32 `json:"tier"`
+	Minutes  int64 `json:"minutes"`
+	Amount   int64 `json:"amount"`
+}
 
 // drainTimeout 单个业务队列 drain 的超时（登录期不能无限等）。
 const drainTimeout = 2 * time.Second
@@ -48,6 +62,48 @@ func (s *Server) drainOffline(playerID int64, sessionID uint64) {
 	defer cancel()
 
 	s.drainOfflineChat(ctx, playerID, sessionID)
+	s.drainOfflineSeat(ctx, playerID)
+}
+
+// drainOfflineSeat 补发离线期间的座位奖励。
+//
+// 走玩家 Actor 的 GrantItemsMsg（BizID = occupy_id），与在线路径同一通道、
+// 同一幂等键：即使这段奖励在线时已投递过又重放，也不会二次发放。
+func (s *Server) drainOfflineSeat(ctx context.Context, playerID int64) {
+	msgs, err := s.presence.PendDrain(ctx, pendBizSeat, playerID)
+	if err != nil {
+		s.logger.Warn("drain offline seat failed", "player_id", playerID, "err", err)
+		return
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	pid, ok := s.players.Get(playerID)
+	if !ok {
+		return // 正常不会发生：drain 在进游戏后触发
+	}
+
+	granted := 0
+	for _, raw := range msgs {
+		var ev offlineSeatReward
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			s.logger.Warn("bad offline seat payload", "player_id", playerID, "err", err)
+			continue
+		}
+		if ev.Amount <= 0 {
+			continue
+		}
+		if err := s.actorSys.Send(pid, &player.GrantItemsMsg{
+			BizID:  fmt.Sprintf("%d", ev.OccupyID),
+			Source: "seat",
+			Items:  []player.GrantItem{{ItemID: pkgseat.RewardItem, Count: ev.Amount}},
+		}); err != nil {
+			s.logger.Warn("grant offline seat reward failed", "player_id", playerID, "err", err)
+			continue
+		}
+		granted++
+	}
+	s.logger.Info("offline seat drained", "player_id", playerID, "count", granted)
 }
 
 // drainOfflineChat 补投离线私聊。

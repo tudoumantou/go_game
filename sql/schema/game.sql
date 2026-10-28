@@ -52,7 +52,7 @@
 --   rank_archive_task
 --   recharge_order
 --   recharge_record
---   seat_pending_reward
+--   seat_player
 --   seat_room
 --   serv_info
 --   shop_record
@@ -1055,13 +1055,11 @@ CREATE TABLE `user_role` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色索引（逻辑模板，分片 user_role_0..14）';
 
 -- ============================================================================
--- 抢位置（单服）：seat_room / seat_slot / seat_pending_reward
+-- 抢位置（单服）：seat_room / seat_player
 -- ============================================================================
 -- 两张表的分工：
---   seat_room            房间 + 座位状态（10 行；slots JSON 收纳 10 个座位），
---                        启动幂等补齐
---   seat_pending_reward  结算 outbox，崩溃/离线时留待玩家登录补发
--- 跨服版本暂不落库，见 internal/cross/seat/manager.go 的说明。
+--   seat_room    房间 + 座位状态（10 行；slots JSON 收纳 10 个座位），启动幂等补齐
+--   seat_player  玩家占座数据（player_id 主键 = 一人一座的库级约束）
 
 -- ============================================================================
 -- seat_room.sql
@@ -1105,22 +1103,3 @@ CREATE TABLE `seat_player` (
   PRIMARY KEY (`player_id`),
   KEY `idx_room_seat` (`room_id`, `seat_index`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置玩家数据（占座索引）';
-
--- ============================================================================
--- seat_pending_reward.sql
--- ============================================================================
--- 座位释放（超时/被抢夺）时玩家可能已离线，玩家 Actor 不在内存；即使在线，
--- 「先落库释放座位、再发奖」之间也可能崩溃。因此结算统一走 outbox：
---   写本表（幂等）→ 座位置空并落库 → 尝试在线发奖 → 成功则删本行。
--- 任何一步崩溃，玩家下次登录由 seat 模块按 occupy_id 补发。
---
--- 主键 (player_id, occupy_id)：occupy_id 是「本次占用实例」的 ID，重启后
--- 重放同一笔结算仍然是同一个 ID，天然幂等；用结算时刻当键则做不到。
-CREATE TABLE `seat_pending_reward` (
-  `player_id`  BIGINT UNSIGNED NOT NULL COMMENT '玩家ID',
-  `occupy_id`  BIGINT UNSIGNED NOT NULL COMMENT '占用实例ID（结算幂等键）',
-  `tier`       TINYINT NOT NULL DEFAULT 0 COMMENT '档位 1=高 2=中 3=低（0 非法）',
-  `minutes`    INT NOT NULL DEFAULT 0 COMMENT '占据分钟数',
-  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`player_id`, `occupy_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='座位待结算奖励（outbox）';

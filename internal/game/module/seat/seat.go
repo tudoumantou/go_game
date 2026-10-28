@@ -1,15 +1,11 @@
 // internal/game/module/seat/seat.go —— 抢位置玩法模块（协议 8001-8010）
 //
-// 只做三件事：把客户端请求翻译成对房间的动作（占座/离开）、把房间快照
-// 翻译成查询响应、登录时补发离线期间的座位奖励。
-//
-// 座位状态不在玩家快照里（一个房间被全服玩家共享），所以本模块无状态，
-// 也不改玩家任何字段——发奖走玩家 Actor 的 GrantItemsMsg。
+// 只做「协议 ↔ 房间动作」的翻译：占座、离开、查询。
+// 奖励投递不在这里——座位释放由组装层处理（在线直投 / 离线事件队列），
+// 玩家登录时的补发也由离线段 drain 统一消费，模块本身无状态。
 package seat
 
 import (
-	"context"
-	"fmt"
 	"time"
 
 	"game_study/internal/common/errcode"
@@ -25,25 +21,13 @@ type Router interface {
 	AllSnapshots() []pkgseat.RoomSnapshot
 }
 
-// PendingStore 待补发奖励表（由 internal/game/seat.PendingStore 实现）。
-type PendingStore interface {
-	ListPending(ctx context.Context, playerID int64) ([]pkgseat.Pending, error)
-	DeletePending(ctx context.Context, playerID, occupyID int64) error
-}
-
-var (
-	router  Router
-	pending PendingStore
-)
+var router Router
 
 // SetRouter 注入房间管理器（组装层调用）。
 func SetRouter(r Router) { router = r }
 
-// SetPending 注入待补发奖励表（无 MySQL 环境可不注入）。
-func SetPending(p PendingStore) { pending = p }
-
 // M 抢位置模块唯一实例。
-var M = module.Define[struct{}]("seat").WithLogin(onLogin)
+var M = module.Define[struct{}]("seat")
 
 func init() {
 	module.Route(M, &gamev1.SeatOccupyReq{}, onOccupy)
@@ -124,42 +108,4 @@ func remainSec(sl pkgseat.Slot) int64 {
 		return 0
 	}
 	return int64(d / time.Second)
-}
-
-// onLogin 补发离线期间的座位奖励。
-//
-// ApplyOnce 把业务键写进玩家快照（applied_grants），即使删表失败也不会
-// 重复发；满包时 ApplyOnce 不占用业务键，保留挂起行下次登录重试。
-func onLogin(c *module.Ctx[struct{}]) error {
-	if pending == nil {
-		return nil
-	}
-	ctx := c.Actor.Context()
-	playerID := c.State.PlayerID()
-
-	rows, err := pending.ListPending(ctx, playerID)
-	if err != nil {
-		c.Log().Warn("seat pending list failed", "player_id", playerID, "err", err)
-		return nil
-	}
-	for _, r := range rows {
-		reward := pkgseat.RewardOf(r.Tier, r.Minutes)
-		if reward <= 0 {
-			_ = pending.DeletePending(ctx, playerID, r.OccupyID)
-			continue
-		}
-		applied, gerr := c.ApplyOnce(fmt.Sprintf("seat:%d", r.OccupyID), func() error {
-			_, e := module.Grant(c.State, []module.ItemGrant{
-				{ItemID: pkgseat.RewardItem, Count: reward},
-			})
-			return e
-		})
-		if gerr != nil {
-			continue // 满包/超限：保留挂起行，下次登录再补
-		}
-		if applied {
-			_ = pending.DeletePending(ctx, playerID, r.OccupyID)
-		}
-	}
-	return nil
 }
