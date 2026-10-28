@@ -1072,15 +1072,39 @@ CREATE TABLE `user_role` (
 -- 读写粒度也始终是整房（落库是整房快照、恢复是全量读），拆表只会让
 -- 写入变成 10 行拼接、还要担心部分写入；与 player_equip.equips、
 -- player_quest.quests 等既有 JSON 收纳模式一致。
+--
+-- id 用 tier*100+room_index 编码（每档最多 100 间）：确定性生成，不依赖
+-- 自增，重建库后同一间房仍是同一个 ID，玩家侧数据（seat_player.room_id）
+-- 不会指向不存在的房间。
 -- slots 结构（按 index 升序）：
 --   [{"index":0,"state":1,"occupant":123,"occupy_id":456,"occupied_at":1700000000}]
 CREATE TABLE `seat_room` (
+  `id`         INT NOT NULL COMMENT '房间唯一ID：tier*100+room_index',
   `tier`       TINYINT NOT NULL COMMENT '档位 1=高 2=中 3=低',
   `room_index` INT NOT NULL COMMENT '档位内房号（0 基）',
   `slots`      JSON NOT NULL COMMENT '10 个座位状态（按 index 升序）',
   `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`tier`, `room_index`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_tier_index` (`tier`, `room_index`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置房间状态（含座位）';
+
+-- 玩家玩法数据：谁占着哪个房间的哪个座、从什么时候开始。
+--
+-- 归属玩法管理器（internal/game/seat.Manager），不进玩家 Actor 的快照：
+-- 座位是房间的、不是玩家的私有状态，塞进玩家状态会让「一个房间被全服共享」
+-- 变成 N 份副本。
+-- 主键 player_id 同时就是「一人一座」的数据库级约束。
+-- 与 seat_room.slots 存在冗余：slots 是权威，本表是玩家维度的索引
+-- （按 player_id 一条 SQL 就能查到占座，不必扫 JSON）。
+CREATE TABLE `seat_player` (
+  `player_id`   BIGINT UNSIGNED NOT NULL COMMENT '玩家ID',
+  `room_id`     INT NOT NULL COMMENT '所在房间ID（seat_room.id）',
+  `seat_index`  INT NOT NULL COMMENT '座位号 0..9',
+  `occupied_at` BIGINT NOT NULL COMMENT '开始占用 unix 秒',
+  `updated_at`  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`player_id`),
+  KEY `idx_room_seat` (`room_id`, `seat_index`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='抢位置玩家数据（占座索引）';
 
 -- ============================================================================
 -- seat_pending_reward.sql

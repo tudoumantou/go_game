@@ -80,6 +80,7 @@ type Slot struct {
 
 // RoomSnapshot 房间快照（一行 = 一个房间的完整状态）。
 type RoomSnapshot struct {
+	ID    int32 // 房间唯一 ID（tier*100+room_index）
 	Tier  Tier
 	Index int
 	Slots []Slot
@@ -96,10 +97,9 @@ type Release struct {
 	Amount    int64 // 0 表示不足 1 分钟、不发奖
 }
 
-// SeatRef 座位引用（一人一座登记）。
+// SeatRef 座位引用（一人一座登记、玩家数据落库）。
 type SeatRef struct {
-	Tier      Tier
-	RoomIndex int
+	RoomID    int32
 	SeatIndex int
 }
 
@@ -130,9 +130,23 @@ func RewardOf(tier Tier, minutes int64) int64 {
 	return RatePerMinute[tier] * minutes
 }
 
-// RoomName 房间 Actor 名：seat:<tier>:<index>（兼作落库分组键）。
-func RoomName(tier Tier, index int) string {
-	return fmt.Sprintf("seat:%d:%d", tier, index)
+// RoomID 房间唯一 ID：tier*100 + room_index。
+//
+// 用确定性编码而不是自增主键：重建库、换环境、重新初始化后同一间房仍是
+// 同一个 ID，玩家侧数据（seat_player.room_id）不会指向错房间。
+// 约束：每档最多 100 间（当前最多 6 间，够用）。
+func RoomID(tier Tier, index int) int32 {
+	return int32(tier)*100 + int32(index)
+}
+
+// SplitRoomID 由 ID 反解档位与房号（日志/排查用）。
+func SplitRoomID(id int32) (Tier, int) {
+	return Tier(id / 100), int(id % 100)
+}
+
+// RoomName 房间 Actor 名：seat:<id>（兼作落库与快照的 key）。
+func RoomName(id int32) string {
+	return fmt.Sprintf("seat:%d", id)
 }
 
 // ValidSeat 校验座位坐标；档位传 0 时 RoomCounts 查不到，一并拦下。

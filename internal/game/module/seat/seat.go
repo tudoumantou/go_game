@@ -20,8 +20,8 @@ import (
 
 // Router 房间操作与快照（由 internal/game/seat.Manager 实现）。
 type Router interface {
-	Occupy(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) bool
-	Leave(tier pkgseat.Tier, roomIndex, seatIndex int, playerID int64) bool
+	Occupy(roomID int32, seatIndex int, playerID int64) bool
+	Leave(roomID int32, seatIndex int, playerID int64) bool
 	AllSnapshots() []pkgseat.RoomSnapshot
 }
 
@@ -64,7 +64,7 @@ func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 		resp.Code = int32(errcode.ErrSystem)
 		return c.Reply(resp)
 	}
-	if !router.Occupy(tier, roomIndex, seatIndex, c.State.PlayerID()) {
+	if !router.Occupy(pkgseat.RoomID(tier, roomIndex), seatIndex, c.State.PlayerID()) {
 		resp.Code = int32(errcode.ErrServerBusy)
 	}
 	return c.Reply(resp)
@@ -83,7 +83,7 @@ func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 		resp.Code = int32(errcode.ErrSystem)
 		return c.Reply(resp)
 	}
-	if !router.Leave(tier, roomIndex, seatIndex, c.State.PlayerID()) {
+	if !router.Leave(pkgseat.RoomID(tier, roomIndex), seatIndex, c.State.PlayerID()) {
 		resp.Code = int32(errcode.ErrServerBusy)
 	}
 	return c.Reply(resp)

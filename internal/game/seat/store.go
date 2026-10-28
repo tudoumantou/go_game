@@ -1,7 +1,12 @@
-// internal/game/seat/store.go —— 房间状态持久化（一行 = 一个房间）
+// internal/game/seat/store.go —— 房间与玩家数据的持久化
 //
-// 座位收在 seat_room.slots 里：房间是聚合根，读写粒度永远整房。
-// 用 pkgseat.Slot 自己的 json tag 直接序列化，不再单独定义一套落库结构。
+// 两张表，各司其职：
+//   seat_room    房间维度（一行 = 一个房间的完整状态，座位收在 slots JSON）
+//   seat_player  玩家维度（一行 = 一个玩家占着哪个房间的哪个座）
+//
+// seat_room 是权威；seat_player 是玩家视角的索引（按 player_id 一条 SQL
+// 就能查占座，不用扫 JSON）。两者由 Manager.onChange 的同一份快照驱动，
+// 不会各自演化出不一致的规则。
 package seat
 
 import (
@@ -12,7 +17,7 @@ import (
 	pkgseat "game_study/pkg/seat"
 )
 
-// Store 房间状态仓储。
+// Store 抢位置持久化。
 type Store struct {
 	db *db.DB
 }
@@ -21,11 +26,11 @@ type Store struct {
 func NewStore(database *db.DB) *Store { return &Store{db: database} }
 
 // EnsureRooms 幂等补齐固定房间行（高 1 / 中 3 / 低 6）。
-func (s *Store) EnsureRooms(ctx context.Context, refs []pkgseat.SeatRef) error {
-	for _, r := range refs {
+func (s *Store) EnsureRooms(ctx context.Context, rooms []pkgseat.RoomSnapshot) error {
+	for _, r := range rooms {
 		if _, err := s.db.ExecContext(ctx,
-			"INSERT IGNORE INTO seat_room (tier, room_index, slots) VALUES (?, ?, '[]')",
-			int32(r.Tier), r.RoomIndex); err != nil {
+			"INSERT IGNORE INTO seat_room (id, tier, room_index, slots) VALUES (?, ?, ?, '[]')",
+			r.ID, int32(r.Tier), r.Index); err != nil {
 			return err
 		}
 	}
@@ -37,7 +42,7 @@ func (s *Store) EnsureRooms(ctx context.Context, refs []pkgseat.SeatRef) error {
 // 单个房间 slots 解析失败就跳过：让这一个房间按空房启动，好过一条脏数据
 // 导致所有房间都恢复不了。
 func (s *Store) Load(ctx context.Context) ([]pkgseat.RoomSnapshot, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT tier, room_index, slots FROM seat_room")
+	rows, err := s.db.QueryContext(ctx, "SELECT id, tier, room_index, slots FROM seat_room")
 	if err != nil {
 		return nil, err
 	}
@@ -46,10 +51,10 @@ func (s *Store) Load(ctx context.Context) ([]pkgseat.RoomSnapshot, error) {
 	var out []pkgseat.RoomSnapshot
 	for rows.Next() {
 		var (
-			tier, roomIndex int32
-			raw             string
+			id, tier, roomIndex int32
+			raw                 string
 		)
-		if err := rows.Scan(&tier, &roomIndex, &raw); err != nil {
+		if err := rows.Scan(&id, &tier, &roomIndex, &raw); err != nil {
 			return nil, err
 		}
 		var slots []pkgseat.Slot
@@ -62,6 +67,7 @@ func (s *Store) Load(ctx context.Context) ([]pkgseat.RoomSnapshot, error) {
 			}
 		}
 		out = append(out, pkgseat.RoomSnapshot{
+			ID:    id,
 			Tier:  pkgseat.Tier(tier),
 			Index: int(roomIndex),
 			Slots: slots,
@@ -77,8 +83,28 @@ func (s *Store) Save(ctx context.Context, snap pkgseat.RoomSnapshot) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		"INSERT INTO seat_room (tier, room_index, slots) VALUES (?, ?, ?) "+
+		"INSERT INTO seat_room (id, tier, room_index, slots) VALUES (?, ?, ?, ?) "+
 			"ON DUPLICATE KEY UPDATE slots = VALUES(slots)",
-		int32(snap.Tier), snap.Index, string(raw))
+		snap.ID, int32(snap.Tier), snap.Index, string(raw))
+	return err
+}
+
+// SavePlayer 写入/更新玩家的占座数据。
+func (s *Store) SavePlayer(ctx context.Context, playerID int64, ref pkgseat.SeatRef, occupiedAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		"INSERT INTO seat_player (player_id, room_id, seat_index, occupied_at) VALUES (?, ?, ?, ?) "+
+			"ON DUPLICATE KEY UPDATE room_id = VALUES(room_id), seat_index = VALUES(seat_index), "+
+			"occupied_at = VALUES(occupied_at)",
+		playerID, ref.RoomID, ref.SeatIndex, occupiedAt)
+	return err
+}
+
+// DeletePlayer 删除玩家的占座数据。
+//
+// 必须带上 room_id 做条件：换座时「新房间写入」与「旧房间删除」可能交错，
+// 只按 player_id 删会把刚写入的新行删掉，导致玩家数据凭空消失。
+func (s *Store) DeletePlayer(ctx context.Context, playerID int64, roomID int32) error {
+	_, err := s.db.ExecContext(ctx,
+		"DELETE FROM seat_player WHERE player_id = ? AND room_id = ?", playerID, roomID)
 	return err
 }

@@ -148,6 +148,23 @@ func TestValidSeat(t *testing.T) {
 	require.False(t, ValidSeat(TierLow, 0, SeatsPerRoom), "座号越界")
 }
 
+// RoomID 必须全局唯一且可反解——玩家数据（seat_player.room_id）靠它定位房间。
+func TestRoomIDUniqueAndReversible(t *testing.T) {
+	seen := make(map[int32]bool)
+	for _, tier := range TierOrder {
+		for i := 0; i < RoomCounts[tier]; i++ {
+			id := RoomID(tier, i)
+			require.False(t, seen[id], "room_id 重复：%d", id)
+			seen[id] = true
+
+			gotTier, gotIdx := SplitRoomID(id)
+			require.Equal(t, tier, gotTier)
+			require.Equal(t, i, gotIdx)
+		}
+	}
+	require.Len(t, seen, 10, "高 1 + 中 3 + 低 6")
+}
+
 func TestNextSeqUnique(t *testing.T) {
 	seen := map[int64]struct{}{}
 	for i := 0; i < 1000; i++ {

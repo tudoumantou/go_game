@@ -36,6 +36,7 @@ type (
 
 // Room 一个座位房间。
 type Room struct {
+	id    int32 // 房间唯一 ID：tier*100+room_index
 	tier  Tier
 	index int
 	seats [SeatsPerRoom]*Seat
@@ -49,12 +50,15 @@ type Room struct {
 
 // NewRoom 创建房间（尚未 Spawn）。
 func NewRoom(tier Tier, index int, logger *log.Logger) *Room {
-	r := &Room{tier: tier, index: index, logger: logger}
+	r := &Room{id: RoomID(tier, index), tier: tier, index: index, logger: logger}
 	for i := range r.seats {
 		r.seats[i] = &Seat{Index: i}
 	}
 	return r
 }
+
+// ID 房间唯一 ID。
+func (r *Room) ID() int32 { return r.id }
 
 // SetPID 注入自身 PID（Spawn 后调用，挂定时器需要）。
 func (r *Room) SetPID(pid *actor.PID) { r.pid = pid }
@@ -198,7 +202,7 @@ func (r *Room) release(s *Seat, now time.Time) {
 
 // Snapshot 房间快照（Actor 内调用；组装层另有缓存供查询）。
 func (r *Room) Snapshot() RoomSnapshot {
-	snap := RoomSnapshot{Tier: r.tier, Index: r.index, Slots: make([]Slot, 0, SeatsPerRoom)}
+	snap := RoomSnapshot{ID: r.id, Tier: r.tier, Index: r.index, Slots: make([]Slot, 0, SeatsPerRoom)}
 	for _, s := range r.seats {
 		sl := Slot{Index: s.Index, State: s.State, Occupant: s.Occupant, OccupyID: s.OccupyID}
 		if s.State == SeatOccupied {
