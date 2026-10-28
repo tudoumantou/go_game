@@ -22,6 +22,7 @@ import (
 	gamev1 "game_study/pkg/pb/game/v1"
 	gatev1 "game_study/pkg/pb/gate/v1"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"game_study/pkg/trace"
 
 	"google.golang.org/protobuf/proto"
 )
@@ -302,7 +303,7 @@ func (s *Server) bindActor(ctx context.Context, sessionID uint64, playerID int64
 	// 的 cacheFailure）。Bind 与后续业务包走同一信箱 FIFO，Actor 必然
 	// 先处理 Bind、再处理业务包。
 	if err := s.actorSys.SendWithSender(pid,
-		&player.BindMsg{SessionID: sessionID, PlayerID: playerID}, nil); err != nil {
+		&player.BindMsg{SessionID: sessionID, PlayerID: playerID, TraceID: trace.IDFrom(ctx)}, nil); err != nil {
 		return err
 	}
 	s.mu.Lock()

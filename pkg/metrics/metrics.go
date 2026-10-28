@@ -1034,6 +1034,8 @@ func NewServer(addr string, health HealthFunc) (*Server, error) {
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorHandling: promhttp.ContinueOnError,
 	}))
+	// profiling 端点（PPROF_ENABLE=1 才注册，见 pprof.go）
+	registerPprof(mux)
 	// /healthz 存活探针：进程活着即 200（不查依赖，避免中间件抖动导致重启风暴）
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

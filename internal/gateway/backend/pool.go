@@ -22,6 +22,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	rpcpkg "game_study/pkg/rpc"
+	"game_study/pkg/trace"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 )
@@ -76,6 +77,9 @@ type streamConn struct {
 	cancel context.CancelFunc
 	// target 建流时的 game 节点（etcd:// scheme），仅用于日志排查
 	target string
+	// traceID 本会话的链路 ID（建流时生成，随 metadata 传给游戏服）；
+	// 网关侧日志带上它就能和游戏服日志按同一 id 串起来。
+	traceID string
 }
 
 // NewPool 创建 Pool。
@@ -222,8 +226,10 @@ func (p *Pool) GetOrConnect(ctx context.Context, target string, sessionID uint64
 		return nil, err
 	}
 	client := internalv2.NewGameServiceClient(cc)
-	// 流的 context 与单次请求解耦：会话存活则流存活，由 remove/Close 统一取消
+	// 流的 context 与单次请求解耦：会话存活则流存活，由 remove/Close 统一取消。
+	// trace_id 必须在这里注入：gRPC metadata 只在建流时发一次，之后追加无效。
 	streamCtx, cancel := context.WithCancel(context.Background())
+	streamCtx, traceID := trace.NewOutgoing(streamCtx)
 	stream, err := client.Channel(streamCtx)
 	if err != nil {
 		// 建流失败：立即 cancel 防 context 泄漏，并记 open 类错误指标
@@ -241,12 +247,14 @@ func (p *Pool) GetOrConnect(ctx context.Context, target string, sessionID uint64
 		}
 	}
 
-	p.streams[sessionID] = &streamConn{client: stream, cancel: cancel, target: target}
+	p.streams[sessionID] = &streamConn{client: stream, cancel: cancel, target: target, traceID: traceID}
 	if metrics.Enabled() {
 		metrics.ChannelStreams(len(p.streams))
 	}
 	// 收包循环即 goroutine per stream 模式：唯一泄漏防护点是 Recv 出错即退
 	go p.recvLoop(sessionID, stream)
+	p.logger.Debug("session stream established",
+		"session_id", sessionID, "target", target, "trace_id", traceID)
 	return stream, nil
 }
 

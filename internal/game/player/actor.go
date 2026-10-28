@@ -58,6 +58,9 @@ type BindMsg struct {
 	SessionID uint64
 	// PlayerID 与 Actor 身份一致（Manager 按它索引 PID），用于日志核对。
 	PlayerID int64
+	// TraceID 本会话的链路 ID（网关建流时生成）。绑定时挂到 Actor 的
+	// logger 上，之后这条会话产生的所有业务日志都带同一个 trace_id。
+	TraceID string
 }
 
 // UnbindMsg 解绑消息。
@@ -233,6 +236,9 @@ type Actor struct {
 	// 提交策略集中在这里，业务与流程都不再感知「延迟发送」的存在。
 	gate commitGate
 
+	// baseLogger 不含会话级字段的原始 logger；每次绑定都从它重建
+	// a.logger，避免反复 With 把 trace_id 叠加成几十个同名键。
+	baseLogger *log.Logger
 	// self 自己的 PID（Receive 时记录一次）：异步落库完成后要往自己信箱
 	// 回投结果，Actor 内部拿不到 PID，只能在消息处理时留一份。
 	self *actor.PID
@@ -256,14 +262,16 @@ func NewActor(playerID int64, registry *module.Registry, logger *log.Logger, rep
 		// 指向同一个玩家，不随 State 实例轮换而失效。
 		state.SetDirtyHook(func() { onDirty(playerID) })
 	}
+	base := logger.With("player_id", playerID)
 	return &Actor{
-		playerID: playerID,
-		state:    state,
-		registry: registry,
-		logger:   logger.With("player_id", playerID),
-		repo:     repo,
-		onDirty:  onDirty,
-		sendFunc: sendFunc,
+		playerID:   playerID,
+		state:      state,
+		registry:   registry,
+		logger:     base,
+		baseLogger: base,
+		repo:       repo,
+		onDirty:    onDirty,
+		sendFunc:   sendFunc,
 	}
 }
 
@@ -438,6 +446,11 @@ type SaveMsg struct {
 func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	a.sessionID = msg.SessionID
 	a.online = true
+	// 会话级 trace_id 落到 logger：这条会话的全部业务日志都能被同一 id 串起来。
+	// 从 baseLogger 重建而不是在当前 logger 上再 With，避免多次重连后堆出重复键。
+	if msg.TraceID != "" && a.baseLogger != nil {
+		a.logger = a.baseLogger.With("trace_id", msg.TraceID)
+	}
 
 	// 首次上线：并行预加载全部数据（12.6）；重连时 Actor 未销毁，跳过
 	if !a.loaded {
