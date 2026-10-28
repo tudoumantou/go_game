@@ -1,11 +1,15 @@
 // internal/game/seat/manager.go —— 房间管理器
 //
 // 管理两样东西：
-//   rooms  房间（每个房间管 10 个座位）
-//   seats  玩家参与数据（player_id → 占着哪个房间的哪个座），O(1) 查
+//
+//	rooms  房间（每个房间管 10 个座位）
+//	seats  玩家参与数据（player_id → 占着哪个房间的哪个座），O(1) 查
 //
 // 结算不自己发奖：只把 Release 事件回调给组装层（onSettle），由它决定
 // 在线直投还是塞进离线事件队列。本包因此不依赖 player / presence。
+//
+// 落库不在房间 Actor 里做：变更只登记脏标记，由 writer 合并写（见
+// flush.go）。房间 Actor 因此零 IO，DB 抖动不会反压到抢座消息。
 //
 // 房间快照由 Room 自持（atomic.Value），管理器不缓存副本，也没有锁
 // 保护房间——只有 seats 用 sync.Map（多个房间 Actor 会并发写它）。
@@ -24,12 +28,14 @@ import (
 // Manager 房间管理器。
 type Manager struct {
 	sys      *actor.System
-	store    *Store
+	store    *Store // 启动时一次性读库（恢复用）
 	logger   *log.Logger
 	onSettle func(pkgseat.Release) // 结算回调（在线投递 / 离线入队由组装层决定）
 
 	rooms map[int32]*pkgseat.Room // room_id → 房间
 	seats sync.Map                // player_id → SeatRef（玩家参与数据）
+
+	w *writer // 合并落库（store 为 nil 时为 nil，纯内存运行）
 }
 
 // NewManager 创建管理器。
@@ -45,6 +51,18 @@ func NewManager(sys *actor.System, store *Store, logger *log.Logger, onSettle fu
 	}
 
 	saved := m.load() // 先把上次的占用读出来，房间收到 RestoreMsg 才能立即结算
+
+	// writer 先建好（暂不启动）：恢复过程若有状态变化（已到期结算、
+	// 补齐 occupy_id），脏标记要能落到队列里，等首轮 tick 一起写出。
+	if store != nil {
+		m.w = newWriter(store, logger, func(roomID int32) (pkgseat.RoomSnapshot, bool) {
+			room := m.rooms[roomID]
+			if room == nil {
+				return pkgseat.RoomSnapshot{}, false
+			}
+			return room.Snapshot(), true
+		})
+	}
 
 	for _, tier := range pkgseat.TierOrder {
 		for i := 0; i < pkgseat.RoomCounts[tier]; i++ {
@@ -70,6 +88,9 @@ func NewManager(sys *actor.System, store *Store, logger *log.Logger, onSettle fu
 				}
 			}
 		}
+	}
+	if m.w != nil {
+		m.w.start()
 	}
 	return m
 }
@@ -122,19 +143,15 @@ func (m *Manager) load() map[int32][]pkgseat.Slot {
 	return out
 }
 
-// onChange 房间状态变更：整房落库。
+// onChange 房间状态变更：只登记脏标记，落库由 writer 合并（不阻塞房间 Actor）。
 func (m *Manager) onChange(snap pkgseat.RoomSnapshot) {
-	if m.store == nil {
+	if m.w == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := m.store.Save(ctx, snap); err != nil {
-		m.logger.Warn("seat room save failed", "room_id", snap.ID, "err", err)
-	}
+	m.w.markRoom(snap.ID)
 }
 
-// onSeat 座位归属变化：更新玩家数据（内存 + seat_player 表）。
+// onSeat 座位归属变化：内存索引立即生效，落库走脏标记。
 func (m *Manager) onSeat(roomID int32, playerID int64, seatIndex int, occupied bool, at time.Time) {
 	if playerID <= 0 {
 		return
@@ -147,21 +164,14 @@ func (m *Manager) onSeat(roomID int32, playerID int64, seatIndex int, occupied b
 		m.seats.CompareAndDelete(playerID, ref)
 	}
 
-	if m.store == nil {
+	if m.w == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
+	var atUnix int64
 	if occupied {
-		if err := m.store.SavePlayer(ctx, playerID, ref, at.Unix()); err != nil {
-			m.logger.Warn("seat player save failed", "player_id", playerID, "err", err)
-		}
-		return
+		atUnix = at.Unix()
 	}
-	if err := m.store.DeletePlayer(ctx, playerID, roomID); err != nil {
-		m.logger.Warn("seat player delete failed", "player_id", playerID, "err", err)
-	}
+	m.w.markPlayer(playerID, ref, atUnix, occupied)
 }
 
 // onRelease 座位释放：把奖励事件交给组装层。
@@ -172,34 +182,55 @@ func (m *Manager) onRelease(rel pkgseat.Release) {
 	m.onSettle(rel)
 }
 
-// Occupy 占座/抢夺；玩家已在别处有座则先释放旧座（自动换座）。
+// Occupy 占座/抢夺；玩家已在别处有座则先占新座、再释放旧座（自动换座）。
 //
 // 投递走 DeliverRemote（按 actorID 投递、sender 为 nil）：房间消息不需要
 // Respond，因此不必为了发消息而保存一份 PID。
 func (m *Manager) Occupy(roomID int32, seatIndex int, playerID int64) bool {
-	room := m.rooms[roomID]
-	if room == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
+	return m.switchSeat(roomID, seatIndex, playerID, m.deliver)
+}
+
+// deliver 向房间 Actor 投递消息。
+func (m *Manager) deliver(roomID int32, msg any) error {
+	return m.sys.DeliverRemote(pkgseat.RoomName(roomID), msg)
+}
+
+// switchSeat 占座 + 换座。deliver 作为参数传入，便于单测构造投递失败。
+//
+// 顺序必须是「先占新、再放旧」：反过来一旦新座投递失败（邮箱满 / 房间
+// 已摘），旧座已经释放，玩家两头空。先占新则失败时什么都没变。
+func (m *Manager) switchSeat(roomID int32, seatIndex int, playerID int64,
+	deliver func(roomID int32, msg any) error) bool {
+	if m.rooms[roomID] == nil || playerID == 0 ||
+		seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
 		return false
 	}
+	// 旧坐标必须在投递前读：新房间可能在我们读之前就处理完 Occupy，
+	// 那时 seats 已指向新座，再读会漏掉旧座释放。
+	old, hadOld := m.Seat(playerID)
 	target := pkgseat.SeatRef{RoomID: roomID, SeatIndex: seatIndex}
-	if old, ok := m.Seat(playerID); ok && old != target {
-		if _, exists := m.rooms[old.RoomID]; exists {
-			_ = m.sys.DeliverRemote(pkgseat.RoomName(old.RoomID),
-				&pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: old.SeatIndex})
+
+	if err := deliver(roomID, &pkgseat.OccupyMsg{PlayerID: playerID, SeatIndex: seatIndex}); err != nil {
+		return false
+	}
+	if hadOld && old != target && m.rooms[old.RoomID] != nil {
+		if err := deliver(old.RoomID, &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: old.SeatIndex}); err != nil {
+			// 旧座释放失败：玩家会短暂占两席，旧座在 ≤HoldLimit 后自然超时
+			// 让座（奖励照发）；索引不会被误删——onSeat(false) 用 ref 比对。
+			m.logger.Warn("seat release on switch failed", "player_id", playerID,
+				"old_room_id", old.RoomID, "err", err)
 		}
 	}
-	return m.sys.DeliverRemote(pkgseat.RoomName(roomID),
-		&pkgseat.OccupyMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
+	return true
 }
 
 // Leave 主动离开。
 func (m *Manager) Leave(roomID int32, seatIndex int, playerID int64) bool {
-	room := m.rooms[roomID]
-	if room == nil || playerID == 0 || seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
+	if m.rooms[roomID] == nil || playerID == 0 ||
+		seatIndex < 0 || seatIndex >= pkgseat.SeatsPerRoom {
 		return false
 	}
-	return m.sys.DeliverRemote(pkgseat.RoomName(roomID),
-		&pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
+	return m.deliver(roomID, &pkgseat.LeaveMsg{PlayerID: playerID, SeatIndex: seatIndex}) == nil
 }
 
 // Seat 查玩家当前坐哪（玩家参与数据，O(1)）。
@@ -243,3 +274,13 @@ func (m *Manager) AllSnapshots() []pkgseat.RoomSnapshot {
 
 // Count 房间总数。
 func (m *Manager) Count() int { return len(m.rooms) }
+
+// Stop 停掉合并落库 worker 并做最后一次写库。
+//
+// 关服顺序：actorSys 必须已 Drain（不会再产生新标记）后才调用。
+func (m *Manager) Stop() error {
+	if m.w == nil {
+		return nil
+	}
+	return m.w.stop()
+}

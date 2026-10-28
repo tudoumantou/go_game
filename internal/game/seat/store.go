@@ -1,12 +1,13 @@
 // internal/game/seat/store.go —— 房间与玩家数据的持久化
 //
 // 两张表，各司其职：
-//   seat_room    房间维度（一行 = 一个房间的完整状态，座位收在 slots JSON）
-//   seat_player  玩家维度（一行 = 一个玩家占着哪个房间的哪个座）
+//
+//	seat_room    房间维度（一行 = 一个房间的完整状态，座位收在 slots JSON）
+//	seat_player  玩家维度（一行 = 一个玩家占着哪个房间的哪个座）
 //
 // seat_room 是权威；seat_player 是玩家视角的索引（按 player_id 一条 SQL
-// 就能查占座，不用扫 JSON）。两者由 Manager.onChange 的同一份快照驱动，
-// 不会各自演化出不一致的规则。
+// 就能查占座，不用扫 JSON）。两者由同一轮变更驱动（房间 onChange / 座位
+// onSeat），不会各自演化出不一致的规则；实际写入由 writer 合并成批。
 package seat
 
 import (
@@ -101,10 +102,12 @@ func (s *Store) SavePlayer(ctx context.Context, playerID int64, ref pkgseat.Seat
 
 // DeletePlayer 删除玩家的占座数据。
 //
-// 必须带上 room_id 做条件：换座时「新房间写入」与「旧房间删除」可能交错，
-// 只按 player_id 删会把刚写入的新行删掉，导致玩家数据凭空消失。
-func (s *Store) DeletePlayer(ctx context.Context, playerID int64, roomID int32) error {
+// 条件必须带 room_id + seat_index：换座时「新座位写入」与「旧座位删除」
+// 可能被合并进同一轮落库，只按 player_id 删会把刚写入的新行删掉，导致
+// 玩家数据凭空消失（同房间换座时 room_id 也相同，只有 seat_index 能区分）。
+func (s *Store) DeletePlayer(ctx context.Context, playerID int64, ref pkgseat.SeatRef) error {
 	_, err := s.db.ExecContext(ctx,
-		"DELETE FROM seat_player WHERE player_id = ? AND room_id = ?", playerID, roomID)
+		"DELETE FROM seat_player WHERE player_id = ? AND room_id = ? AND seat_index = ?",
+		playerID, ref.RoomID, ref.SeatIndex)
 	return err
 }

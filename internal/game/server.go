@@ -273,6 +273,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	})
 
 	// FLUSH：确认落库。失败要出现在返回值里，由 main 非零退出。
+	mgr.Register("flush-seat", shutdown.PhaseFlush, func(context.Context) error {
+		// 座位是合并写：Actor 已 Drain，这里把最后一轮脏标记写完再停 worker。
+		if s.seatMgr == nil {
+			return nil
+		}
+		if err := s.seatMgr.Stop(); err != nil {
+			return fmt.Errorf("seat: %w", err)
+		}
+		return nil
+	})
 	mgr.Register("flush-all", shutdown.PhaseFlush, func(ctx context.Context) error {
 		var errs []error
 		// 落库只有一条路：flusher 从 Actor 内存取数写库。

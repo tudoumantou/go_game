@@ -359,8 +359,10 @@ func (s *Server) pendSeatReward(rel pkgseat.Release) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	// maxLen 50：一人一座，积压 50 条已远超正常范围，超出丢弃最旧的。
-	if err := s.presence.PendPush(ctx, pendBizSeat, rel.PlayerID, raw, 50, 0); err != nil {
+	// maxLen 取 168：一人一座 + 满 1h 结算一次 ⇒ 一天最多 24 条，168 条正好
+	// 覆盖 PendPush 默认的 7 天 TTL。此前用 50（约 2 天）时，LTrim 保留最新、
+	// 丢弃最旧，长期不登录的玩家会静默丢掉最早的奖励。
+	if err := s.presence.PendPush(ctx, pendBizSeat, rel.PlayerID, raw, 168, 0); err != nil {
 		s.logger.Warn("pend seat reward failed", "player_id", rel.PlayerID, "err", err)
 	}
 }

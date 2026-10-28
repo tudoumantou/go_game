@@ -46,9 +46,9 @@ type Room struct {
 	// 查询方直接读它，管理器不必再存一份副本。
 	snap atomic.Value // RoomSnapshot（Slots 每次重建，不共享底层数组）
 
-	onChange  func(RoomSnapshot) // 状态变更（落库）
+	onChange  func(RoomSnapshot)                                               // 状态变更（落库）
 	onSeat    func(playerID int64, seatIndex int, occupied bool, at time.Time) // 座位归属变化（同步玩家数据）
-	onRelease func(Release)      // 座位释放（结算）
+	onRelease func(Release)                                                    // 座位释放（结算）
 
 	logger *log.Logger
 }
@@ -140,8 +140,13 @@ func (r *Room) onLeave(msg *LeaveMsg) {
 }
 
 // onRestore 重启恢复：已到期立即结算（定时器已随进程丢失），未到期重挂。
+//
+// 只有真正改了状态才回调 onChange：恢复内容与库里一致时没有必要再写一遍
+// （10 个房间各写一次等于起服即 10 条无谓 upsert）。需要写回的只有两种：
+// 补齐缺失的 occupy_id、已到期座位的立即结算。
 func (r *Room) onRestore(ctx *actor.Context, msg *RestoreMsg) {
 	now := time.Now()
+	changed := false
 	for _, sl := range msg.Slots {
 		if !ValidSeat(r.tier, r.index, sl.Index) || sl.Occupant <= 0 || sl.OccupiedAt <= 0 {
 			continue
@@ -153,12 +158,14 @@ func (r *Room) onRestore(ctx *actor.Context, msg *RestoreMsg) {
 		if s.OccupyID <= 0 {
 			// 兜底：缺 ID 会变成幂等键 0，同一玩家所有奖励只发得出第一笔。
 			s.OccupyID = nextSeq()
+			changed = true
 		}
 		s.OccupiedAt = time.Unix(sl.OccupiedAt, 0)
 
 		deadline := s.OccupiedAt.Add(HoldLimit)
 		if !deadline.After(now) {
 			r.release(s, now) // 内部会回调 onSeat(false)
+			changed = true
 			continue
 		}
 		if r.onSeat != nil {
@@ -172,7 +179,11 @@ func (r *Room) onRestore(ctx *actor.Context, msg *RestoreMsg) {
 			}
 		}
 	}
-	r.notifyChange()
+	if changed {
+		r.notifyChange()
+		return
+	}
+	r.refresh() // 只发布快照供查询，不落库
 }
 
 // onTimeout 到期让座；只处理同一 OccupiedAt 的那次占用（旧定时器作废）。

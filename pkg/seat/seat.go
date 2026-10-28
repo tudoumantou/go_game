@@ -1,9 +1,11 @@
 // pkg/seat/seat.go —— 抢位置领域模型（档位 / 座位 / 快照 / 结算）
 //
 // 只保留三个数据形状：
-//   Seat    房间 Actor 内部的内存态
-//   Slot    对外的扁平快照（查询协议、落库 JSON、重启恢复共用）
-//   Release 一次释放的结算入参
+//
+//	Seat    房间 Actor 内部的内存态
+//	Slot    对外的扁平快照（查询协议、落库 JSON、重启恢复共用）
+//	Release 一次释放的结算入参
+//
 // 没有 View/Row/JSON 多套镜像：落库和协议用同一个 Slot，靠 json tag 直接序列化。
 package seat
 
@@ -101,13 +103,6 @@ type Release struct {
 type SeatRef struct {
 	RoomID    int32
 	SeatIndex int
-}
-
-// Pending 待补发奖励（outbox 行）。
-type Pending struct {
-	OccupyID int64
-	Tier     Tier
-	Minutes  int64
 }
 
 // OccupancyMinutes 已占分钟数（向下取整，1h 封顶）。
