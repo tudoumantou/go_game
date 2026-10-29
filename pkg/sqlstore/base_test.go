@@ -1,7 +1,7 @@
 // pkg/sqlstore/base_test.go —— 仓储基座的降级语义
 //
 // 这组用例钉的是「三种不可用」各自的后果：
-//   - 没有连接池（NewShared(nil)）：Ready=false，Tx 返回 ErrNoDB，不 panic；
+//   - 没有连接池（New(nil, "demo")）：Ready=false，Tx 返回 ErrNoDB，不 panic；
 //   - nil 接收者（模块没注入仓储）：所有方法都要能安全返回零值；
 //   - 正常连接：Tx 真的开了事务（而不是静默跳过）。
 //
@@ -35,7 +35,7 @@ func TestBaseWithoutDatabase(t *testing.T) {
 	require.False(t, called, "无库时不该进入事务闭包")
 }
 
-// TestBaseNilReceiver 模块没注入仓储（nil 接口/ nil 指针）：方法可调用。
+// TestBaseNilReceiver 模块没注入仓储（nil 接口 / nil 指针）：方法可调用。
 //
 // 这条保护的是 `m.repo` 为 nil 接口时不能直接调 Ready()——
 // 各模块的 ready() 先判 nil，但基座自己也要在 nil 接收者下安全，
