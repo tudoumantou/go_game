@@ -17,11 +17,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
 	"game_study/pkg/sqlstore"
@@ -30,7 +30,6 @@ import (
 const (
 	// userRoleShards 分片数（钉死 15，沿用约定，见文档 §3）。
 	userRoleShards = 15
-	userRolePrefix = "user_role:list:" // Redis 键前缀，后接 account_id
 	userRoleTTL    = 10 * time.Minute
 )
 
@@ -57,7 +56,7 @@ func userRoleTable(accountID int64) string {
 
 // userRoleKey Redis 键（按账号缓存整张角色列表）。
 func userRoleKey(accountID int64) string {
-	return userRolePrefix + strconv.FormatInt(accountID, 10)
+	return cache.UserRoleListKey(accountID)
 }
 
 // ListByAccount 列出某账号全部角色（选角界面用）。cache-aside，按账号缓存整列表。

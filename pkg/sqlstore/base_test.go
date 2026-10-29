@@ -86,3 +86,27 @@ func TestBaseTxRollsBackOnError(t *testing.T) {
 	require.ErrorIs(t, s.Tx(context.Background(), func(*sql.Tx) error { return boom }), boom)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// TestBaseTxWithPassesOptions 带选项的事务模板：无库时同样是 ErrNoDB，
+// 有库时正常走 BEGIN/COMMIT（隔离级别本身由 pkg/db 的用例守）。
+func TestBaseTxWithPassesOptions(t *testing.T) {
+	opts := &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}
+
+	var nilBase *Base
+	require.ErrorIs(t, nilBase.TxWith(context.Background(), opts, func(*sql.Tx) error { return nil }),
+		ErrNoDB)
+
+	mockDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectCommit()
+
+	s := New(&db.DB{DB: mockDB}, "demo")
+	require.NoError(t, s.TxWith(context.Background(), opts, func(tx *sql.Tx) error {
+		require.NotNil(t, tx)
+		return nil
+	}))
+	require.NoError(t, mock.ExpectationsWereMet())
+}

@@ -154,7 +154,21 @@ func normalizeDSN(dsn string) string {
 //   - ctx 取消会传播到 Tx 内每条语句（driver 收到即中断），停机时
 //     不会留下跑不完的事务。
 func (d *DB) Tx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := d.BeginTx(ctx, nil)
+	return d.TxWith(ctx, nil, fn)
+}
+
+// TxWith 带事务选项的事务模板（隔离级别 / 只读）。
+//
+// 补的是能力缺口而不是风格：只读一致性快照需要 ReadOnly + RepeatableRead，
+// 原先这些调用点只能自己 BeginTx，于是「事务怎么起」又多了一种写法。
+// 现在两个入口共用同一段收尾逻辑（错误即回滚、成功即提交）。
+//
+// 什么时候仍该自己写 BEGIN/COMMIT：需要**区分 COMMIT 的错误**（提交失败
+// 意味着「结果未知」，与回滚后的「确定没写」是两种处置），或需要在重试
+// 路径里复用同一个已构建的语句计划。本模板是黑盒，这两种需求表达不出来
+// ——worldmap/store 的三处手写事务就属于此类，理由写在各自函数上。
+func (d *DB) TxWith(ctx context.Context, opts *sql.TxOptions, fn func(tx *sql.Tx) error) error {
+	tx, err := d.BeginTx(ctx, opts)
 	if err != nil {
 		return err
 	}

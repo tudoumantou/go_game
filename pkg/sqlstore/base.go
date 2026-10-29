@@ -111,10 +111,19 @@ func (b *Base) SQL() *sql.DB {
 // 无数据库时返回 ErrNoDB 而不是 nil：调用方**必须**先判 Ready() 决定降级
 // 策略（成功还是失败），悄悄当成成功会让「写没写进去」变成谜。
 func (b *Base) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	return b.TxWith(ctx, nil, fn)
+}
+
+// TxWith 带事务选项的版本（隔离级别 / 只读）。
+//
+// 只读一致性读取（如落库版本的冷启动快照）需要 ReadOnly + RepeatableRead，
+// 以前这类调用点只能自己 BeginTx，于是「事务怎么起」在仓储里又长出第二种
+// 写法。有了本方法，仓储层不再出现裸 BeginTx。
+func (b *Base) TxWith(ctx context.Context, opts *sql.TxOptions, fn func(*sql.Tx) error) error {
 	if !b.Ready() {
 		return ErrNoDB
 	}
-	return b.db.Tx(ctx, fn)
+	return b.db.TxWith(ctx, opts, fn)
 }
 
 // AttachIndex 注入归属索引（组装层调用；nil 表示不启用）。

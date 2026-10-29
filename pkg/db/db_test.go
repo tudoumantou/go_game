@@ -6,8 +6,13 @@
 package db
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/require"
@@ -63,3 +68,43 @@ func TestNormalizeDSNKeepsExplicitTimeouts(t *testing.T) {
 	require.Equal(t, 30*time.Second, cfg.ReadTimeout)
 	require.Equal(t, 20*time.Second, cfg.WriteTimeout)
 }
+
+// TestTxWithCommitsAndRollsBack 事务模板的两个出口：fn 成功提交、fn 失败回滚。
+//
+// 只测「有没有走对出口」，不测隔离级别：sqlmock 不校验 BeginTx 的
+// TxOptions，能守住级别的是集成环境。这里守的是更基础的一条——
+// TxWith 在加了 opts 之后不能把「失败也提交」写错。
+func TestTxWithCommitsAndRollsBack(t *testing.T) {
+	cases := []struct {
+		name string
+		fn   func(*sql.Tx) error
+		prep func(sqlmock.Sqlmock)
+	}{
+		{"commit", func(*sql.Tx) error { return nil },
+			func(m sqlmock.Sqlmock) { m.ExpectCommit() }},
+		{"rollback", func(*sql.Tx) error { return errBoom },
+			func(m sqlmock.Sqlmock) { m.ExpectRollback() }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mockDB, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer mockDB.Close()
+
+			mock.ExpectBegin()
+			c.prep(mock)
+
+			d := &DB{DB: mockDB}
+			err = d.TxWith(context.Background(), &sql.TxOptions{ReadOnly: true}, c.fn)
+			if c.name == "rollback" {
+				require.ErrorIs(t, err, errBoom)
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+// errBoom 事务闭包里的哨兵错误。
+var errBoom = errors.New("boom")

@@ -111,8 +111,9 @@ func (r *Repository) commitOnce(ctx context.Context, plan *domain.MutationPlan) 
 
 	// 1) BEGIN。
 	//
-	// 这里不用 pkg/db.Tx 模板：模板把「fn 返回错误就回滚」封装成黑盒，
-	// 而本函数必须精确区分 COMMIT 的错误，还要在重试路径里复用同一个
+	// 这里不用 pkg/db.Tx / TxWith 模板：模板把「fn 返回错误就回滚」封装成
+	// 黑盒，而本函数必须精确区分 COMMIT 的错误（提交失败 = 结果未知，
+	// 与回滚后的「确定没写」是两种处置），还要在重试路径里复用同一个
 	// plan。手写 BEGIN/COMMIT 多几行，换来的是错误分类完全可控。
 	tx, err := r.db.BeginTx(txCtx, nil)
 	if err != nil {

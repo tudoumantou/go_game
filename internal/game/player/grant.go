@@ -17,6 +17,7 @@ package player
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"game_study/pkg/model"
@@ -31,24 +32,24 @@ func (r *Repository) ReloadItems(ctx context.Context, state *State) error {
 	if r.CacheEnabled() {
 		return fmt.Errorf("use Redis recovery for cached player")
 	}
-	tx, err := r.DB().BeginTx(ctx, nil)
+	items := make(map[int32]int64)
+	// 内存状态只在事务提交成功后才替换：放进闭包内改会在回滚后留下
+	// 「内存里是新值、库里是旧值」的裂缝。
+	err := r.Tx(ctx, func(tx *sql.Tx) error {
+		// 锁角色行（生成的 @lockby:id）
+		if _, err := model.LockPlayerById(ctx, tx, state.PlayerID()); err != nil {
+			return err
+		}
+		rows, err := model.ListPlayerItemByPlayer(ctx, tx, state.PlayerID())
+		if err != nil {
+			return err
+		}
+		for _, it := range rows {
+			items[it.ItemId] = int64(it.Count)
+		}
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	// 锁角色行（生成的 @lockby:id）
-	if _, err := model.LockPlayerById(ctx, tx, state.PlayerID()); err != nil {
-		return err
-	}
-	rows, err := model.ListPlayerItemByPlayer(ctx, tx, state.PlayerID())
-	if err != nil {
-		return err
-	}
-	items := make(map[int32]int64, len(rows))
-	for _, it := range rows {
-		items[it.ItemId] = int64(it.Count)
-	}
-	if err := tx.Commit(); err != nil {
 		return err
 	}
 	state.mu.Lock()

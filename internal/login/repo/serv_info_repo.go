@@ -19,12 +19,10 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
 )
-
-// servInfoCacheKey 全量缓存键（整表一个快照）。
-const servInfoCacheKey = "serv_info:all"
 
 // servInfoCacheTTL 全量缓存有效期；区服配置变更低频，5 分钟足够，
 // 运维改完也可主动 Invalidate 立即生效。
@@ -46,7 +44,7 @@ func NewServInfoRepo(database *db.DB, rdb redis.UniversalClient) *ServInfoRepo {
 // Redis 命中直接返回；miss 回源 MySQL 并回填整表快照。
 func (r *ServInfoRepo) List(ctx context.Context) ([]*model.ServInfo, error) {
 	if r.rdb != nil {
-		if raw, err := r.rdb.Get(ctx, servInfoCacheKey).Bytes(); err == nil {
+		if raw, err := r.rdb.Get(ctx, cache.ServInfoKey()).Bytes(); err == nil {
 			var out []*model.ServInfo
 			if json.Unmarshal(raw, &out) == nil {
 				return out, nil
@@ -60,7 +58,7 @@ func (r *ServInfoRepo) List(ctx context.Context) ([]*model.ServInfo, error) {
 	}
 	if r.rdb != nil {
 		if raw, mErr := json.Marshal(out); mErr == nil {
-			_ = r.rdb.Set(ctx, servInfoCacheKey, raw, servInfoCacheTTL).Err()
+			_ = r.rdb.Set(ctx, cache.ServInfoKey(), raw, servInfoCacheTTL).Err()
 		}
 	}
 	return out, nil
@@ -92,5 +90,5 @@ func (r *ServInfoRepo) Invalidate(ctx context.Context) error {
 	if r.rdb == nil {
 		return nil
 	}
-	return r.rdb.Del(ctx, servInfoCacheKey).Err()
+	return r.rdb.Del(ctx, cache.ServInfoKey()).Err()
 }

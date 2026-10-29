@@ -1,9 +1,9 @@
 // internal/login/repo/token_repo.go —— Token Redis 仓储
 //
-// 架构职责：login token 在 Redis 的存取删——「token → account_id」
-// 映射的唯一存储。网关握手期经 server.go 的 validator 读同一个
-// key（token:xxx）完成校验，因此 key 格式是登录服与网关的隐性契约，
-// 任何一方改前缀都会导致对方校验全部失败。
+// 架构职责：login token 在 Redis 的存取删——「token → player_id」
+// 映射的唯一存储。网关握手期经 server.go 的 validator 读同一个 key
+// 完成校验。key 由 cache.TokenKey 生成：两个进程共用一处定义，
+// 「改一处忘另一处导致全体掉线」的隐患从结构上消失。
 // 协作关系：service.AuthService.GuestLogin 调 Set，ValidateToken
 // 调 Get；登出/顶号场景（未来）调 Del。
 // 设计取舍：① 用 Redis 而非 MySQL——token 校验在握手热路径，
@@ -19,29 +19,25 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/pkg/cache"
 	"github.com/redis/go-redis/v9"
 )
 
 // TokenRepo Token 存储。
 // 依赖 redis.UniversalClient（单机/哨兵/集群通用接口）而非具体
-// 客户端类型——部署形态变化时本文件零改动；prefix 字段化，
-// 多实例/多环境可区分键空间。
+// 客户端类型——部署形态变化时本文件零改动。
 type TokenRepo struct {
 	client redis.UniversalClient
-	prefix string
 }
 
 // NewTokenRepo 创建 TokenRepo。
-// 前缀 "token:" 与 gateway/server.go validator 的 key 拼接方式
-// 必须一致（那里直接写 "token:"+token）——隐性契约，改动需两处同步。
 func NewTokenRepo(client redis.UniversalClient) *TokenRepo {
-	return &TokenRepo{client: client, prefix: "token:"}
+	return &TokenRepo{client: client}
 }
 
-// key 生成 redis key。
-// 私有方法收口拼接逻辑：将来改前缀/加哈希只需改一处。
+// key 生成 redis key（定义在 pkg/cache，与网关校验器共用）。
 func (r *TokenRepo) key(token string) string {
-	return r.prefix + token
+	return cache.TokenKey(token)
 }
 
 // Set 存储 token 与 player_id 映射，TTL 秒。

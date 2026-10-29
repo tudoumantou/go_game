@@ -73,6 +73,9 @@ func (r *Repository) RecoverWorld(ctx context.Context, worldID domain.WorldID) (
 
 	// 用调用方的 ctx（通常带恢复预算），不再叠加短超时：
 	// 大世界全量读取可能超过单个业务事务的 5s 预算。
+	// 手写而不是 db.TxWith：本函数「任何提前返回都回滚、绝不提交」是一条
+	// 契约（只读不该留下任何痕迹），用模板就得依赖「只读事务提交等价于
+	// 回滚」这个推理；直接写出来更省解释成本。隔离级别同理显式写出。
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{
 		Isolation: sql.LevelRepeatableRead,
 		ReadOnly:  true,

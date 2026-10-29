@@ -106,66 +106,66 @@ func (r *Repository) writebehindVersion(ctx context.Context, id int64) (int64, e
 // 读到的记录带 version：首次 Seed 时把它作为版本 0 之后的基线，
 // 保证「第一个 Commit 的 CAS 期望值」与 Seed 写入的版本一致。
 func (r *Repository) loadColdSnapshot(ctx context.Context, id int64) (writebehind.Record, error) {
-	tx, err := r.DB().BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	if err != nil {
-		return writebehind.Record{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
 	out := writebehind.Record{State: writebehind.Snapshot{PlayerID: id, Items: make(map[int32]int64)}}
-	// 幂等键与版本：缺行表示首次登录（版本 0、还没有任何已应用发放）
-	w, err := model.FindPlayerWritebehindByPK(ctx, tx, id)
-	switch {
-	case err == nil:
-		out.Version = w.Version
-		if w.AppliedGrants.Valid {
-			if err := json.Unmarshal([]byte(w.AppliedGrants.String), &out.State.AppliedGrants); err != nil {
-				return out, err
+	// 只读一致性快照：RepeatableRead 让三次读落在同一视图上，ReadOnly 让
+	// 误写在此事务里直接报错（而不是留下一个本不该存在的脏事务）。
+	err := r.TxWith(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(tx *sql.Tx) error {
+		// 幂等键与版本：缺行表示首次登录（版本 0、还没有任何已应用发放）
+		w, err := model.FindPlayerWritebehindByPK(ctx, tx, id)
+		switch {
+		case err == nil:
+			out.Version = w.Version
+			if w.AppliedGrants.Valid {
+				if err := json.Unmarshal([]byte(w.AppliedGrants.String), &out.State.AppliedGrants); err != nil {
+					return err
+				}
 			}
+		case errors.Is(err, sql.ErrNoRows):
+			// 首次登录，正常路径
+		default:
+			return err
 		}
-	case errors.Is(err, sql.ErrNoRows):
-		// 首次登录，正常路径
-	default:
-		return out, err
-	}
-	p := &out.State.Profile
-	row, err := model.FindPlayerByPK(ctx, tx, id)
+		p := &out.State.Profile
+		row, err := model.FindPlayerByPK(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		p.Name, p.Level, p.Exp, p.Coin, p.SceneID = row.Name, row.Level, row.Exp, row.Coin, row.SceneId
+
+		attr, err := model.FindPlayerAttrByPK(ctx, tx, id)
+		switch {
+		case err == nil:
+			out.State.Attr = writebehind.Attr{
+				Career: attr.Career,
+				Hp:     attr.Hp,
+				Mp:     attr.Mp,
+				Atk:    attr.Atk,
+				Def:    attr.Def,
+				Spd:    attr.Spd,
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			// 无属性行按空属性继续（创角事务异常时也能登录自愈）
+		default:
+			return err
+		}
+
+		items, err := model.ListPlayerItemByPlayer(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, it := range items {
+			out.State.Items[it.ItemId] = int64(it.Count)
+		}
+		// 模块私有表由各自的 Persister 读取，框架不再内建任何玩法的 SQL。
+		if err := loadModuleStates(ctx, tx, &out.State); err != nil {
+			return err
+		}
+		return out.State.Validate()
+	})
 	if err != nil {
 		return out, err
 	}
-	p.Name, p.Level, p.Exp, p.Coin, p.SceneID = row.Name, row.Level, row.Exp, row.Coin, row.SceneId
-
-	attr, err := model.FindPlayerAttrByPK(ctx, tx, id)
-	switch {
-	case err == nil:
-		out.State.Attr = writebehind.Attr{
-			Career: attr.Career,
-			Hp:     attr.Hp,
-			Mp:     attr.Mp,
-			Atk:    attr.Atk,
-			Def:    attr.Def,
-			Spd:    attr.Spd,
-		}
-	case errors.Is(err, sql.ErrNoRows):
-		// 无属性行按空属性继续（创角事务异常时也能登录自愈）
-	default:
-		return out, err
-	}
-
-	items, err := model.ListPlayerItemByPlayer(ctx, tx, id)
-	if err != nil {
-		return out, err
-	}
-	for _, it := range items {
-		out.State.Items[it.ItemId] = int64(it.Count)
-	}
-	// 模块私有表由各自的 Persister 读取，框架不再内建任何玩法的 SQL。
-	if err := loadModuleStates(ctx, tx, &out.State); err != nil {
-		return out, err
-	}
-	if err := out.State.Validate(); err != nil {
-		return out, err
-	}
-	return out, tx.Commit()
+	return out, nil
 }
 
 // loadModuleStates 按注册表遍历各模块的冷启动读取。

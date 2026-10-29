@@ -50,6 +50,9 @@ func (r *Repository) Acquire(ctx context.Context, worldID domain.WorldID, ownerI
 	txCtx, cancel := context.WithTimeout(ctx, r.opts.TxTimeout)
 	defer cancel()
 
+	// 手写 BEGIN/COMMIT（不用 db.Tx）：下面两条路径的 COMMIT 错误要分别
+	// 报「创建世界行提交失败」「接管世界租约提交失败」，而模板把提交藏进
+	// 黑盒，只剩一个笼统的错误。见 mysql.go 里 commitOnce 的同类说明。
 	tx, err := r.db.BeginTx(txCtx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("取得世界租约(开启事务): %w", err)

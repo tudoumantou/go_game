@@ -18,11 +18,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 
+	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
 	"game_study/pkg/sqlstore"
@@ -31,7 +31,6 @@ import (
 const (
 	// accSummaryShards 分片数（钉死 32，2 的幂便于未来 reshard，见文档 §3）。
 	accSummaryShards = 32
-	accSummaryPrefix = "acc_summary:" // Redis 单键前缀，后接 accuid
 	accSummaryTTL    = 10 * time.Minute
 )
 
@@ -56,9 +55,9 @@ func accSummaryTable(accuid int64) string {
 	return fmt.Sprintf("acc_summary_%d", shardAccSummary(accuid))
 }
 
-// accSummaryKey Redis 单键。
+// accSummaryKey Redis 单键（格式定义在 pkg/cache）。
 func accSummaryKey(accuid int64) string {
-	return accSummaryPrefix + strconv.FormatInt(accuid, 10)
+	return cache.AccSummaryKey(accuid)
 }
 
 // Get 按 accuid 取摘要（cache-aside）。未命中返回 (nil, nil)——摘要可不存在。

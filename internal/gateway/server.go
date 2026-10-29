@@ -62,11 +62,6 @@ import (
 // 知识点：Server 本身就是「依赖注入容器」——New 只装配无外部依赖的
 // 组件，Start 才注入有 IO 依赖的（Redis/etcd），这样单测可以只跑到
 // New 层；字段分组注释即架构图。
-// tokenKeyPrefix token 在 Redis 的 key 前缀。
-// 与登录服 TokenRepo.key() 是跨进程契约（那边注释也标了）：改一处必须改两处，
-// 否则表现为「登录拿到的 token 网关全认不出」。
-const tokenKeyPrefix = "token:"
-
 type Server struct {
 	// 基础组件：无外部依赖，New 即可用
 	cfg     *config.Config
@@ -176,9 +171,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// token 校验器：握手期 token → account_id 只查 Redis，2s 超时防止
 	// 慢 Redis 拖死握手流程；无 Redis 环境（单测）放行
 	//
-	// key 前缀 "token:" 与登录服 TokenRepo 的 key() 是隐性契约
-	// （internal/login/repo/token_repo.go 注释也标了）：改一处必须改两处，
-	// 否则表现为「登录拿到的 token 网关全认不出」。
+	// key 由 cache.TokenKey 生成，与登录服 TokenRepo 共用一处定义
+	// （pkg/cache/keygen.go），不再是「靠两处注释维持的契约」。
 	validator := func(token string) (int64, error) {
 		if s.redis == nil {
 			return 0, nil // 无 Redis 环境（单测）放行
@@ -187,7 +181,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// 的，cancel 必须 defer，否则 timer 要等超时才释放（context 泄漏）
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		return s.redis.GetClient().Get(ctx, tokenKeyPrefix+token).Int64()
+		return s.redis.GetClient().Get(ctx, cache.TokenKey(token)).Int64()
 	}
 	s.router = router.NewHandler(s.sessMgr, s.connMgr, s.logger, validator, s.bindToGame)
 
@@ -209,7 +203,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		return s.redis.GetClient().Del(ctx, tokenKeyPrefix+token).Err()
+		return s.redis.GetClient().Del(ctx, cache.TokenKey(token)).Err()
 	})
 	s.router.SetForward(s.forwardPacket)
 	// 会话关闭回调：两侧路由表（sessGame / backend.Pool）同步清理，
