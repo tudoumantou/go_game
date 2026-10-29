@@ -11,8 +11,8 @@
 // 懒初始化：无私有状态，不存在建行问题；保留空模块是为了让
 // 「道具域」有明确落点，新增道具玩法（礼包码、道具合成）时不必挪目录。
 //
-// 模块形态：嵌入 module.Thin 薄模块基座。不注册任何协议（MsgIDs 为 nil，
-// Registry 不会建路由项），只挂登录/下线两个观测钩子。
+// 模块形态：module.Define 声明式基座（D = module.NoState）。不注册任何协议
+// （MsgIDs 为 nil，Registry 不会建路由项），只挂登录/下线两个观测钩子。
 package item
 
 import (
@@ -22,28 +22,27 @@ import (
 
 // Module 道具模块。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 }
 
 // New 创建道具模块。
 func New(logger *log.Logger) *Module {
 	m := &Module{}
-	m.Thin = module.NewThin("item",
-		module.ThinLogger(logger),
-		module.ThinLogin(func(ctx *module.Context) error {
-			if logger != nil {
-				logger.Debug("item login", "player_id", ctx.State.PlayerID())
+	m.Bound = module.Define[module.NoState]("item").
+		WithLogger(logger).
+		WithLogin(func(c *module.Ctx[module.NoState]) error {
+			if l := c.Log(); l != nil {
+				l.Debug("item login", "player_id", c.State.PlayerID())
 			}
 			return nil
-		}),
+		}).
 		// 下线标脏只是提示 flusher 关注，权威提交仍是快照 CAS。
-		module.ThinLogout(func(ctx *module.Context) error {
-			ctx.State.MarkDirty("item")
+		WithLogout(func(c *module.Ctx[module.NoState]) error {
+			c.State.MarkDirty("item")
 			return nil
-		}),
-	)
+		})
 	return m
 }
 
-// 保证 Module 满足 module.Module（Thin 已预实现全部方法）。
+// 保证 Module 满足 module.Module（基座已预实现全部方法）。
 var _ module.Module = (*Module)(nil)

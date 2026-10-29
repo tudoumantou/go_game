@@ -27,11 +27,9 @@ import (
 
 // Module 背包模块。
 //
-// 无玩家级字段：logger 之外不持有任何状态，道具数据全部来自 Context.State。
+// 无玩家级字段：状态全部来自 Context.State，基座之外不持有任何东西。
 type Module struct {
-	*module.Thin
-
-	logger *log.Logger
+	*module.Bound[module.NoState]
 }
 
 // New 创建背包模块。
@@ -40,33 +38,29 @@ type Module struct {
 // Discardable 由本类型覆盖（见下），因为背包的写操作不能像只读模块那样
 // 「失败即丢弃」。
 func New(logger *log.Logger) *Module {
-	m := &Module{logger: logger}
-	m.Thin = module.NewThin("bag",
-		module.ThinLogger(logger),
-		module.ThinLogin(m.onLogin),
-		module.ThinLogout(m.onLogout),
-	)
-	module.Handle(m.Thin, m.onList)
-	module.Handle(m.Thin, m.onUse)
+	m := &Module{}
+	m.Bound = module.Define[module.NoState]("bag").
+		WithLogger(logger).
+		WithLogin(func(c *module.Ctx[module.NoState]) error {
+			if l := c.Log(); l != nil {
+				l.Debug("bag login", "player_id", c.State.PlayerID())
+			}
+			return nil
+		}).
+		// 下线标脏：让 flusher 走一次常规 flush 周期。
+		WithLogout(func(c *module.Ctx[module.NoState]) error {
+			c.State.MarkDirty("bag")
+			return nil
+		})
+	module.Handle(m.Bound, m.onList)
+	module.Handle(m.Bound, m.onUse)
 	return m
 }
 
-// Discardable 覆盖 Thin 的宽松默认：Thin 把「已注册协议」一律声明为可丢弃，
+// Discardable 覆盖基座的宽松默认：基座把「已注册协议」一律声明为可丢弃，
 // 但「使用道具」会改资产——提交失败时不能丢，必须保留待提交快照补提，
 // 否则会出现「道具扣了、奖励没发」且无从恢复。
 func (*Module) Discardable(msgID uint32) bool { return msgID == codec.MsgBagListReq }
-
-// onLogin 只记一条调试日志（背包不在登录时做任何预热）。
-func (m *Module) onLogin(ctx *module.Context) error {
-	m.logger.Debug("bag login", "player_id", ctx.State.PlayerID())
-	return nil
-}
-
-// onLogout 下线标脏：让 flusher 走一次常规 flush 周期。
-func (m *Module) onLogout(ctx *module.Context) error {
-	ctx.State.MarkDirty("bag")
-	return nil
-}
 
 // onList 背包列表（P6 堆叠模式：item_uid 用 item_id 占位）。
 //

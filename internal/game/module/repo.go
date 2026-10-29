@@ -89,11 +89,57 @@ func (c *Ctx[D]) Fail(msg proto.Message, err error) error {
 // Handler 业务处理器：只关心上下文，不看原始字节。
 type Handler[D any] func(c *Ctx[D]) error
 
+// NoState 不持有 Ext 状态的模块，用它当 D。
+//
+// 存在理由是「一类模块而不是一个特例」：背包的道具、玩家信息、抢位置的
+// 房间数据都不属于模块私有进度，不需要 Ext 槽位，但它们的处理器仍然要
+// 拿 Context、要回包、要挂在同一个基座上。用 NoState 让它们与签到、任务
+// 共用 Define/Route 这套写法，而不是退回去再引入一套「无状态基座」。
+type NoState = struct{}
+
 // Bound 由 Define 产出的模块：内嵌 Stateful，Module 接口（Name/MsgIDs/分发/
 // 生命周期/可丢弃声明）仍由 Thin 预装配，业务只写 Handler。
 type Bound[D any] struct {
 	*Stateful[D]
 	clock func() time.Time
+	// stateless 声明「本模块处理的消息不修改玩家状态」（见 Stateless）。
+	// 零值 false：默认走完整快照流程，只有显式声明的模块才跳。
+	stateless bool
+}
+
+// Stateless 声明本模块所有协议都不修改玩家状态。
+//
+// 玩家 Actor 见到这条声明会跳过「clone State → 业务 → JSON 比对 → CAS」
+// 全流程（registry.IsStateless）：榜单查询这类纯代理请求不再为快照付开销。
+//
+// 用错（处理器其实改了 State）不会静默丢数据——改动仍随下一轮常规提交
+// 落库，只是这次请求没有即时提交，回包可能先于落库。所以判据是：
+// **处理器里出现 State 的写方法（SetExt/AddItem/MarkDirty）就别声明**。
+func (b *Bound[D]) Stateless() *Bound[D] {
+	b.stateless = true
+	return b
+}
+
+// IsStateless 实现 module.StatelessAware。未调用 Stateless() 时恒为 false，
+// 等价于「本模块没这个能力」，Registry 仍会按普通模块处理。
+func (b *Bound[D]) IsStateless(uint32) bool { return b.stateless }
+
+// addRoute 实现 registrar：把统一的路由声明挂到 Thin 上。
+//
+// 与 Thin.addRoute 的差别只有一处：Bound 的处理器收的是 *Context（不经过
+// Ctx[D]），所以这里直接透传，不再构造带 Repo 的业务上下文——需要 Repo 的
+// 处理器走 Route/HandleRoute，那两个天然有 D。
+func (b *Bound[D]) addRoute(reqID uint32, spec routeSpec) {
+	b.Handle(reqID, func(ctx *Context, msgID uint32, body []byte) error {
+		if b.clock != nil && ctx.Clock == nil {
+			ctx.Clock = b.clock
+		}
+		return spec.h(ctx, msgID, body)
+	})
+	// 响应声明仍要登记：缓存不可用时的业务错误回包靠它。
+	if spec.prototype != nil {
+		b.resp[reqID] = respSpec{respID: spec.respID, prototype: spec.prototype}
+	}
 }
 
 // Define 声明模块：一行搞定名字、日志与状态解码。
@@ -111,6 +157,24 @@ func Define[D any](name string, newFn ...func() *D) *Bound[D] {
 // Guard 设置处理器前置校验（如「缓存权威路径必须就绪」）。
 func (b *Bound[D]) Guard(fn func(ctx *Context, msgID uint32) error) *Bound[D] {
 	b.SetGuard(fn)
+	return b
+}
+
+// ErrCode 设置缓存不可用时的默认错误码（Thin.Fail 用它构造回包）。
+//
+// 不设置时错误路径只记日志、把 error 向上抛，由网关回通用错误——
+// 对「依赖中心服」这类模块（榜单）不合适，它们需要一个明确的业务码。
+func (b *Bound[D]) ErrCode(code int32) *Bound[D] {
+	b.errCode = code
+	return b
+}
+
+// WithLogger 覆盖模块日志器（默认 log.New(模块名)，即名字已作为固定字段带上）。
+//
+// 保留注入入口是为了让模块沿用组装层的 logger 配置（级别、输出目标）：
+// Define 默认自建一个，测试里想静音或生产里想换格式时改不动。
+func (b *Bound[D]) WithLogger(l *log.Logger) *Bound[D] {
+	b.logger = l
 	return b
 }
 
@@ -134,11 +198,10 @@ func (b *Bound[D]) SetClock(fn func() time.Time) *Bound[D] {
 // 适用无参协议：请求的语义完全由「谁在发 + 服务端状态」决定（查询、
 // 领取今天、上线下线这类）。需要请求参数的协议用 Route。
 func (b *Bound[D]) HandleRoute(req proto.Message, h Handler[D]) {
-	b.Handle(codec.ProtoID(req), func(ctx *Context, msgID uint32, _ []byte) error {
-		if b.clock != nil && ctx.Clock == nil {
-			ctx.Clock = b.clock
-		}
-		return h(b.newCtx(ctx, msgID))
+	b.addRoute(codec.ProtoID(req), routeSpec{
+		h: func(ctx *Context, msgID uint32, _ []byte) error {
+			return h(b.newCtx(ctx, msgID))
+		},
 	})
 }
 
@@ -150,18 +213,17 @@ func (b *Bound[D]) HandleRoute(req proto.Message, h Handler[D]) {
 // 每次请求都新建一份消息实例再解包——直接解到 req 上会污染注册时传入的
 // 那份，并发请求共用同一个对象即是数据竞争。
 func Route[D any, R proto.Message](b *Bound[D], req R, h func(*Ctx[D], R) error) {
-	b.Handle(codec.ProtoID(req), func(ctx *Context, msgID uint32, body []byte) error {
-		if b.clock != nil && ctx.Clock == nil {
-			ctx.Clock = b.clock
-		}
-		msg, ok := req.ProtoReflect().New().Interface().(R)
-		if !ok {
-			return fmt.Errorf("module %s: request type mismatch", b.Name())
-		}
-		if err := proto.Unmarshal(body, msg); err != nil {
-			return fmt.Errorf("module %s: decode request: %w", b.Name(), err)
-		}
-		return h(b.newCtx(ctx, msgID), msg)
+	b.addRoute(codec.ProtoID(req), routeSpec{
+		h: func(ctx *Context, msgID uint32, body []byte) error {
+			msg, ok := req.ProtoReflect().New().Interface().(R)
+			if !ok {
+				return fmt.Errorf("module %s: request type mismatch", b.Name())
+			}
+			if err := proto.Unmarshal(body, msg); err != nil {
+				return fmt.Errorf("module %s: decode request: %w", b.Name(), err)
+			}
+			return h(b.newCtx(ctx, msgID), msg)
+		},
 	})
 }
 

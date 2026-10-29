@@ -9,8 +9,8 @@
 // 配置表：attr_formula.xml（P7）；P6 五维 AttrId 1-5 为协议常量。
 // 懒初始化：无状态可初始化。
 //
-// 模块形态：嵌入 module.Thin 薄模块基座。本模块零副作用（不碰任何内存），
-// 注册进 Thin 即承诺可回滚——写缓存失败可直接丢弃重放。
+// 模块形态：module.Define 声明式基座（D = module.NoState）。本模块零副作用
+// （不碰任何内存），注册进基座即承诺可回滚——写缓存失败可直接丢弃重放。
 package profile
 
 import (
@@ -34,21 +34,20 @@ const (
 
 // Module 玩家信息模块。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 }
 
 // New 创建模块。
 func New(logger *log.Logger) *Module {
 	m := &Module{}
-	m.Thin = module.NewThin("profile",
-		module.ThinLogger(logger),
+	m.Bound = module.Define[module.NoState]("profile").
+		WithLogger(logger).
 		// 下线标脏只是提示 flusher 关注，权威提交仍是快照 CAS。
-		module.ThinLogout(func(ctx *module.Context) error {
-			ctx.State.MarkDirty("profile")
+		WithLogout(func(c *module.Ctx[module.NoState]) error {
+			c.State.MarkDirty("profile")
 			return nil
-		}),
-	)
-	module.Handle(m.Thin, m.onPlayerInfo)
+		})
+	module.Handle(m.Bound, m.onPlayerInfo)
 	return m
 }
 

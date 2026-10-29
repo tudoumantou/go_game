@@ -80,11 +80,12 @@ type Querier interface {
 
 // Module 榜单模块。
 //
-// 嵌入 *module.Plain：本模块零状态（不读写玩家快照、不落库），只需声明
-// 协议与处理器。Plain 同时向框架声明「这些消息无状态」——玩家 Actor 因此
-// 跳过 clone State + 两次 JSON Marshal 的快照流程，纯读请求不再为 CAS 付开销。
+// 嵌入 *module.Bound[module.NoState]：本模块零状态（不读写玩家快照、不落库），
+// 但仍用「模块基座」而不是另找一个无状态基座——差别只在最后那一行
+// Stateless()：玩家 Actor 据此跳过 clone State + 两次 JSON Marshal 的
+// 快照流程，纯读请求不再为 CAS 付开销。
 type Module struct {
-	*module.Plain
+	*module.Bound[module.NoState]
 	// q 中心服查询代理；nil 表示未配置中心服（单机环境），全部查询回 6702
 	q      Querier
 	logger *log.Logger
@@ -93,12 +94,11 @@ type Module struct {
 // New 创建模块；q 为 nil 时所有查询回「暂不可用」（未配置中心服的单机环境）。
 func New(q Querier, logger *log.Logger) *Module {
 	m := &Module{q: q, logger: logger}
-	m.Plain = module.NewPlain("rank",
-		module.PlainLogger(logger),
-		// 缓存不可用时回业务码（榜单本来就依赖中心服，客户端照常提示重试）
-		module.PlainErrCode(int32(errcode.ErrRankUnavailable)),
-	)
-	module.HandlePlain(m.Plain, m.onList)
+	m.Bound = module.Define[module.NoState]("rank").
+		// 榜单本来就依赖中心服，缓存不可用时回业务码，客户端照常提示重试
+		ErrCode(int32(errcode.ErrRankUnavailable)).
+		Stateless()
+	module.Handle(m.Bound, m.onList)
 	return m
 }
 

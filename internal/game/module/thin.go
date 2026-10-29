@@ -18,6 +18,15 @@
 //   - Thin 不持有任何玩家状态：模块仍是「单例 + Context.State 外置」形态。
 //   - 需要 MySQL 直写事务的关系型模块（好友/公会/队伍）不建议用 Thin——
 //     它们的复杂度在事务而不在接口样板， Thin 省不下什么。
+//
+// 与 Define 的分工（两者是同一个内核的两层门面，不是两套体系）：
+//
+//	Define[D]  状态是「一个结构体」→ 自动管 Ext 编解码（Repo.Get/Save）
+//	Thin       状态不在 Ext（独立表 / 外部依赖注入）→ 只提供接口管线
+//
+// Define 内部就是 Stateful→Thin，所以 Thin 的能力它全有（含 module.Handle）。
+// 选择依据只有一个：**要不要 Repo**。要就用 Define，不要就用 Thin；
+// 纯只读代理则用 Define[NoState] + Stateless()。
 package module
 
 import (
@@ -216,7 +225,23 @@ func (t *Thin) errorResp(msgID uint32, code int32) (uint32, proto.Message, bool)
 	if !ok {
 		return 0, nil, false
 	}
+	// code<=0 且响应带 code 字段：手里没有可用的业务码（模块没配
+	// ThinErrCode）。此时回包会把 code=0 发出去，那正是「成功」——
+	// 客户端会据此推进本地状态，而服务端一条都没执行。宁可只记日志、
+	// 让上层走通用错误通知，也不回一个假的成功包。
+	//
+	// 响应本身没有 code 字段时不拦：那类协议本来就不带错误码，
+	// 回一个空包至少让客户端触发回调，好过等到超时。
+	if code <= 0 && hasCodeField(spec.prototype) {
+		return 0, nil, false
+	}
 	return spec.respID, withCode(spec.prototype, code), true
+}
+
+// hasCodeField 响应是否带 int32 的 code 字段（决定零码时能不能回包）。
+func hasCodeField(prototype proto.Message) bool {
+	fd := prototype.ProtoReflect().Descriptor().Fields().ByName("code")
+	return fd != nil && fd.Kind() == protoreflect.Int32Kind
 }
 
 // withCode 克隆零值原型并设置 code 字段（字段缺失时原样返回）。

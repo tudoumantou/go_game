@@ -33,8 +33,8 @@ type ProtoPtr[T any] interface {
 
 // Typed 把「类型化业务函数」包装成 ThinHandler：自动解包请求、回包响应。
 //
-// 返回未命名函数类型：ThinHandler 与 PlainHandler 的底层签名一致，
-// 未命名类型可以隐式赋给两者，因此同一个 Typed 既能喂给 Thin 也能喂给 Plain。
+// 返回未命名函数类型：注册入口（registrar.addRoute）收的就是这个签名，
+// 未命名类型可以隐式赋给 ThinHandler，因此同一个 Typed 能被所有基座接收。
 //
 // 用法（配合 HandleR，响应号声明一次即可）：
 //
@@ -91,30 +91,21 @@ func Typed[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
 // 就是）、respID 的第二次出现（Typed 的第一个参数）。改协议号时只需要改
 // proto 注解，不会再出现「常量改了、注册处忘了改」。
 //
+// base 收 registrar 而不是具体的 *Thin：Thin（关系型/带钩子模块）与
+// Bound（Define 声明式模块）都能直接传进来，不需要第二个「HandlePlain」
+// 这样的孪生函数。见 route.go。
+//
 // 反查失败会 panic（`codec.ProtoID` 对没有 `@msg` 注解的消息直接炸）——
 // 这是有意的：漏注解的协议永远收不到消息，启动期炸掉比线上静默不响应好。
-func Handle[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
-	t *Thin,
+func Handle[B registrar, TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
+	base B,
 	fn func(ctx *Context, req *TReq, resp *TResp) error,
 ) {
 	reqID := codec.ProtoID(PReq(new(TReq)))
 	respID := codec.ProtoID(PResp(new(TResp)))
-	t.HandleR(reqID, respID, PResp(new(TResp)),
-		Typed[TReq, TResp, PReq, PResp](respID, fn))
-}
-
-// HandlePlain 与 Handle 相同，只是挂在 Plain 基座上。
-//
-// 为什么不能共用一个函数：ThinHandler 与 PlainHandler 底层签名一样、
-// 但类型不同，Go 的接口方法签名要求精确匹配。两个基座各留一个入口，
-// 比为了「省一个函数」把两个 handler 类型统一成别名要清楚——
-// 它们本来就是两套生命周期（Plain 没有 Actor 状态与登录钩子）。
-func HandlePlain[TReq, TResp any, PReq ProtoPtr[TReq], PResp ProtoPtr[TResp]](
-	p *Plain,
-	fn func(ctx *Context, req *TReq, resp *TResp) error,
-) {
-	reqID := codec.ProtoID(PReq(new(TReq)))
-	respID := codec.ProtoID(PResp(new(TResp)))
-	p.HandleR(reqID, respID, PResp(new(TResp)),
-		PlainHandler(Typed[TReq, TResp, PReq, PResp](respID, fn)))
+	base.addRoute(reqID, routeSpec{
+		respID:    respID,
+		prototype: PResp(new(TResp)),
+		h:         Typed[TReq, TResp, PReq, PResp](respID, fn),
+	})
 }
