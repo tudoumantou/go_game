@@ -26,8 +26,10 @@ package team
 
 import (
 	"context"
+
 	"game_study/internal/game/module"
 	"game_study/pkg/log"
+	gamev1 "game_study/pkg/pb/game/v1"
 )
 
 // teamRepo 是模块对组队仓储的全部依赖（接口隔离）。
@@ -73,10 +75,10 @@ func New(repo teamRepo, logger *log.Logger) *Module {
 	m.Bound = module.Define[module.NoState]("team").
 		WithLogger(logger).
 		WithLogout(m.onLogout)
-	module.Handle(m.Bound, m.onInfo)
-	module.Handle(m.Bound, m.onCreate)
-	module.Handle(m.Bound, m.onJoin)
-	module.Handle(m.Bound, m.onLeave)
+	module.Route(m.Bound, &gamev1.TeamInfoReq{}, m.onInfo)
+	module.Route(m.Bound, &gamev1.TeamCreateReq{}, m.onCreate)
+	module.Route(m.Bound, &gamev1.TeamJoinReq{}, m.onJoin)
+	module.Route(m.Bound, &gamev1.TeamLeaveReq{}, m.onLeave)
 	return m
 }
 

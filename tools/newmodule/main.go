@@ -11,22 +11,24 @@
 //   - server_start.go 的注册位置有语义（依赖 MySQL 的模块要放进 `if s.database != nil`
 //     分支），自动插入比漏写更危险，所以打印片段让人粘贴。
 //
-// # 两种模块形态（对应基座的两个底座）
+// # 两种模块形态（同一套基座，只是 D 不同）
 //
 // 有内存态（默认 / -table）：`module.Define[Data]` + 包级 M。
 //
 //	module.go   装配：stateKey + Define + 路由注册
 //	types.go    状态结构：Data + newData + validate（持久化的形状）
-//	handler.go  处理器：func(c *module.Ctx[Data], req *R) error，用 c.Reply 回包
+//	handler.go  处理器：func(c *module.Ctx[Data], req *R) error
 //
-// 有独立表（-store）：`module.Thin` + Module 结构体持仓储。
+// 有独立表（-store）：`module.Define[module.NoState]` + Module 结构体持仓储。
 //
-//	module.go   装配：Module 结构体 + New + module.Handle 注册
-//	handler.go  处理器：func(m *Module) onX(ctx *module.Context, req *R, resp *P) error
+//	module.go   装配：Module 结构体 + New + 路由注册
+//	handler.go  处理器：func(m *Module) onX(c *module.Ctx[module.NoState], req *R) error
 //	store.go    表的访问层（驱动只在这一层出现）
 //
-// 两者的处理器签名不同，不是笔误：Define 底座的基座知道响应类型（c.Reply），
-// Thin 底座的 Handle 提前绑定了一对 req/resp（写 resp 字段即回包）。
+// 两种形态的处理器签名完全一致，只是 D 不同：有内存态就取状态结构体
+// （多一个 c.Repo），没有就取 NoState。回包一律由处理器自己 c.Reply——
+// 曾经有过一套「框架替你回 resp」的 Thin 形态（func(ctx, req, resp) error），
+// v3.25 已删除：同一个概念两种写法，读代码的人得先判断这个模块属于哪种。
 //
 // # 持久化的两代写法
 //
@@ -42,6 +44,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,8 +70,8 @@ func main() {
 		}
 	}
 	if *table != "" && *store != "" {
-		fail("暂不支持同时指定 -table 与 -store：有内存态（Define）和有独立表（Thin）" +
-			"是两种模块形态，混用需要手工组装")
+		fail("暂不支持同时指定 -table 与 -store：有内存态（D 取状态结构体）和有独立表" +
+			"（D 取 NoState）是两种数据形态，混用需要手工组装")
 	}
 
 	pairs, err := parseMsgs(*msgs)
@@ -84,7 +87,7 @@ func main() {
 		fail(err.Error())
 	}
 
-	thin := *store != ""
+	withStore := *store != ""
 	// 表不存在时提前说清楚：否则一路生成完，到 make gen 才因为
 	// 「undefined: model.XxxFlat」失败，看不出根因在建表这一步。
 	if t := *table; t != "" {
@@ -94,10 +97,10 @@ func main() {
 		warnIfNoTable(t)
 	}
 	switch {
-	case thin:
-		write(filepath.Join(dir, "module.go"), thinModuleTmpl(*name, pairs))
+	case withStore:
+		write(filepath.Join(dir, "module.go"), storeModuleTmpl(*name, pairs))
 		if len(pairs) > 0 {
-			write(filepath.Join(dir, "handler.go"), thinHandlerTmpl(*name, pairs))
+			write(filepath.Join(dir, "handler.go"), storeHandlerTmpl(*name, pairs))
 		}
 		write(filepath.Join(dir, "store.go"), storeTmpl(*name, *store))
 	default:
@@ -195,17 +198,18 @@ var M = module.Define[Data](stateKey, newData).Guard(module.RequireCache)
 %[3]s`, imports.String(), name, initBlock)
 }
 
-// thinModuleTmpl Thin 形态的装配文件：Module 结构体 + New + Handle 注册。
+// storeModuleTmpl 独立表形态的装配文件：Module 结构体 + New + 路由注册。
 //
-// 与 Define 的区别是「数据不在内存里」：所有读写都落到独立表，
-// 因此不需要 Guard(RequireCache)，也不参与快照 CAS。
-func thinModuleTmpl(name string, pairs []msgPair) string {
-	var handles strings.Builder
-	for _, p := range pairs {
-		fmt.Fprintf(&handles, "\tmodule.Handle(m.Thin, m.%s)\n", p.handlerName())
-	}
-	if handles.Len() > 0 {
-		handles.WriteString("\n")
+// 与 Define 形态的差别只有 D：状态不在玩家快照里，所以取 NoState，
+// 模块自己持仓储。基座、路由函数、处理器签名全部相同。
+func storeModuleTmpl(name string, pairs []msgPair) string {
+	var routes, imports strings.Builder
+	if len(pairs) > 0 {
+		imports.WriteString("\n\n\tgamev1 \"game_study/pkg/pb/game/v1\"")
+		for _, p := range pairs {
+			fmt.Fprintf(&routes, "\tmodule.Route(m.Bound, &gamev1.%s{}, m.%s)\n", p.req, p.handlerName())
+		}
+		routes.WriteString("\n")
 	}
 
 	return header(name, "无（数据在 "+name+" 相关表里，按需查询）") + fmt.Sprintf(`
@@ -213,13 +217,15 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
-)
+%[2]s)
 
 // Module %[1]s 模块。
 //
 // 无内存态：每次请求从 store 现查现写，不参与玩家快照的 CAS 提交。
+// 基座仍是 Define——D 取 NoState 只表示「没有 Ext 槽位」，不影响接口管线
+// 与生命周期。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 
 	// store 表访问层；nil 表示无 DB 环境（单测），各方法需自行降级。
 	store  *store
@@ -232,10 +238,10 @@ type Module struct {
 // 应改成 store 接口（参考 mail.New 收 mailRepo 的做法）。
 func New(database *db.DB, logger *log.Logger) *Module {
 	m := &Module{store: newStore(database), logger: logger}
-	m.Thin = module.NewThin(%[1]q, module.ThinLogger(logger))
-%s	return m
+	m.Bound = module.Define[module.NoState](%[1]q).WithLogger(logger)
+%[3]s	return m
 }
-`, name, handles.String())
+`, name, imports.String(), routes.String())
 }
 
 // typesTmpl 状态结构：持久化的形状 + 新玩家初始态 + 落库前校验。
@@ -340,21 +346,36 @@ import (
 `, name, strings.TrimRight(b.String(), "\n"))
 }
 
-// thinHandlerTmpl Thin 形态的处理器：签名带 resp，写完字段即回包。
-func thinHandlerTmpl(name string, pairs []msgPair) string {
+// storeHandlerTmpl 独立表形态的处理器：拿 Ctx[NoState] + 解好的请求，自己回包。
+//
+// 签名与 Define 形态完全一致（只有 D 不同）：回包一律 c.Reply，
+// 不再有「写完 resp 字段就行、基座替你发」的第二套语义。
+func storeHandlerTmpl(name string, pairs []msgPair) string {
 	var b strings.Builder
-	for _, p := range pairs {
-		fmt.Fprintf(&b, `
+	first := pairs[0]
+
+	fmt.Fprintf(&b, `
 // %s 处理 %s。
 //
-// 回包由基座完成：本函数返回 nil 时，Handle 包装器序列化 resp 下发；
-// 需要改码就 return ctx.FailCode(resp, errcode.Xxx)。
-func (m *Module) %s(ctx *module.Context, req *gamev1.%s, resp *gamev1.%s) error {
-	*resp = gamev1.%s{}
-	_, _, _ = m, ctx, req
-	return nil
+// 完整骨架：校验 → 查 store → 回包。其余处理器是简版，照这个补。
+// 仓储调用一律 context.Background()：请求 ctx 在回包后即取消，
+// 沿用它会把 DB 读写误杀；需要超时用 module.QueryCtx()。
+func (m *Module) %s(c *module.Ctx[module.NoState], req *gamev1.%s) error {
+	resp := &gamev1.%s{}
+	_ = req // 按业务读 req 的字段
+	// 按业务查 m.store（context.Background() + module.QueryCtx()）
+	return c.Reply(resp)
 }
-`, p.handlerName(), p.req, p.handlerName(), p.req, p.resp, p.resp)
+`, first.handlerName(), first.req, first.handlerName(), first.req, first.resp)
+
+	for _, p := range pairs[1:] {
+		fmt.Fprintf(&b, `
+// %s 处理 %s。
+func (m *Module) %s(c *module.Ctx[module.NoState], req *gamev1.%s) error {
+	_ = req
+	return c.Reply(&gamev1.%s{})
+}
+`, p.handlerName(), p.req, p.handlerName(), p.req, p.resp)
 	}
 
 	return fmt.Sprintf(`package %[1]s
@@ -366,8 +387,9 @@ import (
 )
 
 // 写作约定（docs/模块开发约定.md）：
-//	handler 只做「取状态 → 按规则判断 → 调 store → 填 resp」。
+//	handler 只做「取身份 → 按规则判断 → 调 store → 回包」。
 //	SQL 只出现在 store.go，且必须是 tools/gendb 生成的函数。
+//	错误分支一律 return c.FailCode(resp, errcode.Xxx)。
 %[2]s
 `, name, strings.TrimRight(b.String(), "\n"))
 }
@@ -491,8 +513,17 @@ func upperFirst(s string) string {
 	return string(r)
 }
 
+// write 落盘前统一 gofmt。
+//
+// 两件事一次做：生成的文件格式与仓库其余部分一致（省掉手动 gofmt），
+// 以及模板拼错时在生成期就报出来——否则要等 make build 才发现，
+// 而错误信息指向生成出来的文件，看不出根因在模板。
 func write(path, content string) {
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	src, err := format.Source([]byte(content))
+	if err != nil {
+		fail(fmt.Sprintf("生成 %s 失败（模板语法错误）: %v", path, err))
+	}
+	if err := os.WriteFile(path, src, 0o644); err != nil {
 		fail(err.Error())
 	}
 	fmt.Printf("  生成 %s\n", path)

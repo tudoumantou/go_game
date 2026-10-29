@@ -32,7 +32,7 @@
 //	Define[D]  唯一入口：D 决定要不要 Ext 槽位，链式装配日志/钩子/时钟
 //	Thin       内核：Module 七件套、协议分发、错误回包都在这里
 //
-// Define 内部就是 Stateful→Thin，所以 Thin 的能力它全有（含 module.Handle）。
+// Define 内部就是 Stateful→Thin，所以 Thin 的能力（分发、错误回包、生命周期）它全有。
 package module
 
 import (
@@ -56,9 +56,9 @@ type ThinHandler func(ctx *Context, msgID uint32, body []byte) error
 // 每个模块的响应类型又是不同的具体类型，工厂函数让模块自己决定
 // 「哪个协议号、哪个错误码字段」的映射，框架保持零反射。
 //
-// 多数模块不必写它——用 HandleR 声明「请求号 + 响应号 + 空原型」即可，
-// 基座会按原型克隆并置 code 字段。ThinRespOf 只留给「一个请求回多种响应」
-// 这类超出「一问一答」形态的场景。
+// 多数模块不必写它——Bound.Resp 声明「请求原型 + 响应原型」即可（只对
+// 配了 ErrCode 的模块有意义：Guard 失败时基座按原型克隆并置 code）。
+// ThinRespOf 只留给「一个请求回多种响应」这类超出「一问一答」形态的场景。
 type RespFactory func(code int32) proto.Message
 
 // respSpec 一次协议注册的响应声明（HandleR 填入）。
@@ -75,20 +75,25 @@ type respSpec struct {
 //		module.ThinLogger(logger),
 //		module.ThinLogin(onLogin),
 //	)
-//	module.Handle(th, onSend)      // 一问一答（协议号由类型反查）
+//	th.Handle(msgID, fn)   // fn 是 ThinHandler（原始字节），只在内核与测试里出现
 //
-// 业务侧的对应写法是 Define：
+// 业务侧的对应写法是 Define + Route：
 //
 //	m.Bound = module.Define[module.NoState]("chat").WithLogger(logger).WithLogin(m.onLogin)
-//	module.Handle(m.Bound, m.onSend)
+//	module.Route(m.Bound, &gamev1.ChatSendReq{}, m.onSend)
 //
 // 生命周期钩子都是可选的：不挂 Login/Logout 就是空实现，
-// 与手写 Module 时「用不到就 return nil」完全一致。注册入口见 route.go。
+// 与手写 Module 时「用不到就 return nil」完全一致。
+//
+// 注意 ThinHandler（func(*Context, msgID, body) error）不是业务侧签名：
+// 业务处理器统一是 func(*Ctx[D], req) error（回包自己 Reply）。前者要注册处
+// 自写 msgID、自己 Unmarshal，v3.25 起只保留给内核与测试；
+// convention_test.go 的 TestModulesDoNotRegisterThinHandler 守这条线。
 type Thin struct {
 	name    string
 	logger  *log.Logger
 	errCode int32
-	// resp 请求协议 → 响应声明（HandleR 注册时自动填入）。
+	// resp 请求协议 → 响应声明（Bound.Resp / HandleR 填入）。
 	//
 	// 绝大多数模块用它就够了：错误回包由基座按响应号 + 空原型自动构造，
 	// 模块不必再写一个「按 msgID 分支的工厂函数」。
@@ -197,12 +202,15 @@ func (t *Thin) Handle(msgID uint32, fn ThinHandler) {
 	t.ids = append(t.ids, msgID)
 }
 
-// HandleR 注册处理器，并声明它的响应协议。
+// HandleR 注册处理器，并声明它的响应协议（内核原语）。
 //
-// 相比 Handle 只多一条信息，省掉的是模块里那段「请求号 → 响应号 + 错误包
-// 工厂」的 switch（signin 曾为此写 14 行）：
+// 业务模块不用它——处理器统一走 module.Route，响应声明走 Bound.Resp：
 //
-//	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
+//	module.Route(m.Bound, &gamev1.RankListReq{}, m.onList)
+//	m.Bound.Resp(&gamev1.RankListReq{}, &gamev1.RankListResp{})
+//
+// 这里保留是因为它是 Thin 内核唯一的「注册 + 声明响应」单次调用入口，
+// 内核测试靠它验证 errorResp 的语义（Bound.Resp 内部直接写 resp map）。
 //
 // prototype 必须是**零值原型**（&XxxResp{}）：基座用 proto.Clone 造新实例，
 // 再按字段名设置 code。原型带默认值的话错误包会带上那些默认值。

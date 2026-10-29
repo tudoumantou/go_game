@@ -1,8 +1,12 @@
-// internal/game/module/route_test.go —— 统一注册入口（registrar）与 Bound 基座能力
+// internal/game/module/route_test.go —— 路由注册与 Bound 基座能力
 //
-// 这组测试钉的是「一个注册函数服务所有基座」这件事本身：
-// 以前 module.Handle 只吃 *Thin、HandlePlain 只吃 *Plain，两边各有一套
-// 测试；现在只剩一个入口，就只需要证明它对每个基座都成立。
+// 这组测试钉的是「注册入口只有两个」这件事本身：
+//
+//	module.Route(b, &Req{}, onX)   带请求体
+//	b.HandleRoute(&Req{}, onX)     无请求体
+//
+// 处理器签名统一是 func(*Ctx[D], req) error——回包由处理器自己做。
+// 历史上那套「框架替你回 resp」的 module.Handle 已删除（v3.25）。
 package module
 
 import (
@@ -17,32 +21,6 @@ import (
 
 // boundData 测试用状态结构（Bound 需要具体类型做泛型参数）。
 type boundData struct{ Hits int32 }
-
-// TestHandleRegistersOnBothBases 同一个 module.Handle 对 Thin 与 Bound 都成立。
-func TestHandleRegistersOnBothBases(t *testing.T) {
-	var thinHits, boundHits int
-	thin := NewThin("t")
-	Handle(thin, func(_ *Context, _ *gamev1.SigninInfoReq, _ *gamev1.SigninInfoResp) error {
-		thinHits++
-		return nil
-	})
-	bound := Define[boundData]("b")
-	Handle(bound, func(_ *Context, _ *gamev1.SigninInfoReq, _ *gamev1.SigninInfoResp) error {
-		boundHits++
-		return nil
-	})
-
-	thinCtx, thinReplies := newThinFixture(thin)
-	require.NoError(t, thin.OnMessage(thinCtx, codecSigninInfoReq(t), nil))
-	boundCtx, boundReplies := newThinFixture(bound.Thin)
-	require.NoError(t, bound.OnMessage(boundCtx, codecSigninInfoReq(t), nil))
-
-	require.Equal(t, 1, thinHits, "Thin 基座的处理器应被调用")
-	require.Equal(t, 1, boundHits, "Bound 基座的处理器应被调用")
-	// 两个基座都声明了响应：自动回包各发一条。
-	require.Len(t, *thinReplies, 1)
-	require.Len(t, *boundReplies, 1)
-}
 
 // TestBoundStatelessFlag 只有显式声明 Stateless() 的模块才跳过快照流程。
 func TestBoundStatelessFlag(t *testing.T) {
@@ -59,9 +37,10 @@ func TestBoundStatelessFlag(t *testing.T) {
 // TestBoundErrCodeBuildsReply 缓存不可用时的业务错误回包由 ErrCode + 响应声明构造。
 func TestBoundErrCodeBuildsReply(t *testing.T) {
 	b := Define[NoState]("rank").ErrCode(6702)
-	Handle(b, func(_ *Context, _ *gamev1.SigninInfoReq, _ *gamev1.SigninInfoResp) error {
+	Route(b, &gamev1.SigninInfoReq{}, func(_ *Ctx[NoState], _ *gamev1.SigninInfoReq) error {
 		return nil
 	})
+	b.Resp(&gamev1.SigninInfoReq{}, &gamev1.SigninInfoResp{})
 
 	respID, raw, ok := b.CacheFailureReply(codecSigninInfoReq(t))
 	require.True(t, ok, "声明了 ErrCode 与响应后应能构造回包")
@@ -73,11 +52,15 @@ func TestBoundErrCodeBuildsReply(t *testing.T) {
 }
 
 // TestBoundWithoutErrCodeNoReply 未设 ErrCode 时不给业务回包（走网关通用错误）。
+//
+// 第二个断言同样重要：即使声明了响应原型，没有 ErrCode 就不回包——
+// 否则会发出 code=0 的包，客户端会当成「成功」，而服务端一条都没执行。
 func TestBoundWithoutErrCodeNoReply(t *testing.T) {
 	b := Define[NoState]("bare")
-	Handle(b, func(_ *Context, _ *gamev1.SigninInfoReq, _ *gamev1.SigninInfoResp) error {
+	Route(b, &gamev1.SigninInfoReq{}, func(_ *Ctx[NoState], _ *gamev1.SigninInfoReq) error {
 		return nil
 	})
+	b.Resp(&gamev1.SigninInfoReq{}, &gamev1.SigninInfoResp{})
 	_, _, ok := b.CacheFailureReply(codecSigninInfoReq(t))
 	require.False(t, ok)
 }

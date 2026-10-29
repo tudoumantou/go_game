@@ -22,8 +22,10 @@ package guild
 
 import (
 	"context"
+
 	"game_study/internal/game/module"
 	"game_study/pkg/log"
+	gamev1 "game_study/pkg/pb/game/v1"
 )
 
 // guildRepo 是模块对公会仓储的全部依赖（接口隔离）。
@@ -67,15 +69,9 @@ func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 func New(repo guildRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
 	m.Bound = module.Define[module.NoState]("guild").WithLogger(logger)
-	module.Handle(m.Bound, m.onInfo)
-	module.Handle(m.Bound, m.onCreate)
-	module.Handle(m.Bound, m.onJoin)
-	module.Handle(m.Bound, m.onQuit)
+	module.Route(m.Bound, &gamev1.GuildInfoReq{}, m.onInfo)
+	module.Route(m.Bound, &gamev1.GuildCreateReq{}, m.onCreate)
+	module.Route(m.Bound, &gamev1.GuildJoinReq{}, m.onJoin)
+	module.Route(m.Bound, &gamev1.GuildQuitReq{}, m.onQuit)
 	return m
 }
-
-// onInfo 查询所在公会；IsLeader 由 LeaderID 与本人比较得出。
-//
-// IsLeader 用公会行的 leader_id 内存态比较，不再查成员表 title：
-// 会长身份以 leader_id 为权威（Quit 解散逻辑也认它），少一次查询
-// 且两个判断口径一致，不会出现「title 是会长但 leader_id 是别人」的分歧。

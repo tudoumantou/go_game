@@ -100,11 +100,15 @@ func New(q Querier, logger *log.Logger) *Module {
 		// 榜单本来就依赖中心服，缓存不可用时回业务码，客户端照常提示重试
 		ErrCode(int32(errcode.ErrRankUnavailable)).
 		Stateless()
-	module.Handle(m.Bound, m.onList)
+	module.Route(m.Bound, &gamev1.RankListReq{}, m.onList)
+	// 补声明响应原型：CacheFailureReply 只在 Guard 失败（处理器没执行）
+	// 时用到，那时没人构造响应，基座按原型克隆并置 ErrCode。
+	m.Bound.Resp(&gamev1.RankListReq{}, &gamev1.RankListResp{})
 	return m
 }
 
-func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *gamev1.RankListResp) error {
+func (m *Module) onList(c *module.Ctx[module.NoState], req *gamev1.RankListReq) error {
+	resp := &gamev1.RankListResp{}
 
 	rankType := req.GetRankType()
 	if rankType == "" {
@@ -113,11 +117,11 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 	// 长度预检在打到中心服之前：超长 rankType 既是无效输入也是潜在滥用
 	// （会变成 Redis key 的一部分），本地挡掉最便宜
 	if len(rankType) > maxRankTypeLen {
-		return ctx.FailCode(resp, errcode.ErrRankBadType)
+		return c.FailCode(resp, errcode.ErrRankBadType)
 	}
 	if m.q == nil {
 		resp.RankType = rankType
-		return ctx.FailCode(resp, errcode.ErrRankUnavailable)
+		return c.FailCode(resp, errcode.ErrRankUnavailable)
 	}
 
 	// WithTimeout 给中心服 RPC 加超时；cancel 必须 defer——
@@ -127,26 +131,24 @@ func (m *Module) onList(ctx *module.Context, req *gamev1.RankListReq, resp *game
 	// 请求 ctx 在回包后即取消，会误杀查询。
 	qctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
-	res, err := m.q.Query(qctx, rankType, ctx.State.PlayerID(), defaultTopN)
+	res, err := m.q.Query(qctx, rankType, c.State.PlayerID(), defaultTopN)
 	if err != nil {
 		// 中心服断连/超时：明确告诉客户端稍后重试，不伪造空榜。
 		m.logger.Debug("rank query failed", "rank_type", rankType, "err", err)
 		resp.RankType = rankType
-		return ctx.FailCode(resp, errcode.ErrRankUnavailable)
+		return c.FailCode(resp, errcode.ErrRankUnavailable)
 	}
 
-	*resp = gamev1.RankListResp{
-		Code:      int32(errcode.OK),
-		RankType:  rankType,
-		Season:    res.Season,
-		Entries:   toProto(res.Entries),
-		Around:    toProto(res.Around),
-		OnBoard:   res.OnBoard,
-		MyRank:    res.MyRank,
-		MyScore:   res.MyScore,
-		UpdatedAt: res.UpdatedAt,
-	}
-	return nil
+	resp.Code = int32(errcode.OK)
+	resp.RankType = rankType
+	resp.Season = res.Season
+	resp.Entries = toProto(res.Entries)
+	resp.Around = toProto(res.Around)
+	resp.OnBoard = res.OnBoard
+	resp.MyRank = res.MyRank
+	resp.MyScore = res.MyScore
+	resp.UpdatedAt = res.UpdatedAt
+	return c.Reply(resp)
 }
 
 // toProto 中性结构 → proto 条目。

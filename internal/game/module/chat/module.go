@@ -21,6 +21,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/pkg/log"
+	gamev1 "game_study/pkg/pb/game/v1"
 	"game_study/pkg/ratelimit"
 )
 
@@ -83,8 +84,8 @@ func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
 	m.Bound = module.Define[module.NoState]("chat").
 		WithLogger(logger).
 		WithLogout(m.onLogout)
-	module.Handle(m.Bound, m.onSend)
-	module.Handle(m.Bound, m.onHistory)
+	module.Route(m.Bound, &gamev1.ChatSendReq{}, m.onSend)
+	module.Route(m.Bound, &gamev1.ChatHistoryReq{}, m.onHistory)
 	return m
 }
 

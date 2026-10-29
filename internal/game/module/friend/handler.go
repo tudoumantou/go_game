@@ -12,20 +12,19 @@ import (
 )
 
 // onList 好友 + 待处理申请列表；在线状态只作展示，不影响关系判定。
-func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *gamev1.FriendListResp) error {
+func (m *Module) onList(c *module.Ctx[module.NoState], _ *gamev1.FriendListReq) error {
 	// module.QueryCtx 是「Background + 模块统一上限」，defer cancel() 释放
 	// 定时器并让取消沿 context 树传到 database/sql 驱动层，中断慢查询。
 	// 上限值集中在 module.QueryTimeout，本文件不再出现 3s 字面量。
 	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 
-	friends, applies, err := m.repo.List(ctxDB, ctx.State.PlayerID())
+	friends, applies, err := m.repo.List(ctxDB, c.State.PlayerID())
 	if err != nil {
 		return fmt.Errorf("list friends: %w", err)
 	}
 
-	resp.Code = int32(errcode.OK)
-	resp.Limit = friendLimit()
+	resp := &gamev1.FriendListResp{Code: int32(errcode.OK), Limit: friendLimit()}
 	for _, f := range friends {
 		online := false
 		if m.online != nil {
@@ -52,7 +51,7 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *game
 
 	// 黑名单单独一段查：它与好友/申请不是同一张表，合进 List 会让那条
 	// 已经够长的函数更难读。在线状态对黑名单没意义，Online 恒为 false。
-	blocks, err := m.repo.Blocks(ctxDB, ctx.State.PlayerID())
+	blocks, err := m.repo.Blocks(ctxDB, c.State.PlayerID())
 	if err != nil {
 		return fmt.Errorf("list blocked: %w", err)
 	}
@@ -64,17 +63,18 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *game
 			CreatedAt: b.CreatedAt.Unix(),
 		})
 	}
-	return nil
+	return c.Reply(resp)
 }
 
 // onBlock 拉黑：写黑名单并解除双向好友。
-func (m *Module) onBlock(ctx *module.Context, req *gamev1.FriendBlockReq, resp *gamev1.FriendBlockResp) error {
+func (m *Module) onBlock(c *module.Ctx[module.NoState], req *gamev1.FriendBlockReq) error {
+	resp := &gamev1.FriendBlockResp{}
 	if req.PlayerId <= 0 {
-		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
+		return c.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
-	me := ctx.State.PlayerID()
+	me := c.State.PlayerID()
 	if req.PlayerId == me {
-		return ctx.FailCode(resp, errcode.ErrFriendBlockSelf)
+		return c.FailCode(resp, errcode.ErrFriendBlockSelf)
 	}
 
 	ctxDB, cancel := module.QueryCtx()
@@ -82,74 +82,78 @@ func (m *Module) onBlock(ctx *module.Context, req *gamev1.FriendBlockReq, resp *
 	if err := m.repo.Block(ctxDB, me, req.PlayerId); err != nil {
 		return fmt.Errorf("block player %d: %w", req.PlayerId, err)
 	}
-	return nil
+	return c.Reply(resp)
 }
 
 // onUnblock 取消拉黑（幂等）。
-func (m *Module) onUnblock(ctx *module.Context, req *gamev1.FriendUnblockReq, resp *gamev1.FriendUnblockResp) error {
+func (m *Module) onUnblock(c *module.Ctx[module.NoState], req *gamev1.FriendUnblockReq) error {
+	resp := &gamev1.FriendUnblockResp{}
 	if req.PlayerId <= 0 {
-		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
+		return c.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
 
 	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
-	if err := m.repo.Unblock(ctxDB, ctx.State.PlayerID(), req.PlayerId); err != nil {
+	if err := m.repo.Unblock(ctxDB, c.State.PlayerID(), req.PlayerId); err != nil {
 		return fmt.Errorf("unblock player %d: %w", req.PlayerId, err)
 	}
-	return nil
+	return c.Reply(resp)
 }
 
 // onApply 发起好友申请；自加/非法目标在模块层拦截，不发 SQL。
 //
 // 参数校验前置：非法的请求（PlayerId<=0、加自己）连库都不查，
 // 既省一次往返，也避免把无意义查询打到 DB。
-func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *gamev1.FriendApplyResp) error {
+func (m *Module) onApply(c *module.Ctx[module.NoState], req *gamev1.FriendApplyReq) error {
+	resp := &gamev1.FriendApplyResp{}
 	if req.PlayerId <= 0 {
-		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
+		return c.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
-	if req.PlayerId == ctx.State.PlayerID() {
-		return ctx.FailCode(resp, errcode.ErrFriendSelf)
+	if req.PlayerId == c.State.PlayerID() {
+		return c.FailCode(resp, errcode.ErrFriendSelf)
 	}
 
 	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
-	code, err := m.repo.Apply(ctxDB, ctx.State.PlayerID(), req.PlayerId)
+	code, err := m.repo.Apply(ctxDB, c.State.PlayerID(), req.PlayerId)
 	if err != nil {
 		return fmt.Errorf("apply friend: %w", err)
 	}
+	// code 是仓储按业务场景算出的动态码（已存在/已申请/成功），
+	// 不是编译期常量，所以直接写字段而不走 FailCode。
 	resp.Code = code
-	return nil
+	return c.Reply(resp)
 }
 
 // onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
-func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp *gamev1.FriendHandleResp) error {
-	if req.PlayerId <= 0 || req.PlayerId == ctx.State.PlayerID() {
-		return ctx.FailCode(resp, errcode.ErrFriendApplyNotFound)
+func (m *Module) onHandle(c *module.Ctx[module.NoState], req *gamev1.FriendHandleReq) error {
+	resp := &gamev1.FriendHandleResp{}
+	if req.PlayerId <= 0 || req.PlayerId == c.State.PlayerID() {
+		return c.FailCode(resp, errcode.ErrFriendApplyNotFound)
 	}
 
 	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
-	code, err := m.repo.Handle(ctxDB, ctx.State.PlayerID(), req.PlayerId, req.Accept, applyTTL)
+	code, err := m.repo.Handle(ctxDB, c.State.PlayerID(), req.PlayerId, req.Accept, applyTTL)
 	if err != nil {
 		return fmt.Errorf("handle friend apply: %w", err)
 	}
 	resp.Code = code
-	return nil
+	return c.Reply(resp)
 }
 
 // onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
-func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp *gamev1.FriendDeleteResp) error {
+func (m *Module) onDelete(c *module.Ctx[module.NoState], req *gamev1.FriendDeleteReq) error {
+	resp := &gamev1.FriendDeleteResp{}
 	if req.PlayerId <= 0 {
-		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
+		return c.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
 
 	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
-	if err := m.repo.Delete(ctxDB, ctx.State.PlayerID(), req.PlayerId); err != nil {
+	if err := m.repo.Delete(ctxDB, c.State.PlayerID(), req.PlayerId); err != nil {
 		return fmt.Errorf("delete friend: %w", err)
 	}
 	resp.Code = int32(errcode.OK) // 删除幂等：本来不是好友也视为成功
-	return nil
+	return c.Reply(resp)
 }
-
-// friendLimit 好友上限（friend_limit.xml col1），缺配置回退 50。

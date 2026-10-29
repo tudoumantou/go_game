@@ -18,9 +18,11 @@ package friend
 
 import (
 	"context"
+
 	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/log"
+	gamev1 "game_study/pkg/pb/game/v1"
 )
 
 // onlineChecker 在线状态查询（*cache.Presence 实现；测试可注入）。
@@ -32,8 +34,8 @@ type onlineChecker interface {
 
 // Module 好友模块。
 //
-// 嵌入 Bound[NoState]：接口七件套与错误回包由基座提供；六个处理器经
-// module.Handle 拿到解包后的请求与待填的响应，不再手写 Unmarshal / reply。
+// 嵌入 Bound[NoState]：接口七件套由基座提供；六个处理器经 module.Route
+// 拿到解包后的请求，自己 Reply，不再手写 Unmarshal。
 //
 // 关系型模块也用 Define：D 取 NoState 即可——基座管的是「接口管线 +
 // 生命周期」，需不需要 Ext 槽位只是 D 的选择，不影响能不能直写事务。
@@ -57,12 +59,12 @@ func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
 	m := &Module{repo: NewRepo(database), online: online, logger: logger}
 	m.Bound = module.Define[module.NoState]("friend").WithLogger(logger)
-	module.Handle(m.Bound, m.onList)
-	module.Handle(m.Bound, m.onApply)
-	module.Handle(m.Bound, m.onHandle)
-	module.Handle(m.Bound, m.onDelete)
-	module.Handle(m.Bound, m.onBlock)
-	module.Handle(m.Bound, m.onUnblock)
+	module.Route(m.Bound, &gamev1.FriendListReq{}, m.onList)
+	module.Route(m.Bound, &gamev1.FriendApplyReq{}, m.onApply)
+	module.Route(m.Bound, &gamev1.FriendHandleReq{}, m.onHandle)
+	module.Route(m.Bound, &gamev1.FriendDeleteReq{}, m.onDelete)
+	module.Route(m.Bound, &gamev1.FriendBlockReq{}, m.onBlock)
+	module.Route(m.Bound, &gamev1.FriendUnblockReq{}, m.onUnblock)
 	return m
 }
 

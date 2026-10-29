@@ -13,7 +13,7 @@
 //
 // 模块形态：module.Define 声明式基座（D = module.NoState）。当前无协议
 // （属性查询随 PlayerInfo 下发），只挂登录/下线两个观测钩子；未来加属性
-// 协议时 `module.Handle(M, onXxx)` 一行即可，不动基座。
+// 协议时 `module.Route(M, &XxxReq{}, onXxx)` 一行即可，不动基座。
 //
 // 与签到、背包共用同一套写法是刻意的：模块形态只有一种，不需要「这个模块
 // 用 Thin、那个模块用 Define」的选择题。

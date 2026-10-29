@@ -22,7 +22,6 @@ import (
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"github.com/samber/lo"
-	"google.golang.org/protobuf/proto"
 )
 
 // Module 背包模块。
@@ -34,7 +33,8 @@ type Module struct {
 
 // New 创建背包模块。
 //
-// 两条路由经 module.Handle 注册：消息号由类型反查，解包与回包由基座负责。
+// 两条路由经 module.Route 注册：消息号由类型反查、请求由基座解包，
+// 回包由处理器自己决定（成功回业务响应，失败回错误码）。
 // Discardable 由本类型覆盖（见下），因为背包的写操作不能像只读模块那样
 // 「失败即丢弃」。
 func New(logger *log.Logger) *Module {
@@ -52,8 +52,8 @@ func New(logger *log.Logger) *Module {
 			c.State.MarkDirty("bag")
 			return nil
 		})
-	module.Handle(m.Bound, m.onList)
-	module.Handle(m.Bound, m.onUse)
+	module.Route(m.Bound, &gamev1.BagListReq{}, m.onList)
+	module.Route(m.Bound, &gamev1.UseItemReq{}, m.onUse)
 	return m
 }
 
@@ -68,8 +68,8 @@ func (*Module) Discardable(msgID uint32) bool { return msgID == codec.MsgBagList
 // **随机**的（Go 运行时故意打乱），所以每次拉列表的道具顺序可能不同。
 // 这里能接受是因为协议不承诺顺序、客户端自行排序；若哪天下发顺序
 // 变成契约，必须先排序再遍历。
-func (m *Module) onList(ctx *module.Context, _ *gamev1.BagListReq, resp *gamev1.BagListResp) error {
-	items := ctx.State.Items()
+func (m *Module) onList(c *module.Ctx[module.NoState], _ *gamev1.BagListReq) error {
+	items := c.State.Items()
 	// FilterMap：一次遍历完成「跳过脏数据 + 转协议结构」，比先 make 再
 	// append 少两行，且「哪些条目会被下发」集中在一个闭包里。
 	entries := lo.FilterMap(lo.Entries(items), func(e lo.Entry[int32, int64], _ int) (*gamev1.ItemEntry, bool) {
@@ -82,12 +82,13 @@ func (m *Module) onList(ctx *module.Context, _ *gamev1.BagListReq, resp *gamev1.
 			Count:   int32(e.Value),
 		}, true
 	})
-	*resp = gamev1.BagListResp{Code: int32(errcode.OK), Items: entries}
-	return nil
+	resp := &gamev1.BagListResp{Code: int32(errcode.OK), Items: entries}
+	return c.Reply(resp)
 }
 
 // onUse 使用道具。
-func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1.UseItemResp) error {
+func (m *Module) onUse(c *module.Ctx[module.NoState], req *gamev1.UseItemReq) error {
+	resp := &gamev1.UseItemResp{}
 	itemID := int32(req.ItemUid)
 	count := req.Count
 	// 未带数量按 1 个处理；堆叠模式下 ItemUid 即 item_id。
@@ -97,11 +98,11 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 
 	cfg, ok := gamedata.GetItemCfg(int64(itemID))
 	if !ok {
-		return ctx.FailCode(resp, errcode.ErrItemNotExist)
+		return c.FailCode(resp, errcode.ErrItemNotExist)
 	}
 	// 配置约定：Col3 = 单次可使用数量上限，<=0 表示不可主动使用（P7 接 item_type.xml）
 	if cfg.Col3 <= 0 {
-		return ctx.FailCode(resp, errcode.ErrItemNotUsable)
+		return c.FailCode(resp, errcode.ErrItemNotUsable)
 	}
 	// 请求数量超过单次上限时截断，而不是报错：与客户端的批量使用体验一致。
 	if int64(count) > cfg.Col3 {
@@ -115,29 +116,27 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 	//
 	// 不再单独 MarkDirty("bag")：RemoveItem 内部已 touch("bag")，
 	// 与 Grant 里「AddItem 自带标脏」同一约定。
-	if err := module.Spend(ctx.State, itemID, int64(count)); err != nil {
-		return ctx.FailCode(resp, errcode.ErrItemNotEnough)
+	if err := module.Spend(c.State, itemID, int64(count)); err != nil {
+		return c.FailCode(resp, errcode.ErrItemNotEnough)
 	}
 	// 事件：驱动任务/成就（use_item，Key=道具 ID）
 	// Emit 是可选依赖（nil = 无订阅方），必须先判空——
 	// 函数类型的零值是 nil，直接调用会 panic。
-	if ctx.Emit != nil {
-		ctx.Emit(module.Event{Type: "use_item", Key: fmt.Sprintf("%d", itemID), Delta: int64(count)})
+	if c.Emit != nil {
+		c.Emit(module.Event{Type: "use_item", Key: fmt.Sprintf("%d", itemID), Delta: int64(count)})
 	}
 
 	resp.Code = int32(errcode.OK)
-	resp.RemainCount = int32(ctx.State.GetItemCount(itemID))
-	// 回包由 module.Typed 统一完成；这里再回一次会多发一条响应。
-	// 增量推送
-	// Change=2 表示扣减（协议约定 1=增加、2=减少），与商店/发奖路径对称。
+	resp.RemainCount = int32(c.State.GetItemCount(itemID))
+	// 增量推送（先推后回）：Change=2 表示扣减（协议约定 1=增加、2=减少），
+	// 与商店/发奖路径对称。推送协议号由消息类型反查，写推送和写响应是
+	// 同一个 c.Reply——两者都只是「发一条消息出去」。
 	notify := &gamev1.BagChangeNotify{Changes: []*gamev1.ItemChange{{
 		ItemUid: int64(itemID),
 		ItemId:  itemID,
 		Count:   resp.RemainCount,
 		Change:  2,
 	}}}
-	if raw, err := proto.Marshal(notify); err == nil {
-		_ = ctx.Reply(codec.MsgBagChangeNotify, raw)
-	}
-	return nil
+	_ = c.Reply(notify)
+	return c.Reply(resp)
 }

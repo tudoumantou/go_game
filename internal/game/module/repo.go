@@ -202,6 +202,20 @@ func (b *Bound[D]) applyClock(ctx *Context) {
 	}
 }
 
+// Resp 为一条已注册的路由补充响应原型（只有配了 ErrCode 的模块需要）。
+//
+// Ctx 形态的处理器在正常路径自己 Reply，基座不需要知道响应类型。唯一需要
+// 原型的场景是 Guard 失败：那时处理器根本没执行，没有业务构造的响应可回，
+// 基座只能按原型克隆一份再置 code（见 Thin.errorResp）。
+//
+// 不配也不影响业务——Registry 探测不到 CacheFailureReply 时，缓存不可用
+// 走网关通用错误通知，客户端同样能感知失败，只是少一个明确业务码。
+// 所以只有 rank 这种「降级要明说稍后重试」的模块才调它。
+func (b *Bound[D]) Resp(req proto.Message, resp proto.Message) *Bound[D] {
+	b.resp[codec.ProtoID(req)] = respSpec{respID: codec.ProtoID(resp), prototype: resp}
+	return b
+}
+
 // HandleRoute 注册一条路由：协议号由消息类型反查，回什么由处理器决定。
 //
 // 与旧 HandleR 的区别：不预先绑定响应协议，因此不限制「一问一答」——

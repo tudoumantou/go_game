@@ -28,6 +28,8 @@ import (
 	"game_study/pkg/cache"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
+
+	gamev1 "game_study/pkg/pb/game/v1"
 )
 
 type mailRepo interface {
@@ -118,9 +120,9 @@ func New(repo mailRepo, logger *log.Logger) *Module {
 		WithLogger(logger).
 		WithLogin(m.onLogin).
 		WithLogout(m.onLogout)
-	module.Handle(m.Bound, m.onList)
-	module.Handle(m.Bound, m.onTake)
-	module.Handle(m.Bound, m.onDelete)
+	module.Route(m.Bound, &gamev1.MailListReq{}, m.onList)
+	module.Route(m.Bound, &gamev1.MailTakeAttachmentReq{}, m.onTake)
+	module.Route(m.Bound, &gamev1.MailDeleteReq{}, m.onDelete)
 	return m
 }
 

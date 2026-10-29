@@ -28,7 +28,6 @@ package scenemod
 import (
 	"game_study/internal/game/module"
 	scn "game_study/internal/game/scene"
-	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	"game_study/pkg/pb/game/v1"
 )
@@ -54,12 +53,11 @@ func New(mgr *scn.Manager, logger *log.Logger) *Module {
 	m.Bound = module.Define[module.NoState]("scene").
 		WithLogger(logger).
 		WithLogout(m.onLogout)
-	// 进入/移动不在这里回包：请求转给场景 Actor，结果由场景广播异步送达
-	// （MsgSceneEntityNotify / MsgSceneEnterResp）。没有请求-响应配对，
-	// 所以用 Handle；回包的两个协议用 HandleR。
-	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
-	m.Handle(codec.MsgSceneMoveReq, m.onMove)
-	m.HandleR(codec.MsgSceneLeaveReq, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{}, m.onLeave)
-	module.Handle(m.Bound, m.onSync)
+	// 进入/移动成功时不回包：请求转给场景 Actor，结果由场景广播异步送达
+	// （MsgSceneEntityNotify / MsgSceneEnterResp）；失败路径处理器自己 Reply。
+	module.Route(m.Bound, &gamev1.SceneEnterReq{}, m.onEnter)
+	module.Route(m.Bound, &gamev1.SceneMoveReq{}, m.onMove)
+	m.Bound.HandleRoute(&gamev1.SceneLeaveReq{}, m.onLeave)
+	module.Route(m.Bound, &gamev1.SceneSyncReq{}, m.onSync)
 	return m
 }

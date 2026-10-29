@@ -19,22 +19,22 @@ import (
 )
 
 // onSend 发送私聊（17.3：本端 out → 对方在线本服直投 / 跨服走 Kafka / 离线 pend）。
-func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *gamev1.ChatSendResp) error {
-	*resp = gamev1.ChatSendResp{}
+func (m *Module) onSend(c *module.Ctx[module.NoState], req *gamev1.ChatSendReq) error {
+	resp := &gamev1.ChatSendResp{}
 	// channel=0 按私聊兼容（老客户端不传频道字段），其余频道 P6 未开放
 	if req.Channel != channelPrivate && req.Channel != 0 {
-		return ctx.FailCode(resp, errcode.ErrChannelClosed) // P6 仅开放私聊
+		return c.FailCode(resp, errcode.ErrChannelClosed) // P6 仅开放私聊
 	}
 	if req.Content == "" || req.PeerId <= 0 {
-		return ctx.FailCode(resp, errcode.ErrContentEmpty)
+		return c.FailCode(resp, errcode.ErrContentEmpty)
 	}
 	if len(req.Content) > maxContentBytes || utf8.RuneCountInString(req.Content) > maxContentRunes {
-		return ctx.FailCode(resp, errcode.ErrContentTooLong)
+		return c.FailCode(resp, errcode.ErrContentTooLong)
 	}
 	// 频控放在内容校验之后：被拒绝的脏请求不占用额度（否则玩家打字打错
 	// 一次就要等一秒），只有真正要发出去的才计数。
-	if m.chatLimiter != nil && !m.chatLimiter.Allow(strconv.FormatInt(ctx.State.PlayerID(), 10)) {
-		return ctx.FailCode(resp, errcode.ErrChatTooFast)
+	if m.chatLimiter != nil && !m.chatLimiter.Allow(strconv.FormatInt(c.State.PlayerID(), 10)) {
+		return c.FailCode(resp, errcode.ErrChatTooFast)
 	}
 
 	// msgID 先于一切 IO 生成：历史行与投递消息必须共用同一个 ID，
@@ -42,8 +42,8 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	msgID := nextMsgID()
 	now := time.Now().Unix()
 	// 身份一律取 Actor 内会话，不信协议体携带的发送者字段（防伪造他人发言）
-	fromID := ctx.State.PlayerID()
-	fromName := ctx.State.Profile().Name
+	fromID := c.State.PlayerID()
+	fromName := c.State.Profile().Name
 
 	// ① 本端历史（direction=out）
 	if m.repo != nil {
@@ -78,7 +78,7 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 	resp.Code = int32(errcode.OK)
 	resp.MsgId = fmt.Sprintf("%d", msgID)
 	resp.SentAt = now
-	return nil
+	return c.Reply(resp)
 }
 
 // deliver 按在线状态选择投递路径。
@@ -87,18 +87,18 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 // 跨服在线 → Kafka 生产（对端所在节点的广播消费者落地后处理）。
 
 // onHistory 拉取与某好友的聊天历史。
-func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp *gamev1.ChatHistoryResp) error {
-	*resp = gamev1.ChatHistoryResp{Code: int32(errcode.OK)}
+func (m *Module) onHistory(c *module.Ctx[module.NoState], req *gamev1.ChatHistoryReq) error {
+	resp := &gamev1.ChatHistoryResp{Code: int32(errcode.OK)}
 	if !m.ready() {
-		return nil
+		return c.Reply(resp)
 	}
-	lines, err := m.repo.ListRecent(context.Background(), ctx.State.PlayerID(), req.PeerId, int(req.Limit))
+	lines, err := m.repo.ListRecent(context.Background(), c.State.PlayerID(), req.PeerId, int(req.Limit))
 	if err != nil {
 		return err
 	}
 	// 查询是倒序，回包按时间正序
 	// 逆序遍历把 DESC 结果反转：比在 SQL 里再套一层子查询省一次排序
-	selfID := ctx.State.PlayerID()
+	selfID := c.State.PlayerID()
 	for i := len(lines) - 1; i >= 0; i-- {
 		l := lines[i]
 		msg := &gamev1.ChatMessageNotify{
@@ -120,7 +120,7 @@ func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp
 	// 取满一页即提示可能还有更多：精确判断要额外 count，
 	// 私聊翻页场景用「取满」近似足够（客户端可再拉一页确认）
 	resp.HasMore = len(lines) >= int(req.Limit)
-	return nil
+	return c.Reply(resp)
 }
 
 // nextMsgID 生成消息 ID（时间戳毫秒 << 20 | 20 位随机）。

@@ -47,7 +47,7 @@ func New(logger *log.Logger) *Module {
 			c.State.MarkDirty("profile")
 			return nil
 		})
-	module.Handle(m.Bound, m.onPlayerInfo)
+	module.Route(m.Bound, &gamev1.PlayerInfoReq{}, m.onPlayerInfo)
 	return m
 }
 
@@ -57,25 +57,25 @@ func New(logger *log.Logger) *Module {
 // 维护在 bonus 上，最终值 = 基础值 + 加成，这里只取最终值下发。
 // 这样新增加成来源（坐骑、称号）不需要改本模块——只要那个模块
 // 在自己 OnLogin 里 AddBonus。
-func (m *Module) onPlayerInfo(ctx *module.Context, _ *gamev1.PlayerInfoReq, resp *gamev1.PlayerInfoResp) error {
-	p := ctx.State.Profile()
-	*resp = gamev1.PlayerInfoResp{
+func (m *Module) onPlayerInfo(c *module.Ctx[module.NoState], _ *gamev1.PlayerInfoReq) error {
+	p := c.State.Profile()
+	resp := &gamev1.PlayerInfoResp{
 		Code:   0,
-		RoleId: ctx.State.PlayerID(),
+		RoleId: c.State.PlayerID(),
 		Name:   p.Name,
 		Level:  p.Level,
 		Exp:    p.Exp,
-		ExpMax: ctx.State.ExpMax(),
+		ExpMax: c.State.ExpMax(),
 		Coin:   p.Coin,
 		Attrs: []*gamev1.AttrPair{
-			{AttrId: attrHP, Value: ctx.State.GetAttr("hp")},
-			{AttrId: attrMP, Value: ctx.State.GetAttr("mp")},
-			{AttrId: attrATK, Value: ctx.State.GetAttr("atk")},
-			{AttrId: attrDEF, Value: ctx.State.GetAttr("def")},
-			{AttrId: attrSPD, Value: ctx.State.GetAttr("spd")},
+			{AttrId: attrHP, Value: c.State.GetAttr("hp")},
+			{AttrId: attrMP, Value: c.State.GetAttr("mp")},
+			{AttrId: attrATK, Value: c.State.GetAttr("atk")},
+			{AttrId: attrDEF, Value: c.State.GetAttr("def")},
+			{AttrId: attrSPD, Value: c.State.GetAttr("spd")},
 		},
 	}
-	return nil
+	return c.Reply(resp)
 }
 
 // 保证 Module 满足 module.Module（Thin 已预实现全部方法）。

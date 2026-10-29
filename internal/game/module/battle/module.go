@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"game_study/internal/game/module"
-	"game_study/pkg/codec"
 	"game_study/pkg/log"
+	gamev1 "game_study/pkg/pb/game/v1"
 )
 
 type Module struct {
@@ -55,11 +55,10 @@ func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Log
 		queued:   make(map[int64]bool),
 	}
 	m.Bound = module.Define[module.NoState]("battle").WithLogger(logger)
-	module.Handle(m.Bound, m.onMatch)
-	// 战报是单向上报：客户端不等回包，服务端也没有响应协议可回。
-	// 用 Handle 而不是 HandleR（后者要求声明响应）。
-	m.Handle(codec.MsgBattleOpReport, m.onOpReport)
-	module.Handle(m.Bound, m.onResultReport)
+	module.Route(m.Bound, &gamev1.MatchReq{}, m.onMatch)
+	// 战报是单向上报：客户端不等回包，处理器成功路径不 Reply。
+	module.Route(m.Bound, &gamev1.BattleOpReport{}, m.onOpReport)
+	module.Route(m.Bound, &gamev1.BattleResultReport{}, m.onResultReport)
 	return m
 }
 

@@ -129,35 +129,42 @@ func TestHandlerTemplate(t *testing.T) {
 	requireParses(t, "handler.go", out)
 }
 
-// TestThinModuleTemplate Thin 形态（有独立表、无内存态）的装配。
+// TestStoreModuleTemplate 独立表形态（无内存态）的装配。
 //
-// 与 Define 形态的关键差别：数据不在内存里，所以没有 Guard(RequireCache)，
-// 处理器走 module.Handle（签名带 resp，写字段即回包）。
-func TestThinModuleTemplate(t *testing.T) {
-	out := thinModuleTmpl("mailbox", []msgPair{
+// 与 Define 形态的关键差别只有 D：数据不在玩家快照里，取 NoState，
+// 模块自己持仓储。基座、路由函数、处理器签名全部相同——这正是
+// v3.25 统一签名的目的：两种数据形态不该长出两套写法。
+func TestStoreModuleTemplate(t *testing.T) {
+	out := storeModuleTmpl("mailbox", []msgPair{
 		{req: "MailboxListReq", resp: "MailboxListResp"},
 		{req: "MailboxClaimReq", resp: "MailboxClaimResp"},
 	})
 	for _, want := range []string{
 		"type Module struct {",
-		"*module.Thin",
-		"module.NewThin(\"mailbox\", module.ThinLogger(logger))",
-		"module.Handle(m.Thin, m.onMailboxList)",
-		"module.Handle(m.Thin, m.onMailboxClaim)",
+		"*module.Bound[module.NoState]",
+		`module.Define[module.NoState]("mailbox")`,
+		"module.Route(m.Bound, &gamev1.MailboxListReq{}, m.onMailboxList)",
+		"module.Route(m.Bound, &gamev1.MailboxClaimReq{}, m.onMailboxClaim)",
 		"func New(database *db.DB, logger *log.Logger) *Module",
 	} {
 		require.Contains(t, out, want, fmt.Sprintf("缺少 %q\n%s", want, out))
 	}
-	// 无内存态就不该有快照守卫：有 Guard 说明形态搞混了
-	require.NotContains(t, out, "RequireCache", "Thin 形态不参与快照 CAS，不该有 RequireCache")
+	// 无内存态就不该有快照守卫；也不该再出现 Thin 直接组装（第二套处理器签名）
+	require.NotContains(t, out, "RequireCache", "NoState 形态不参与快照 CAS，不该有 RequireCache")
+	for _, dead := range []string{"module.NewThin", "module.Handle(", "*module.Thin"} {
+		require.NotContains(t, out, dead, fmt.Sprintf("独立表形态不该再出现 %q（处理器签名已统一）", dead))
+	}
 	requireParses(t, "module.go", out)
 }
 
-// TestThinHandlerTemplate Thin 形态处理器的签名必须带 resp。
-func TestThinHandlerTemplate(t *testing.T) {
-	out := thinHandlerTmpl("mailbox", []msgPair{{req: "MailboxListReq", resp: "MailboxListResp"}})
-	require.Contains(t, out, "func (m *Module) onMailboxList(ctx *module.Context, req *gamev1.MailboxListReq, resp *gamev1.MailboxListResp) error {")
-	require.Contains(t, out, "*resp = gamev1.MailboxListResp{}")
+// TestStoreHandlerTemplate 独立表形态处理器的签名必须与 Define 形态一致。
+func TestStoreHandlerTemplate(t *testing.T) {
+	out := storeHandlerTmpl("mailbox", []msgPair{{req: "MailboxListReq", resp: "MailboxListResp"}})
+	require.Contains(t, out, "func (m *Module) onMailboxList(c *module.Ctx[module.NoState], req *gamev1.MailboxListReq) error {")
+	require.Contains(t, out, "resp := &gamev1.MailboxListResp{}")
+	require.Contains(t, out, "return c.Reply(resp)")
+	// 旧的「写 resp 字段即回包」写法不能再出现
+	require.NotContains(t, out, "*resp = gamev1.")
 	requireParses(t, "handler.go", out)
 }
 
