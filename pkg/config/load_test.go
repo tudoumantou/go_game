@@ -41,6 +41,11 @@ func TestShippedGameConfigsLoad(t *testing.T) {
 				}
 			}
 			require.True(t, found, "configs/game 的 idtab.mappings 应包含 mail")
+
+			// idtab 的两个调参项必须显式给出：它们 v3.21 才接线，
+			// 配成空/0 会静默走代码默认值——等于配置又变回摆设。
+			require.Positive(t, cfg.IDTab.BuildPageSize, "出厂配置应显式给出构建分页")
+			require.NotEmpty(t, cfg.IDTab.ReconcileInterval, "出厂配置应显式给出对账周期")
 		})
 	}
 }
