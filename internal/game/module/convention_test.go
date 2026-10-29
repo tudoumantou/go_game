@@ -151,3 +151,145 @@ func exprString(e ast.Expr) string {
 		return ""
 	}
 }
+
+// ── 状态读写入口的唯一性 ─────────────────────────────────────────────
+//
+// Repository（repository.go）把「读 → 改 → 写 → 标脏」收成一个调用。
+// 但抽象能不能立住，取决于有没有人绕过它——只要有一个模块还在
+// Get + 手工 Save，下一个人就会照着抄。所以用静态检查把它变成 CI 卡点。
+//
+// 检查三类调用（都是 x.Y.Method() 形状，Y 是 Repo 或 State）：
+//
+//	Repo.Get / Repo.Save   已迁移模块里禁止（漏写 Save = 静默丢数据）
+//	State.ClaimBiz         全仓禁止（幂等键必须与状态同一次提交）
+//	State.CanHold          全仓禁止（容量预检必须与入包同一次调用）
+//	State.MarkDirty        仅允许没有 Ext 槽位的模块（它们没有 Repository）
+
+// stateCallRule 一条调用约束。
+type stateCallRule struct {
+	recv   string // 接收者最后一段：Repo / State
+	method string // 方法名
+	desc   string // 违规时打印的理由
+}
+
+var stateCallRules = []stateCallRule{
+	{"Repo", "Get", "读状态用 c.Repo.View，改状态用 c.Repo.Mutate——Get+Save 的写法漏一次 Save 就是一次静默丢数据"},
+	{"Repo", "Save", "改状态用 c.Repo.Mutate（changed=true 才写回），不要再手工 Save"},
+	{"State", "ClaimBiz", "幂等键只走 c.Repo.Once(key, fn)：手工占键容易漏标脏，「只发奖」的请求会丢键"},
+	{"State", "CanHold", "容量预检只走 module.Grant / module.PrecheckGrant：自己调容易漏掉 int32 溢出检查"},
+	{"State", "MarkDirty", "有 Ext 槽位的模块用 c.Repo.Touch()，它会跳过空槽位，不为没玩过的玩家写空状态"},
+}
+
+// TestModulesUseRepository 守住「状态读写只有一个入口」。
+//
+// 全部模块都已完成迁移（v3.16），所以规则是全量生效、没有白名单：
+// 新模块从第一天起就得走 Repository，不存在「以后再说」的存量。
+func TestModulesUseRepository(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	scanned := 0
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "moduletest" {
+			continue // moduletest 是测试桩，不是业务模块
+		}
+		mod := e.Name()
+		files, err := filepath.Glob(filepath.Join(mod, "*.go"))
+		require.NoError(t, err)
+		// 模块形态决定 MarkDirty 是否合法：没有 Ext 槽位的模块没有 Repository
+		// 可挂，只能 MarkDirty 提示一次常规 flush。形态从源码推导，不靠手工
+		// 维护白名单——白名单一旦漏写，规则就会对新模块静默失效。
+		hasState := moduleHasExtState(files)
+		for _, file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				continue // 测试要给 State 写实现，天然会出现这些方法名
+			}
+			scanned++
+			checkStateCalls(t, file, mod, hasState)
+		}
+	}
+	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
+}
+
+// moduleHasExtState 判断模块是否持有 Ext 状态：存在 Define[非 NoState] 即为是。
+//
+// 手写基座（chat/mail/friend/guild/team/scene）没有 Define，返回 false——
+// 它们的状态在独立表或玩家快照的固定字段里，确实没有 Repository 可挂。
+func moduleHasExtState(files []string) bool {
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if err != nil {
+			continue // 解析失败交给 checkStateCalls 报错
+		}
+		has := false
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			idx, ok := call.Fun.(*ast.IndexExpr)
+			if !ok || !strings.HasSuffix(exprString(idx.X), "Define") {
+				return true
+			}
+			if !strings.Contains(exprString(idx.Index), "NoState") {
+				has = true
+			}
+			return true
+		})
+		if has {
+			return true
+		}
+	}
+	return false
+}
+
+// checkStateCalls 检查一个源文件里的状态读写调用是否走了唯一入口。
+func checkStateCalls(t *testing.T, path, mod string, hasState bool) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		recv, method := callRecvAndMethod(call)
+		if recv == "" {
+			return true
+		}
+		for _, rule := range stateCallRules {
+			if rule.recv != recv || rule.method != method {
+				continue
+			}
+			if method == "MarkDirty" && !hasState {
+				continue // 没有 Ext 槽位的模块只能这么写
+			}
+			pos := fset.Position(call.Pos())
+			t.Errorf("%s: %s 模块直接调了 %s.%s —— %s", pos, mod, recv, method, rule.desc)
+		}
+		return true
+	})
+}
+
+// callRecvAndMethod 从 x.Y.Method() 里取出 (Y, Method)。
+//
+// 只认「两级选择器 + 调用」这一种形状：字段名 Y 是 Repo 或 State。
+// 其他形状（包级函数 module.Grant(...)、单级 a.B(...)）返回空，不参与检查。
+func callRecvAndMethod(call *ast.CallExpr) (recv, method string) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return "", ""
+	}
+	owner, ok := sel.X.(*ast.SelectorExpr)
+	if !ok {
+		return "", ""
+	}
+	return owner.Sel.Name, sel.Sel.Name
+}

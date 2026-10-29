@@ -113,17 +113,17 @@ func TestStateRoundTrip(t *testing.T) {
 	ctx, _ := newCtx(st)
 	m := M
 
-	// 业务只调 Repo：Get 解码 → 改 → Save 编码并标脏。
+	// 业务只调 Repo：Mutate 一次完成「解码 → 改 → 编码回写并标脏」。
 	biz := m.NewCtx(ctx)
-	d, err := biz.Repo.Get()
-	require.NoError(t, err)
-	d.add(2, []module.ItemGrant{{ItemID: 1001, Count: 20}})
-	require.NoError(t, biz.Repo.Save(d))
+	require.NoError(t, biz.Repo.Mutate(func(d *SignIn) (bool, error) {
+		d.add(2, []module.ItemGrant{{ItemID: 1001, Count: 20}})
+		return true, nil
+	}))
 
 	// Ext 里存的是业务结构（而不是表行），业务不必知道表长什么样。
 	raw := st.Ext(stateKey)
 	var decoded SignIn
-	err = json.Unmarshal(raw, &decoded)
+	err := json.Unmarshal(raw, &decoded)
 	require.NoError(t, err, fmt.Sprintf("Ext 不是 SignIn 结构: %v (%s)", err, raw))
 	require.Len(t, decoded.Days, 1, fmt.Sprintf("Ext 内容不符: %+v", decoded))
 	require.EqualValues(t, 2, decoded.Days[0])

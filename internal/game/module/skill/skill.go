@@ -42,9 +42,11 @@ func init() {
 }
 
 // onLogout 下线时标脏，确保最后一次学习的技能随快照落库。
+//
+// 用 Repo.Touch 而不是 State.MarkDirty(stateKey)：槽位为空时（一个技能
+// 都没学）不该给玩家写一条空状态，Touch 会跳过这种情况。
 func onLogout(c *module.Ctx[Data]) error {
-	c.State.MarkDirty(stateKey)
-	return nil
+	return c.Repo.Touch()
 }
 
 // onList 已学技能列表：按 skill_id 升序返回（技能数量很小，用手写排序避免引入 sort 依赖），
@@ -54,33 +56,35 @@ func onLogout(c *module.Ctx[Data]) error {
 // 这里用手写冒泡而非 sort.Ints——N 通常 <20，省一个 import，
 // 也顺带在注释里写明了「为什么不用标准库」。
 func onList(c *module.Ctx[Data]) error {
-	d, err := c.Repo.Get()
-	if err != nil {
-		return c.Fail(&gamev1.SkillListResp{Code: int32(errcode.ErrSystem)}, err)
-	}
 	resp := &gamev1.SkillListResp{}
-	ids := make([]int32, 0, len(d.Levels))
-	for id := range d.Levels {
-		ids = append(ids, id)
-	}
-	// 稳定顺序，客户端列表不抖动（N 通常 <20，冒泡足够）。
-	for i := 0; i < len(ids); i++ {
-		for j := i + 1; j < len(ids); j++ {
-			if ids[j] < ids[i] {
-				ids[i], ids[j] = ids[j], ids[i]
+	err := c.Repo.View(func(d *Data) error {
+		ids := make([]int32, 0, len(d.Levels))
+		for id := range d.Levels {
+			ids = append(ids, id)
+		}
+		// 稳定顺序，客户端列表不抖动（N 通常 <20，冒泡足够）。
+		for i := 0; i < len(ids); i++ {
+			for j := i + 1; j < len(ids); j++ {
+				if ids[j] < ids[i] {
+					ids[i], ids[j] = ids[j], ids[i]
+				}
 			}
 		}
-	}
-	for _, id := range ids {
-		name := ""
-		if cfg, ok := gamedata.GetSkillCfg(int64(id)); ok {
-			name = cfg.Col1
+		for _, id := range ids {
+			name := ""
+			if cfg, ok := gamedata.GetSkillCfg(int64(id)); ok {
+				name = cfg.Col1
+			}
+			resp.Skills = append(resp.Skills, &gamev1.SkillEntry{
+				SkillId: id,
+				Name:    name,
+				Level:   d.Levels[id],
+			})
 		}
-		resp.Skills = append(resp.Skills, &gamev1.SkillEntry{
-			SkillId: id,
-			Name:    name,
-			Level:   d.Levels[id],
-		})
+		return nil
+	})
+	if err != nil {
+		return c.Fail(&gamev1.SkillListResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 	return c.Reply(resp)
 }
@@ -97,18 +101,20 @@ func onLearn(c *module.Ctx[Data], req *gamev1.SkillLearnReq) error {
 	if c.State.Profile().Level < int32(cfg.Col2) {
 		return c.FailCode(&gamev1.SkillLearnResp{}, errcode.ErrSkillLevelLow)
 	}
-	d, err := c.Repo.Get()
+
+	resp := &gamev1.SkillLearnResp{}
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		if _, learned := d.Levels[req.SkillId]; learned {
+			resp.Code = int32(errcode.ErrSkillLearned)
+			return false, nil
+		}
+		d.Levels[req.SkillId] = 1
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	if _, learned := d.Levels[req.SkillId]; learned {
-		return c.FailCode(&gamev1.SkillLearnResp{}, errcode.ErrSkillLearned)
-	}
-	d.Levels[req.SkillId] = 1
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.SkillLearnResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	return c.Reply(&gamev1.SkillLearnResp{})
+	return c.Reply(resp)
 }
 
 // onUpgrade 升级：扣材料与等级变更在同一次快照提交。
@@ -120,30 +126,35 @@ func onUpgrade(c *module.Ctx[Data], req *gamev1.SkillUpgradeReq) error {
 	if _, ok := gamedata.GetSkillCfg(int64(req.SkillId)); !ok {
 		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillNotExist)
 	}
-	d, err := c.Repo.Get()
+
+	resp := &gamev1.SkillUpgradeResp{}
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		level, learned := d.Levels[req.SkillId]
+		if !learned {
+			resp.Code = int32(errcode.ErrSkillNotLearned)
+			return false, nil
+		}
+		// 消耗读 skill_upgrade 表（Col1=当前等级，Col2=升到下一级的消耗）。
+		// 查不到该等级的行即已满级——旧实现是 skill.Col3 * level，没有上限，
+		// 技能可以无限升级；运营也没有任何可调的地方（那张表纯摆设）。
+		cost, up := skillUpgradeCost(level)
+		if !up {
+			resp.Code = int32(errcode.ErrSkillMaxLevel)
+			return false, nil
+		}
+		if err := module.Spend(c.State, upgradeItemID, cost); err != nil {
+			resp.Code = int32(errcode.ErrSkillNoResource)
+			return false, nil
+		}
+		next := level + 1
+		d.Levels[req.SkillId] = next
+		resp.Level = next
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	level, learned := d.Levels[req.SkillId]
-	if !learned {
-		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillNotLearned)
-	}
-	// 消耗读 skill_upgrade 表（Col1=当前等级，Col2=升到下一级的消耗）。
-	// 查不到该等级的行即已满级——旧实现是 skill.Col3 * level，没有上限，
-	// 技能可以无限升级；运营也没有任何可调的地方（那张表纯摆设）。
-	cost, up := skillUpgradeCost(level)
-	if !up {
-		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillMaxLevel)
-	}
-	if err := module.Spend(c.State, upgradeItemID, cost); err != nil {
-		return c.FailCode(&gamev1.SkillUpgradeResp{}, errcode.ErrSkillNoResource)
-	}
-	next := level + 1
-	d.Levels[req.SkillId] = next
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.SkillUpgradeResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	return c.Reply(&gamev1.SkillUpgradeResp{Level: next})
+	return c.Reply(resp)
 }
 
 // skillUpgradeCost 返回「从 level 升到 level+1」的消耗；没有该行表示已满级。

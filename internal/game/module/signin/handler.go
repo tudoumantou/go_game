@@ -1,6 +1,9 @@
 // handler.go —— 签到协议处理器。
 //
-// 只写业务流：取状态 → 校验配置 → 判幂等 → 发奖 → 改状态 → 存回 → 回包。
+// 只写业务流：取状态 → 校验配置 → 判幂等 → 发奖 → 改状态 → 回包。
+// 状态读写走 Repository（View/Mutate），不出现 Get/Save 这种「改完要记得写回」
+// 的两段式写法——漏写 Save 是一次静默数据丢失，单元测试抓不到。
+//
 // 不出现 SQL、不碰 *db.DB、不拼缓存 key（由 docs/模块开发约定.md §2 约束，
 // .golangci.yml 的 depguard 会在 import 层面卡住）。
 package signin
@@ -26,70 +29,82 @@ func onInfo(c *module.Ctx[SignIn]) error {
 	// 「按旧周几判定已领、按新周几发奖」的错位。
 	today := timeutil.Weekday(c.Now())
 
-	d, err := c.Repo.Get()
+	resp := &gamev1.SigninInfoResp{Today: today}
+	err := c.Repo.View(func(d *SignIn) error {
+		resp.ClaimedToday = d.has(today)
+		resp.ClaimedDays = d.Days
+		resp.ClaimedRewards = d.Rewards
+		return nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.SigninInfoResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	return c.Reply(&gamev1.SigninInfoResp{
-		Today:          today,
-		ClaimedToday:   d.has(today),
-		ClaimedDays:    d.Days,
-		ClaimedRewards: d.Rewards,
-	})
+	return c.Reply(resp)
 }
 
 // onClaim 领取今天对应的奖励；已领过只回状态，不重复发奖。
 //
-// 顺序固定为「取状态 → 校验配置 → 幂等判断 → 发奖 → 改状态 → 存回」，
-// 任何一步失败都不 Save，内存改动不会产生一次无意义的提交。
+// 顺序固定为「校验配置 → 幂等判断 → 发奖 → 改状态」，
+// 任何一步失败都让 Mutate 的闭包返回 changed=false，状态不回写，
+// 内存改动不会产生一次无意义的提交。
+//
+// 回包放在 Mutate 之后：闭包里只落定 resp 的字段，不发包——
+// 否则会出现「响应先于状态提交」的窗口，客户端刷新会读到旧状态。
 func onClaim(c *module.Ctx[SignIn]) error {
 	today := timeutil.Weekday(c.Now())
 
-	d, err := c.Repo.Get()
+	// 四个分支共用一份回包：只有 Code/Already/Rewards 会变，
+	// 状态字段（Day/Days/Rewards 汇总）始终回当前值。
+	resp := &gamev1.SigninClaimResp{Day: today}
+
+	// bagChanges 只在真正发奖时非空，用来决定是否补发一条背包变更通知。
+	var bagChanges []module.BagChange
+
+	err := c.Repo.Mutate(func(d *SignIn) (bool, error) {
+		resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
+
+		grants, cfgErr := rewardsForDay(today)
+		if cfgErr != nil {
+			// 配置是运营产物、不是玩家状态，这里只记日志并回业务码，
+			// 不让整个请求走系统错误路径（客户端要靠 Day/Days 刷新界面）。
+			c.Log().Warn("signin config invalid", "day", today, "err", cfgErr)
+			resp.Code = int32(errcode.ErrSigninConfig)
+			return false, nil
+		}
+		resp.Rewards = protoRewards(grants)
+
+		// 幂等：重复领取回「已领」状态，不再发奖。
+		if d.has(today) {
+			resp.Already = true
+			return false, nil
+		}
+
+		// 发奖与登记在同一个提交窗口里：Grant 失败时不改任何状态，
+		// 领取位也就不会置上，玩家清包后可重新领。
+		changes, grantErr := module.Grant(c.State, grants)
+		if grantErr != nil {
+			resp.Code = int32(grantCode(grantErr))
+			return false, nil
+		}
+
+		d.add(today, grants)
+		resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
+		bagChanges = changes
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.SigninClaimResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 
-	// 四个分支共用一份回包：只有 Code/Already/Rewards 会变，
-	// 状态字段（Day/Days/Rewards 汇总）始终回当前值。
-	resp := &gamev1.SigninClaimResp{
-		Day: today, ClaimedDays: d.Days, ClaimedRewards: d.Rewards,
-	}
-
-	grants, cfgErr := rewardsForDay(today)
-	if cfgErr != nil {
-		// resp 里已经填好了 Day/ClaimedDays/ClaimedRewards，
-		// 用 FailCode 只改 Code 再回包，别清空重建（客户端要靠这些字段刷新界面）。
-		return c.FailCode(resp, errcode.ErrSigninConfig)
-	}
-	resp.Rewards = protoRewards(grants)
-
-	// 幂等：重复领取回「已领」状态，不再发奖。
-	if d.has(today) {
-		resp.Already = true
-		return c.Reply(resp)
-	}
-
-	// 发奖与登记在同一个提交窗口里：Grant 失败时不改任何状态，
-	// 领取位也就不会置上，玩家清包后可重新领。
-	changes, grantErr := module.Grant(c.State, grants)
-	if grantErr != nil {
-		resp.Code = int32(grantCode(grantErr))
-		return c.Reply(resp)
-	}
-
-	d.add(today, grants)
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.SigninClaimResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	resp.ClaimedDays, resp.ClaimedRewards = d.Days, d.Rewards
-
 	if err := c.Reply(resp); err != nil {
 		return err
 	}
+	if len(bagChanges) == 0 {
+		return nil
+	}
 	// 背包变更由 Grant 一并算出（含发放后存量），直接转协议下发。
 	return c.Reply(&gamev1.BagChangeNotify{
-		Changes: module.ToItemChanges(changes),
+		Changes: module.ToItemChanges(bagChanges),
 	})
 }
 

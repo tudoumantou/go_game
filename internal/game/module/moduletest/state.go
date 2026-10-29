@@ -58,6 +58,12 @@ func (s *State) SetSceneID(id int32) { s.profile.SceneID = id }
 // DirtyModules 返回被标脏的模块名（按调用顺序）。
 func (s *State) DirtyModules() []string { return append([]string(nil), s.dirty...) }
 
+// SetExtCount 返回 SetExt 被调用的次数。
+//
+// 用来断言「没改状态就不该写回」：Repository.Mutate 在 changed=false 时
+// 必须一次 SetExt 都不产生，否则每条只读请求都会赔上一次序列化 + 一次提交。
+func (s *State) SetExtCount() int { return s.setExts }
+
 // SetExt 写模块私有状态并标脏，与 player.State 行为一致。
 func (s *State) SetExt(name string, raw json.RawMessage) {
 	s.setExts++
@@ -124,11 +130,16 @@ func (s *State) Ext(name string) json.RawMessage {
 func (s *State) CanHold([]module.ItemGrant) bool { return s.canHold }
 
 // ClaimBiz 实现 module.PlayerState：首次占用返回 true。
+//
+// 与 player.State 一致：占用必须标脏（真实实现里是 touch("grants")）。
+// 桩如果只置位不标脏，「只占键、不改状态」的请求在测试里会显示为「无需提交」，
+// 而线上是能提交的——桩与真实实现的差异会掩盖 bug，不是简化。
 func (s *State) ClaimBiz(key string) bool {
 	if s.biz[key] {
 		return false
 	}
 	s.biz[key] = true
+	s.dirty = append(s.dirty, "grants")
 	return true
 }
 

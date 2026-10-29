@@ -37,12 +37,14 @@ import (
 //	}
 //
 //	func onClaim(c *module.Ctx[Data], _ *gamev1.SigninClaimReq) error {
-//		d, err := c.Repo.Get()        // 取状态
-//		d.Days = append(d.Days, today)
-//		if err := c.Repo.Save(d); err != nil {
+//		err := c.Repo.Mutate(func(d *Data) (bool, error) {   // 解码 → 改 → 写回
+//			d.Days = append(d.Days, today)                    // changed=true 才写回
+//			return true, nil
+//		})
+//		if err != nil {
 //			return err
 //		}
-//		return c.Reply(&gamev1.SigninClaimResp{Code: 0})
+//		return c.Reply(&gamev1.SigninClaimResp{})
 //	}
 //
 // 也可以直接 NewStateful 组装（需要完全自定义日志/钩子时），
@@ -67,21 +69,14 @@ func NewStateful[T any](name string, newFn func() *T, opts ...ThinOption) *State
 	}
 }
 
-// Read 以只读方式访问状态：解码后交给 fn，不回写。
-func (s *Stateful[T]) Read(ctx *Context, fn func(*T)) error {
-	d, err := s.decode(ctx)
-	if err != nil {
-		return err
-	}
-	fn(d)
-	return nil
-}
-
 // Mutate 以读写方式访问状态：fn 返回 true 表示有改动，基座负责写回 Ext 并标脏。
 //
 // 为什么让 fn 返回 bool 而不是无条件写回：很多请求是「只读 + 早退」
 // （已领取、配置缺失、背包已满），无权改状态却触发一次序列化与标脏，
 // 会让每条消息都产生一次提交。fn 的返回值就是「我到底改没改」的答案。
+//
+// 业务代码不直接调它，走 Repository.Mutate（签名多一个 error，见 repository.go）。
+// 保留这个导出是给测试「种一份初始状态」用的——测试不关心错误路径。
 func (s *Stateful[T]) Mutate(ctx *Context, fn func(*T) bool) error {
 	d, err := s.decode(ctx)
 	if err != nil {
@@ -96,6 +91,9 @@ func (s *Stateful[T]) Mutate(ctx *Context, fn func(*T) bool) error {
 // State 返回当前状态的解码副本（只读场景的便捷写法）。
 //
 // 每次调用都会解码一次，循环里调它要自己缓存。
+//
+// 注：曾经还有一个 Read（只读闭包），零调用，已删除——只读语义统一由
+// Repository.View 提供，同一种语义不留两个入口。
 func (s *Stateful[T]) State(ctx *Context) (*T, error) { return s.decode(ctx) }
 
 // decode 从玩家快照的 Ext 槽位解出状态结构体。

@@ -28,16 +28,15 @@ import (
 )
 
 func onLogin(c *module.Ctx[Data]) error {
-	d, err := c.Repo.Get()
-	if err != nil {
-		return nil
-	}
-	for _, id := range d.Field {
-		if bonus := atkBonus(id, d.Stars[id]); bonus != 0 {
-			c.State.AddBonus("atk", bonus)
+	// 只读遍历：只往 State 加属性加成，不修改模块状态。
+	return c.Repo.View(func(d *Data) error {
+		for _, id := range d.Field {
+			if bonus := atkBonus(id, d.Stars[id]); bonus != 0 {
+				c.State.AddBonus("atk", bonus)
+			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // onList 伙伴列表：全部配置都下发，未拥有（星级 0）不带加成字段。
@@ -46,54 +45,59 @@ func onLogin(c *module.Ctx[Data]) error {
 // （星级 0），客户端可渲染「可激活」入口。
 
 func onList(c *module.Ctx[Data]) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.PartnerListResp{FieldLimit: fieldLimit}
+	err := c.Repo.View(func(d *Data) error {
+		for _, cfg := range gamedata.PartnerCfgList() {
+			id := int32(cfg.Id)
+			star := d.Stars[id]
+			entry := &gamev1.PartnerEntry{
+				PartnerId: id,
+				Name:      cfg.Col1,
+				Quality:   int32(cfg.Col2),
+				Star:      star,
+			}
+			if star > 0 {
+				entry.OnField = contains(d.Field, id)
+				entry.AtkBonus = atkBonus(id, star)
+			}
+			resp.Partners = append(resp.Partners, entry)
+		}
+		return nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.PartnerListResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	resp := &gamev1.PartnerListResp{FieldLimit: fieldLimit}
-	for _, cfg := range gamedata.PartnerCfgList() {
-		id := int32(cfg.Id)
-		star := d.Stars[id]
-		entry := &gamev1.PartnerEntry{
-			PartnerId: id,
-			Name:      cfg.Col1,
-			Quality:   int32(cfg.Col2),
-			Star:      star,
-		}
-		if star > 0 {
-			entry.OnField = contains(d.Field, id)
-			entry.AtkBonus = atkBonus(id, star)
-		}
-		resp.Partners = append(resp.Partners, entry)
 	}
 	return c.Reply(resp)
 }
 
 // onActivate 激活：消耗配置里的 col3 金币，状态置为 1 星（不上阵）。
 //
-// 扣费与置星都在内存：任何一步失败都不 Save，不会「扣了钱没激活」。
+// 扣费与置星都在内存：任何一步失败都不写回，不会「扣了钱没激活」。
 
 func onActivate(c *module.Ctx[Data], req *gamev1.PartnerActivateReq) error {
 	cfg, ok := gamedata.GetPartnerCfg(int64(req.PartnerId))
 	if !ok {
 		return c.FailCode(&gamev1.PartnerActivateResp{}, errcode.ErrPartnerNotFound)
 	}
-	d, err := c.Repo.Get()
+
+	resp := &gamev1.PartnerActivateResp{}
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		if d.Stars[req.PartnerId] > 0 {
+			resp.Code = int32(errcode.ErrPartnerOwned)
+			return false, nil
+		}
+		// 扣费与置星在同一份内存状态里：提交失败一起回滚。
+		if err := module.Spend(c.State, itemCoin, cfg.Col3); err != nil {
+			resp.Code = int32(errcode.ErrPartnerNoCoin)
+			return false, nil
+		}
+		d.Stars[req.PartnerId] = 1
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.PartnerActivateResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	if d.Stars[req.PartnerId] > 0 {
-		return c.FailCode(&gamev1.PartnerActivateResp{}, errcode.ErrPartnerOwned)
-	}
-	// 扣费与置星在同一份内存状态里：提交失败一起回滚。
-	if err := module.Spend(c.State, itemCoin, cfg.Col3); err != nil {
-		return c.FailCode(&gamev1.PartnerActivateResp{}, errcode.ErrPartnerNoCoin)
-	}
-	d.Stars[req.PartnerId] = 1
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.PartnerActivateResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	return c.Reply(&gamev1.PartnerActivateResp{})
+	return c.Reply(resp)
 }
 
 // onStarUp 升星：按 partner_star 的「当前星级 → 下一星」消耗金币。
@@ -103,33 +107,41 @@ func onActivate(c *module.Ctx[Data], req *gamev1.PartnerActivateReq) error {
 // 比「先减后加」少一次中间态。
 
 func onStarUp(c *module.Ctx[Data], req *gamev1.PartnerStarUpReq) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.PartnerStarUpResp{}
+	var bonusDelta int64 // 已上阵伙伴的加成净变化
+
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		star := d.Stars[req.PartnerId]
+		if star <= 0 {
+			resp.Code = int32(errcode.ErrPartnerNotOwned)
+			return false, nil
+		}
+		cost, ok := starCost(req.PartnerId, star)
+		if !ok {
+			// 配置里没有「当前星 → 下一星」行 = 已满星
+			resp.Code = int32(errcode.ErrPartnerMaxStar)
+			return false, nil
+		}
+		// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
+		if err := module.Spend(c.State, itemCoin, cost); err != nil {
+			resp.Code = int32(errcode.ErrPartnerNoCoin)
+			return false, nil
+		}
+		wasOnField := contains(d.Field, req.PartnerId)
+		oldBonus := atkBonus(req.PartnerId, star)
+		d.Stars[req.PartnerId] = star + 1
+		resp.Star = star + 1
+		// 已上阵时属性要跟着变：只加「新星 - 旧星」的差值，净变化发生一次。
+		if wasOnField {
+			bonusDelta = atkBonus(req.PartnerId, resp.Star) - oldBonus
+		}
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.PartnerStarUpResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	star := d.Stars[req.PartnerId]
-	if star <= 0 {
-		return c.FailCode(&gamev1.PartnerStarUpResp{}, errcode.ErrPartnerNotOwned)
-	}
-	cost, ok := starCost(req.PartnerId, star)
-	if !ok {
-		// 配置里没有「当前星 → 下一星」行 = 已满星
-		return c.FailCode(&gamev1.PartnerStarUpResp{}, errcode.ErrPartnerMaxStar)
-	}
-	// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
-	if err := module.Spend(c.State, itemCoin, cost); err != nil {
-		return c.FailCode(&gamev1.PartnerStarUpResp{}, errcode.ErrPartnerNoCoin)
-	}
-	wasOnField := contains(d.Field, req.PartnerId)
-	oldBonus := atkBonus(req.PartnerId, star)
-	d.Stars[req.PartnerId] = star + 1
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.PartnerStarUpResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	resp := &gamev1.PartnerStarUpResp{Star: star + 1}
-	// 已上阵时属性要跟着变：只加「新星 - 旧星」的差值，净变化发生一次。
-	if wasOnField {
-		c.State.AddBonus("atk", atkBonus(req.PartnerId, resp.Star)-oldBonus)
+	if bonusDelta != 0 {
+		c.State.AddBonus("atk", bonusDelta)
 	}
 	return c.Reply(resp)
 }
@@ -139,39 +151,53 @@ func onStarUp(c *module.Ctx[Data], req *gamev1.PartnerStarUpReq) error {
 // Go 知识点：switch 不带表达式（switch true 的省略写法）+ case 布尔条件，
 // 把「请求态 × 当前态」的四种组合平铺成四个分支，比 if-else 嵌套
 // 更能表达「状态机」语义。两个「已是目标态」的分支直接回包——幂等成功
-// 但不改状态、不 Save。
+// 但不改状态、不写回。
 
 func onField(c *module.Ctx[Data], req *gamev1.PartnerFieldReq) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.PartnerFieldResp{}
+	var (
+		bonusDelta int64 // 本次上/下阵对面板的净影响
+		total      int64 // 改后的加成合计（回包用）
+	)
+
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		star := d.Stars[req.PartnerId]
+		if star <= 0 {
+			resp.Code = int32(errcode.ErrPartnerNotOwned)
+			return false, nil
+		}
+		on := contains(d.Field, req.PartnerId)
+		switch {
+		case req.On && on:
+			// 已上阵：幂等成功，不重复加加成，也不产生提交。
+			total = totalBonus(d)
+			return false, nil
+		case req.On && !on:
+			if len(d.Field) >= fieldLimit {
+				resp.Code = int32(errcode.ErrPartnerFieldFull)
+				return false, nil
+			}
+			d.Field = append(d.Field, req.PartnerId)
+			bonusDelta = atkBonus(req.PartnerId, star)
+		case !req.On && on:
+			d.Field = remove(d.Field, req.PartnerId)
+			bonusDelta = -atkBonus(req.PartnerId, star)
+		case !req.On && !on:
+			// 已下阵：幂等成功，无改动。
+			total = totalBonus(d)
+			return false, nil
+		}
+		total = totalBonus(d)
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.PartnerFieldResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	star := d.Stars[req.PartnerId]
-	if star <= 0 {
-		return c.FailCode(&gamev1.PartnerFieldResp{}, errcode.ErrPartnerNotOwned)
+	if bonusDelta != 0 {
+		c.State.AddBonus("atk", bonusDelta)
 	}
-	on := contains(d.Field, req.PartnerId)
-	switch {
-	case req.On && on:
-		// 已上阵：幂等成功，不重复加加成，也不产生提交。
-		return c.Reply(&gamev1.PartnerFieldResp{AtkBonus: totalBonus(d)})
-	case req.On && !on:
-		if len(d.Field) >= fieldLimit {
-			return c.FailCode(&gamev1.PartnerFieldResp{}, errcode.ErrPartnerFieldFull)
-		}
-		d.Field = append(d.Field, req.PartnerId)
-		c.State.AddBonus("atk", atkBonus(req.PartnerId, star))
-	case !req.On && on:
-		d.Field = remove(d.Field, req.PartnerId)
-		c.State.AddBonus("atk", -atkBonus(req.PartnerId, star))
-	case !req.On && !on:
-		// 已下阵：幂等成功，无改动。
-		return c.Reply(&gamev1.PartnerFieldResp{AtkBonus: totalBonus(d)})
-	}
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.PartnerFieldResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	return c.Reply(&gamev1.PartnerFieldResp{AtkBonus: totalBonus(d)})
+	resp.AtkBonus = total
+	return c.Reply(resp)
 }
 
 // atkBonus 一个伙伴当前星级提供的攻击加成：配置基础值 × 星级。

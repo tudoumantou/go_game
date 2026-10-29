@@ -44,26 +44,28 @@ func shopExists(shopID int32) bool {
 // 且 JSON 序列化后人类可读，便于线上排查。
 
 func onList(c *module.Ctx[Data]) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.ShopListResp{}
+	err := c.Repo.View(func(d *Data) error {
+		// 跨天归零只影响本次展示，不写回：下次读会重新算一遍，行为一致。
+		normalize(d, businessDay(time.Now()))
+		for _, cfg := range gamedata.ShopGoodsCfgList() {
+			shopID := int32(cfg.Col1) // 商品归属的商店
+			if !shopExists(shopID) {
+				continue // 归属商店已下架/配置错：不展示也不允许购买
+			}
+			resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
+				GoodsId: int32(cfg.Id),
+				ItemId:  int32(cfg.Col2),
+				Price:   int32(cfg.Col3),
+				Count:   int32(cfg.Col4),
+				Bought:  d.Bought[goodsKey(shopID, int32(cfg.Id))],
+				Limit:   int32(cfg.Col5), // 0 = 不限购（配置缺列时的零值即「不限」）
+			})
+		}
+		return nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.ShopListResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	// 只读路径上的跨天重置不写回：下次读会重算，行为一致（原实现同）。
-	normalize(d, businessDay(time.Now()))
-	resp := &gamev1.ShopListResp{}
-	for _, cfg := range gamedata.ShopGoodsCfgList() {
-		shopID := int32(cfg.Col1) // 商品归属的商店
-		if !shopExists(shopID) {
-			continue // 归属商店已下架/配置错：不展示也不允许购买
-		}
-		resp.Goods = append(resp.Goods, &gamev1.ShopGoods{
-			GoodsId: int32(cfg.Id),
-			ItemId:  int32(cfg.Col2),
-			Price:   int32(cfg.Col3),
-			Count:   int32(cfg.Col4),
-			Bought:  d.Bought[goodsKey(shopID, int32(cfg.Id))],
-			Limit:   int32(cfg.Col5), // 0 = 不限购（配置缺列时的零值即「不限」）
-		})
 	}
 	return c.Reply(resp)
 }
@@ -92,45 +94,60 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopGoodsNotExist)
 	}
 
-	d, err := c.Repo.Get()
+	itemID := int32(cfg.Col2)
+	grants := []module.ItemGrant{{ItemID: itemID, Count: int64(cfg.Col4) * count}}
+	price := int64(cfg.Col3) * count
+
+	resp := &gamev1.ShopBuyResp{}
+	var (
+		bought  int32              // 购买后的累计份数（回包用）
+		changes []module.BagChange // 发货结果（背包推送用）
+	)
+
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		// 先跨天归零再读已购次数：否则「昨天买满了今天买不了」。
+		// 归零本身不算改动——它只是把过期的计数清掉，真正的 changed 是
+		// 下面的 Bought 累加；失败路径不写回，下次读会按新的一天重算。
+		today := businessDay(time.Now())
+		normalize(d, today)
+		key := goodsKey(shopID, req.GoodsId)
+
+		// 周期限购：必须在扣费之前判。放到扣费之后就会出现
+		// 「钱扣了、货被限购挡下」，只能客服补偿。
+		//
+		// 限购的计量单位是「份」（一份 = Col4 个道具），与 Bought 的口径一致；
+		// 0 表示不限购，兼容没配这一列的旧配置。
+		if !withinLimit(d.Bought[key], int32(count), int32(cfg.Col5)) {
+			resp.Code = int32(errcode.ErrShopLimitExceeded)
+			return false, nil
+		}
+
+		// 预检必须早于扣费：先扣费再发现背包满，就只能客服补偿了。
+		if err := module.PrecheckGrant(c.State, grants); err != nil {
+			resp.Code = int32(errcode.ErrShopBagFull)
+			return false, nil
+		}
+		if err := module.Spend(c.State, itemDiamond, price); err != nil {
+			resp.Code = int32(errcode.ErrShopDiamondNotEnough)
+			return false, nil
+		}
+		// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
+		granted, grantErr := module.Grant(c.State, grants)
+		if grantErr != nil {
+			resp.Code = int32(errcode.ErrShopBagFull)
+			return false, nil
+		}
+
+		d.Bought[key] += int32(count)
+		bought = d.Bought[key]
+		changes = granted
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.ShopBuyResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-
-	// 先跨天归零再读已购次数：否则「昨天买满了今天买不了」。
-	// 这里改了内存但失败路径不 Save——下次读会按新的一天重算，行为一致。
-	today := businessDay(time.Now())
-	normalize(d, today)
-	key := goodsKey(shopID, req.GoodsId)
-
-	// 周期限购：必须在扣费之前判。放到扣费之后就会出现
-	// 「钱扣了、货被限购挡下」，只能客服补偿。
-	//
-	// 限购的计量单位是「份」（一份 = Col4 个道具），与 Bought 的口径一致；
-	// 0 表示不限购，兼容没配这一列的旧配置。
-	if !withinLimit(d.Bought[key], int32(count), int32(cfg.Col5)) {
-		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopLimitExceeded)
-	}
-
-	itemID := int32(cfg.Col2)
-	grants := []module.ItemGrant{{ItemID: itemID, Count: int64(cfg.Col4) * count}}
-	if err := module.PrecheckGrant(c.State, grants); err != nil {
-		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopBagFull)
-	}
-	price := int64(cfg.Col3) * count
-	if err := module.Spend(c.State, itemDiamond, price); err != nil {
-		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopDiamondNotEnough)
-	}
-	// 预检已过，这里必定成功；仍按错误处理是纵深防御（配置热更等极端情况）。
-	changes, grantErr := module.Grant(c.State, grants)
-	if grantErr != nil {
-		return c.FailCode(&gamev1.ShopBuyResp{}, errcode.ErrShopBagFull)
-	}
-
-	d.Bought[key] += int32(count)
-	bought := d.Bought[key]
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.ShopBuyResp{Code: int32(errcode.ErrSystem)}, err)
+	if resp.Code != 0 {
+		return c.Reply(resp)
 	}
 
 	// 背包增量推送（钻石扣减 + 道具增加），一条通知带两条变更。

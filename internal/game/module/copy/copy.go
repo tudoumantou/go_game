@@ -67,22 +67,24 @@ func init() {
 // 列表 = 配置全集 LEFT JOIN 玩家进度：没打过的副本也在列表里
 // （BestStar=0/PassCount=0），这样客户端不需要再拉配置表。
 func onList(c *module.Ctx[Data]) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.CopyListResp{}
+	err := c.Repo.View(func(d *Data) error {
+		for _, cfg := range gamedata.CopyCfgList() {
+			entry := &gamev1.CopyEntry{
+				CopyId:   int32(cfg.Id),
+				Name:     cfg.Col1,
+				MinLevel: int32(cfg.Col2),
+			}
+			if rec, ok := d.Records[int32(cfg.Id)]; ok {
+				entry.BestStar = rec.Star
+				entry.PassCount = rec.PassCount
+			}
+			resp.Copies = append(resp.Copies, entry)
+		}
+		return nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.CopyListResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	resp := &gamev1.CopyListResp{}
-	for _, cfg := range gamedata.CopyCfgList() {
-		entry := &gamev1.CopyEntry{
-			CopyId:   int32(cfg.Id),
-			Name:     cfg.Col1,
-			MinLevel: int32(cfg.Col2),
-		}
-		if rec, ok := d.Records[int32(cfg.Id)]; ok {
-			entry.BestStar = rec.Star
-			entry.PassCount = rec.PassCount
-		}
-		resp.Copies = append(resp.Copies, entry)
 	}
 	return c.Reply(resp)
 }
@@ -106,39 +108,43 @@ func onSettle(c *module.Ctx[Data], req *gamev1.CopySettleReq) error {
 		star = 3
 	}
 
-	d, err := c.Repo.Get()
-	if err != nil {
-		return c.Fail(&gamev1.CopySettleResp{Code: int32(errcode.ErrSystem)}, err)
-	}
+	resp := &gamev1.CopySettleResp{}
+	var (
+		firstPass bool
+		changes   []*gamev1.ItemChange
+	)
 
-	// rec 是值副本；FirstPass 先取反再置位——本次是否首通必须在改写之前判定。
-	rec := d.Records[req.CopyId]
-	firstPass := !rec.FirstPass
-	if rec.Star < star {
-		rec.Star = star // 历史最佳只升不降
-	}
-	rec.PassCount++
-	rec.FirstPass = true
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		// rec 是值副本；FirstPass 先取反再置位——本次是否首通必须在改写之前判定。
+		rec := d.Records[req.CopyId]
+		firstPass = !rec.FirstPass
+		if rec.Star < star {
+			rec.Star = star // 历史最佳只升不降
+		}
+		rec.PassCount++
+		rec.FirstPass = true
 
-	// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
-	// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算。
-	var changes []*gamev1.ItemChange
-	if firstPass {
-		grants := make([]module.ItemGrant, 0, 4)
-		for _, drop := range gamedata.CopyDropCfgList() {
-			if drop.Col1 != cfg.Id {
-				continue
+		// 首通发奖：按 copy_drop.xml 中 col1 = copy_id 的行发道具。
+		// 满包/超限：整个结算拒绝（进度也不前进），玩家清包后重新结算。
+		if firstPass {
+			grants := make([]module.ItemGrant, 0, 4)
+			for _, drop := range gamedata.CopyDropCfgList() {
+				if drop.Col1 != cfg.Id {
+					continue
+				}
+				grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
 			}
-			grants = append(grants, module.ItemGrant{ItemID: int32(drop.Col2), Count: drop.Col3})
+			bagChanges, grantErr := module.Grant(c.State, grants)
+			if grantErr != nil {
+				resp.Code = int32(errcode.ErrCopyBagFull)
+				return false, nil
+			}
+			changes = module.ToItemChanges(bagChanges)
 		}
-		bagChanges, grantErr := module.Grant(c.State, grants)
-		if grantErr != nil {
-			return c.FailCode(&gamev1.CopySettleResp{}, errcode.ErrCopyBagFull)
-		}
-		changes = module.ToItemChanges(bagChanges)
-	}
-	d.Records[req.CopyId] = rec
-	if err := c.Repo.Save(d); err != nil {
+		d.Records[req.CopyId] = rec
+		return true, nil
+	})
+	if err != nil {
 		return c.Fail(&gamev1.CopySettleResp{Code: int32(errcode.ErrSystem)}, err)
 	}
 
@@ -147,7 +153,8 @@ func onSettle(c *module.Ctx[Data], req *gamev1.CopySettleReq) error {
 	if cfg.Col2 <= 0 {
 		expGain = 50
 	}
-	resp := &gamev1.CopySettleResp{FirstPass: firstPass, ExpGain: expGain}
+	resp.FirstPass = firstPass
+	resp.ExpGain = expGain
 	if len(changes) > 0 {
 		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: changes}); err == nil {
 			resp.Rewards = raw

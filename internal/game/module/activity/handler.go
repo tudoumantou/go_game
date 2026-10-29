@@ -36,31 +36,27 @@ func SetProducer(p ProgressProducer) { producer = p }
 // 且活动模块不关心 Kafka 细节（topic/分区/重试）。
 
 func onLogin(c *module.Ctx[Data]) error {
-	// 「读状态 → 逐活动推进」；没有任何活动推进时不产生提交。
-	d, err := c.Repo.Get()
+	// 「读状态 → 逐活动推进」；没有任何活动推进时 changed=false，不产生提交。
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		changed := false
+		for _, cfg := range gamedata.ActivityCfgList() {
+			if cfg.Col2 != "login" {
+				continue
+			}
+			id := int32(cfg.Id)
+			rec := d.Records[id]
+			if rec.Progress >= int32(cfg.Col3) {
+				continue // 已达目标，登录不再推进
+			}
+			rec.Progress++
+			d.Records[id] = rec
+			changed = true
+		}
+		return changed, nil
+	})
 	if err != nil {
 		// 状态损坏不阻断登录：后续消息会再次报错，把玩家拦在登录外不能。
 		c.Log().Warn("activity login progress failed", "player_id", c.State.PlayerID(), "err", err)
-		return nil
-	}
-	changed := false
-	for _, cfg := range gamedata.ActivityCfgList() {
-		if cfg.Col2 != "login" {
-			continue
-		}
-		id := int32(cfg.Id)
-		rec := d.Records[id]
-		if rec.Progress >= int32(cfg.Col3) {
-			continue // 已达目标，登录不再推进
-		}
-		rec.Progress++
-		d.Records[id] = rec
-		changed = true
-	}
-	if changed {
-		if err := c.Repo.Save(d); err != nil {
-			c.Log().Warn("activity login progress failed", "player_id", c.State.PlayerID(), "err", err)
-		}
 	}
 	return nil
 }
@@ -72,39 +68,36 @@ func onLogin(c *module.Ctx[Data]) error {
 //  2. server_progress 类活动要额外收集上报，攒批后统一发 Kafka。
 
 func onEvent(c *module.Ctx[Data], evt module.Event) {
-	d, err := c.Repo.Get()
+	var reports [][2]int32 // 全服贡献上报：(activity_id, progress)
+
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		changed := false
+		for _, cfg := range gamedata.ActivityCfgList() {
+			if cfg.Col2 != evt.Type {
+				continue
+			}
+			id := int32(cfg.Id)
+			rec := d.Records[id]
+			next := rec.Progress + int32(evt.Delta)
+			if next > int32(cfg.Col3) {
+				next = int32(cfg.Col3)
+			}
+			if next == rec.Progress {
+				continue // 已封顶，无变化
+			}
+			rec.Progress = next
+			d.Records[id] = rec
+			changed = true
+			if cfg.Col2 == "server_progress" {
+				// 全服活动：进度变化后上报新值（绝对值，中心服按差值累加）。
+				reports = append(reports, [2]int32{id, next})
+			}
+		}
+		return changed, nil
+	})
 	if err != nil {
 		c.Log().Warn("activity progress update failed", "player_id", c.State.PlayerID(), "err", err)
 		return
-	}
-	var reports [][2]int32 // 全服贡献上报：(activity_id, progress)
-	changed := false
-	for _, cfg := range gamedata.ActivityCfgList() {
-		if cfg.Col2 != evt.Type {
-			continue
-		}
-		id := int32(cfg.Id)
-		rec := d.Records[id]
-		next := rec.Progress + int32(evt.Delta)
-		if next > int32(cfg.Col3) {
-			next = int32(cfg.Col3)
-		}
-		if next == rec.Progress {
-			continue // 已封顶，无变化
-		}
-		rec.Progress = next
-		d.Records[id] = rec
-		changed = true
-		if cfg.Col2 == "server_progress" {
-			// 全服活动：进度变化后上报新值（绝对值，中心服按差值累加）。
-			reports = append(reports, [2]int32{id, next})
-		}
-	}
-	if changed {
-		if err := c.Repo.Save(d); err != nil {
-			c.Log().Warn("activity progress update failed", "player_id", c.State.PlayerID(), "err", err)
-			return
-		}
 	}
 	// 上报在提交之后：本地进度先落，再尝试广播——
 	// 广播失败不影响本地正确性（见 reportProgress）。
@@ -165,28 +158,30 @@ func instanceIDFor(activityID int32, now int64) string {
 // 不需要服务端推「活动结束」通知——少一种推送，少一类时序问题。
 
 func onList(c *module.Ctx[Data]) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.ActivityListResp{}
+	err := c.Repo.View(func(d *Data) error {
+		now := time.Now().Unix()
+		for _, cfg := range gamedata.ActivityCfgList() {
+			// 下发的窗口已过期就不展示：客户端仍会定时刷新。
+			if !openNow(int32(cfg.Id), now) {
+				continue
+			}
+			entry := &gamev1.ActivityEntry{
+				ActivityId: int32(cfg.Id),
+				Name:       cfg.Col1,
+				Type:       cfg.Col2,
+				Target:     int32(cfg.Col3),
+			}
+			if rec, ok := d.Records[int32(cfg.Id)]; ok {
+				entry.Progress = rec.Progress
+				entry.Claimed = rec.RewardMask&1 != 0
+			}
+			resp.Activities = append(resp.Activities, entry)
+		}
+		return nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.ActivityListResp{Code: int32(errcode.ErrSystem)}, err)
-	}
-	now := time.Now().Unix()
-	resp := &gamev1.ActivityListResp{}
-	for _, cfg := range gamedata.ActivityCfgList() {
-		// 下发的窗口已过期就不展示：客户端仍会定时刷新。
-		if !openNow(int32(cfg.Id), now) {
-			continue
-		}
-		entry := &gamev1.ActivityEntry{
-			ActivityId: int32(cfg.Id),
-			Name:       cfg.Col1,
-			Type:       cfg.Col2,
-			Target:     int32(cfg.Col3),
-		}
-		if rec, ok := d.Records[int32(cfg.Id)]; ok {
-			entry.Progress = rec.Progress
-			entry.Claimed = rec.RewardMask&1 != 0
-		}
-		resp.Activities = append(resp.Activities, entry)
 	}
 	return c.Reply(resp)
 }
@@ -204,33 +199,42 @@ func onClaim(c *module.Ctx[Data], req *gamev1.ActivityClaimReq) error {
 		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityNotOpen)
 	}
 
-	d, err := c.Repo.Get()
+	resp := &gamev1.ActivityClaimResp{}
+	var bagChanges []module.BagChange
+
+	err := c.Repo.Mutate(func(d *Data) (bool, error) {
+		rec := d.Records[req.ActivityId]
+		if rec.Progress < int32(cfg.Col3) {
+			resp.Code = int32(errcode.ErrActivityNotFinish)
+			return false, nil
+		}
+		// 位图判重：bit0=已领。活动天生多档位，枚举会爆炸。
+		if rec.RewardMask&1 != 0 {
+			resp.Code = int32(errcode.ErrActivityClaimed)
+			return false, nil
+		}
+		// 发奖：target * 20 钻石；满包/超限时不发也不置领取位。
+		gain := int64(cfg.Col3) * 20
+		changes, grantErr := module.Grant(c.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
+		if grantErr != nil {
+			resp.Code = int32(errcode.ErrActivityBagFull)
+			return false, nil
+		}
+		rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
+		d.Records[req.ActivityId] = rec
+		bagChanges = changes
+		return true, nil
+	})
 	if err != nil {
 		return c.Fail(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrSystem)}, err)
 	}
-	rec := d.Records[req.ActivityId]
-	if rec.Progress < int32(cfg.Col3) {
-		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityNotFinish)
-	}
-	// 位图判重：bit0=已领。活动天生多档位，枚举会爆炸。
-	if rec.RewardMask&1 != 0 {
-		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityClaimed)
-	}
-	// 发奖：target * 20 钻石；满包/超限时不发也不置领取位。
-	gain := int64(cfg.Col3) * 20
-	bagChanges, grantErr := module.Grant(c.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
-	if grantErr != nil {
-		return c.FailCode(&gamev1.ActivityClaimResp{}, errcode.ErrActivityBagFull)
-	}
-	rec.RewardMask |= 1 // 置位 bit0：与道具同一次快照 CAS
-	d.Records[req.ActivityId] = rec
-	if err := c.Repo.Save(d); err != nil {
-		return c.Fail(&gamev1.ActivityClaimResp{Code: int32(errcode.ErrSystem)}, err)
-	}
 
-	resp := &gamev1.ActivityClaimResp{}
-	if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(bagChanges)}); err == nil {
-		resp.Rewards = raw
+	// 只有真正发过奖才带背包变更：失败路径保持 Rewards 为 nil，
+	// 与「先 return 再构造响应」的旧行为一致。
+	if len(bagChanges) > 0 {
+		if raw, err := proto.Marshal(&gamev1.BagChangeNotify{Changes: module.ToItemChanges(bagChanges)}); err == nil {
+			resp.Rewards = raw
+		}
 	}
 	return c.Reply(resp)
 }

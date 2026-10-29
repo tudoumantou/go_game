@@ -11,12 +11,17 @@
 //	}
 //
 //	func onInfo(c *module.Ctx[Data]) error {
-//		d, err := c.Repo.Get()          // 取状态
-//		if err != nil { return c.Fail(&gamev1.SigninInfoResp{Code: int32(errcode.ErrSystem)}, err) }
-//		return c.Reply(&gamev1.SigninInfoResp{...})   // 回什么由协议自己决定
+//		resp := &gamev1.SigninInfoResp{}
+//		err := c.Repo.View(func(d *Data) error {   // 只读：解码后交给闭包
+//			resp.ClaimedDays = d.Days
+//			return nil
+//		})
+//		if err != nil { return c.Fail(resp, err) }
+//		return c.Reply(resp)                       // 回什么由协议自己决定
 //	}
 //
 // 注册时不声明响应协议：处理器可以回任意消息（或不回）。
+// 状态读写契约见 repository.go（Repository/Repo）。
 package module
 
 import (
@@ -28,35 +33,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Repo 是模块状态的读写门面。
-//
-//	Get    解码当前玩家的模块状态（首次访问返回空状态，不落库）
-//	Save   编码回 Ext 槽位并标脏（由 flusher 异步落库）
-//	Delete 清空槽位（下次 Get 回到空状态）
-type Repo[D any] struct {
-	s   *Stateful[D]
-	ctx *Context
-}
-
-// Get 读取当前玩家的模块状态。
-func (r *Repo[D]) Get() (*D, error) { return r.s.decode(r.ctx) }
-
-// Save 写回模块状态（编码 + 标脏）。
-func (r *Repo[D]) Save(d *D) error { return r.s.encode(r.ctx, d) }
-
-// Delete 清空模块状态。
-func (r *Repo[D]) Delete() error {
-	r.ctx.State.SetExt(r.s.Name(), nil)
-	return nil
-}
-
 // Ctx 业务处理器上下文：在 module.Context 之上挂类型化的 Repo。
 //
 // 嵌入 *Context 后，State/Send/Now 等能力仍可直接用；
 // Reply 只收 proto 消息，协议号由基座按类型反查。
+//
+// Repo 声明成接口而不是 *Repo[D]：业务只应看到契约的五个方法，
+// 拿不到「解码/编码」这类底层原语。实现只有一个（extSlot 版本），
+// 接口在这里的作用是**限制可见面**，不是为多态。
 type Ctx[D any] struct {
 	*Context
-	Repo *Repo[D]
+	Repo Repository[D]
 
 	msgID uint32 // 当前请求号（Fail 记录日志用）
 	bound *Bound[D]
