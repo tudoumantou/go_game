@@ -33,6 +33,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/periodic"
 	"game_study/pkg/ratelimit"
 	"game_study/pkg/shutdown"
 )
@@ -235,25 +236,24 @@ func (s *Server) Start(ctx context.Context) error {
 // reconcileLoop 每小时对账：已支付未发货订单重投（13.3 模式③）。
 // 为什么需要对账：PayCallback 里 Kafka 发送失败只记日志（不阻塞回调），
 // 那些「订单已支付但消息没到游戏服」的单靠本循环补偿——支付链路
-// 的最终一致性兜底。ctx 取消即退出，ticker 随之 Stop 释放。
+// 的最终一致性兜底。失败只记 Warn 继续：下次对账还是同一批单，
+// 退出循环等于让丢单永久留在地上。
 func (s *Server) reconcileLoop(ctx context.Context, svc *service.RechargeService) {
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	periodic.Run(ctx, periodic.Options{
+		Name:     "reconcile",
+		Interval: time.Hour,
+		Logger:   s.logger,
+		Fn: func(ctx context.Context) error {
 			n, err := svc.ReplayPaidUndelivered(ctx, 100)
 			if err != nil {
-				s.logger.Warn("reconcile failed", "err", err)
-				continue
+				return err
 			}
 			if n > 0 {
 				s.logger.Info("reconcile replayed orders", "count", n)
 			}
-		}
-	}
+			return nil
+		},
+	})
 }
 
 // Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，由 pkg/shutdown 编排）。

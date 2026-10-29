@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/center/leader"
 	"game_study/pkg/activity"
 	"game_study/pkg/cache"
 	"game_study/pkg/db"
@@ -26,6 +27,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/periodic"
 	"game_study/pkg/sqlstore"
 
 	"github.com/redis/go-redis/v9"
@@ -111,24 +113,17 @@ func (s *Service) handleProgress(_ context.Context, env *pkgmq.Envelope) error {
 }
 
 // Run 由 leader 驱动：判定里程碑 + 发奖。
-// 30s 一拍与 scheduler/archive 对齐：leader 类任务统一节拍，
-// 运维排查时按同一节奏看日志即可。非 leader 期间空转不判错。
+//
+// 节拍取 leader.TickInterval，与 archive/scheduler 同源——「统一节拍」此前
+// 靠三处注释互相指认，现在是一个常量。非 leader 期间空转不判错。
 func (s *Service) Run(ctx context.Context, isLeader func() bool) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if isLeader == nil || !isLeader() {
-				continue
-			}
-			if err := s.Tick(ctx); err != nil {
-				s.logger.Warn("milestone tick failed", "err", err)
-			}
-		}
-	}
+	periodic.Run(ctx, periodic.Options{
+		Name:     "milestone",
+		Interval: leader.TickInterval,
+		Logger:   s.logger,
+		Gate:     periodic.Guard(isLeader),
+		Fn:       s.Tick,
+	})
 }
 
 // Tick 一轮：先按当前进度生成任务，再发待发任务。

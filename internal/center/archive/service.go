@@ -19,6 +19,7 @@ import (
 	"hash/fnv"
 	"time"
 
+	"game_study/internal/center/leader"
 	"game_study/internal/center/rank"
 	"game_study/internal/center/stats"
 	"game_study/pkg/db"
@@ -26,6 +27,7 @@ import (
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"game_study/pkg/periodic"
 	"game_study/pkg/sqlstore"
 )
 
@@ -110,30 +112,19 @@ func New(database *db.DB, rankSvc *rank.Service, statsSvc *stats.Service,
 }
 
 // Run 由 leader 生命周期驱动：非 leader 期间空转，成为 leader 后自动接上。
-// 间隔取 30s：赛季切换与统计落库都不需要秒级精度，过频只会增加无谓查询。
 //
-// select 同时监听 ctx.Done() 与 ticker.C：取消信号能立刻打断等待，
-// 不会多等一个 tick 周期。isLeader 为 nil 视为永不执行——
-// 调用方没接选举时安全降级，不会误跑有主逻辑。
+// 循环骨架交给 pkg/periodic：ticker 释放、ctx 双监听、isLeader 缺省即禁止
+// 这三件事各只在一个地方实现。这里只声明本任务的四个决定——节拍取
+// leader.TickInterval（三个有主任务共用一个值）、leader 才能跑、失败只告警
+// 不退出（归档可重试，退出循环等于放弃本实例的有主职责）。
 func (s *Service) Run(ctx context.Context, isLeader func() bool) {
-	ticker := time.NewTicker(30 * time.Second)
-	// defer ticker.Stop()：泄漏的 Ticker 不会被 GC，底层持有运行时定时器，
-	// 长生命周期服务里必须显式停
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if isLeader == nil || !isLeader() {
-				continue
-			}
-			// Tick 失败只告警不退出：归档可重试，退出循环等于放弃本实例的有主职责
-			if err := s.Tick(ctx); err != nil {
-				s.logger.Warn("archive tick failed", "err", err)
-			}
-		}
-	}
+	periodic.Run(ctx, periodic.Options{
+		Name:     "archive",
+		Interval: leader.TickInterval,
+		Logger:   s.logger,
+		Gate:     periodic.Guard(isLeader),
+		Fn:       s.Tick,
+	})
 }
 
 // Tick 一次调度：赛季到期就归档切换，然后落统计。

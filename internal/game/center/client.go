@@ -29,6 +29,7 @@ import (
 
 	"game_study/pkg/backoff"
 	"game_study/pkg/log"
+	"game_study/pkg/periodic"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 	"google.golang.org/grpc"
@@ -200,17 +201,18 @@ func (c *Client) runOnce(ctx context.Context) error {
 // heartbeatLoop 周期心跳（间隔取服务端期望值的一半，容忍一次丢失）。
 //
 // goroutine 生命周期：随本次 runOnce 的 stream 生死——stream 断开后
-// Send 必失败并 return；ctx/stopCh 取消时同样退出，不会泄漏。
+// Send 必失败，StopOnError 让循环直接退出；ctx/stopCh 取消时经 ctx 与
+// Done 两个通道退出，不会泄漏。
+//
+// 这是唯一一处用 Done 而不是 ctx 的任务：循环的寿命等于一条连接，
+// 连接断了只该停心跳，不该 cancel 整个客户端。
 func (c *Client) heartbeatLoop(ctx context.Context, stream internalv2.CenterService_ReportClient) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.stopCh:
-			return
-		case <-ticker.C:
+	periodic.Run(ctx, periodic.Options{
+		Name:        "heartbeat",
+		Interval:    5 * time.Second,
+		Done:        c.stopCh,
+		StopOnError: true,
+		Fn: func(context.Context) error {
 			rep := &internalv2.NodeReport{
 				Body: &internalv2.NodeReport_Heartbeat{Heartbeat: &internalv2.NodeHeartbeat{
 					NodeId:      c.selfID,
@@ -219,11 +221,9 @@ func (c *Client) heartbeatLoop(ctx context.Context, stream internalv2.CenterServ
 					Version:     c.version,
 				}},
 			}
-			if err := stream.Send(rep); err != nil {
-				return
-			}
-		}
-	}
+			return stream.Send(rep)
+		},
+	})
 }
 
 // dispatch 分发下行指令。

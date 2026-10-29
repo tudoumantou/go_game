@@ -22,6 +22,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
+	"game_study/pkg/periodic"
 	rpcpkg "game_study/pkg/rpc"
 	"game_study/pkg/shutdown"
 
@@ -109,26 +110,25 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // reportRoomStats 定期上报房间与节点指标。
-// 10s 一拍：房间数是慢变量，秒级没有意义；metrics 未启用时整轮 skip——
-// 探针式检查放在循环内而不是起不起线程，省一个 goroutine。
+//
+// 10s 一拍：房间数是慢变量，秒级没有意义。metrics 未启用时整轮 skip——
+// 探针式检查放在 Fn 内而不是起不起线程，省一个 goroutine。
 func (s *Server) reportRoomStats(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	periodic.Run(ctx, periodic.Options{
+		Name:     "room-stats",
+		Interval: 10 * time.Second,
+		Fn: func(context.Context) error {
 			if !metrics.Enabled() {
-				continue
+				return nil
 			}
 			st := s.rooms.Stats()
 			metrics.CrossRooms("waiting", st["waiting"])
 			metrics.CrossRooms("running", st["running"])
 			metrics.CrossRooms("total", st["total"])
 			metrics.ChannelStreams(s.crossRPC.PeerCount())
-		}
-	}
+			return nil
+		},
+	})
 }
 
 // readiness 就绪探针：跨服节点没有外部依赖，Actor 起来即就绪。

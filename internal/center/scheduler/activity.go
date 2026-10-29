@@ -17,12 +17,14 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/center/leader"
 	"game_study/pkg/activity"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/periodic"
 	"game_study/pkg/sqlstore"
 )
 
@@ -45,27 +47,19 @@ func New(database *db.DB, producer *pkgmq.Producer, logger *log.Logger) *Service
 	return &Service{Base: sqlstore.New(database, "scheduler"), producer: producer, logger: logger, now: time.Now}
 }
 
-// Run 由 leader 生命周期驱动，30s 一次：活动边界最长一天，秒级精度没有意义。
+// Run 由 leader 生命周期驱动。
 //
-// select 双监听（ctx.Done/ticker.C）：信号到达立刻退出，不多等一拍；
-// ticker 必须 Stop——否则底层定时器泄漏，center 的测试进程会越跑越胖。
-// isLeader 为 nil 视为永不执行：没接选举的部署安全空转。
+// 节拍取 leader.TickInterval（活动边界最长一天，秒级精度没有意义）。
+// 循环骨架（含 ticker 必须 Stop、ctx 与 tick 同一条 select）见 pkg/periodic
+// ——此前这条注释在三个包里各写一遍，写法也各差一点。
 func (s *Service) Run(ctx context.Context, isLeader func() bool) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if isLeader == nil || !isLeader() {
-				continue
-			}
-			if err := s.Tick(ctx); err != nil {
-				s.logger.Warn("activity schedule failed", "err", err)
-			}
-		}
-	}
+	periodic.Run(ctx, periodic.Options{
+		Name:     "activity",
+		Interval: leader.TickInterval,
+		Logger:   s.logger,
+		Gate:     periodic.Guard(isLeader),
+		Fn:       s.Tick,
+	})
 }
 
 // Tick 同步全部活动实例。

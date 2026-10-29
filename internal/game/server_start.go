@@ -150,11 +150,12 @@ func (s *Server) initIDTable() {
 		if s.roleSvc != nil {
 			s.roleSvc.SetIDTable(s.idTable)
 		}
-		// 两个后台 goroutine 的退出都只依赖 runCtx：Start 返回前 started
-		// 未置位时 defer 会 cancel 掉它们，不会泄漏；内部循环均以
-		// ctx.Done() 为终止条件（见 buildIDTables/maintainIDTables）。
+		// 三个后台 goroutine 的退出都只依赖 runCtx：Start 返回前 started
+		// 未置位时 defer 会 cancel 掉它们，不会泄漏；两个维护循环的骨架
+		// 在 pkg/periodic（见 maintainIDTables/cleanIDTableOrphans）。
 		go s.buildIDTables(s.runCtx)
 		go s.maintainIDTables(s.runCtx)
+		go s.cleanIDTableOrphans(s.runCtx)
 	}
 }
 

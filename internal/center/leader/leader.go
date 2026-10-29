@@ -31,6 +31,16 @@ import (
 // 该 key 下挂竞选者条目（按创建 revision 排序比大小），换 key 等于换一套竞选组。
 const DefaultKey = "/game_study/leader/center"
 
+// TickInterval leader 类后台任务的统一节拍：赛季归档、活动调度、里程碑判定。
+//
+// 三处必须取同一个值。此前是三个包各写一遍 30 * time.Second，各自注释都写着
+// 「与另外两个对齐」——靠注释维持的约定正是它迟早会分叉的证据，而分叉的后果
+// 不是报错，是运维排查时「同一时刻为什么只有两个任务跑了」变成新的疑问。
+//
+// 30s 的取舍：活动边界最长一天、赛季以小时计，秒级精度买不到任何正确性；
+// 再粗一档（分钟级）则活动切换的延迟对玩家可见。
+const TickInterval = 30 * time.Second
+
 // Election 选主管理器。
 //
 // 基于 etcd concurrency.Election（租约 + 前缀比较）：抢到主的实例把 selfID

@@ -45,6 +45,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/periodic"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 	"game_study/pkg/shutdown"
@@ -437,25 +438,23 @@ func (s *Server) reconcileInterval() time.Duration {
 	return defaultReconcileInterval
 }
 
-// maintainIDTables ID 表维护（12.5.3）。
+// maintainIDTables ID 表数量核对（12.5.3）：每 reconcile_interval（默认 10 分钟）
+// 对热表做数量核对，不一致则重建（重建期间回落 DB，不阻塞查询）。
 //
-//   - 每 reconcile_interval（默认 10 分钟）：对热表做数量核对，不一致则重建
-//     （重建期间回落 DB，不阻塞查询）
-//   - 每小时：清理孤儿实体 hash（e:{table}:{id} 存在但 idtab 无此 id）
+// 与 cleanIDTableOrphans 分成两个循环，而不是像原先那样「一个 goroutine
+// 两个 ticker 塞进一条 select」：两个节拍本来就互不相关（核对 10 分钟、
+// 清孤儿 1 小时），合成一条 select 只省了一个 goroutine，代价是读代码时
+// 得同时从两个 case 里推「各自多久跑一次」，以及加第三个周期任务时无处可放。
 func (s *Server) maintainIDTables(ctx context.Context) {
-	reconcile := time.NewTicker(s.reconcileInterval())
-	defer reconcile.Stop()
-	clean := time.NewTicker(time.Hour)
-	defer clean.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-reconcile.C:
+	periodic.Run(ctx, periodic.Options{
+		Name:     "idtab-reconcile",
+		Interval: s.reconcileInterval(),
+		Logger:   s.logger,
+		Fn: func(ctx context.Context) error {
 			for _, meta := range cache.DefaultIDTables {
+				// 逐个表之间响应取消：一轮可能扫十几张表，关服不该等它走完
 				if ctx.Err() != nil {
-					return
+					return nil
 				}
 				rebuilt, err := s.idTable.Reconcile(ctx, meta)
 				if err != nil {
@@ -474,11 +473,32 @@ func (s *Server) maintainIDTables(ctx context.Context) {
 					}
 				}
 			}
-		case <-clean.C:
+			return nil
+		},
+	})
+}
+
+// cleanIDTableOrphans 每小时清理孤儿实体 hash：e:{table}:{id} 存在但 idtab
+// 无此 id。
+//
+// 单独成环的理由见 maintainIDTables。与 reconcile 并发是安全的：
+// BuildOne 落在 :building 临时 key 上、完成后 RENAME 原子切换，正式集合在
+// 重建全程保持「旧完整集合」而不是空集，所以这里查 SIsMember 拿到的是
+// 一个完整答案，不会把重建中的表判成「全部不存在」而误删。ready 判断只是
+// 省掉未建好时的无用扫描，不是唯一的安全依据。
+//
+// 失败只记日志：孤儿只是占空间，下一小时还会再扫到，不需要重试或退出。
+func (s *Server) cleanIDTableOrphans(ctx context.Context) {
+	periodic.Run(ctx, periodic.Options{
+		Name:     "idtab-clean",
+		Interval: time.Hour,
+		Logger:   s.logger,
+		Fn: func(ctx context.Context) error {
 			for _, meta := range cache.DefaultIDTables {
 				if ctx.Err() != nil {
-					return
+					return nil
 				}
+				// 表还没 ready 说明正在重建，此时清孤儿会把刚写进来的行误删
 				if !s.idTable.Ready(ctx, meta.Name) {
 					continue
 				}
@@ -489,8 +509,9 @@ func (s *Server) maintainIDTables(ctx context.Context) {
 					s.logger.Info("idtab orphan cleaned", "table", meta.Name, "removed", n)
 				}
 			}
-		}
-	}
+			return nil
+		},
+	})
 }
 
 // buildOwnerIndexes 后台构建归属索引与整表预热（缓存架构设计 §3）。
@@ -537,23 +558,21 @@ func (s *Server) buildOwnerIndexes(ctx context.Context) {
 	s.logger.Info("owner index build done", "mappings", len(s.indexMappings))
 }
 
-// maintainOwnerIndexes 归属索引维护（缓存架构设计 §5）：每 10 分钟数量核对。
+// maintainOwnerIndexes 归属索引维护（缓存架构设计 §5）：每 reconcile_interval
+// 数量核对一次。
 //
 // 与 maintainIDTables 的 Reconcile 同构：ZCARD 与库里行数不一致 → 重建
 // （重建期间 Members 回落 DB，不阻塞登录）。只核对索引，实体 hash 的
 // 孤儿清理由 IDTable.CleanOrphans 负责（同一个 e:{table}:{id} 空间）。
 func (s *Server) maintainOwnerIndexes(ctx context.Context) {
-	ticker := time.NewTicker(s.reconcileInterval())
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+	periodic.Run(ctx, periodic.Options{
+		Name:     "owner-index",
+		Interval: s.reconcileInterval(),
+		Logger:   s.logger,
+		Fn: func(ctx context.Context) error {
 			for _, m := range s.indexMappings {
 				if ctx.Err() != nil {
-					return
+					return nil
 				}
 				oi, ok := s.ownerIdx[m.Table]
 				if !ok {
@@ -576,8 +595,9 @@ func (s *Server) maintainOwnerIndexes(ctx context.Context) {
 					}
 				}
 			}
-		}
-	}
+			return nil
+		},
+	})
 }
 
 // sendToPlayer 按 playerID 直接下发（不经过 Actor）。
