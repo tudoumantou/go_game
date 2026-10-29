@@ -11,86 +11,30 @@
 // activity_period.xml（开放周期，col1=周期类型）。
 // 懒初始化：未参与活动返回空 Data；窗口判定不落库——
 // 「是否开放」每次请求现算（openNow），过期活动直接从列表隐藏。
+
 package activity
 
 import (
 	"context"
 	"fmt"
-	"time"
-
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/activity"
 	"game_study/pkg/gamedata"
 	pkgmq "game_study/pkg/mq"
-
 	gamev1 "game_study/pkg/pb/game/v1"
+	"time"
+
 	"google.golang.org/protobuf/proto"
 )
 
-// stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
-const stateKey = "activity"
-
-// 奖励道具（P6 固定：钻石 1001）。
-const itemDiamond int32 = 1001
-
-// Record 单个活动的进度与领取位图。
-//
-// 字段语义：
-//   - Progress：当前进度，由 OnEvent 累加并在配置 Col3 目标处截断；
-//   - RewardMask：领取位图，bit0=第一档奖励已领；多档奖励时按位扩展。
-//
-// Go 知识点：位图（bitmask）把「哪几档领了」压成一个整数——
-// 单档活动只用 bit0（&1 / |=1），多档时第 n 档是 1<<(n-1)，
-// 比 []bool 或 map 都省空间，且整型比较可并行做多重判定。
-type Record struct {
-	Progress   int32 `json:"progress"`
-	RewardMask int64 `json:"reward_mask"`
-}
-
-// Data 是活动模块的私有状态：activity_id -> 进度与已领位图。
-type Data struct {
-	Records map[int32]Record `json:"records"`
-}
-
-// producer 全服活动贡献上报（R7.3）；nil 表示不上报（单机/测试）。
-//
-// 包级而不是模块字段：模块本身已是进程级单例（M），注入发生在启动期
-// 单线程，之后只读——与 Define 的「无 New」形态一致。
-var producer ProgressProducer
-
-// SetProducer 注入贡献上报能力（组装层在 Register 之前调用）。
 func SetProducer(p ProgressProducer) { producer = p }
 
 // ProgressProducer 贡献上报能力（*pkgmq.Producer 实现）。
 //
 // 接口注入而非直接依赖 mq 包：单测可注入假 producer，
 // 且活动模块不关心 Kafka 细节（topic/分区/重试）。
-type ProgressProducer interface {
-	// ProduceEnvelope 投递一条全服活动贡献消息；失败由调用方降级为日志。
-	ProduceEnvelope(ctx context.Context, env *pkgmq.Envelope) error
-}
 
-// M 活动模块的唯一实例。
-//
-// 没有 New()：日志、编解码、分发、生命周期都由 Define 兜底；
-// producer 走 SetProducer 注入。两个请求都可重放（列表只读；领奖按
-// 位图幂等），因此可安全声明为可丢弃。
-var M = module.Define[Data](stateKey, newData).
-	WithLogin(onLogin).
-	WithEvent(onEvent)
-
-func init() {
-	M.HandleRoute(&gamev1.ActivityListReq{}, onList)
-	module.Route(M, &gamev1.ActivityClaimReq{}, onClaim)
-}
-
-// onLogin 登录类活动进度 +1，纯内存改动，随本次快照提交（经 ThinLogin 挂接）。
-//
-// 与 quest.OnEvent 的分工：登录是「事件」的一种，但发生在协议之外，
-// 所以单独在 OnLogin 钩子里推进，而不是伪造一条 Event。
-// 状态损坏时吞错继续登录：活动进度丢一次可以原谅，
-// 把玩家拦在登录外不能。
 func onLogin(c *module.Ctx[Data]) error {
 	// 「读状态 → 逐活动推进」；没有任何活动推进时不产生提交。
 	d, err := c.Repo.Get()
@@ -126,6 +70,7 @@ func onLogin(c *module.Ctx[Data]) error {
 // 与 quest.OnEvent 同构，差异有两点：
 //  1. 进度到目标后仍然接受事件（只是截断），不改变任何领取态；
 //  2. server_progress 类活动要额外收集上报，攒批后统一发 Kafka。
+
 func onEvent(c *module.Ctx[Data], evt module.Event) {
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -172,6 +117,7 @@ func onEvent(c *module.Ctx[Data], evt module.Event) {
 //
 // 上报绝对值而不是增量：重投相同值在中心服得到差值 0，天然幂等。
 // 上报失败只记日志——玩家本地进度已保存，下一次事件会带上更大的进度继续推进。
+
 func reportProgress(c *module.Ctx[Data], activityID, progress int32) {
 	if producer == nil || progress <= 0 {
 		return
@@ -200,6 +146,7 @@ func reportProgress(c *module.Ctx[Data], activityID, progress int32) {
 //
 // 实例 ID = 活动 + 周期序号：同一活动的每一轮（每天/每周）是不同实例，
 // 进度与奖励按实例隔离，上一轮的 Record 不会串到下一轮。
+
 func instanceIDFor(activityID int32, now int64) string {
 	if w, ok := DefaultRegistry().Get(activityID); ok {
 		return w.InstanceID
@@ -216,6 +163,7 @@ func instanceIDFor(activityID int32, now int64) string {
 //
 // 过期活动直接不下发：客户端定时刷新列表即可看到活动消失，
 // 不需要服务端推「活动结束」通知——少一种推送，少一类时序问题。
+
 func onList(c *module.Ctx[Data]) error {
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -244,6 +192,7 @@ func onList(c *module.Ctx[Data]) error {
 }
 
 // onClaim 领奖：进度达标 + 位图防重复，领奖事实与奖励同一次快照提交。
+
 func onClaim(c *module.Ctx[Data], req *gamev1.ActivityClaimReq) error {
 	cfg, ok := gamedata.GetActivityCfg(int64(req.ActivityId))
 	if !ok {

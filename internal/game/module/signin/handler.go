@@ -1,17 +1,8 @@
-// Package signin 实现按北京时间自然周（周一至周日）循环的七日签到。
+// handler.go —— 签到协议处理器。
 //
-// 业务只做三件事：取状态（Repo.Get）、按规则改（has/add）、存回去（Repo.Save）。
-// 编解码、标脏、Ext 槽位、落库时机全部由基座承担；持久化适配见 persist.go。
-//
-// 架构职责：签到信息查询 + 当日领取。与 loginreward 同为「协议少、规则强」
-// 的日历玩法，但周期单位是周（weekday 1-7）而非日。
-// Ext 槽位：player_signin（ClaimedDays + ClaimedRewards 两列 JSON）。
-// 配置表：signin_reward.xml（day=周几，item_id/count）。
-//
-// 配置热更：每次请求从 gamedata 当前快照读取（不缓存到模块），运营改数值
-// 后新请求立即生效；缺天/非法配置由 onClaim 回 codeConfig，启动期不做
-// 「七天必须齐全」的硬校验——那会把只改某几天的热更挡在门外。配置完整性
-// 由 TestRewardConfiguration 在构建期（CI）守住。
+// 只写业务流：取状态 → 校验配置 → 判幂等 → 发奖 → 改状态 → 存回 → 回包。
+// 不出现 SQL、不碰 *db.DB、不拼缓存 key（由 docs/模块开发约定.md §2 约束，
+// .golangci.yml 的 depguard 会在 import 层面卡住）。
 package signin
 
 import (
@@ -27,42 +18,6 @@ import (
 	"game_study/pkg/timeutil"
 	"github.com/samber/lo"
 )
-
-const (
-	// stateKey 同时是 Ext 槽位键与落库归属的模块名。
-	stateKey = "signin"
-)
-
-// SignIn 是签到的业务视图：本周已领取天数（1=周一…7=周日）与已领取奖励汇总。
-//
-// 字段语义：
-//   - Days：本周已领取的星期几，落库保持升序（便于对账与 diff）；
-//   - Rewards：本周已领取奖励汇总（item_id → 累计数量），只作展示/对账，不发奖。
-//
-// 跨周后本结构不会被自动清零——清空由周期回调模块调用 Reset 完成，
-// 这是「模块不持时钟锚点」设计的已知取舍（见 docs/signin.md）。
-//
-// Go 知识点：两个字段都没有 json tag，序列化用 Go 字段名（"Days"/"Rewards"）。
-// 这是历史契约（表里已存的数据按这个键名），补 tag 会让旧快照读不出来，
-// 所以注释里显式记录「无 tag 是故意的」。
-// @codec table=player_signin validate=validate
-type SignIn struct {
-	Days    []int32         `db:"claimed_days"`
-	Rewards map[int32]int64 `db:"claimed_rewards"`
-}
-
-// M 是签到模块的唯一实例：声明在包级，路由在 init 注册。
-//
-// 没有 New()：日志、状态编解码、分发都由 Define 兜底，每次启动手工
-// 组装一遍只是多一处漏配的机会。两个请求都满足「重放无第二次副作用」
-// （Info 只读；Claim 按「今天已领」事实幂等），因此可安全声明为可丢弃。
-// 测试要换时钟用 M.SetClock。
-var M = module.Define[SignIn](stateKey, newSignIn).Guard(module.RequireCache)
-
-func init() {
-	M.HandleRoute(&gamev1.SigninInfoReq{}, onInfo)
-	M.HandleRoute(&gamev1.SigninClaimReq{}, onClaim)
-}
 
 // onInfo 签到信息查询：今天周几、今天是否已领、本周领取全貌。
 func onInfo(c *module.Ctx[SignIn]) error {
@@ -149,36 +104,6 @@ func grantCode(err error) errcode.Code {
 	return errcode.ErrSigninBagFull
 }
 
-// newSignIn 新玩家的空状态（空切片而非 nil，业务里不必判空）。
-func newSignIn() *SignIn { return &SignIn{Days: []int32{}, Rewards: map[int32]int64{}} }
-
-// has 今天是否已领取。
-func (d *SignIn) has(day int32) bool {
-	for _, v := range d.Days {
-		if v == day {
-			return true
-		}
-	}
-	return false
-}
-
-// add 登记领取事实：天数保持升序落库，奖励按道具累加。
-//
-// Days 升序是落库契约：JSON diff 与人工对账时顺序稳定；
-// append 后 sort.Slice 保证这一点（天数最多 7 个，排序成本可忽略）。
-func (d *SignIn) add(day int32, grants []module.ItemGrant) {
-	if d.Rewards == nil {
-		d.Rewards = make(map[int32]int64, len(grants))
-	}
-	if !d.has(day) {
-		d.Days = append(d.Days, day)
-		sort.Slice(d.Days, func(i, j int) bool { return d.Days[i] < d.Days[j] })
-	}
-	for _, g := range grants {
-		d.Rewards[g.ItemID] += g.Count
-	}
-}
-
 // protoRewards 把内部发奖结构转成协议结构（按 ItemID 排序由调用方保证）。
 func protoRewards(grants []module.ItemGrant) []*gamev1.SigninReward {
 	return lo.Map(grants, func(g module.ItemGrant, _ int) *gamev1.SigninReward {
@@ -219,22 +144,4 @@ func rewardsForDay(day int32) ([]module.ItemGrant, error) {
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].ItemID < out[j].ItemID })
 	return out, nil
-}
-
-// validate 落库前校验：天数在 1-7，奖励数量为正，坏数据整批回滚。
-//
-// 这类校验属于业务语义（周序号 1..7），不交给生成器：生成器只管
-// 「字段 ↔ 列」的结构映射。
-func validate(d *SignIn) error {
-	for _, day := range d.Days {
-		if day < 1 || day > timeutil.DaysPerWeek {
-			return fmt.Errorf("invalid signin day %d", day)
-		}
-	}
-	for id, count := range d.Rewards {
-		if id <= 0 || count <= 0 {
-			return fmt.Errorf("invalid signin reward %d x %d", id, count)
-		}
-	}
-	return nil
 }

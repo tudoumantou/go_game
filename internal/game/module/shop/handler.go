@@ -15,31 +15,21 @@
 //
 // 写法（v3.6 迁移）：模块声明一行、路由若干行、业务只碰 Ctx.Repo；
 // 协议号由消息类型反查，错误码来自统一枚举。
+
 package shop
 
 import (
 	"fmt"
-	"time"
-
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
-
 	gamev1 "game_study/pkg/pb/game/v1"
+	"time"
+
 	"google.golang.org/protobuf/proto"
 )
 
-// stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
-const stateKey = "shop"
-
-// itemDiamond 商店结算货币（钻石）。与 quest/skill/activity 共用 1001。
-const itemDiamond int32 = 1001
-
-// shopExists 商店配置是否存在（shop 表是商品归属的权威）。
-//
-// 商品行第一列是 shop_id：归属到不存在的商店说明配置被改坏，
-// 这种商品既不展示也不能买——否则玩家能绕过「商店下架」直接购买。
 func shopExists(shopID int32) bool {
 	_, ok := gamedata.GetShopCfg(int64(shopID))
 	return ok
@@ -52,24 +42,7 @@ func shopExists(shopID int32) bool {
 // Go 知识点：Bought 的键是字符串复合键（"1:1001"）而非嵌套 map——
 // 购买记录是稀疏的（几十个商品只买过几个），复合键省掉一层 map
 // 且 JSON 序列化后人类可读，便于线上排查。
-type Data struct {
-	Day    int64            `json:"day"`
-	Bought map[string]int32 `json:"bought"`
-}
 
-// M 商店模块的唯一实例。
-//
-// 不做跨天清理——清零逻辑在读取路径上（见 normalize），因此没有登录钩子。
-var M = module.Define[Data](stateKey, newData)
-
-func init() {
-	M.HandleRoute(&gamev1.ShopListReq{}, onList)
-	module.Route(M, &gamev1.ShopBuyReq{}, onBuy)
-}
-
-// onList 商店列表（商品 + 本周期已购 / 限购）。
-//
-// normalize 传今天：跨天时在读取路径清零，列表天然展示新周期。
 func onList(c *module.Ctx[Data]) error {
 	d, err := c.Repo.Get()
 	if err != nil {
@@ -99,6 +72,7 @@ func onList(c *module.Ctx[Data]) error {
 //
 // 顺序即正确性：先只预检（不改状态）→ 扣费 → 才发货。
 // 反过来做就会出现「钱扣了货没到」或「货到了钱没扣」，只能客服补偿。
+
 func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 	cfg, ok := gamedata.GetShopGoodsCfg(int64(req.GoodsId))
 	if !ok {
@@ -181,11 +155,13 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 //
 // 计量单位是「份」而非「个」：Bought 记的是购买份数（一份 = Col4 个道具），
 // 两者口径必须一致，否则一次买 50 个道具会被算成 50 份。
+
 func withinLimit(bought, want, limit int32) bool {
 	return limit <= 0 || bought+want <= limit
 }
 
 // goodsKey 组合商店与商品 ID，作为快照内的稳定键。
+
 func goodsKey(shopID, goodsID int32) string {
 	return fmt.Sprintf("%d:%d", shopID, goodsID)
 }
@@ -194,6 +170,7 @@ func goodsKey(shopID, goodsID int32) string {
 //
 // 缺配置回退 false：刷新是「玩法决策」，配置没说不刷就不刷，
 // 比默认刷更保守（不会误清玩家已购次数）。
+
 func dailyRefresh() bool {
 	if len(gamedata.ShopRefreshCfgList()) == 0 {
 		return false
@@ -205,4 +182,5 @@ func dailyRefresh() bool {
 //
 // 与 loginreward/signin 同一口径（UTC+8 固定偏移）：进程跑在
 // UTC 容器里也不能改变「今天」的归属，跨天清零才对得上玩家体感。
+
 func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }

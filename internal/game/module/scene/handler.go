@@ -1,25 +1,7 @@
-// Package scenemod 玩家侧场景模块：协议 → 场景 Actor，场景回执 → 客户端。
+// handler.go —— 场景协议处理器：进 / 移 / 离 / 同步。
 //
-// 模块本身不保存位置、不判断视野——这些属于场景 Actor（见 internal/game/scene）。
-// 它只做三件事：转发请求、在下线时通知离场、把错误码翻译成协议响应。
-//
-// 架构职责：协议翻译层。玩家的场景意图（进/移/离/同步）经本模块转成
-// 跨 Actor 消息（scn.EnterMsg 等）投给场景 Actor；场景的广播与回执
-// 由场景侧直接推回玩家 Actor，不经本模块。
-//
-// Ext 槽位：无。唯一的场景相关持久字段是 Profile.SceneID（玩家层
-// profile Ext 的字段），本模块只读写它，不另开槽位。
-//
-// 事件订阅：无。
-//
-// 配置表关系：无（场景清单与实例管理在 internal/game/scene）。
-//
-// 懒初始化：不适用（无本地行概念；场景 Actor 由 Manager 按需拉起）。
-//
-// 关键语义：ctx.Actor.Send 是「投递不等结果」的异步消息——
-// 返回 error 只表示投递失败（信箱满/ Actor 已停），不表示场景处理成败；
-// 场景的处理结果由场景 Actor 另路推送，本模块的同步回包只表达
-// 「已受理」或「投递失败」。
+// 全部是「翻译 + 投递」：本模块不判断位置、不判断视野，只把协议转成
+// 场景 Actor 的消息，把错误码翻译成协议响应。
 package scenemod
 
 import (
@@ -29,41 +11,9 @@ import (
 	"game_study/internal/game/module"
 	scn "game_study/internal/game/scene"
 	"game_study/pkg/codec"
-	"game_study/pkg/log"
 	"game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
 )
-
-// Module 场景模块。
-//
-// 转发型模块：无自有可变状态（mgr 是进程级共享的场景管理器，只读引用），
-// OnMessage 在玩家 Actor 内串行执行，不需要锁。
-type Module struct {
-	// Thin 提供 Module 七件套与协议注册；本模块只在 OnLogout 有实际逻辑
-	// （下线时通知场景移除实体），其余生命周期无操作。
-	*module.Thin
-
-	// mgr 场景 Actor 管理器：按 scene_id 解析场景 Actor 的 PID
-	mgr    *scn.Manager
-	logger *log.Logger
-}
-
-// New 创建场景模块。
-func New(mgr *scn.Manager, logger *log.Logger) *Module {
-	m := &Module{mgr: mgr, logger: logger}
-	m.Thin = module.NewThin("scene",
-		module.ThinLogger(logger),
-		module.ThinLogout(m.onLogout),
-	)
-	// 进入/移动不在这里回包：请求转给场景 Actor，结果由场景广播异步送达
-	// （MsgSceneEntityNotify / MsgSceneEnterResp）。没有请求-响应配对，
-	// 所以用 Handle；回包的两个协议用 HandleR。
-	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
-	m.Handle(codec.MsgSceneMoveReq, m.onMove)
-	m.HandleR(codec.MsgSceneLeaveReq, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{}, m.onLeave)
-	module.Handle(m.Thin, m.onSync)
-	return m
-}
 
 // onLogout 下线时通知场景移除实体（经 ThinLogout 挂接）。
 //
