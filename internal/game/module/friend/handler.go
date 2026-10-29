@@ -4,21 +4,19 @@
 package friend
 
 import (
-	"context"
 	"fmt"
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 
 	gamev1 "game_study/pkg/pb/game/v1"
-	"time"
 )
 
 // onList 好友 + 待处理申请列表；在线状态只作展示，不影响关系判定。
 func (m *Module) onList(ctx *module.Context, _ *gamev1.FriendListReq, resp *gamev1.FriendListResp) error {
-	// Go 知识点：context.WithTimeout 派生带超时的 ctx，
-	// defer cancel() 保证函数返回时释放定时器资源（取消会沿 context
-	// 树传播到 database/sql 的驱动层，中断慢查询）。
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// module.QueryCtx 是「Background + 模块统一上限」，defer cancel() 释放
+	// 定时器并让取消沿 context 树传到 database/sql 驱动层，中断慢查询。
+	// 上限值集中在 module.QueryTimeout，本文件不再出现 3s 字面量。
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 
 	friends, applies, err := m.repo.List(ctxDB, ctx.State.PlayerID())
@@ -79,7 +77,7 @@ func (m *Module) onBlock(ctx *module.Context, req *gamev1.FriendBlockReq, resp *
 		return ctx.FailCode(resp, errcode.ErrFriendBlockSelf)
 	}
 
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 	if err := m.repo.Block(ctxDB, me, req.PlayerId); err != nil {
 		return fmt.Errorf("block player %d: %w", req.PlayerId, err)
@@ -93,7 +91,7 @@ func (m *Module) onUnblock(ctx *module.Context, req *gamev1.FriendUnblockReq, re
 		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
 
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 	if err := m.repo.Unblock(ctxDB, ctx.State.PlayerID(), req.PlayerId); err != nil {
 		return fmt.Errorf("unblock player %d: %w", req.PlayerId, err)
@@ -113,7 +111,7 @@ func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *
 		return ctx.FailCode(resp, errcode.ErrFriendSelf)
 	}
 
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 	code, err := m.repo.Apply(ctxDB, ctx.State.PlayerID(), req.PlayerId)
 	if err != nil {
@@ -129,7 +127,7 @@ func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp
 		return ctx.FailCode(resp, errcode.ErrFriendApplyNotFound)
 	}
 
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 	code, err := m.repo.Handle(ctxDB, ctx.State.PlayerID(), req.PlayerId, req.Accept, applyTTL)
 	if err != nil {
@@ -145,7 +143,7 @@ func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp
 		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
 	}
 
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 	if err := m.repo.Delete(ctxDB, ctx.State.PlayerID(), req.PlayerId); err != nil {
 		return fmt.Errorf("delete friend: %w", err)

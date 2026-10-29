@@ -39,6 +39,8 @@ const (
 	maxRankTypeLen = 32
 	// queryTimeout 中心服查询超时：榜单是旁路页面，3s 等不到就明确
 	// 告诉用户不可用，占着玩家 Actor 的 OnMessage 更久没有意义
+	// 与 module.QueryTimeout 值相同但不是同一个对象：那个管 MySQL，
+	// 这个管跨服 gRPC。合并会让「中心服慢」和「库慢」变成一个调参项。
 	queryTimeout = 3 * time.Second
 )
 

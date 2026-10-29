@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
@@ -26,7 +25,7 @@ import (
 // ExpireAt.Valid 先判再取：sql.NullTime 的可空语义，Valid=false 时
 // .Time 是零值，直接 Unix() 会回一个 1970 的过期时间骗客户端。
 func (m *Module) onList(ctx *module.Context, _ *gamev1.MailListReq, resp *gamev1.MailListResp) error {
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 
 	rows, err := m.listRows(ctxDB, ctx.State.PlayerID())
@@ -155,7 +154,7 @@ func (m *Module) onDelete(c *module.Context, req *gamev1.MailDeleteReq, resp *ga
 	if req.MailId <= 0 {
 		return c.FailCode(resp, errcode.ErrMailNotFound)
 	}
-	ctxDB, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctxDB, cancel := module.QueryCtx()
 	defer cancel()
 
 	playerID := c.State.PlayerID()

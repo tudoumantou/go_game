@@ -123,7 +123,46 @@ type Context struct {
 	Clock func() time.Time
 	// Peers 跨玩家只读访问（好友/公会列表展示对方信息）。
 	// nil 表示未注入——单测与无 DB 环境；业务侧需判空或回落默认展示。
+	//
+	// 当前零消费者（见 peer.go 顶部说明）：字段与注入都还在，但没有任何
+	// 模块调它，读别人摘要仍走各自 SQL JOIN。要删的话三处一起删——
+	// 本字段、peer.go、player/actor.go 的注入。
 	Peers PeerReader
+}
+
+// QueryTimeout 模块内单次仓储调用的上限。
+//
+// 为什么不是一个值在多处各写一遍：模块里的仓储调用四十多处，其中八处
+// （friend×6、mail×2）显式加了 3s 上限，其余靠 pkg/db 的 DSN readTimeout
+// 兜底——两个值谁紧谁生效，于是「一次查询最多等多久」有两个答案，调整时
+// 也只改得动其中八处。收成一个常量后，改它等于改全部。
+//
+// 3s 的取舍：玩家 Actor 是串行的，一条卡住的查询会把该玩家后面所有消息
+// 都堵住。3s 够覆盖正常查询，又短到玩家感觉是「慢」而不是「卡死」。
+// 它比 pkg/db 的驱动层兜底（defaultQueryTimeout = 5s）更紧，两者是层次关系
+// 而不是重复：模块层先放弃，驱动层保证「连模块层都没设」的查询也不会永久挂住。
+const QueryTimeout = 3 * time.Second
+
+// QueryCtx 模块仓储调用用的 ctx：Background + QueryTimeout。
+//
+// 为什么是 Background 而不是某个请求 ctx：Actor 模型下单条消息没有可取消的
+// 上下文——消息一旦开始处理就该做完，中途取消会留下半完成状态（写了一半的
+// 关系表、发了一半的奖励）。所以「请求 ctx」这个对象根本不存在：
+// pkg/actor.Context.Context() 返回的也是 Background。能表达的上限只有超时。
+//
+// 用法固定两行：
+//
+//	ctxDB, cancel := module.QueryCtx()
+//	defer cancel()
+//
+// 什么时候用、什么时候直接传 context.Background()：两者都合法，区别是上限
+// 来自哪里。QueryCtx 是「模块层主动放弃」，适合已知很快的查询（好友列表、
+// 邮件列表、单条关系读）；直接 Background 则完全交给 pkg/db 的驱动层 5s
+// 兜底，适合耗时没测量过的重查询（公会成员列表这类）。此前 3s 只在 friend
+// 和 mail 里出现、team 和 guild 一律 Background，看起来像遗漏——其实是两种
+// 预算，只是没有名字区分。现在有了名字，选择就变成显式的。
+func QueryCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), QueryTimeout)
 }
 
 // Now 返回当前时间：优先注入的时钟，否则系统时间。

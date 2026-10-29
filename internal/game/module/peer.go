@@ -4,6 +4,21 @@
 // 一小块数据」的展示需求，过去每个模块各拼一套（friend 自己写 SQL JOIN、
 // chat 自己定义 Messenger）。这里把它收敛成一个窄接口。
 //
+// ⚠️ 当前未接线（v3.23 标注）：全仓零调用。PeerReader 的实现由 player.Repository
+// 提供、在 actor.go 注入到 module.Context.Peers，但没有任何业务模块使用它；
+// 「读别人一小块数据」实际仍走各自 SQL：
+//
+//	friend/store.go:34,54,354   JOIN player 取 name/level（好友/申请/黑名单）
+//	team/store.go:169           LEFT JOIN player（成员列表）
+//
+// 不迁移的一个合理理由：列表场景一次 JOIN 就拿到 N 个人的名字，而 ViewMany
+// 需要「先查关系表拿 ID、再批量回源」两次往返。也就是说 PeerReader 真正的
+// 适用面只有「单点读一个人」，而这个需求目前没有出现。
+//
+// 判断标准（同 internal/scenemap 的处理）：三个月内没有「让某个模块改用
+// View/ViewMany」的排期，就删掉接口与 Context.Peers 字段——零消费者的代码
+// 不会报错，只会让「怎么读别人数据」继续有两个答案，而维护者会以为统一过。
+//
 // 与写路径的分工：
 //   - 读：走 Redis 快照（比 MySQL 新，MySQL 是异步落库）→ 未命中回落库；
 //   - 写：必须给对方 Actor 发消息，绝不能直接改别人的内存。
