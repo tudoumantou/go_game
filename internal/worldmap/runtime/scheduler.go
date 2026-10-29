@@ -139,7 +139,12 @@ func eventRef(ev domain.DueEvent) string {
 	case domain.DueKindCollectEnd:
 		return sessionRef(ev.SessionID)
 	case domain.DueKindRefresh:
-		return refreshRef(ev.WorldID, ev.RichBlockID, ev.RefreshGeneration, ev.RefreshSlot)
+		// 走 domain.RefreshKey 而不是本地再拼一份：这个键同时被
+		// manager 当作幂等 RequestID（domain/collect.go:196 的注释说明
+		// 「键相同即已创建，重试不重复抽奖」）。两处各拼一遍时，改一处
+		// 漏一处不会报错——只会让补点槽位的去重键与幂等键对不上，
+		// 表现为「定时刷新偶尔不触发」，查起来没有任何线索。
+		return domain.RefreshKey(ev.WorldID, ev.RichBlockID, ev.RefreshGeneration, ev.RefreshSlot)
 	default:
 		return ""
 	}
@@ -164,8 +169,4 @@ func sessionRef(sessionID string) string {
 		return ""
 	}
 	return "session:" + sessionID
-}
-
-func refreshRef(world domain.WorldID, block, gen, slot int64) string {
-	return fmt.Sprintf("refresh:%d:%d:%d:%d", world, block, gen, slot)
 }

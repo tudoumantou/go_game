@@ -307,3 +307,22 @@ func TestMailboxCloseSemantics(t *testing.T) {
 	_, ok = box.Recv()
 	require.False(t, ok, "取空后应返回 false")
 }
+
+// TestEventRefRefreshUsesDomainKey 补点去重键必须与 domain.RefreshKey 同源。
+//
+// 这两个键本来就是同一个字符串空间：runtime 的 eventRef 用它做取消/去重，
+// manager 用它当幂等 RequestID（domain/collect.go 的 RefreshKey 注释写着
+// 「键相同即已创建，重试不重复抽奖」）。此前 runtime 自己又拼了一份
+// "refresh:%d:%d:%d:%d"，改一处漏一处不会报错，只表现为「定时刷新偶尔不
+// 触发」——没有任何日志线索。
+func TestEventRefRefreshUsesDomainKey(t *testing.T) {
+	ev := domain.DueEvent{
+		Kind:              domain.DueKindRefresh,
+		WorldID:           7,
+		RichBlockID:       12,
+		RefreshGeneration: 3,
+		RefreshSlot:       5,
+	}
+	require.Equal(t, domain.RefreshKey(7, 12, 3, 5), eventRef(ev),
+		"eventRef 必须直接调 domain.RefreshKey，不能本地再拼一份")
+}
