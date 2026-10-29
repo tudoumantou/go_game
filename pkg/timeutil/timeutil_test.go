@@ -38,7 +38,7 @@ func TestBusinessDayBoundary(t *testing.T) {
 		"同一瞬间的不同时区表达必须给出同一天")
 
 	// 反证：UTC 日界算法（sec/86400）在这个时刻还停在「昨天」。
-	require.NotEqualValues(t, utcSameInstant.Unix()/secondsPerDay, BusinessDay(utcSameInstant),
+	require.NotEqualValues(t, utcSameInstant.Unix()/SecondsPerDay, BusinessDay(utcSameInstant),
 		"北京时间 0-8 点区间，UTC 日界与业务日界必然不同")
 }
 

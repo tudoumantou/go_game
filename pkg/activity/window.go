@@ -18,11 +18,9 @@ import (
 	"game_study/pkg/timeutil"
 )
 
-// daySeconds 一天的秒数（86400）。
-//
-// 显式声明为 int64：活动计算全部走 int64 秒，避免与 32 位平台/int32
-// 运算时的位宽差异（时间戳乘天数很容易超 int32）。
-const daySeconds int64 = 86400
+// 一天的秒数用 timeutil.SecondsPerDay（int64）：活动计算全部走 int64 秒，
+// 避免与 32 位平台/int32 运算时的位宽差异（时间戳乘天数很容易超 int32）。
+// 不在本包重复声明常量——那样「一天的秒数」就有两个定义。
 
 // epoch 周期基准（北京时间 2020-01-01 00:00）。
 //
@@ -42,9 +40,9 @@ var epoch = time.Date(2020, 1, 1, 0, 0, 0, 0, timeutil.BusinessZone).Unix()
 // 「epoch + k*span」，不依赖本地时区/日历——没有月份概念，不需要
 // 处理大小月与 DST，这是「按天等分」相对「自然月」的核心简化。
 func Window(durationDays int32, now int64) (start, end, period int64) {
-	span := int64(durationDays) * daySeconds
+	span := int64(durationDays) * timeutil.SecondsPerDay
 	if span <= 0 {
-		span = daySeconds
+		span = timeutil.SecondsPerDay
 	}
 	if now < epoch {
 		// 基准之前的时刻归到第 0 期，避免负数周期导致 instance_id 形态异常。

@@ -25,11 +25,13 @@ var BusinessZone = time.FixedZone("Asia/Shanghai", 8*3600)
 // businessOffsetSeconds 业务时区相对 UTC 的偏移。
 const businessOffsetSeconds int64 = 8 * 3600
 
-// secondsPerDay 一天的秒数。
+// SecondsPerDay 一天的秒数。
 //
-// 写成常量而不是在多处写字面量：位数写错不会报错，只会让「天」这个
+// 导出而不是各包各写一个字面量：位数写错不会报错，只会让「天」这个
 // 单位悄悄变长或变短，表现为「某天多出一小时」这种极难复现的 bug。
-const secondsPerDay int64 = 86400
+// pkg/activity 的周期等分也用它——同一常量两个定义，改一处漏一处就是
+// 「活动周期比一天长 24 秒」这类事故。
+const SecondsPerDay int64 = 86400
 
 // Weekday 返回业务时区下的周几：1=周一 … 7=周日。
 //
@@ -62,5 +64,5 @@ func BusinessDay(t time.Time) int64 { return BusinessDayUnix(t.Unix()) }
 // 单独提供一个 Unix 版本：协议、日志上报与中心服下发的时刻都是 int64 秒，
 // 调用方拿到秒再包一层 time.Unix 只是为了马上取回秒，白绕一圈。
 func BusinessDayUnix(sec int64) int64 {
-	return (sec + businessOffsetSeconds) / secondsPerDay
+	return (sec + businessOffsetSeconds) / SecondsPerDay
 }
