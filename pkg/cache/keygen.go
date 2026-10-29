@@ -5,14 +5,12 @@ import "fmt"
 
 // key 命名规范：<域>:<实体>:<id>[:<子键>]
 const (
-	PrefixPlayer  = "player"  // player:<player_id>:<field>
-	PrefixOnline  = "online"  // online:<player_id>
-	PrefixToken   = "token"   // token:<token>
-	PrefixIDTab   = "idtab"   // idtab:<table>（存在性集合，见 idtable.go）
-	PrefixSeq     = "seq"     // seq:<name>（ID 分配计数器，见 idtab.go）
-	PrefixLock    = "lock"    // lock:<resource>
-	PrefixMailBox = "mailbox" // mailbox:<player_id>
-	PrefixShard   = "shard"   // shard:<index>:<player_id>
+	PrefixPlayer = "player" // player:<player_id>:<field>
+	PrefixOnline = "online" // online:<player_id>
+	PrefixToken  = "token"  // token:<token>
+	PrefixIDTab  = "idtab"  // idtab:<table>（存在性集合，见 idtable.go）
+	PrefixSeq    = "seq"    // seq:<name>（ID 分配计数器，见 idtab.go）
+	PrefixShard  = "shard"  // shard:<index>:<player_id>
 
 	// PrefixOwnerIndex 归属索引（ZSET：score = 归属者 id，member = 实体 id）。
 	//
@@ -53,11 +51,6 @@ func SeqKey(name string) string {
 // EntityKey 实体热数据 key（Hash 类型）。
 func EntityKey(table string, id int64) string {
 	return fmt.Sprintf("e:%s:%d", table, id)
-}
-
-// LockKey 分布式锁 key。
-func LockKey(resource string) string {
-	return fmt.Sprintf("%s:%s", PrefixLock, resource)
 }
 
 // ShardKey 落库分片 key。
