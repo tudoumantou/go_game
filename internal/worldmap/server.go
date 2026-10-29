@@ -19,6 +19,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 	"game_study/pkg/pb/internalv2"
+	"game_study/pkg/shutdown"
 )
 
 // Server 是地图服务进程的装配体（文档 18.1 server.go）。
@@ -342,31 +343,57 @@ func (s *Server) seedFor(_ domain.WorldID, sceneID domain.SceneID) (runtime.Seed
 
 // Shutdown 优雅关闭：停接新写 → 等在途事务 → 关场景 → 关池 → 释放租约。
 // 幂等。
+//
+// 步骤编排交给 pkg/shutdown（与其余五个进程同一套阶段语义）。本服务原先
+// 就是「返回错误」的，不属于「失败被 Warn 吞掉」那一类；接过来的收益是
+// 阶段日志与预算耗尽的报告口径一致，以及 release 失败的处置有明确归属。
 func (s *Server) Shutdown(ctx context.Context) error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	var firstErr error
-	if s.manager != nil {
-		if err := s.manager.Shutdown(ctx); err != nil {
-			firstErr = err
+	// 单步 25s：worldmap 的 Shutdown 内部要等在途事务（命令队列与事务池），
+	// 默认 20s 会在事务多的时候提前掐断。总预算仍由 main 传的 ctx 兜底（30s）。
+	mgr := shutdown.NewManager(s.logger).WithStepTimeout(25 * time.Second)
+
+	// DRAINING：停接新写、等在途事务、关场景、关池——这一整套是 manager 的
+	// 内部契约，作为一步保持原子，不在这里拆开。
+	mgr.Register("drain-world", shutdown.PhaseDraining, func(cctx context.Context) error {
+		if s.manager == nil {
+			return nil
 		}
-	}
-	if s.coordinator != nil {
-		s.coordinator.Close()
-	}
-	if s.repo != nil {
-		// 主动释放：不释放也能靠 TTL 过期被接管，但会让下次发布多等一个 TTL。
+		return s.manager.Shutdown(cctx)
+	})
+
+	mgr.Register("close-coordinator", shutdown.PhaseDraining, func(context.Context) error {
+		if s.coordinator != nil {
+			s.coordinator.Close()
+		}
+		return nil
+	})
+
+	// DRAINING：主动释放世界租约。不释放也能靠 TTL 过期被接管，只是让下次
+	// 发布多等一个 TTL——所以失败只记日志，不进返回值（不是「必须成功」）。
+	mgr.Register("release-leases", shutdown.PhaseDraining, func(cctx context.Context) error {
+		if s.repo == nil {
+			return nil
+		}
 		for worldID, epoch := range s.epochs {
-			if err := s.repo.Release(ctx, worldID, s.ownerID, epoch); err != nil {
+			if err := s.repo.Release(cctx, worldID, s.ownerID, epoch); err != nil {
 				s.logger.Warn("释放租约失败", "world", worldID, "err", err)
 			}
 		}
-	}
-	if s.database != nil {
-		_ = s.database.Close()
-	}
-	return firstErr
+		return nil
+	})
+
+	// STOP：关连接池。
+	mgr.Register("close-db", shutdown.PhaseStop, func(context.Context) error {
+		if s.database == nil {
+			return nil
+		}
+		return s.database.Close()
+	})
+
+	return mgr.Run(ctx)
 }
 
 // Manager 暴露世界管理器（RPC 层与集成测试用）。

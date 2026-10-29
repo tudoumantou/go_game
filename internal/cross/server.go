@@ -23,6 +23,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	rpcpkg "game_study/pkg/rpc"
+	"game_study/pkg/shutdown"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 )
@@ -143,45 +144,75 @@ func (s *Server) readiness(_ context.Context) error {
 // 退流要在 GracefulStop 之前（gRPC 会永远等双向流自己结束）；停 Actor
 // 要在最后（房间全部 settled 后它的邮箱才空）。
 //
-// drainTimeout 双重封顶：配置的 Drain 时长与 ctx 剩余超时取小——
-// 总超时先到时强停，保证整个关闭流程不超 main 给的预算。
+// 编排交给 pkg/shutdown：Phase 表达「跨阶段不可换」，注册顺序表达
+// 「同阶段内的依赖」。原先手写时每一步的失败只打一行 Warn、函数恒返回
+// nil——结算推送失败与 metrics 关不掉的严重程度差了两个数量级，却都只
+// 体现在日志里；现在统一进返回值，由 main 转成非零退出码。
 func (s *Server) Shutdown(ctx context.Context) error {
-	// ① 拒新房 + 存量兜底结算
-	// closing 标志先置位：Drain 里第一件事，保证关闭期间到达的
-	// CreateReq 被拒绝而不是又开一间永远等不到结算的新房
-	if s.rooms != nil {
-		drainTimeout := 5 * time.Minute
-		if d, err := config.ParseDuration(s.cfg.Shutdown.DrainTimeout); err == nil && d > 0 {
-			drainTimeout = d
+	// 单步超时按 Drain 预算放宽：默认的 20s 会在房间兜底结算（可配到
+	// 5 分钟）中途把这一步掐断，留下一半房间没结算。其余步骤自带更短的
+	// 内部超时（gRPC 2s），不会被这条放宽影响。
+	drainTimeout := 5 * time.Minute
+	if d, err := config.ParseDuration(s.cfg.Shutdown.DrainTimeout); err == nil && d > 0 {
+		drainTimeout = d
+	}
+	mgr := shutdown.NewManager(s.logger).WithStepTimeout(drainTimeout + 5*time.Second)
+
+	// DRAINING：拒新房 + 存量兜底结算。
+	// closing 标志在 Drain 里第一件事置位：保证关闭期间到达的 CreateReq
+	// 被拒绝，而不是又开一间永远等不到结算的新房。
+	mgr.Register("drain-rooms", shutdown.PhaseDraining, func(cctx context.Context) error {
+		if s.rooms == nil {
+			return nil
 		}
-		if deadline, ok := ctx.Deadline(); ok {
-			// 总超时更短时以总超时为准
-			if remain := time.Until(deadline); remain < drainTimeout {
-				drainTimeout = remain
+		// 双重封顶：配置的 Drain 时长与总预算剩余取小——总超时先到时强停，
+		// 保证整个关闭流程不超 main 给的预算。
+		d := drainTimeout
+		if deadline, ok := cctx.Deadline(); ok {
+			if remain := time.Until(deadline); remain < d {
+				d = remain
 			}
 		}
-		s.rooms.Drain(drainTimeout)
-	}
+		s.rooms.Drain(d)
+		return nil
+	})
 
-	// ② 主动断所有游戏服流 —— 否则 GracefulStop 会一直等这些永不结束的双向流
-	// 断流前 Drain 已把结算推完：这里断的是「空转的流」，玩家侧
-	// 早已收到结果并离房
-	if s.crossRPC != nil {
-		s.crossRPC.CloseAllPeers()
-	}
-	// ③ 停 gRPC（带超时：2s 内让正在写的帧发完，超时强制断）
-	if s.rpcServer != nil {
-		s.rpcServer.StopWithTimeout(2 * time.Second)
-	}
-	// ④ 停 Actor（房间全部结算完）
-	// Stop 会等 mailbox 排空：settle 推送是异步的，直接杀进程会让
-	// 最后几帧结果丢在队列里——玩家看到「战斗结束但没结算」
-	if s.actorSys != nil {
-		s.actorSys.Stop()
-	}
-	// ⑤ 停指标
-	if s.metricsSrv != nil {
-		_ = s.metricsSrv.Stop(ctx)
+	// DRAINING：主动断所有游戏服流 —— 否则 GracefulStop 会一直等这些
+	// 永不结束的双向流。断流前 Drain 已把结算推完，这里断的是「空转的流」。
+	mgr.Register("close-peers", shutdown.PhaseDraining, func(context.Context) error {
+		if s.crossRPC != nil {
+			s.crossRPC.CloseAllPeers()
+		}
+		return nil
+	})
+
+	// DRAINING：停 gRPC（2s 内让正在写的帧发完，超时强制断）。
+	mgr.Register("stop-grpc", shutdown.PhaseDraining, func(context.Context) error {
+		if s.rpcServer != nil {
+			s.rpcServer.StopWithTimeout(2 * time.Second)
+		}
+		return nil
+	})
+
+	// STOP：停 Actor（房间全部结算完）。
+	// Stop 会等 mailbox 排空：settle 推送是异步的，直接杀进程会让最后几帧
+	// 结果丢在队列里——玩家看到「战斗结束但没结算」。
+	mgr.Register("stop-actors", shutdown.PhaseStop, func(context.Context) error {
+		if s.actorSys != nil {
+			s.actorSys.Stop()
+		}
+		return nil
+	})
+
+	mgr.Register("stop-metrics", shutdown.PhaseStop, func(cctx context.Context) error {
+		if s.metricsSrv != nil {
+			return s.metricsSrv.Stop(cctx)
+		}
+		return nil
+	})
+
+	if err := mgr.Run(ctx); err != nil {
+		return fmt.Errorf("cross shutdown: %w", err)
 	}
 	s.logger.Info("cross stopped")
 	return nil

@@ -17,6 +17,7 @@ package login
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
 	"game_study/pkg/ratelimit"
+	"game_study/pkg/shutdown"
 )
 
 // Server 登录服（组装层入口，职责见设计文档 3.1 目录树）
@@ -251,40 +253,64 @@ func (s *Server) reconcileLoop(ctx context.Context, svc *service.RechargeService
 	}
 }
 
-// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，pkg/shutdown 编排）。
+// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，由 pkg/shutdown 编排）。
 // 顺序即安全顺序：先停 HTTP（不再接新请求）→ 停消费（提交 offset）
 // → Flush + 关生产者（在途消息落盘）→ 关 MySQL → 关 Redis → 停指标。
 // 反序会让新支付回调打进正在关闭的链路，丢单风险最高。
+//
+// 原先六步的失败全部只打 Warn、函数恒返回 nil：「回调丢单」与「指标端口
+// 没关掉」在退出码上没有任何区别。现在统一进返回值，由 main 转非零退出。
 func (s *Server) Shutdown(ctx context.Context) error {
-	if s.httpSrv != nil {
-		if err := s.httpSrv.Shutdown(ctx); err != nil {
-			s.logger.Warn("http shutdown", "err", err)
+	mgr := shutdown.NewManager(s.logger)
+
+	// DRAINING：关 HTTP 入口（不再接新回调），等在途请求返回。
+	mgr.Register("stop-http", shutdown.PhaseDraining, func(cctx context.Context) error {
+		if s.httpSrv == nil {
+			return nil
 		}
-	}
-	// 关闭顺序：停消费（提交 offset）→ Flush 生产者 → 关连接
-	if s.delivered != nil {
-		if err := s.delivered.Close(); err != nil {
-			s.logger.Warn("consumer close", "err", err)
+		return s.httpSrv.Shutdown(cctx)
+	})
+
+	// DRAINING：停消费（内部提交 offset 后退出）。必须在关 Kafka 之前。
+	mgr.Register("stop-consumer", shutdown.PhaseDraining, func(context.Context) error {
+		if s.delivered == nil {
+			return nil
 		}
-	}
-	if s.producer != nil {
-		// Flush 在 Close 前：把缓冲区里未确认的消息尽量发出，
-		// Close 之后 producer 不再接受任何 Send
-		_ = s.producer.Flush(ctx)
-		if err := s.producer.Close(); err != nil {
-			s.logger.Warn("producer close", "err", err)
+		return s.delivered.Close()
+	})
+
+	// FLUSH：把缓冲区里未确认的消息尽量发出；Close 之后 producer 不再收 Send。
+	mgr.Register("flush-producer", shutdown.PhaseFlush, func(cctx context.Context) error {
+		if s.producer == nil {
+			return nil
 		}
-	}
-	if s.database != nil {
-		_ = s.database.Close()
-	}
-	if s.redis != nil {
-		if err := s.redis.Close(); err != nil {
-			s.logger.Warn("redis close", "err", err)
+		err := s.producer.Flush(cctx)
+		closeErr := s.producer.Close()
+		return errors.Join(err, closeErr)
+	})
+
+	// STOP：DB → Redis → 指标。
+	mgr.Register("close-db", shutdown.PhaseStop, func(context.Context) error {
+		if s.database == nil {
+			return nil
 		}
-	}
-	if s.metricsSrv != nil {
-		_ = s.metricsSrv.Stop(ctx)
+		return s.database.Close()
+	})
+	mgr.Register("close-redis", shutdown.PhaseStop, func(context.Context) error {
+		if s.redis == nil {
+			return nil
+		}
+		return s.redis.Close()
+	})
+	mgr.Register("stop-metrics", shutdown.PhaseStop, func(cctx context.Context) error {
+		if s.metricsSrv != nil {
+			return s.metricsSrv.Stop(cctx)
+		}
+		return nil
+	})
+
+	if err := mgr.Run(ctx); err != nil {
+		return fmt.Errorf("login shutdown: %w", err)
 	}
 	s.logger.Info("login stopped")
 	return nil

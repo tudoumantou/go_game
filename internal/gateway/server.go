@@ -46,6 +46,7 @@ import (
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
 	resolver "game_study/pkg/rpc/resolver"
+	"game_study/pkg/shutdown"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -600,47 +601,84 @@ func (s *Server) adminAllowed(r *http.Request) bool {
 	return host == "127.0.0.1" || host == "::1"
 }
 
-// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，pkg/shutdown 编排）。
+// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，由 pkg/shutdown 编排）。
 // 顺序即安全顺序：先摘 etcd 注册（不再接新流量）→ 断所有客户端连接
 // （在途请求随断连失败，客户端重连到新节点）→ 停 TCP/HTTP → 关后端流
 // → 关 etcd/Redis。反序会让新请求继续打到正在关闭的组件上。
+//
+// 原先每一步的失败只打 Warn、函数恒返回 nil：断流失败（玩家掉线不
+// 重连）与指标端口关不掉在返回值上没有区别。现在统一进返回值。
 func (s *Server) Shutdown(ctx context.Context) error {
-	// DRAIN：摘注册
-	// 先摘除再断连：否则 etcd 仍宣称本节点存活，新玩家连进来即被断
-	if s.etcdCancel != nil {
-		s.etcdCancel()
-	}
-	// DRAINING：关所有会话连接，让 conn handler 退出
-	// CloseAll 内部先摘表再逐个 Close，避免持锁回调造成死锁（见 session.Manager）
-	s.sessMgr.CloseAll()
-	if s.tcpSrv != nil {
-		if err := s.tcpSrv.Stop(); err != nil {
-			s.logger.Warn("tcp stop", "err", err)
+	mgr := shutdown.NewManager(s.logger)
+
+	// DRAIN：摘注册。
+	// 先摘除再断连：否则 etcd 仍宣称本节点存活，新玩家连进来即被断。
+	// etcdCancel 幂等（context.CancelFunc），只注册一次——原实现里同一件事
+	// 在 DRAINING 段又调了一遍，是复制粘贴留下的重复。
+	mgr.Register("unregister", shutdown.PhaseDrain, func(context.Context) error {
+		if s.etcdCancel != nil {
+			s.etcdCancel()
 		}
-	}
-	if s.httpSrv != nil {
-		if err := s.httpSrv.Shutdown(ctx); err != nil {
-			s.logger.Warn("http shutdown", "err", err)
+		return nil
+	})
+
+	// DRAINING：关所有会话连接，让 conn handler 退出。
+	// CloseAll 内部先摘表再逐个 Close，避免持锁回调造成死锁（见 session.Manager）。
+	mgr.Register("close-sessions", shutdown.PhaseDraining, func(context.Context) error {
+		if s.sessMgr != nil {
+			s.sessMgr.CloseAll()
 		}
-	}
-	if s.etcdCancel != nil {
-		s.etcdCancel()
-	}
-	// 后端流全部取消：recvLoop 随 Recv 报错退出，goroutine 收敛
-	if s.backend != nil {
-		_ = s.backend.Close()
-	}
-	if s.etcdReg != nil {
-		_ = s.etcdReg.Close()
-	}
-	if s.etcdClient != nil {
-		_ = s.etcdClient.Close()
-	}
-	if s.redis != nil {
-		_ = s.redis.Close()
-	}
-	if s.metricsSrv != nil {
-		_ = s.metricsSrv.Stop(ctx)
+		return nil
+	})
+
+	// DRAINING：停 TCP/HTTP 监听。
+	mgr.Register("stop-tcp", shutdown.PhaseDraining, func(context.Context) error {
+		if s.tcpSrv != nil {
+			return s.tcpSrv.Stop()
+		}
+		return nil
+	})
+	mgr.Register("stop-http", shutdown.PhaseDraining, func(cctx context.Context) error {
+		if s.httpSrv != nil {
+			return s.httpSrv.Shutdown(cctx)
+		}
+		return nil
+	})
+
+	// DRAINING：后端流全部取消，recvLoop 随 Recv 报错退出，goroutine 收敛。
+	mgr.Register("close-backend", shutdown.PhaseDraining, func(context.Context) error {
+		if s.backend != nil {
+			return s.backend.Close()
+		}
+		return nil
+	})
+
+	// STOP：etcd → Redis → 指标。
+	mgr.Register("close-etcd", shutdown.PhaseStop, func(context.Context) error {
+		var errs []error
+		if s.etcdReg != nil {
+			errs = append(errs, s.etcdReg.Close())
+		}
+		if s.etcdClient != nil {
+			errs = append(errs, s.etcdClient.Close())
+		}
+		return errors.Join(errs...)
+	})
+	mgr.Register("close-redis", shutdown.PhaseStop, func(context.Context) error {
+		if s.redis == nil {
+			return nil
+		}
+		return s.redis.Close()
+	})
+	mgr.Register("stop-metrics", shutdown.PhaseStop, func(cctx context.Context) error {
+		if s.metricsSrv != nil {
+			return s.metricsSrv.Stop(cctx)
+		}
+		return nil
+	})
+
+	if err := mgr.Run(ctx); err != nil {
+		return fmt.Errorf("gateway shutdown: %w", err)
 	}
 	s.logger.Info("gateway stopped")
 	return nil

@@ -16,6 +16,7 @@ package center
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
 	rpcpkg "game_study/pkg/rpc"
+	"game_study/pkg/shutdown"
 
 	internalv2 "game_study/pkg/pb/internalv2"
 	"github.com/redis/go-redis/v9"
@@ -647,43 +649,79 @@ func (a *senderAdapter) SendPush(p *relay.PushPayload) error {
 //
 // 顺序原理：先踢后停——反过来的话节点还连着自己，gRPC 一停全部瞬断，
 // 重连风暴且玩家掉线；先 Kick 给节点 3s 缓冲期去建新连接。
+// Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，由 pkg/shutdown 编排）。
+//
+// 顺序即安全顺序：先通知节点改连（否则它们要等 gRPC 强停才发现本实例没了）
+// → 停 gRPC → 停中转桥 → 刷 producer → 关 DB → 停指标。
+//
+// 原先每一步的失败只打一行 Warn、函数恒返回 nil：producer 刷不出去（发货
+// 消息丢）与 metrics 关不掉（无关紧要）在返回值上没有区别。现在统一进
+// 返回值，由 main 转成非零退出码。
 func (s *Server) Shutdown(ctx context.Context) error {
-	// ① 通知所有节点「准备关闭」，让它们尽早重连到其它中心服实例
-	s.kickAllNodes()
+	mgr := shutdown.NewManager(s.logger)
 
-	// ② 停 gRPC（带超时，避免 Report 流永不结束导致卡死 —— 与 P13 同类问题）
-	if s.rpcServer != nil {
-		s.rpcServer.StopWithTimeout(3 * time.Second)
-	}
+	// DRAIN：通知所有节点「准备关闭」，让它们尽早重连到其它中心服实例。
+	mgr.Register("kick-nodes", shutdown.PhaseDrain, func(context.Context) error {
+		s.kickAllNodes()
+		return nil
+	})
 
-	// ③ 停中转桥（消费者 Run 随 ctx 退出，这里显式关闭释放 Kafka 连接）
-	// 关之前打统计：forwarded/received/delivered/skipped 是判断集群
-	// 中转健康度的唯一现场证据，进程一退就没了
-	if s.relayBridge != nil {
+	// DRAINING：停 gRPC（带超时，避免 Report 流永不结束导致卡死 —— 与 P13 同类问题）。
+	mgr.Register("stop-grpc", shutdown.PhaseDraining, func(context.Context) error {
+		if s.rpcServer != nil {
+			s.rpcServer.StopWithTimeout(3 * time.Second)
+		}
+		return nil
+	})
+
+	// DRAINING：停中转桥（消费者 Run 随 ctx 退出，这里显式关闭释放 Kafka 连接）。
+	// 关之前打统计：forwarded/received/delivered/skipped 是判断集群中转
+	// 健康度的唯一现场证据，进程一退就没了。
+	mgr.Register("close-relay", shutdown.PhaseDraining, func(context.Context) error {
+		if s.relayBridge == nil {
+			return nil
+		}
 		s.relayBridge.Close()
 		if fwd, recv, deliv, skip := s.relayBridge.Stats(); fwd+recv > 0 {
 			s.logger.Info("relay bridge stats",
 				"forwarded", fwd, "received", recv, "delivered", deliv, "skipped", skip)
 		}
-	}
+		return nil
+	})
 
-	// ④ 归档与统计落库：Run 随 ctx 退出；这里确保 producer 缓冲已刷出
-	// Flush 在 Close 之前：没刷出的发货消息会随 producer 一起蒸发；
-	// Flush 用传入的 shutdownCtx（带剩余超时），不会无限等
-	if s.milestoneSvc != nil {
-		_ = s.milestoneSvc.Close()
-	}
-	if s.producer != nil {
-		_ = s.producer.Flush(ctx)
-		s.producer.Close()
-	}
-	if s.database != nil {
-		_ = s.database.Close()
-	}
+	// FLUSH：归档/统计收尾 + producer 刷出。Flush 在 Close 之前：没刷出的
+	// 发货消息会随 producer 一起蒸发。
+	mgr.Register("close-milestone", shutdown.PhaseFlush, func(context.Context) error {
+		if s.milestoneSvc == nil {
+			return nil
+		}
+		return s.milestoneSvc.Close()
+	})
+	mgr.Register("flush-producer", shutdown.PhaseFlush, func(cctx context.Context) error {
+		if s.producer == nil {
+			return nil
+		}
+		err := s.producer.Flush(cctx)
+		closeErr := s.producer.Close()
+		return errors.Join(err, closeErr)
+	})
 
-	// ⑤ 停指标
-	if s.metricsSrv != nil {
-		_ = s.metricsSrv.Stop(ctx)
+	// STOP：关 DB、停指标。
+	mgr.Register("close-db", shutdown.PhaseStop, func(context.Context) error {
+		if s.database == nil {
+			return nil
+		}
+		return s.database.Close()
+	})
+	mgr.Register("stop-metrics", shutdown.PhaseStop, func(cctx context.Context) error {
+		if s.metricsSrv != nil {
+			return s.metricsSrv.Stop(cctx)
+		}
+		return nil
+	})
+
+	if err := mgr.Run(ctx); err != nil {
+		return fmt.Errorf("center shutdown: %w", err)
 	}
 	s.logger.Info("center stopped")
 	return nil

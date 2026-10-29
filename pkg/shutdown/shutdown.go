@@ -17,8 +17,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"game_study/pkg/log"
 )
 
 // Phase 关闭阶段。
@@ -69,14 +67,24 @@ type Step struct {
 type Manager struct {
 	mu          sync.Mutex
 	steps       []Step
-	logger      *log.Logger
+	logger      Logger
 	stepTimeout time.Duration
+}
+
+// Logger 关闭编排只需要这两个方法。
+//
+// 收接口而不是 *log.Logger：worldmap 的日志器是自己的 runtime.Logger
+// 接口（Info/Warn/Error 同签名），钉死具体类型就得让它为了关服再包一层
+// 适配器。一个工具包不该规定日志器的形状。
+type Logger interface {
+	Info(msg string, args ...any)
+	Warn(msg string, args ...any)
 }
 
 // NewManager 创建 Manager。
 // 默认单步 20s：覆盖一次 Kafka/DB flush 批次的富余量，又不让单步卡死
 // 吞掉总预算（总预算由 ctx 控制，单步超时是二级防线）。
-func NewManager(logger *log.Logger) *Manager {
+func NewManager(logger Logger) *Manager {
 	return &Manager{logger: logger, stepTimeout: 20 * time.Second}
 }
 
