@@ -19,6 +19,35 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// FirstTime 原子占位：key 不存在时写入并返回 true（首次），已存在返回 false。
+//
+// # 为什么单独抽成函数
+//
+// 「SETNX 抢一个标记」在项目里有三处：Kafka 消费去重（RedisDeduper）、
+// 排行榜结算去重（center/rank）、里程碑展开去重（center/milestone）。
+// 三处都写 `SetNX(ctx, key, 1, ttl)`，但错误语义各不相同——一处打 Warn 丢掉
+// 上报，一处 `err != nil || !ok { continue }` 把「Redis 故障」和「确定重复」
+// 混成一件事。
+//
+// 混在一起的后果不对称：Redis 故障时按「重复」处理，等于这条业务永久跳过；
+// 而按「失败」处理至少还能靠重投补回来。所以本函数把两种情况分开返回，
+// 调用方必须显式决定故障时的策略。
+//
+// 参数：key 由调用方按各自领域构造（三处的 key 格式不同，且短期内不能统一
+// ——rank 的 key 改了会让线上正在生效的去重窗口重置，重复加分无法自动修正）。
+// ttl <= 0 时不设过期（不推荐：key 会永久堆积，只适合调用方另有清理机制的场景）。
+//
+// 返回：true = 首次（调用方执行业务）；false = 已存在（确定重复）；
+// error = 不知道（Redis 故障，不是重复）。
+func FirstTime(ctx context.Context, client redis.UniversalClient, key string, ttl time.Duration) (bool, error) {
+	ok, err := client.SetNX(ctx, key, 1, ttl).Result()
+	if err != nil {
+		// %w 包装：调用方可 errors.Is 判底层 Redis 错误类型（超时/连接）。
+		return false, fmt.Errorf("setnx %s: %w", key, err)
+	}
+	return ok, nil
+}
+
 // RedisDeduper Redis 幂等去重器。
 //
 // 无状态薄封装：只持有 client，可被多个消费 goroutine 并发使用——
@@ -62,12 +91,9 @@ func (d *RedisDeduper) FirstTime(ctx context.Context, topic, bizID string, ttl t
 	if ttl <= 0 {
 		ttl = mq.DefaultIdemTTL
 	}
-	ok, err := d.client.SetNX(ctx, mq.IdemKey(topic, bizID), 1, ttl).Result()
-	if err != nil {
-		// %w 包装底层错误：调用方可用 errors.Is 判 Redis 错误类型
-		return false, fmt.Errorf("idem setnx %s: %w", bizID, err)
-	}
-	return ok, nil
+	// 与 rank/milestone 共用同一个原语：占位语义只有一处实现，
+	// 「false 是确定重复、error 是不知道」这条区分也只有一处定义。
+	return FirstTime(ctx, d.client, mq.IdemKey(topic, bizID), ttl)
 }
 
 // 编译期断言：实现 mq.Forgetter。

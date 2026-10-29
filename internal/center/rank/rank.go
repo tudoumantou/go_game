@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"game_study/pkg/cache"
 	"game_study/pkg/log"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -115,10 +116,15 @@ func (s *Service) Write(rep *internalv2.RankReport) {
 	// 业务键去重：Redis 失败时宁可不加分，也不冒重复加分的风险
 	// （重复加分无法自动修正，少加一次可以由运营补偿）。
 	// 显式 cancel 而非 defer：函数后面还有 ZINCRBY 与 Set 两条命令，
-	// defer 会把 2s 超时上下文一直持到函数返回，白占资源
+	// defer 会把 2s 超时上下文一直持到函数返回，白占资源。
+	//
+	// 占位走 cache.FirstTime（与 Kafka 消费去重、里程碑展开共用同一个
+	// 原语）：它把「确定重复」与「Redis 故障」分成 false / error 两种返回，
+	// 这里两者都 return，但日志只有故障那条会打——混在一起会让一次 Redis
+	// 抖动看起来像一串正常的重复上报。
 	if rep.BizId != "" {
 		dctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		ok, err := s.rdb.SetNX(dctx, dedupKey(rep.BizId), 1, dedupTTL).Result()
+		ok, err := cache.FirstTime(dctx, s.rdb, dedupKey(rep.BizId), dedupTTL)
 		cancel()
 		if err != nil {
 			s.logger.Warn("rank dedup failed, drop report", "biz_id", rep.BizId, "err", err)

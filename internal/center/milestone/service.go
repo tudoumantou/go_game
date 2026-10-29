@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"game_study/pkg/activity"
+	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/log"
@@ -168,10 +169,20 @@ func (s *Service) createTasks(ctx context.Context) error {
 
 		// 同一实例同一里程碑只展开一次：SETNX 成功者负责建任务。
 		// 抢不到的实例直接跳过——多中心服部署下保证只有一方展开，
-		// 任务表不会出现并发重复插入；30 天 TTL 覆盖一个赛季周期
+		// 任务表不会出现并发重复插入；30 天 TTL 覆盖一个赛季周期。
+		//
+		// 占位走 cache.FirstTime（与 Kafka 消费去重、排行榜结算去重共用）：
+		// 它把「确定重复」与「Redis 故障」分成 false / error。这里两者都
+		// 跳过本轮，但故障那条要留日志——原先 err 与 !ok 合在一个 if 里，
+		// Redis 抖动时一整轮里程碑判定静默消失，事后无法从日志复现。
 		marker := fmt.Sprintf("activity:milestone:%s:%d", inst.id, cfg.Id)
-		ok, err = s.rdb.SetNX(ctx, marker, 1, 30*24*time.Hour).Result()
-		if err != nil || !ok {
+		ok, err = cache.FirstTime(ctx, s.rdb, marker, 30*24*time.Hour)
+		if err != nil {
+			s.logger.Warn("milestone marker failed, skip this round",
+				"instance", inst.id, "milestone", cfg.Id, "err", err)
+			continue
+		}
+		if !ok {
 			continue
 		}
 
