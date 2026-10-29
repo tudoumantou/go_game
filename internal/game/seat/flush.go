@@ -1,11 +1,11 @@
-// internal/game/seat/flush.go —— 合并落库（write-behind）
+// internal/game/seat/flush.go —— 座位状态的合并落库
 //
 // 为什么需要这一层：座位状态变更原本在房间 Actor 的 Receive 里同步写
 // MySQL——一次占座两次往返（seat_room + seat_player），期间该房间的
 // 所有消息（他人占座、1h 超时、恢复）全部排队，DB 抖动会直接表现为
 // 「抢不到座」。这里把 DB 往返移出 Actor：
 //
-//	房间 Actor --mark（纯内存）--> writer.dirty --每秒合并--> Store
+//	房间 Actor --mark（纯内存）--> Coalescer --每秒合并--> Store
 //
 // 合并为什么安全：
 //   - seat_room 是整房幂等覆盖（Save 只按 room_id 更新 slots），
@@ -13,16 +13,17 @@
 //   - seat_player 按 player_id 只保留最后一次变更（含 upsert/delete 的
 //     意图），删除条件带 room_id + seat_index，不会误删换座后的新行。
 //
-// 失败重试：写失败的 key 重新并回待写集合，下一轮重试；进程崩溃最多
-// 丢一个 flushInterval 的内存状态，重启后以库里的快照为准。
+// 合并机制本身在 pkg/flush.Coalescer：这套「键级合并 + 失败放回」的逻辑
+// 与玩法无关，原先在这里写了 150 行。本文件只剩座位特有的那部分——
+// 脏集合分两级、每级写什么。
 package seat
 
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
+	"game_study/pkg/flush"
 	"game_study/pkg/log"
 	pkgseat "game_study/pkg/seat"
 )
@@ -53,135 +54,71 @@ type seatOp struct {
 	occupied bool
 }
 
-// writer 合并落库 worker。
+// writer 座位落库器：两级脏集合，两种合并语义。
+//
+//   - rooms：只关心「这间房脏了」，落库时现取房间最新快照。这样连续变更
+//     只写最终态，也不需要把快照在管理器里再存一份。
+//   - players：关心「最后意图」（占座还是离开，坐在哪），所以值不是零值
+//     而是 seatOp。
+//
+// 分两个 Coalescer 而不是一个带联合结构体的：两级键类型不同（int32/int64）、
+// 失败重试互不牵连，合成一个只会让「房间写失败导致玩家也重试」。
 type writer struct {
 	saver  saver
 	logger *log.Logger
-	// snap 落库时现取房间最新快照：这样连续变更只写最终态，
-	// 也不需要把快照在管理器里再存一份。
-	snap func(roomID int32) (pkgseat.RoomSnapshot, bool)
+	snap   func(roomID int32) (pkgseat.RoomSnapshot, bool)
 
-	mu      sync.Mutex
-	rooms   map[int32]struct{}
-	players map[int64]seatOp
-
-	stopCh   chan struct{}
-	done     chan struct{}
-	stopOnce sync.Once
+	rooms   *flush.Coalescer[int32, struct{}]
+	players *flush.Coalescer[int64, seatOp]
 }
 
 func newWriter(s saver, logger *log.Logger, snap func(int32) (pkgseat.RoomSnapshot, bool)) *writer {
-	return &writer{
-		saver:   s,
-		logger:  logger,
-		snap:    snap,
-		rooms:   make(map[int32]struct{}, 16),
-		players: make(map[int64]seatOp, 16),
-		stopCh:  make(chan struct{}),
-		done:    make(chan struct{}),
-	}
+	w := &writer{saver: s, logger: logger, snap: snap}
+	w.rooms = flush.NewCoalescer(
+		flush.CoalesceConfig{Interval: flushInterval, Timeout: flushTimeout},
+		func(ctx context.Context, roomID int32, _ struct{}) error {
+			snap, ok := w.snap(roomID)
+			if !ok {
+				return nil // 房间已被移除：没有可写的状态
+			}
+			return w.saver.Save(ctx, snap)
+		}, logger)
+	w.players = flush.NewCoalescer(
+		flush.CoalesceConfig{Interval: flushInterval, Timeout: flushTimeout},
+		func(ctx context.Context, playerID int64, op seatOp) error {
+			if !op.occupied {
+				return w.saver.DeletePlayer(ctx, playerID, op.ref)
+			}
+			return w.saver.SavePlayer(ctx, playerID, op.ref, op.at)
+		}, logger)
+	return w
 }
 
 // start 拉起后台 worker（每次 NewManager 一次）。
-func (w *writer) start() { go w.loop() }
+func (w *writer) start() {
+	w.rooms.Start()
+	w.players.Start()
+}
 
 // markRoom 登记房间脏标记（房间 Actor 内调用，纯内存）。
-func (w *writer) markRoom(roomID int32) {
-	w.mu.Lock()
-	w.rooms[roomID] = struct{}{}
-	w.mu.Unlock()
-}
+func (w *writer) markRoom(roomID int32) { w.rooms.Mark(roomID, struct{}{}) }
 
 // markPlayer 登记玩家数据变更（后写覆盖先写，只落最后一次意图）。
 func (w *writer) markPlayer(playerID int64, ref pkgseat.SeatRef, at int64, occupied bool) {
-	w.mu.Lock()
-	w.players[playerID] = seatOp{ref: ref, at: at, occupied: occupied}
-	w.mu.Unlock()
+	w.players.Mark(playerID, seatOp{ref: ref, at: at, occupied: occupied})
 }
 
-func (w *writer) loop() {
-	defer close(w.done)
-	t := time.NewTicker(flushInterval)
-	defer t.Stop()
-	for {
-		select {
-		case <-t.C:
-			if err := w.flushOnce(context.Background()); err != nil {
-				w.logger.Warn("seat flush failed, will retry", "err", err)
-			}
-		case <-w.stopCh:
-			return
-		}
-	}
+// flush 立即排空两级脏集合（测试与关服路径共用）。
+//
+// 两级各自 Flush 而不是合成一批：房间和玩家行的写互不依赖，
+// 一个失败不该让另一批也重试。
+func (w *writer) flush(ctx context.Context) error {
+	return errors.Join(w.rooms.Flush(ctx), w.players.Flush(ctx))
 }
 
 // stop 停 worker 并做最后一次落库（关服路径：Actor 已 Drain，不会再有新标记）。
+//
+// 两级都要排空：只停 rooms 会让「关服瞬间的玩家行变更」留在内存里。
 func (w *writer) stop() error {
-	w.stopOnce.Do(func() { close(w.stopCh) })
-	<-w.done
-	return w.flushOnce(context.Background())
-}
-
-// flushOnce 取走当前脏集合写库；失败的 key 并回集合等下一轮。
-//
-// 先换出新 map 再解锁写库：写库可能耗时，不能持锁做 IO。
-func (w *writer) flushOnce(ctx context.Context) error {
-	w.mu.Lock()
-	rooms, players := w.rooms, w.players
-	w.rooms = make(map[int32]struct{}, len(rooms))
-	w.players = make(map[int64]seatOp, len(players))
-	w.mu.Unlock()
-
-	if len(rooms) == 0 && len(players) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, flushTimeout)
-	defer cancel()
-
-	var errs []error
-	for id := range rooms {
-		snap, ok := w.snap(id)
-		if !ok {
-			continue // 房间已被移除：没有可写的状态
-		}
-		if err := w.saver.Save(ctx, snap); err != nil {
-			w.logger.Warn("seat room flush failed", "room_id", id, "err", err)
-			errs = append(errs, err)
-			w.retryRoom(id)
-		}
-	}
-	for playerID, op := range players {
-		var err error
-		if op.occupied {
-			err = w.saver.SavePlayer(ctx, playerID, op.ref, op.at)
-		} else {
-			err = w.saver.DeletePlayer(ctx, playerID, op.ref)
-		}
-		if err != nil {
-			w.logger.Warn("seat player flush failed", "player_id", playerID, "err", err)
-			errs = append(errs, err)
-			w.retryPlayer(playerID, op)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// retryRoom 把失败的房间放回待写集合。
-func (w *writer) retryRoom(roomID int32) {
-	w.mu.Lock()
-	w.rooms[roomID] = struct{}{}
-	w.mu.Unlock()
-}
-
-// retryPlayer 把失败的玩家放回待写集合。
-//
-// 只在集合里没有该玩家时放回：本轮写库期间可能已经有更新的变更，
-// 直接覆盖会让「新状态被旧状态顶掉」。
-func (w *writer) retryPlayer(playerID int64, op seatOp) {
-	w.mu.Lock()
-	if _, ok := w.players[playerID]; !ok {
-		w.players[playerID] = op
-	}
-	w.mu.Unlock()
+	return errors.Join(w.rooms.Stop(), w.players.Stop())
 }

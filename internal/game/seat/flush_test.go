@@ -69,7 +69,7 @@ func TestFlushMergesDirtyMarks(t *testing.T) {
 	w.markPlayer(7, a, 1000, true)
 	w.markPlayer(7, b, 2000, true) // 后写覆盖先写
 
-	require.NoError(t, w.flushOnce(context.Background()))
+	require.NoError(t, w.flush(context.Background()))
 
 	// map 遍历无序，房间顺序不做断言；只校验去重结果与玩家取最终值。
 	require.Len(t, f.calls, 3, "两个房间各一次 + 玩家一次")
@@ -81,8 +81,8 @@ func TestFlushMergesDirtyMarks(t *testing.T) {
 	}
 	require.ElementsMatch(t, []int64{100, 200}, roomIDs, "同一房间多次变更只落一次")
 	require.Contains(t, f.calls, saverCall{kind: "save", id: 7, ref: b}, "玩家只落最终座位")
-	require.Empty(t, w.rooms, "落库成功后脏集合应清空")
-	require.Empty(t, w.players)
+	require.Zero(t, w.rooms.Len(), "落库成功后脏集合应清空")
+	require.Zero(t, w.players.Len())
 }
 
 // 占座后立刻离开（同一轮窗口内）：只应发出删除，不应先写后删。
@@ -94,7 +94,7 @@ func TestFlushDeleteOverridesOccupy(t *testing.T) {
 	w.markPlayer(7, ref, 1000, true)
 	w.markPlayer(7, ref, 0, false)
 
-	require.NoError(t, w.flushOnce(context.Background()))
+	require.NoError(t, w.flush(context.Background()))
 	require.Equal(t, []saverCall{{kind: "delete", id: 7, ref: ref}}, f.calls)
 }
 
@@ -107,20 +107,20 @@ func TestFlushKeepsDirtyOnFailure(t *testing.T) {
 	ref := pkgseat.SeatRef{RoomID: 100, SeatIndex: 1}
 	w.markPlayer(7, ref, 1000, true)
 
-	require.Error(t, w.flushOnce(context.Background()))
-	require.Len(t, w.rooms, 1, "失败后房间脏标记必须保留")
-	require.Len(t, w.players, 1, "失败后玩家脏标记必须保留")
+	require.Error(t, w.flush(context.Background()))
+	require.Equal(t, 1, w.rooms.Len(), "失败后房间脏标记必须保留")
+	require.Equal(t, 1, w.players.Len(), "失败后玩家脏标记必须保留")
 
 	f.fail = false
-	require.NoError(t, w.flushOnce(context.Background()))
-	require.Empty(t, w.rooms)
-	require.Empty(t, w.players)
+	require.NoError(t, w.flush(context.Background()))
+	require.Zero(t, w.rooms.Len())
+	require.Zero(t, w.players.Len())
 }
 
 // 空集合不应产生任何 SQL。
 func TestFlushNoopWhenClean(t *testing.T) {
 	f := &fakeSaver{}
 	w := newTestWriter(f)
-	require.NoError(t, w.flushOnce(context.Background()))
+	require.NoError(t, w.flush(context.Background()))
 	require.Empty(t, f.calls)
 }
