@@ -51,6 +51,8 @@ idtab:
   reconcile_interval: 10m      # 数量对账
 
   # 一对多索引（docs/缓存架构设计.md §3）：只有「一个归属者多行」的表需要配。
+  # v3.17 起模块在代码里用 module.IndexDeclarer 声明，这里只做部署开关
+  # （漏配也会被 attachOwnerIndexes 补建，并记 Info 日志）。
   # mail 由模块在 onList 里按需展开（登录展开入口已在 v3.9 删除）。
   mappings:
     - {table: mail, by: player_id, key: id}

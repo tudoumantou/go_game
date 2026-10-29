@@ -65,6 +65,11 @@ idtab:
   # 当前实现的伙伴/装备都是单行 JSON）配了是纯浪费——按 player_id 一次查询就够。
   # key（主键列）必填：构建与预热都以它为分页游标；by 仅 preload_all 可省。
   #
+  # v3.17 起这里不再是唯一声明处：模块通过 module.IndexDeclarer 在代码里
+  # 声明自己要用哪个索引，组装层合并两个来源（代码声明缺的会补建，并记一条
+  # "owner index declared by module" 的 Info 提示来补 yaml）。本配置降级为
+  # 「部署开关」：这个环境建不建、要不要 preload_all。
+  #
   # mail: 点开邮箱时按需展开（Members → 批量加载 → 回填）。
   #   消费方：internal/game/module/mail（listRows / indexAdd / onDelete）。
   #   登录展开入口已于 v3.9 删除（缓存架构设计 §4.2），配置项也在 v3.11 移除。
