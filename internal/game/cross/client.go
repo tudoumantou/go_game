@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"game_study/pkg/backoff"
 	"game_study/pkg/log"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -77,38 +78,19 @@ func NewClient(selfID, nodeAddr string, h Handler, logger *log.Logger) *Client {
 // Start 建立流并常驻重连（阻塞，直到 ctx 取消或 Stop）。
 //
 // 退避从 500ms 起（比 center 短）：跨服节点滚动重启更频繁，快速重连能
-// 减少战斗房间的转移窗口。
+// 减少战斗房间的转移窗口。节奏交给 pkg/backoff——本包与 center 客户端、
+// 中心服选主三处曾各写一遍同一个循环（连注释都在互相引用对方的起点）。
 func (c *Client) Start(ctx context.Context, conn *grpc.ClientConn) {
-	backoff := minBackoff
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.stopCh:
-			return
-		default:
-		}
-
-		err := c.runOnce(ctx, conn)
-		if err != nil {
+	b := backoff.New(minBackoff, maxBackoff)
+	// fn 的错误不参与控制流：断开是常态，重连本身就是处理方式。
+	// 返回值（ctx 取消 / Stop）由 Stop 的调用方按需处理，这里忽略。
+	_ = backoff.Loop(ctx, c.stopCh, b,
+		func(ctx context.Context) error { return c.runOnce(ctx, conn) },
+		func(err error, wait time.Duration) {
 			c.logger.Warn("cross stream broken, reconnecting",
-				"cross", c.nodeAddr, "backoff", backoff.String(), "err", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.stopCh:
-			return
-		case <-time.After(backoff):
-		}
-		if backoff < maxBackoff {
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-	}
+				"cross", c.nodeAddr, "backoff", wait.String(), "err", err)
+		},
+	)
 }
 
 // runOnce 建一次流并跑到断开。

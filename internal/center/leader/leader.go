@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"game_study/pkg/backoff"
 	"game_study/pkg/log"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -101,40 +102,22 @@ func New(client *clientv3.Client, cfg Config, logger *log.Logger) *Election {
 // 竞选中断（session 过期/etcd 故障）时按指数退避重试，上限 30s：etcd
 // 抖动期间不疯狂重连，恢复后又能及时抢回。ctx 取消或 Stop 时返回。
 //
-// 循环结构：开头非阻塞 select 查退出信号 → campaign 阻塞到任期结束 →
-// 退避等待 → 回到开头。campaign 返回 nil 只可能是主动退出，错误则走退避。
+// 节奏交给 pkg/backoff。原先这里手写的版本在「翻倍前判上限」：cur=20s 时
+// 翻到 40s 就不再判了，实际突破了注释里写的 30s——同一个循环写了三遍，
+// 这一遍就是写错的那遍（另两处在 game 的 center/cross 客户端）。
 func (e *Election) Run(ctx context.Context) error {
-	backoff := time.Second
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-e.stopCh:
-			return nil
-		default:
-		}
-
-		err := e.campaign(ctx)
-		// ctx.Err() == nil 才记日志：主动取消时 campaign 返回错误是预期内的，
-		// 记了只会误导排查（把正常退出当故障）
-		if err != nil && ctx.Err() == nil {
+	b := backoff.New(time.Second, 30*time.Second)
+	return backoff.Loop(ctx, e.stopCh, b, e.campaign,
+		func(err error, wait time.Duration) {
+			// ctx.Err() != nil 时 campaign 返回错误是预期内的（主动取消），
+			// 记了只会误导排查（把正常退出当故障）。
+			if ctx.Err() != nil {
+				return
+			}
 			e.logger.Warn("leader campaign broke, retrying",
-				"self", e.selfID, "backoff", backoff.String(), "err", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-e.stopCh:
-			return nil
-		case <-time.After(backoff):
-		}
-		if backoff < 30*time.Second {
-			// 指数退避封顶 30s：etcd 长时间故障时避免间隔无意义拉长，
-			// 恢复后最多等 30s 即可抢回主
-			backoff *= 2
-		}
-	}
+				"self", e.selfID, "backoff", wait.String(), "err", err)
+		},
+	)
 }
 
 // campaign 一次完整竞选（到失联为止）。

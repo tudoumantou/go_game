@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"game_study/pkg/backoff"
 	"game_study/pkg/log"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -114,37 +115,23 @@ func (c *Client) SetQPS(q int64) { c.qps.Store(q) }
 //
 // 退避只在「真的断过」时翻倍：runOnce 正常返回（ctx 取消）时 err 为 nil，
 // 不会打 Warn 也不会继续退避——循环直接退出。
+//
+// 节奏交给 pkg/backoff：本包与 cross 客户端、中心服选主三处曾各写一遍
+// 同一个循环，其中 leader 那份的封顶判断还写错了（从 20s 翻到 40s）。
 func (c *Client) Start(ctx context.Context) {
-	backoff := minBackoff
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.stopCh:
-			return
-		default:
-		}
-
-		err := c.runOnce(ctx)
-		if err != nil && ctx.Err() == nil {
-			c.logger.Warn("center report stream broken",
-				"center", c.addr, "backoff", backoff.String(), "err", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-c.stopCh:
-			return
-		case <-time.After(backoff):
-		}
-		if backoff < maxBackoff {
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
+	b := backoff.New(minBackoff, maxBackoff)
+	_ = backoff.Loop(ctx, c.stopCh, b,
+		func(ctx context.Context) error { return c.runOnce(ctx) },
+		func(err error, wait time.Duration) {
+			// ctx 已取消时 runOnce 返回错误是预期内的：记了只会误导排查
+			// （把正常退出当成故障）。
+			if ctx.Err() != nil {
+				return
 			}
-		}
-	}
+			c.logger.Warn("center report stream broken",
+				"center", c.addr, "backoff", wait.String(), "err", err)
+		},
+	)
 }
 
 // runOnce 建一次流并跑到断开。
