@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 
+	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
 )
@@ -19,20 +20,13 @@ import (
 // db 可为 nil（无 DB 环境）：模块层所有入口判空后按「降级成功」回包，
 // 保证无依赖环境下协议演示不中断。
 type Repo struct {
-	db *db.DB
+	*module.Shared
 }
 
 // NewRepo 创建仓储。
-
-// NewRepo 创建仓储。
-func NewRepo(database *db.DB) *Repo { return &Repo{db: database} }
-
-// FindByPlayer 查询玩家所在公会。
-//
-// 返回 (nil, nil) 表示「未入会」：把 sql.ErrNoRows 这个「正常无行」
-// 翻译成 nil 而非错误，调用方只需判 g == nil，不用碰 errors.Is。
-// JOIN + LIMIT 1：一个玩家正常只有一行成员记录，LIMIT 1 防脏数据多行时
-// QueryRow 直接报错把查询打挂。
+func NewRepo(database *db.DB) *Repo {
+	return &Repo{Shared: module.NewShared(database, "guild")}
+}
 
 // FindByPlayer 查询玩家所在公会。
 //
@@ -45,7 +39,7 @@ func (r *Repo) FindByPlayer(ctx context.Context, playerID int64) (*Guild, error)
 	           FROM guild g JOIN guild_member m ON m.guild_id = g.id
 	           WHERE m.player_id = ? LIMIT 1`
 	var g Guild
-	err := r.db.QueryRowContext(ctx, q, playerID).Scan(&g.ID, &g.Name, &g.LeaderID, &g.Level, &g.MemberCount)
+	err := r.SQL().QueryRowContext(ctx, q, playerID).Scan(&g.ID, &g.Name, &g.LeaderID, &g.Level, &g.MemberCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -62,17 +56,9 @@ func (r *Repo) FindByPlayer(ctx context.Context, playerID int64) (*Guild, error)
 // 1062/Duplicate 字符串识别 → ErrNameUsed：database/sql 的 driver
 // 不暴露「哪条唯一约束冲突」，只能匹配 MySQL 错误号文本——这是惯用法
 // 但脆弱，换 driver/改字符集时要同步回来改这里。
-
-// Create 创建公会并把会长加入成员表（事务）。
-//
-// 两条 INSERT 必须同事务：只建公会行不插成员行，中间态下会长自己
-// 都查不到这个公会；事务保证「要么都能用、要么都没发生」。
-// 1062/Duplicate 字符串识别 → ErrNameUsed：database/sql 的 driver
-// 不暴露「哪条唯一约束冲突」，只能匹配 MySQL 错误号文本——这是惯用法
-// 但脆弱，换 driver/改字符集时要同步回来改这里。
 func (r *Repo) Create(ctx context.Context, name string, leaderID int64) (int64, error) {
 	var guildID int64
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := r.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := model.InsertGuild(ctx, tx, &model.Guild{
 			Name:        name,
 			LeaderId:    leaderID,
@@ -115,7 +101,7 @@ func (r *Repo) Create(ctx context.Context, name string, leaderID int64) (int64, 
 // 上限判定失败时整个事务回滚——连成员行都不插，不会留下「人在公会、
 // 计数没加」的错位。
 func (r *Repo) Join(ctx context.Context, guildID, playerID int64) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	return r.Tx(ctx, func(tx *sql.Tx) error {
 		// 锁公会行（生成的 @lockby:id）：member_count 的「读-判断-写」
 		// 三步必须在同一事务内基于同一份读数，否则并发加入会双双通过判定
 		g, err := model.LockGuildById(ctx, tx, guildID)
@@ -162,7 +148,7 @@ func (r *Repo) Join(ctx context.Context, guildID, playerID int64) error {
 // DELETE 顺序先成员后公会：满足外键依赖，也保证任一语句失败时
 // 整个事务回滚，不会留下「公会没了、成员行还在」的孤儿数据。
 func (r *Repo) Quit(ctx context.Context, playerID int64) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	return r.Tx(ctx, func(tx *sql.Tx) error {
 		member, err := model.FindGuildMemberByPlayerId(ctx, tx, playerID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotInGuild

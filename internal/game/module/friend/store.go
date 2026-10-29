@@ -8,29 +8,28 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"game_study/internal/common/errcode"
-	"game_study/pkg/model"
 	"time"
 
+	"game_study/internal/common/errcode"
+	"game_study/internal/game/module"
 	"game_study/pkg/db"
+	"game_study/pkg/model"
 )
 
 // Repo 好友仓储：所有写操作都在事务里完成，保证双边一致。
 type Repo struct {
-	db *db.DB
+	*module.Shared
 }
 
 // NewRepo 创建仓储。
-
-// NewRepo 创建仓储。
-func NewRepo(database *db.DB) *Repo { return &Repo{db: database} }
-
-// List 读取好友与待我处理的申请。
+func NewRepo(database *db.DB) *Repo {
+	return &Repo{Shared: module.NewShared(database, "friend")}
+}
 
 // List 读取好友与待我处理的申请。
 func (r *Repo) List(ctx context.Context, playerID int64) ([]FriendRow, []ApplyRow, error) {
 	var friends []FriendRow
-	rows, err := r.db.DB.QueryContext(ctx, `
+	rows, err := r.SQL().QueryContext(ctx, `
 		SELECT f.friend_id, p.name, p.level, f.created_at
 		FROM friend f JOIN player p ON p.id = f.friend_id
 		WHERE f.player_id = ? ORDER BY f.created_at DESC`, playerID)
@@ -50,7 +49,7 @@ func (r *Repo) List(ctx context.Context, playerID int64) ([]FriendRow, []ApplyRo
 	}
 
 	var applies []ApplyRow
-	arows, err := r.db.DB.QueryContext(ctx, `
+	arows, err := r.SQL().QueryContext(ctx, `
 		SELECT a.from_id, p.name, p.level, a.created_at
 		FROM friend_apply a JOIN player p ON p.id = a.from_id
 		WHERE a.to_id = ? AND a.status = 0 ORDER BY a.created_at DESC`, playerID)
@@ -75,25 +74,13 @@ func (r *Repo) List(ctx context.Context, playerID int64) ([]FriendRow, []ApplyRo
 //   - 我已申请且待处理 → 幂等返回「已申请」，不重复插入；
 //   - 我之前被拒绝 → 复用同一行回到待处理（唯一键保证一对人只有一行）。
 //
-// Go 知识点：整个方法体是 r.db.Tx(ctx, func(tx *sql.Tx) error {...})——
-// 闭包内 return nil = 提交，return err = 回滚。业务码不用 error 传出
-// （error 保留给真失败），而是通过闭包捕获的外部变量 code 回传，
-// 这样「拒绝」与「出错」不会混在一个返回值里。
-
-// Apply 发起申请，返回业务码。
-//
-// 三种「看起来是新申请」的情况要分开：
-//   - 对方已经申请我 → 直接成为好友（不必等对方再点一次同意）；
-//   - 我已申请且待处理 → 幂等返回「已申请」，不重复插入；
-//   - 我之前被拒绝 → 复用同一行回到待处理（唯一键保证一对人只有一行）。
-//
-// Go 知识点：整个方法体是 r.db.Tx(ctx, func(tx *sql.Tx) error {...})——
+// Go 知识点：整个方法体是 r.Tx(ctx, func(tx *sql.Tx) error {...})——
 // 闭包内 return nil = 提交，return err = 回滚。业务码不用 error 传出
 // （error 保留给真失败），而是通过闭包捕获的外部变量 code 回传，
 // 这样「拒绝」与「出错」不会混在一个返回值里。
 func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 	var code = int32(errcode.OK)
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := r.Tx(ctx, func(tx *sql.Tx) error {
 		// 目标必须存在（好友列表要 JOIN player 取名，悬空 ID 会让列表丢行）。
 		if _, err := model.FindPlayerByPK(ctx, tx, to); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -197,14 +184,9 @@ func (r *Repo) Apply(ctx context.Context, from, to int64) (int32, error) {
 //
 // 状态机：0=待处理 → 1=已同意 / 2=已拒绝。status=1 再点是幂等成功，
 // status=2 需要重新申请——与 onAccept 的「已领任务可重接」同思路。
-
-// Handle 处理申请：同意建立双向关系，拒绝只改状态。
-//
-// 状态机：0=待处理 → 1=已同意 / 2=已拒绝。status=1 再点是幂等成功，
-// status=2 需要重新申请——与 onAccept 的「已领任务可重接」同思路。
 func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time.Duration) (int32, error) {
 	var code = int32(errcode.OK)
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := r.Tx(ctx, func(tx *sql.Tx) error {
 		apply, err := model.LockFriendApplyByFromIdToId(ctx, tx, from, to)
 		if errors.Is(err, sql.ErrNoRows) {
 			code = int32(errcode.ErrFriendApplyNotFound)
@@ -257,12 +239,6 @@ func (r *Repo) Handle(ctx context.Context, to, from int64, accept bool, ttl time
 	})
 	return code, err
 }
-
-// becomeFriends 双向插入并在双方都未超限时把两条申请置为已同意。
-//
-// errFriendFull 是「事务内信号错误」：在闭包深处返回、由外层转业务码。
-// Go 知识点：用 errors.New 造一个包内哨兵值 + errors.Is 判定，
-// 比返回裸 bool 多带了错误链语义，也不必为每种业务拒绝都定义一个 error。
 
 // becomeFriends 双向插入并在双方都未超限时把两条申请置为已同意。
 //
@@ -325,10 +301,8 @@ func lockFriendCount(ctx context.Context, tx *sql.Tx, playerID int64) (int, erro
 }
 
 // Delete 删除双向关系；本来不是好友也返回成功（幂等）。
-
-// Delete 删除双向关系；本来不是好友也返回成功（幂等）。
 func (r *Repo) Delete(ctx context.Context, a, b int64) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	return r.Tx(ctx, func(tx *sql.Tx) error {
 		// 原来是 `WHERE (a AND b) OR (c AND d)`；拆成两条按复合键删除，
 		// 同一事务内等价，且各自幂等（删 0 行不报错）。
 		for _, pair := range [][2]int64{{a, b}, {b, a}} {
@@ -347,7 +321,7 @@ func (r *Repo) Delete(ctx context.Context, a, b int64) error {
 //
 // 已拉黑按成功处理（唯一键冲突忽略）：玩家重复点「拉黑」不该看到报错。
 func (r *Repo) Block(ctx context.Context, playerID, targetID int64) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	return r.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := model.InsertFriendBlock(ctx, tx, &model.FriendBlock{
 			PlayerId:  playerID,
 			BlockedId: targetID,
@@ -366,7 +340,7 @@ func (r *Repo) Block(ctx context.Context, playerID, targetID int64) error {
 
 // Unblock 取消拉黑（幂等：本来不在黑名单也返回成功）。
 func (r *Repo) Unblock(ctx context.Context, playerID, targetID int64) error {
-	_, err := model.DeleteFriendBlockByPlayerIdBlockedId(ctx, r.db.DB, playerID, targetID)
+	_, err := model.DeleteFriendBlockByPlayerIdBlockedId(ctx, r.SQL(), playerID, targetID)
 	return err
 }
 
@@ -375,7 +349,7 @@ func (r *Repo) Unblock(ctx context.Context, playerID, targetID int64) error {
 // 这是本模块第二条手写的只读 JOIN（第一条是 List）——gendb 表达不了关联查询，
 // 已登记进 docs/功能实现状态.md 的例外清单。
 func (r *Repo) Blocks(ctx context.Context, playerID int64) ([]FriendRow, error) {
-	rows, err := r.db.DB.QueryContext(ctx, `
+	rows, err := r.SQL().QueryContext(ctx, `
 		SELECT b.blocked_id, p.name, p.level, b.created_at
 		FROM friend_block b JOIN player p ON p.id = b.blocked_id
 		WHERE b.player_id = ? ORDER BY b.created_at DESC`, playerID)

@@ -17,7 +17,7 @@ import (
 // 职责只有落 in 方向历史；repo 为 nil（无 DB 环境）时静默跳过——
 // 历史是尽力而为的旁路数据，不因缺库阻断 Kafka 消费。
 func (m *Module) DeliverInbound(ctx context.Context, msg *pkgmq.ChatCrossMsg) error {
-	if m.repo == nil {
+	if !m.ready() {
 		return nil
 	}
 	return m.repo.Insert(ctx, msg.ToID, msg.FromID, msg.MsgID, DirectionIn, msg.Channel, msg.Content)

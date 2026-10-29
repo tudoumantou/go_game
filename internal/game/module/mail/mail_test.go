@@ -46,6 +46,10 @@ type fakeRepo struct {
 	inserted  *model.Mail // 最后一次插入的主邮件（断言模板填充用）
 }
 
+// Ready 测试桩恒为「有库」：无库场景由 newTestModule(nil, ...) 表达，
+// 那条路径走的是接口为 nil 的分支（见 Module.ready）。
+func (f *fakeRepo) Ready() bool { return true }
+
 func (f *fakeRepo) UnreadCount(context.Context, int64) (int64, error) {
 	return int64(len(f.rows)), f.unreadErr
 }

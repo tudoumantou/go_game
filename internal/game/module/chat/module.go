@@ -29,6 +29,8 @@ import (
 // 抽成接口只为一件事：让「频道校验」「三路投递」「方向还原」这些纯编排逻辑
 // 能在内存里测，不必为一条断言拉起 MySQL。*Repo 隐式实现它，装配层不变。
 type chatRepo interface {
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	Ready() bool
 	Insert(ctx context.Context, ownerID, peerID, msgID int64, direction int32, channel int32, content string) error
 	ListRecent(ctx context.Context, ownerID, peerID int64, limit int) ([]ChatLine, error)
 }
@@ -57,16 +59,18 @@ type Module struct {
 	chatLimiter *ratelimit.Keyed
 }
 
-// SetChatLimiter 覆盖默认频控（装配期调用；nil 表示关闭）。
+// ready 数据库是否可用。
 //
-// 默认在 New 里建（1 条/秒、突发 3）：即使装配层忘了配，也有基本防护。
+// 两种「不可用」都要算：仓储压根没注入（无 DB 环境的模块级降级，repo 是
+// nil 接口），以及仓储在但没配连接池（NewRepo(nil)，Ready() 为 false）。
+// 只判前者会让后者变成 nil deref，只判后者会对 nil 接口调用方法——
+// 所以这里是唯一一处同时判两者的地方，业务只写 if !m.ready()。
+func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 
 // SetChatLimiter 覆盖默认频控（装配期调用；nil 表示关闭）。
 //
 // 默认在 New 里建（1 条/秒、突发 3）：即使装配层忘了配，也有基本防护。
 func (m *Module) SetChatLimiter(l *ratelimit.Keyed) { m.chatLimiter = l }
-
-// New 创建聊天模块（messenger 可为 nil：单机降级为只落库）。
 
 // New 创建聊天模块（messenger 可为 nil：单机降级为只落库）。
 func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
@@ -85,12 +89,6 @@ func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
 	module.Handle(m.Thin, m.onHistory)
 	return m
 }
-
-// onLogout 下线时触发一次常规 flush 周期。
-//
-// 聊天无 Ext 快照，这里 MarkDirty 只是让 Persister 走一次常规周期
-// （保持与其他模块的生命周期行为一致，无害）；真正要落的历史在 MySQL，
-// 发送时已直写，不依赖登出触发。
 
 // onLogout 下线时触发一次常规 flush 周期。
 //

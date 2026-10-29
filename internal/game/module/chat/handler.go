@@ -89,7 +89,7 @@ func (m *Module) onSend(ctx *module.Context, req *gamev1.ChatSendReq, resp *game
 // onHistory 拉取与某好友的聊天历史。
 func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp *gamev1.ChatHistoryResp) error {
 	*resp = gamev1.ChatHistoryResp{Code: int32(errcode.OK)}
-	if m.repo == nil {
+	if !m.ready() {
 		return nil
 	}
 	lines, err := m.repo.ListRecent(context.Background(), ctx.State.PlayerID(), req.PeerId, int(req.Limit))
@@ -122,24 +122,6 @@ func (m *Module) onHistory(ctx *module.Context, req *gamev1.ChatHistoryReq, resp
 	resp.HasMore = len(lines) >= int(req.Limit)
 	return nil
 }
-
-// nextMsgID 生成消息 ID（时间戳毫秒 << 20 | 20 位随机）。
-//
-// 位运算组装的三重考量：
-//  1. 毫秒时间戳占高位 → ID 整体随时间单调递增，MySQL 主键顺序插入、
-//     索引页分裂最少；当前毫秒约 2^40.7，左移 20 位后约 2^60.7 < 2^63，
-//     不会溢出成负数；
-//  2. 低 20 位（1,048,576 个槽位）放同毫秒随机数：这是**概率唯一**而非
-//     绝对唯一，碰撞概率上界 n(n-1)/2^21——每毫秒 10 条约 0.004%，
-//     100 条约 0.5%，1000 条约 48%。私聊实际峰值远低于每毫秒 100 条，
-//     所以够用；真要支撑每毫秒上千条，必须换成「节点 ID + 序列」发号器
-//     （或中心化发号），当前位宽不够；
-//  3. 用 crypto/rand 而非 math/rand：msgID 会暴露给客户端且是 Kafka 幂等键，
-//     不要求密码学强度，但要避免可预测的序列被客户端猜中后伪造重复消息。
-//
-// 碰撞的后果：chat_record 的 uk_owner_msg（owner_id, msg_id）会把后一条
-// 静默忽略，Kafka 侧同 ID 也会被去重——即「极低概率丢一条消息」，不是
-// 串号。这是选择无中心化发号器的已知代价。
 
 // nextMsgID 生成消息 ID（时间戳毫秒 << 20 | 20 位随机）。
 //

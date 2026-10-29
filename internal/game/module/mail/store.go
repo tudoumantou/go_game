@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strings"
 
+	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
 )
@@ -21,12 +22,12 @@ import (
 // MySQL 直写（不过 Persister）：邮件是流水型数据、与玩家快照解耦，
 // db 由组装层注入；模块层入口对 repo==nil 的处理见各方法注释。
 type Repo struct {
-	db *db.DB
+	*module.Shared
 }
 
 // NewRepo 创建仓储。
 func NewRepo(database *db.DB) *Repo {
-	return &Repo{db: database}
+	return &Repo{Shared: module.NewShared(database, "mail")}
 }
 
 // Insert 插入邮件，返回邮件 ID。
@@ -35,7 +36,7 @@ func NewRepo(database *db.DB) *Repo {
 // 已由生成器统一解决——可空字符串列映射 sql.NullString，零值写 NULL 而非空串，
 // 唯一索引对 NULL 不生效，同一玩家的多封普通邮件不再互撞（历史 Error 1062）。
 func (r *Repo) Insert(ctx context.Context, m *model.Mail) (int64, error) {
-	res, err := model.InsertMail(ctx, r.db.DB, m)
+	res, err := model.InsertMail(ctx, r.SQL(), m)
 	if err != nil {
 		return 0, fmt.Errorf("insert mail: %w", err)
 	}
@@ -47,7 +48,7 @@ func (r *Repo) Insert(ctx context.Context, m *model.Mail) (int64, error) {
 // 逐条插入而非批量：一封邮件附件是个位数，逐条 INSERT 简单且错误定位清晰；
 // 失败由 Deliver 的循环只 Warn——主邮件已建成，缺附件好过整封丢。
 func (r *Repo) InsertAttachment(ctx context.Context, mailID int64, itemID, count int32) error {
-	_, err := model.InsertMailAttachment(ctx, r.db.DB, &model.MailAttachment{
+	_, err := model.InsertMailAttachment(ctx, r.SQL(), &model.MailAttachment{
 		MailId: mailID,
 		ItemId: itemID,
 		Count:  count,
@@ -71,7 +72,7 @@ func (r *Repo) HasAttachments(ctx context.Context, mailIDs []int64) (map[int64]b
 	for i, id := range mailIDs {
 		args[i] = id
 	}
-	rows, err := r.db.QueryContext(ctx, q, args...)
+	rows, err := r.SQL().QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query mail attachments: %w", err)
 	}
@@ -111,7 +112,7 @@ func (r *Repo) ListByPlayer(ctx context.Context, playerID int64, limit int) ([]M
 	           FROM mail m
 	           WHERE m.player_id = ?
 	           ORDER BY m.id DESC LIMIT ?`
-	rows, err := r.db.QueryContext(ctx, q, playerID, limit)
+	rows, err := r.SQL().QueryContext(ctx, q, playerID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list mail: %w", err)
 	}
@@ -138,7 +139,7 @@ func (r *Repo) ListByPlayer(ctx context.Context, playerID int64, limit int) ([]M
 // 生成的 CountMailByPlayerIdStatus 就是 `SELECT COUNT(*) ... WHERE player_id=?
 // AND status=?`；COUNT 恒返回一行，因此不需要 ErrNoRows 分支。
 func (r *Repo) UnreadCount(ctx context.Context, playerID int64) (int64, error) {
-	return model.CountMailByPlayerIdStatus(ctx, r.db.DB, playerID, 0)
+	return model.CountMailByPlayerIdStatus(ctx, r.SQL(), playerID, 0)
 }
 
 // FindAttachments 只读附件：校验归属与有无附件，不写库。
@@ -150,7 +151,7 @@ func (r *Repo) UnreadCount(ctx context.Context, playerID int64) (int64, error) {
 // ErrMailNotExist，避免用错误码差异向调用方泄露邮件 id 是否存在。
 // claimed = 0 过滤是双轨幂等的第二道：已领附件不再出现在结果里。
 func (r *Repo) FindAttachments(ctx context.Context, playerID, mailID int64) ([]Attachment, error) {
-	m, err := model.FindMailByPK(ctx, r.db.DB, mailID)
+	m, err := model.FindMailByPK(ctx, r.SQL(), mailID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrMailNotExist
 	}
@@ -160,7 +161,7 @@ func (r *Repo) FindAttachments(ctx context.Context, playerID, mailID int64) ([]A
 	if m.PlayerId != playerID {
 		return nil, ErrMailNotExist
 	}
-	rows, err := model.ListMailAttachmentByMailIdClaimed(ctx, r.db.DB, mailID, 0)
+	rows, err := model.ListMailAttachmentByMailIdClaimed(ctx, r.SQL(), mailID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +185,7 @@ func (r *Repo) FindAttachments(ctx context.Context, playerID, mailID int64) ([]A
 // 附件那条不再带 `AND claimed = 0` 过滤——全量置 1 本来就幂等，
 // 带上过滤只是少改几行，语义没有区别。
 func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	return r.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := model.UpdateMailAttachmentClaimedByMailId(ctx, tx, &model.MailAttachment{
 			MailId:  mailID,
 			Claimed: 1,
@@ -203,7 +204,7 @@ func (r *Repo) MarkTaken(ctx context.Context, mailID int64) error {
 // FindAttachments 同一口径，不向调用方泄露别人的邮件 id 是否存在。
 // 这条复合条件删除由 @deleteby:id,player_id 生成，条件与手写版逐字一致。
 func (r *Repo) Delete(ctx context.Context, playerID, mailID int64) error {
-	return r.db.Tx(ctx, func(tx *sql.Tx) error {
+	return r.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := model.DeleteMailByIdPlayerId(ctx, tx, mailID, playerID)
 		if err != nil {
 			return err
@@ -239,7 +240,7 @@ func (r *Repo) DeliverOffline(ctx context.Context, playerID int64, bizID, title,
 	}
 	var newID int64
 	created := false
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := r.Tx(ctx, func(tx *sql.Tx) error {
 		res, err := model.InsertMail(ctx, tx, &model.Mail{
 			PlayerId: playerID,
 			Title:    title,

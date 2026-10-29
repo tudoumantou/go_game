@@ -295,3 +295,38 @@ func TestDeleteWithoutIndexStillWorks(t *testing.T) {
 	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.Equal(t, []int64{80}, repo.deleted)
 }
+
+// TestIndexSpecsDeclared 模块必须自己声明归属索引（module.IndexDeclarer）。
+//
+// 声明在代码里而不是只写 yaml：漏配 yaml 时模块静默回落 SQL，服务照跑、
+// 性能掉一半、日志一个字都没有。这条用例锁住「声明存在且指向 mail 表」。
+func TestIndexSpecsDeclared(t *testing.T) {
+	var m module.IndexDeclarer = New(nil, log.New("mail-test", log.WithLevel("error")))
+	specs := m.IndexSpecs()
+	require.Len(t, specs, 1)
+	require.Equal(t, "mail", specs[0].Table)
+	require.Equal(t, "player_id", specs[0].By, "归属列决定 ZSET 的 score")
+	require.Equal(t, "id", specs[0].Key, "主键列决定 ZSET 的 member")
+}
+
+// TestAttachIndexInjects 组装层注入走 AttachIndex（module.IndexInjector）。
+//
+// 与 SetOwnerIndex 的区别：AttachIndex 带表名，一个模块声明多个索引时
+// 能正确分发；SetOwnerIndex 是「就这一个」的简写，保留给测试与单索引场景。
+func TestAttachIndexInjects(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	m := New(nil, log.New("mail-test", log.WithLevel("error")))
+	require.Nil(t, m.index, "未注入时索引为 nil，列表回落 SQL")
+
+	oi := cache.NewOwnerIndex(rdb, nil, "mail", "player_id", "id")
+	m.AttachIndex("mail", oi)
+	require.Same(t, oi, m.index)
+
+	// 表名不匹配时不注入：一个模块可能声明多个索引，按表名分发。
+	m2 := New(nil, log.New("mail-test", log.WithLevel("error")))
+	m2.AttachIndex("other_table", oi)
+	require.Nil(t, m2.index, "非本模块的表不该被注入")
+}

@@ -154,14 +154,17 @@ func (s *Server) initIDTable() {
 
 // initOwnerIndex 建归属索引（缓存架构设计 §3）：按 idtab.mappings 声明。
 //
-// 只给「有归属列」的映射建索引；preload_all 的映射走整表实体预热
-// （idTable.Preheat），它也可能同时带 by——那索引也建，两件事都做。
-// 构建/维护同样在后台 goroutine：ready 未置位期间 Members 回落 MySQL，
-// 服务可用性不受影响（与 initIDTable 同一约定）。
+// 这里只建「配置里写了 by 的那些」。模块声明的索引在模块注册之后由
+// attachOwnerIndexes 补齐——两处声明合并成 s.indexMappings，构建与对账
+// 都遍历合并后的那一份。
+//
+// 构建 goroutine 不在这里起（原先在这里）：那时模块还没注册、声明还没
+// 收集，先起的构建会漏掉模块声明的索引。挪到 attachOwnerIndexes。
 func (s *Server) initOwnerIndex() {
 	if s.database == nil || s.redis == nil {
 		return
 	}
+	s.indexMappings = append(s.indexMappings, s.cfg.IDTab.Mappings...)
 	for _, m := range s.cfg.IDTab.Mappings {
 		if m.By == "" {
 			continue // 纯整表预热：没有归属列可索引
@@ -172,21 +175,52 @@ func (s *Server) initOwnerIndex() {
 		s.ownerIdx[m.Table] = cache.NewOwnerIndex(
 			s.redis.GetClient(), s.database.DB, m.Table, m.By, m.Key)
 	}
-	if len(s.ownerIdx) == 0 && !anyPreloadAll(s.cfg.IDTab.Mappings) {
+}
+
+// attachOwnerIndexes 收集模块声明的归属索引、补齐并注入，然后启动构建与对账。
+//
+// 必须在 initModules 之后调用：声明在模块实例上（module.IndexDeclarer），
+// 实例注册进 Registry 才拿得到。
+//
+// 为什么要合并 yaml 与代码两个来源，而不是只留一个：
+//   - yaml 里有 preload_all 这类「部署相关」的声明，代码不该知道要不要预热；
+//   - 而「这张表要走归属索引」是业务事实，写在代码里才不会漏——漏配 yaml
+//     时模块静默回落 SQL，服务照跑、性能掉一半、日志一个字都没有。
+func (s *Server) attachOwnerIndexes() {
+	if s.database != nil && s.redis != nil {
+		for _, m := range s.modules.All() {
+			decl, ok := m.(module.IndexDeclarer)
+			if !ok {
+				continue
+			}
+			for _, spec := range decl.IndexSpecs() {
+				oi, existed := s.ownerIdx[spec.Table]
+				if !existed {
+					oi = cache.NewOwnerIndex(
+						s.redis.GetClient(), s.database.DB, spec.Table, spec.By, spec.Key)
+					if s.ownerIdx == nil {
+						s.ownerIdx = make(map[string]*cache.OwnerIndex, 4)
+					}
+					s.ownerIdx[spec.Table] = oi
+					s.indexMappings = append(s.indexMappings, config.CacheMapping{
+						Table: spec.Table, By: spec.By, Key: spec.Key,
+					})
+					// 配置漏了但代码要用：补建并留痕。这条 Info 是「该去补
+					// yaml 了」的唯一提示，删掉它就等于让漏配重新变成静默。
+					s.logger.Info("owner index declared by module", "module", m.Name(), "table", spec.Table)
+				}
+				if inj, ok := m.(module.IndexInjector); ok {
+					inj.AttachIndex(spec.Table, oi)
+				}
+			}
+		}
+	}
+
+	if len(s.indexMappings) == 0 {
 		return
 	}
 	go s.buildOwnerIndexes(s.runCtx)
 	go s.maintainOwnerIndexes(s.runCtx)
-}
-
-// anyPreloadAll 是否有整表预热的映射（决定要不要起构建 goroutine）。
-func anyPreloadAll(mappings []config.CacheMapping) bool {
-	for _, m := range mappings {
-		if m.PreloadAll {
-			return true
-		}
-	}
-	return false
 }
 
 // initCenterClient 建中心服客户端（P8 匹配 + P0 跨节点投递）。
@@ -290,10 +324,6 @@ func (s *Server) initModules() {
 	// 无库环境（单测/演示）整体跳过，玩家仍可用 profile/attr/bag/item/battle。
 	if s.database != nil {
 		s.mailMod = mail.New(mail.NewRepo(s.database), s.logger)
-		// 邮件是第一个真正消费归属索引的模块（缓存架构设计 §4.2）：
-		// 列表走「按需展开」——未配 mappings 或 Redis 不可用时 index 为 nil，
-		// 模块内部自动回落 ListByPlayer，行为与接入前完全一致。
-		s.mailMod.SetOwnerIndex(s.ownerIdx["mail"])
 		s.chatMod = chat.New(chat.NewRepo(s.database), chatMessenger{srv: s}, s.logger)
 		// 聊天频控：默认 1 条/秒（突发 3），配置负数关闭。
 		// 与网关包级限流是两道：包限流管总量，这里管「单条成本」。

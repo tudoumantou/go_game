@@ -42,6 +42,10 @@ type fakeRepo struct {
 	listErr error
 }
 
+// Ready 测试桩恒为「有库」：无库场景由 newTestModule(nil, ...) 表达，
+// 那条路径走的是接口为 nil 的分支（见 Module.ready）。
+func (f *fakeRepo) Ready() bool { return true }
+
 func (f *fakeRepo) Insert(_ context.Context, ownerID, peerID, msgID int64, direction, channel int32, content string) error {
 	f.inserts = append(f.inserts, insertCall{ownerID, peerID, msgID, direction, channel, content})
 	return f.insErr

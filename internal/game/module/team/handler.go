@@ -17,7 +17,7 @@ import (
 // 队伍上限 5 人，分两次查的代价可接受（合并成一条 JOIN 会把
 // 「不在队」和「在队无成员」两种语义搅在一起）。
 func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1.TeamInfoResp) error {
-	if m.repo == nil {
+	if !m.ready() {
 		// 无 DB 环境按「不在队」回：与 (nil, nil) 同码
 		return ctx.FailCode(resp, errcode.ErrTeamNotIn)
 	}
@@ -50,13 +50,8 @@ func (m *Module) onInfo(ctx *module.Context, _ *gamev1.TeamInfoReq, resp *gamev1
 //
 // 前置 FindByPlayer 挡「已有队伍再创建」：仓储层只管建队，
 // 「一个人只能在一队」的约束在模块层显式声明（与 guild 同构）。
-
-// onCreate 创建队伍；repo 缺失（单机/测试）时按成功降级。
-//
-// 前置 FindByPlayer 挡「已有队伍再创建」：仓储层只管建队，
-// 「一个人只能在一队」的约束在模块层显式声明（与 guild 同构）。
 func (m *Module) onCreate(ctx *module.Context, req *gamev1.TeamCreateReq, resp *gamev1.TeamCreateResp) error {
-	if m.repo == nil {
+	if !m.ready() {
 		resp.Code = int32(errcode.OK)
 		return nil
 	}
@@ -79,14 +74,8 @@ func (m *Module) onCreate(ctx *module.Context, req *gamev1.TeamCreateReq, resp *
 // 前置查询的意义：Join 仓储层只保证「进这个队」的原子性，
 // 「你原来在别的队」需要先退再进——模块层显式拒绝跨队直加，
 // demo 期不做自动换队（避免两个队伍的成员行竞态）。
-
-// onJoin 加入指定队伍；已在别的队先拒绝，超员/不存在由仓储错误码转换。
-//
-// 前置查询的意义：Join 仓储层只保证「进这个队」的原子性，
-// 「你原来在别的队」需要先退再进——模块层显式拒绝跨队直加，
-// demo 期不做自动换队（避免两个队伍的成员行竞态）。
 func (m *Module) onJoin(ctx *module.Context, req *gamev1.TeamJoinReq, resp *gamev1.TeamJoinResp) error {
-	if m.repo == nil {
+	if !m.ready() {
 		resp.Code = int32(errcode.OK)
 		return nil
 	}
@@ -115,13 +104,8 @@ func (m *Module) onJoin(ctx *module.Context, req *gamev1.TeamJoinReq, resp *game
 //
 // 解散的原子性在仓储事务内：删队长行 → 删全员 → 软删队伍，
 // 任一步失败整体回滚，不会出现「队长退了、队伍还在」的半解散态。
-
-// onLeave 主动退队；队长退队 = 解散（仓储层保证）。
-//
-// 解散的原子性在仓储事务内：删队长行 → 删全员 → 软删队伍，
-// 任一步失败整体回滚，不会出现「队长退了、队伍还在」的半解散态。
 func (m *Module) onLeave(ctx *module.Context, _ *gamev1.TeamLeaveReq, resp *gamev1.TeamLeaveResp) error {
-	if m.repo == nil {
+	if !m.ready() {
 		resp.Code = int32(errcode.OK)
 		return nil
 	}

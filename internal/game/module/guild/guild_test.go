@@ -43,6 +43,10 @@ type fakeRepo struct {
 	quitCalls int
 }
 
+// Ready 测试桩恒为「有库」：无库场景由 newTestModule(nil, ...) 表达，
+// 那条路径走的是接口为 nil 的分支（见 Module.ready）。
+func (f *fakeRepo) Ready() bool { return true }
+
 func (f *fakeRepo) FindByPlayer(context.Context, int64) (*Guild, error) {
 	return f.guild, f.findErr
 }

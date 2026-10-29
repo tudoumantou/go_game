@@ -31,6 +31,8 @@ import (
 )
 
 type mailRepo interface {
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	Ready() bool
 	UnreadCount(ctx context.Context, playerID int64) (int64, error)
 	Insert(ctx context.Context, m *model.Mail) (int64, error)
 	InsertAttachment(ctx context.Context, mailID int64, itemID, count int32) error
@@ -41,6 +43,14 @@ type mailRepo interface {
 	Delete(ctx context.Context, playerID, mailID int64) error
 	DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (int64, bool, error)
 }
+
+// mailTable 邮件主表名。
+//
+// 抽常量是因为它出现在三个地方且必须一致：store.go 的 SQL、归属索引的
+// 声明（IndexSpecs）、Redis key 前缀（cache.OwnerIndexKey）。三处写字面量
+// 时改一处忘两处，索引会静默指向一张不存在的表——Expansion 永远为空，
+// 列表静默回落 SQL，没有任何报错。
+const mailTable = "mail"
 
 // Module 邮件模块。
 //
@@ -62,12 +72,41 @@ type Module struct {
 	index *cache.OwnerIndex
 }
 
+// ready 数据库是否可用。
+//
+// 两种「不可用」都要算：仓储压根没注入（无 DB 环境的模块级降级，repo 是
+// nil 接口），以及仓储在但没配连接池（NewRepo(nil)，Ready() 为 false）。
+// 只判前者会让后者变成 nil deref，只判后者会对 nil 接口调用方法——
+// 所以这里是唯一一处同时判两者的地方，业务只写 if !m.ready()。
+func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
+
 // SetOwnerIndex 注入归属索引（组装层在 Register 之前调用）。
 //
 // nil 表示不启用（单测/无 Redis 环境）：列表自动回落 ListByPlayer，
 // 行为与接入索引之前完全一致——这正是「索引是加速层，不是正确性前提」
 // 在模块侧的体现。
-func (m *Module) SetOwnerIndex(oi *cache.OwnerIndex) { m.index = oi }
+func (m *Module) SetOwnerIndex(oi *cache.OwnerIndex) {
+	m.index = oi
+	if r, ok := m.repo.(*Repo); ok {
+		r.AttachIndex(oi) // 仓储层也记一份，便于「有没有索引」在仓储侧可查
+	}
+}
+
+// IndexSpecs 声明本模块需要的归属索引（module.IndexDeclarer）。
+//
+// 声明在代码里而不是只写在 configs/*.yaml 的 idtab.mappings：漏配 yaml
+// 没有任何提示，只会让列表静默回落 SQL——服务照跑，性能掉一半，日志里
+// 一个字都没有。配置现在只负责「要不要建」（Redis 不可用时不建）。
+func (m *Module) IndexSpecs() []module.IndexSpec {
+	return []module.IndexSpec{{Table: mailTable, By: "player_id", Key: "id"}}
+}
+
+// AttachIndex 接住组装层建好的索引（module.IndexInjector）。
+func (m *Module) AttachIndex(table string, oi *cache.OwnerIndex) {
+	if table == mailTable {
+		m.SetOwnerIndex(oi)
+	}
+}
 
 // New 创建邮件模块。
 func New(repo mailRepo, logger *log.Logger) *Module {

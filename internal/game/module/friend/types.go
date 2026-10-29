@@ -35,8 +35,6 @@ func friendLimit() int32 {
 }
 
 // applyLimit 待处理申请上限（col2），缺配置回退 30。
-
-// applyLimit 待处理申请上限（col2），缺配置回退 30。
 func applyLimit() int {
 	if len(gamedata.FriendLimitCfgList()) == 0 {
 		return 30

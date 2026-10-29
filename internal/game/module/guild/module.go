@@ -32,6 +32,8 @@ import (
 // 「一人一会」的前置判断、哨兵错误到业务码的翻译都在模块层，需要能
 // 脱离 MySQL 验证。*Repo 隐式实现它，装配层不变。
 type guildRepo interface {
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	Ready() bool
 	FindByPlayer(ctx context.Context, playerID int64) (*Guild, error)
 	Create(ctx context.Context, name string, leaderID int64) (int64, error)
 	Join(ctx context.Context, guildID, playerID int64) error
@@ -55,7 +57,13 @@ type Module struct {
 	logger *log.Logger
 }
 
-// New 创建公会模块。
+// ready 数据库是否可用。
+//
+// 两种「不可用」都要算：仓储压根没注入（无 DB 环境的模块级降级，repo 是
+// nil 接口），以及仓储在但没配连接池（NewRepo(nil)，Ready() 为 false）。
+// 只判前者会让后者变成 nil deref，只判后者会对 nil 接口调用方法——
+// 所以这里是唯一一处同时判两者的地方，业务只写 if !m.ready()。
+func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 
 // New 创建公会模块。
 func New(repo guildRepo, logger *log.Logger) *Module {
@@ -69,16 +77,10 @@ func New(repo guildRepo, logger *log.Logger) *Module {
 }
 
 // OnSave 实现 module.Module。
-
-// OnSave 实现 module.Module。
 func (m *Module) OnSave(ctx context.Context) error { return nil }
 
 // OnLogin 实现 module.Module。
-
-// OnLogin 实现 module.Module。
 func (m *Module) OnLogin(ctx *module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
 
 // OnLogout 实现 module.Module。
 func (m *Module) OnLogout(ctx *module.Context) error { return nil }

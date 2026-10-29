@@ -19,7 +19,7 @@ import (
 // 缺 DB 时必须让上游看到失败、走 Kafka 重试，而不是假装成功——
 // 「报错重试」永远好过「静默丢奖励」。
 func (m *Module) DeliverOffline(ctx context.Context, playerID int64, bizID, title, content string, items []Attachment) (bool, error) {
-	if m.repo == nil {
+	if !m.ready() {
 		return false, fmt.Errorf("mail repository unavailable")
 	}
 	mailID, created, err := m.repo.DeliverOffline(ctx, playerID, bizID, title, content, items)

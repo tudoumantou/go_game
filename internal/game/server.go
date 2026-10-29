@@ -86,9 +86,17 @@ type Server struct {
 
 	// ownerIdx 归属索引（by_owner:{table} ZSET）：一对多表按角色展开，
 	// 登录时一次取出某玩家的全部实体 id（缓存架构设计 §3）。按表名索引，
-	// 由 idtab.mappings 声明驱动；preload_all 的表只预热实体不建索引，
+	// 由两处声明合并驱动：配置文件 idtab.mappings（部署开关）与模块的
+	// IndexSpecs（代码声明）。preload_all 的表只预热实体不建索引，
 	// 不出现在这里。
 	ownerIdx map[string]*cache.OwnerIndex
+
+	// indexMappings 生效的索引声明（yaml + 模块声明合并后）。
+	//
+	// 构建与对账都遍历这一份，而不是 s.cfg.IDTab.Mappings：模块声明了但
+	// yaml 漏配的索引也要被建、被对账，否则「代码要用、配置没写」的索引
+	// 会是一个永远为空的 ZSET。
+	indexMappings []config.CacheMapping
 
 	// mailMod/chatMod 是模块实例，Kafka 消费者要直接调它们（发邮件/落聊天历史）。
 	// 提升为字段而不是 initModules 的局部变量：装配被拆成多个方法后，
@@ -166,6 +174,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	s.initBattleAndProducer()
 	s.initModules()
+	// 归属索引的「收集声明 → 补齐 → 注入」必须在模块注册之后：声明挂在
+	// 模块实例上（module.IndexDeclarer），没注册就看不到。构建 goroutine
+	// 也由这里启动（initOwnerIndex 只建 yaml 里写了的那部分）。
+	s.attachOwnerIndexes()
 
 	// ③ 落库链路：flusher → writebehind worker → player manager
 	if err := s.startFlusher(); err != nil {
@@ -469,7 +481,7 @@ func (s *Server) maintainIDTables(ctx context.Context) {
 // 逐映射构建、记录第一错误但不中断——一个映射配错（比如 by 列不存在）
 // 不该让其余映射也建不起来。ready 未置位期间登录展开回落 MySQL。
 func (s *Server) buildOwnerIndexes(ctx context.Context) {
-	for _, m := range s.cfg.IDTab.Mappings {
+	for _, m := range s.indexMappings {
 		if ctx.Err() != nil {
 			return
 		}
@@ -501,7 +513,7 @@ func (s *Server) buildOwnerIndexes(ctx context.Context) {
 		s.logger.Info("owner index built", "table", m.Table, "count", n,
 			"elapsed", elapsed.Round(time.Millisecond))
 	}
-	s.logger.Info("owner index build done", "mappings", len(s.cfg.IDTab.Mappings))
+	s.logger.Info("owner index build done", "mappings", len(s.indexMappings))
 }
 
 // maintainOwnerIndexes 归属索引维护（缓存架构设计 §5）：每 10 分钟数量核对。
@@ -518,7 +530,7 @@ func (s *Server) maintainOwnerIndexes(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for _, m := range s.cfg.IDTab.Mappings {
+			for _, m := range s.indexMappings {
 				if ctx.Err() != nil {
 					return
 				}

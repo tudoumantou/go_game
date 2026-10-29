@@ -36,6 +36,8 @@ import (
 // 决定能不能创建」「仓储错误怎么翻译成业务码」这些编排逻辑在模块层，
 // 需要能脱离 MySQL 验证。*Repo 隐式实现它，装配层不变。
 type teamRepo interface {
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	Ready() bool
 	FindByPlayer(ctx context.Context, playerID int64) (*Team, error)
 	Create(ctx context.Context, leaderID int64, copyID int32) (int64, error)
 	Join(ctx context.Context, teamID, playerID int64) error
@@ -60,7 +62,13 @@ type Module struct {
 	logger *log.Logger
 }
 
-// New 创建组队模块。
+// ready 数据库是否可用。
+//
+// 两种「不可用」都要算：仓储压根没注入（无 DB 环境的模块级降级，repo 是
+// nil 接口），以及仓储在但没配连接池（NewRepo(nil)，Ready() 为 false）。
+// 只判前者会让后者变成 nil deref，只判后者会对 nil 接口调用方法——
+// 所以这里是唯一一处同时判两者的地方，业务只写 if !m.ready()。
+func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 
 // New 创建组队模块。
 func New(repo teamRepo, logger *log.Logger) *Module {
@@ -83,16 +91,8 @@ func New(repo teamRepo, logger *log.Logger) *Module {
 // 在不同模块承载相反的产品决策。
 // 注意：这是与 Thin 的日志器、守卫同处一个基座的钩子，Thin 只负责
 // 在 OnLogout 时调用它；错误被忽略——登出流程不能被 DB 抖动卡住。
-
-// onLogout 掉线自动退队。
-//
-// 与公会的关键语义差异：公会掉线不退会（持久社交关系，防误退），
-// 队伍掉线退队（临时关系，防挂机占位坑队友）——同一生命周期钩子
-// 在不同模块承载相反的产品决策。
-// 注意：这是与 Thin 的日志器、守卫同处一个基座的钩子，Thin 只负责
-// 在 OnLogout 时调用它；错误被忽略——登出流程不能被 DB 抖动卡住。
 func (m *Module) onLogout(ctx *module.Context) error {
-	if m.repo == nil {
+	if !m.ready() {
 		return nil
 	}
 	_ = m.repo.Leave(context.Background(), ctx.State.PlayerID())

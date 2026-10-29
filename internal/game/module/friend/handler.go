@@ -105,11 +105,6 @@ func (m *Module) onUnblock(ctx *module.Context, req *gamev1.FriendUnblockReq, re
 //
 // 参数校验前置：非法的请求（PlayerId<=0、加自己）连库都不查，
 // 既省一次往返，也避免把无意义查询打到 DB。
-
-// onApply 发起好友申请；自加/非法目标在模块层拦截，不发 SQL。
-//
-// 参数校验前置：非法的请求（PlayerId<=0、加自己）连库都不查，
-// 既省一次往返，也避免把无意义查询打到 DB。
 func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *gamev1.FriendApplyResp) error {
 	if req.PlayerId <= 0 {
 		return ctx.FailCode(resp, errcode.ErrFriendTargetNotFound)
@@ -129,8 +124,6 @@ func (m *Module) onApply(ctx *module.Context, req *gamev1.FriendApplyReq, resp *
 }
 
 // onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
-
-// onHandle 同意/拒绝申请；过期在仓储层按 TTL 判定并顺手置为已拒绝。
 func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp *gamev1.FriendHandleResp) error {
 	if req.PlayerId <= 0 || req.PlayerId == ctx.State.PlayerID() {
 		return ctx.FailCode(resp, errcode.ErrFriendApplyNotFound)
@@ -145,8 +138,6 @@ func (m *Module) onHandle(ctx *module.Context, req *gamev1.FriendHandleReq, resp
 	resp.Code = code
 	return nil
 }
-
-// onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
 
 // onDelete 删除好友；幂等——本来不是好友也回成功（双向两行一起删）。
 func (m *Module) onDelete(ctx *module.Context, req *gamev1.FriendDeleteReq, resp *gamev1.FriendDeleteResp) error {

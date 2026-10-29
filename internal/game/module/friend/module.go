@@ -47,7 +47,13 @@ type Module struct {
 	logger *log.Logger
 }
 
-// New 创建模块；online 可为 nil（列表全部显示离线）。
+// ready 数据库是否可用。
+//
+// 两种「不可用」都要算：仓储压根没注入（无 DB 环境的模块级降级，repo 是
+// nil 接口），以及仓储在但没配连接池（NewRepo(nil)，Ready() 为 false）。
+// 只判前者会让后者变成 nil deref，只判后者会对 nil 接口调用方法——
+// 所以这里是唯一一处同时判两者的地方，业务只写 if !m.ready()。
+func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 
 // New 创建模块；online 可为 nil（列表全部显示离线）。
 func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
