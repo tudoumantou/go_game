@@ -38,6 +38,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -59,7 +60,7 @@ type Prefetch struct {
 
 // Preloader 预加载器。
 type Preloader struct {
-	db      *db.DB
+	*sqlstore.Base
 	logger  *log.Logger
 	timeout time.Duration
 }
@@ -69,7 +70,7 @@ func NewPreloader(database *db.DB, logger *log.Logger, timeout time.Duration) *P
 	if timeout <= 0 {
 		timeout = DefaultPreloadTimeout
 	}
-	return &Preloader{db: database, logger: logger, timeout: timeout}
+	return &Preloader{Base: sqlstore.New(database, "player_preload"), logger: logger, timeout: timeout}
 }
 
 // Load 并行拉取玩家全部登录数据并组装 State。
@@ -94,7 +95,7 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 
 	// 并行拉取：三表并发，耗时 ≈ max(单表耗时)
 	g.Go(func() error {
-		row, err := model.FindPlayerByPK(gctx, p.db.DB, playerID)
+		row, err := model.FindPlayerByPK(gctx, p.SQL(), playerID)
 		switch {
 		case err == nil:
 			pf.Player = row
@@ -107,7 +108,7 @@ func (p *Preloader) Load(ctx context.Context, playerID int64) (*State, *Prefetch
 	})
 
 	g.Go(func() error {
-		row, err := model.FindPlayerAttrByPK(gctx, p.db.DB, playerID)
+		row, err := model.FindPlayerAttrByPK(gctx, p.SQL(), playerID)
 		switch {
 		case err == nil:
 			pf.Attr = row
@@ -179,7 +180,7 @@ func assembleState(playerID int64, pf *Prefetch) *State {
 }
 
 func (p *Preloader) queryItems(ctx context.Context, playerID int64) (map[int32]int64, error) {
-	rows, err := model.ListPlayerItemByPlayer(ctx, p.db.DB, playerID)
+	rows, err := model.ListPlayerItemByPlayer(ctx, p.SQL(), playerID)
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}

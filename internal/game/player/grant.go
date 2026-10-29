@@ -31,7 +31,7 @@ func (r *Repository) ReloadItems(ctx context.Context, state *State) error {
 	if r.CacheEnabled() {
 		return fmt.Errorf("use Redis recovery for cached player")
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.DB().BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

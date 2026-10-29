@@ -41,10 +41,10 @@ func (r *Repository) View(ctx context.Context, playerID int64) (*module.PeerView
 			return peerViewOf(rec.State), nil
 		}
 	}
-	if r.db == nil {
+	if !r.Ready() {
 		return nil, nil
 	}
-	p, err := model.FindPlayerByPK(ctx, r.db.DB, playerID)
+	p, err := model.FindPlayerByPK(ctx, r.SQL(), playerID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -87,10 +87,10 @@ func (r *Repository) ViewMany(ctx context.Context, ids []int64) (map[int64]*modu
 			missing = append(missing, id)
 		}
 	}
-	if len(missing) == 0 || r.db == nil {
+	if len(missing) == 0 || !r.Ready() {
 		return out, nil
 	}
-	rows, err := model.ListPlayerByIds(ctx, r.db.DB, missing)
+	rows, err := model.ListPlayerByIds(ctx, r.SQL(), missing)
 	if err != nil {
 		return nil, fmt.Errorf("peer views: %w", err)
 	}

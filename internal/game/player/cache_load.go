@@ -91,7 +91,7 @@ func (r *Repository) LoadCachedForce(ctx context.Context, id int64) (*State, int
 //
 // 缺行表示这个玩家还没有异步落库记录，视为 0——此时任何副本都不落后。
 func (r *Repository) writebehindVersion(ctx context.Context, id int64) (int64, error) {
-	w, err := model.FindPlayerWritebehindByPK(ctx, r.db.DB, id)
+	w, err := model.FindPlayerWritebehindByPK(ctx, r.SQL(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -106,7 +106,7 @@ func (r *Repository) writebehindVersion(ctx context.Context, id int64) (int64, e
 // 读到的记录带 version：首次 Seed 时把它作为版本 0 之后的基线，
 // 保证「第一个 Commit 的 CAS 期望值」与 Seed 写入的版本一致。
 func (r *Repository) loadColdSnapshot(ctx context.Context, id int64) (writebehind.Record, error) {
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	tx, err := r.DB().BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return writebehind.Record{}, err
 	}

@@ -27,12 +27,16 @@ import (
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 	"game_study/pkg/writebehind"
 )
 
 // Repository 玩家数据仓储。
+//
+// 基座是 pkg/sqlstore.Base（与模块侧、登录服同源）：db 判空、事务起法、
+// 索引挂载全项目一个答案，玩家快照不再是「另有一套判断」的那一处。
 type Repository struct {
-	db    *db.DB
+	*sqlstore.Base
 	cache *writebehind.Store
 }
 
@@ -47,7 +51,7 @@ func (r *Repository) CacheEnabled() bool { return r != nil && r.cache != nil }
 
 // NewRepository 创建仓储。
 func NewRepository(database *db.DB) *Repository {
-	return &Repository{db: database}
+	return &Repository{Base: sqlstore.New(database, "player")}
 }
 
 // Load 从 MySQL 加载玩家状态（角色信息 + 属性 + 道具）。
@@ -58,7 +62,7 @@ func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 	state := NewState(playerID)
 
 	// 角色基础信息
-	row, err := model.FindPlayerByPK(ctx, r.db.DB, playerID)
+	row, err := model.FindPlayerByPK(ctx, r.SQL(), playerID)
 	if err == nil {
 		state.SetProfile(module.Profile{
 			Name:    row.Name,
@@ -72,7 +76,7 @@ func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 	}
 
 	// 属性
-	attrRow, err := model.FindPlayerAttrByPK(ctx, r.db.DB, playerID)
+	attrRow, err := model.FindPlayerAttrByPK(ctx, r.SQL(), playerID)
 	if err == nil {
 		state.SetAttrStruct(Attr{
 			Career: attrRow.Career,
@@ -99,7 +103,7 @@ func (r *Repository) Load(ctx context.Context, playerID int64) (*State, error) {
 }
 
 func (r *Repository) loadItems(ctx context.Context, playerID int64) (map[int32]int64, error) {
-	rows, err := model.ListPlayerItemByPlayer(ctx, r.db.DB, playerID)
+	rows, err := model.ListPlayerItemByPlayer(ctx, r.SQL(), playerID)
 	if err != nil {
 		return nil, fmt.Errorf("query items: %w", err)
 	}
@@ -145,7 +149,7 @@ func (r *Repository) save(ctx context.Context, state *State, withGrants bool) (i
 	dirty := state.DirtyItems()
 	var version int64
 
-	err := r.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := r.Tx(ctx, func(tx *sql.Tx) error {
 		playerID := state.PlayerID()
 		a := state.Attr()
 

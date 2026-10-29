@@ -21,16 +21,17 @@ import (
 	"game_study/internal/game/service"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // RoleStore 角色持久化（实现 service.RoleStore）。
 type RoleStore struct {
-	db *db.DB
+	*sqlstore.Base
 }
 
 // NewRoleStore 创建角色仓储。
 func NewRoleStore(database *db.DB) *RoleStore {
-	return &RoleStore{db: database}
+	return &RoleStore{Base: sqlstore.New(database, "player_role")}
 }
 
 // FindByAccount 返回账号下最早创建的角色；无角色返回 service.ErrNoRole。
@@ -39,7 +40,7 @@ func NewRoleStore(database *db.DB) *RoleStore {
 // 让 service 认识 sql 包就等于把驱动细节漏进业务层（这与本轮整改的
 // 目标相反）。ORDER BY id LIMIT 1 由生成器保证（@findby:account_id）。
 func (s *RoleStore) FindByAccount(ctx context.Context, accountID int64) (*model.Player, error) {
-	p, err := model.FindPlayerByAccountId(ctx, s.db.DB, accountID)
+	p, err := model.FindPlayerByAccountId(ctx, s.SQL(), accountID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, service.ErrNoRole
 	}
@@ -63,7 +64,7 @@ func (s *RoleStore) FindByAccount(ctx context.Context, accountID int64) (*model.
 // 而不是匹配错误文本，换驱动版本也不会失效。
 func (s *RoleStore) Create(ctx context.Context, d service.RoleDraft) (int64, error) {
 	var roleID int64
-	err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+	err := s.Tx(ctx, func(tx *sql.Tx) error {
 		// 角色主行：Id 留零值，由 MySQL 自增分配（生成的 INSERT 显式列出 id 列，
 		// 0 在自增列上等价于「不指定」，与 InsertAccount 的既有用法一致）
 		res, err := model.InsertPlayer(ctx, tx, &model.Player{
