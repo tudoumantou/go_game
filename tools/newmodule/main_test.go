@@ -105,13 +105,27 @@ func TestHandlerTemplate(t *testing.T) {
 	for _, want := range []string{
 		"func onMailboxList(c *module.Ctx[Data], req *gamev1.MailboxListReq) error {",
 		"func onMailboxClaim(c *module.Ctx[Data], req *gamev1.MailboxClaimReq) error {",
-		"c.Reply(&gamev1.MailboxListResp{})",
+		"c.Repo.View(func(d *Data) error {",
+		"c.Reply(resp)",
 		"errcode.ErrSystem",
 	} {
 		require.Contains(t, out, want, fmt.Sprintf("缺少 %q\n%s", want, out))
 	}
 	// 新写法：错误分支只写 FailCode / Fail，不手写 Code 赋值
 	require.NotContains(t, out, "Code = int32(errcode.")
+
+	// 已删除的 API 不能出现在模板里。
+	//
+	// 这条守的是一个真实事故：Repository 在 24 个模块迁完后删掉了
+	// Get/Save/Delete（只留 View/Mutate/Once/Touch/Reset），模板却还在
+	// 生成 c.Repo.Get()——生成出来的模块第一件事是修编译错误。
+	//
+	// requireParses 拦不住它：那是「类型错误」不是「语法错误」。所以这里
+	// 用字符串黑名单兜一层，与 TestModuleTemplate 的黑名单同款。
+	for _, dead := range []string{"c.Repo.Get(", "c.Repo.Save(", "c.Repo.Delete("} {
+		require.NotContains(t, out, dead,
+			fmt.Sprintf("模板引用了已删除的 API %q（Repository 只有 View/Mutate/Once/Touch/Reset）", dead))
+	}
 	requireParses(t, "handler.go", out)
 }
 

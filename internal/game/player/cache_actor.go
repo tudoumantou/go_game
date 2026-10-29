@@ -29,6 +29,8 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/common/constant"
+	"game_study/internal/common/errcode"
 	"game_study/pkg/actor"
 	gatev1 "game_study/pkg/pb/gate/v1"
 	"google.golang.org/protobuf/proto"
@@ -161,7 +163,11 @@ func (a *Actor) cacheFailure(ctx *actor.Context, err error) {
 				return
 			}
 		}
-		body, _ := proto.Marshal(&gatev1.ErrorNotify{Code: 1005, Msg: "缓存暂不可用，请重试", Context: fmt.Sprintf("related_msg_id=%d", msg.MsgID)})
-		_ = a.send(20, body)
+		body, _ := proto.Marshal(&gatev1.ErrorNotify{
+			Code:    int32(errcode.ErrServerBusy),
+			Msg:     errcode.Message(errcode.ErrServerBusy),
+			Context: fmt.Sprintf("related_msg_id=%d", msg.MsgID),
+		})
+		_ = a.send(constant.MsgIDErrorNotify, body)
 	}
 }

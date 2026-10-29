@@ -108,16 +108,16 @@ func (m *Module) onUse(ctx *module.Context, req *gamev1.UseItemReq, resp *gamev1
 		count = int32(cfg.Col3)
 	}
 
-	have := ctx.State.GetItemCount(itemID)
-	if have < int64(count) {
+	// 扣减走 module.Spend：与商店/强化/伙伴共用同一套「够不够 + 扣不扣」，
+	// 失败时状态零改动。这里曾自己写「先 GetItemCount 比较、再 RemoveItem
+	// 并判返回值」——正是 spend.go 要消灭的两步写法：多一处就多一次
+	// 「查了但没扣」或「扣了但没判返回值」的机会。
+	//
+	// 不再单独 MarkDirty("bag")：RemoveItem 内部已 touch("bag")，
+	// 与 Grant 里「AddItem 自带标脏」同一约定。
+	if err := module.Spend(ctx.State, itemID, int64(count)); err != nil {
 		return ctx.FailCode(resp, errcode.ErrItemNotEnough)
 	}
-	// RemoveItem 自带原子性：数量不足返回 false 且不做部分扣减；
-	// Actor 单线程下上面的 have 检查已足够，这次是纵深防御。
-	if !ctx.State.RemoveItem(itemID, int64(count)) {
-		return ctx.FailCode(resp, errcode.ErrItemNotEnough)
-	}
-	ctx.State.MarkDirty(m.Name())
 	// 事件：驱动任务/成就（use_item，Key=道具 ID）
 	// Emit 是可选依赖（nil = 无订阅方），必须先判空——
 	// 函数类型的零值是 nil，直接调用会 panic。

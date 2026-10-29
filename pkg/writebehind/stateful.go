@@ -49,13 +49,13 @@ func RegisterStateful[Row, Data any](
 	validate func(*Data) error,
 ) {
 	if name == "" {
-		panic("writebehind: stateful persister with empty name")
+		panic("writebehind: persister with empty name")
 	}
 	if ops.Upsert == nil || ops.Load == nil {
-		panic(fmt.Sprintf("writebehind: stateful persister %q requires both Upsert and Load", name))
+		panic(fmt.Sprintf("writebehind: persister %q requires both Upsert and Load", name))
 	}
 	if codec.ToRow == nil || codec.FromRow == nil {
-		panic(fmt.Sprintf("writebehind: stateful persister %q requires ToRow and FromRow", name))
+		panic(fmt.Sprintf("writebehind: persister %q requires ToRow and FromRow", name))
 	}
 	RegisterPersister(statefulPersister[Row, Data]{
 		name: name, ops: ops, codec: codec, validate: validate,

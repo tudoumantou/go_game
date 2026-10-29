@@ -27,9 +27,7 @@ import (
 
 const stateKey = "shop"
 
-// itemDiamond 商店结算货币（钻石）。与 quest/skill/activity 共用 1001。
-
-const itemDiamond int32 = 1001
+// 商店结算货币是金币（module.ItemGold），道具 ID 定义在 module/itemid.go 一处。
 
 // shopExists 商店配置是否存在（shop 表是商品归属的权威）。
 //

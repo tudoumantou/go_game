@@ -87,7 +87,7 @@ func onActivate(c *module.Ctx[Data], req *gamev1.PartnerActivateReq) error {
 			return false, nil
 		}
 		// 扣费与置星在同一份内存状态里：提交失败一起回滚。
-		if err := module.Spend(c.State, itemCoin, cfg.Col3); err != nil {
+		if err := module.Spend(c.State, module.ItemGold, cfg.Col3); err != nil {
 			resp.Code = int32(errcode.ErrPartnerNoCoin)
 			return false, nil
 		}
@@ -123,7 +123,7 @@ func onStarUp(c *module.Ctx[Data], req *gamev1.PartnerStarUpReq) error {
 			return false, nil
 		}
 		// 扣费放在读旧加成之前：Spend 失败时不改状态，后面的逻辑就不会跑到。
-		if err := module.Spend(c.State, itemCoin, cost); err != nil {
+		if err := module.Spend(c.State, module.ItemGold, cost); err != nil {
 			resp.Code = int32(errcode.ErrPartnerNoCoin)
 			return false, nil
 		}

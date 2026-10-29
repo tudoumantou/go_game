@@ -15,7 +15,6 @@ package repo
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -65,24 +64,14 @@ func (r *UserRoleRepo) ListByAccount(ctx context.Context, accountID int64) ([]*m
 	if accountID <= 0 {
 		return nil, nil
 	}
-	if r.rdb != nil {
-		if raw, err := r.rdb.Get(ctx, userRoleKey(accountID)).Bytes(); err == nil {
-			var out []*model.UserRole
-			if json.Unmarshal(raw, &out) == nil {
-				return out, nil
-			}
-		}
-	}
-	out, err := r.loadByAccount(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-	if r.rdb != nil {
-		if raw, mErr := json.Marshal(out); mErr == nil {
-			_ = r.rdb.Set(ctx, userRoleKey(accountID), raw, userRoleTTL).Err()
-		}
-	}
-	return out, nil
+	// 缓存三步走 cache.Aside（与 acc_summary/serv_info 同一套）。
+	// 空角色列表回填：它是正确答案（新账号还没建角色），缓存它省掉
+	// 客户端反复刷新选角界面的回源。
+	return cache.Aside(ctx, r.rdb, userRoleKey(accountID), userRoleTTL,
+		func() ([]*model.UserRole, bool, error) {
+			out, err := r.loadByAccount(ctx, accountID)
+			return out, err == nil, err
+		})
 }
 
 // loadByAccount 回源分片表（ORDER BY player_id 稳定顺序）。

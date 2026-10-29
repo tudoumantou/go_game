@@ -22,9 +22,8 @@ import (
 
 const stateKey = "equip"
 
-// itemDiamond 强化消耗的货币（钻石）。与 shop/skill/quest 共用 1001。
-
-const itemDiamond int32 = 1001
+// 强化消耗的货币是金币（module.ItemGold），不是本模块私有常量：
+// 道具 ID 属于数据事实，定义在 module/itemid.go 一处。
 
 // Entry 装备实例。
 //

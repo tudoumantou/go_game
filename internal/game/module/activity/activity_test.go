@@ -85,7 +85,7 @@ func TestClaimOnce(t *testing.T) {
 		require.NoError(t, err)
 	}
 	want := int64(cfg.Col3) * 20
-	require.EqualValues(t, want, st.GetItemCount(itemDiamond))
+	require.EqualValues(t, want, st.GetItemCount(module.ItemGold))
 	d, _ := m.State(ctx)
 	require.NotEqualValues(t, 0, d.Records[int32(cfg.Id)].RewardMask&1, "claim fact not persisted in snapshot")
 }
@@ -99,7 +99,7 @@ func TestClaimUnfinished(t *testing.T) {
 	body, _ := proto.Marshal(&gamev1.ActivityClaimReq{ActivityId: int32(cfg.Id)})
 	err := m.OnMessage(ctx, codec.MsgActivityClaimReq, body)
 	require.NoError(t, err)
-	require.EqualValues(t, 0, st.GetItemCount(itemDiamond), "unfinished activity must not grant")
+	require.EqualValues(t, 0, st.GetItemCount(module.ItemGold), "unfinished activity must not grant")
 }
 
 // TestEventClampsProgress 事件推进不超过目标值。

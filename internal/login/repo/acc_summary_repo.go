@@ -15,7 +15,6 @@ package repo
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -61,25 +60,17 @@ func accSummaryKey(accuid int64) string {
 }
 
 // Get 按 accuid 取摘要（cache-aside）。未命中返回 (nil, nil)——摘要可不存在。
+//
+// 缓存三步走 cache.Aside（与 serv_info/user_role 同一套）：这里只负责
+// 「回源怎么查」与「查到的空结果要不要缓存」。摘要是展示副本，没有就是
+// 没有，因此 nil 不回填——否则「刚创建还没同步摘要」的账号会被缓存成
+// 空值，挡住同步后的首次读。
 func (r *AccSummaryRepo) Get(ctx context.Context, accuid int64) (*model.AccSummary, error) {
-	if r.rdb != nil {
-		if raw, err := r.rdb.Get(ctx, accSummaryKey(accuid)).Bytes(); err == nil {
-			var m model.AccSummary
-			if json.Unmarshal(raw, &m) == nil {
-				return &m, nil
-			}
-		}
-	}
-	m, err := r.load(ctx, accuid)
-	if err != nil {
-		return nil, err
-	}
-	if m != nil && r.rdb != nil {
-		if raw, mErr := json.Marshal(m); mErr == nil {
-			_ = r.rdb.Set(ctx, accSummaryKey(accuid), raw, accSummaryTTL).Err()
-		}
-	}
-	return m, nil
+	return cache.Aside(ctx, r.rdb, accSummaryKey(accuid), accSummaryTTL,
+		func() (*model.AccSummary, bool, error) {
+			m, err := r.load(ctx, accuid)
+			return m, m != nil, err
+		})
 }
 
 // load 回源分片表。ErrNoRows 翻译为「无摘要」（nil, nil）而非错误。

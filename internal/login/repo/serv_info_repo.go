@@ -13,7 +13,6 @@ package repo
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -46,25 +45,13 @@ func NewServInfoRepo(database *db.DB, rdb redis.UniversalClient) *ServInfoRepo {
 // List 列出全部区服（cache-aside）。
 // Redis 命中直接返回；miss 回源 MySQL 并回填整表快照。
 func (r *ServInfoRepo) List(ctx context.Context) ([]*model.ServInfo, error) {
-	if r.rdb != nil {
-		if raw, err := r.rdb.Get(ctx, cache.ServInfoKey()).Bytes(); err == nil {
-			var out []*model.ServInfo
-			if json.Unmarshal(raw, &out) == nil {
-				return out, nil
-			}
-			// 坏缓存：当 miss 处理，回源重建（不阻断读）
-		}
-	}
-	out, err := r.loadAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if r.rdb != nil {
-		if raw, mErr := json.Marshal(out); mErr == nil {
-			_ = r.rdb.Set(ctx, cache.ServInfoKey(), raw, servInfoCacheTTL).Err()
-		}
-	}
-	return out, nil
+	// 缓存三步走 cache.Aside（与 acc_summary/user_role 同一套）。
+	// 空区服列表也要回填：它是正确答案，缓存它省掉每次选服的回源。
+	return cache.Aside(ctx, r.rdb, cache.ServInfoKey(), servInfoCacheTTL,
+		func() ([]*model.ServInfo, bool, error) {
+			out, err := r.loadAll(ctx)
+			return out, err == nil, err
+		})
 }
 
 // loadAll 从 MySQL 拉全量（ORDER BY id 稳定顺序，便于客户端展示）。

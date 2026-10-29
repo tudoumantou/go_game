@@ -105,9 +105,10 @@ type FieldSource interface {
 // 用于「必须整份写入」的场景：冷启动 Seed、pending 补提。
 // 常规消息用 State.DirtyFields() 只写变化的部分。
 func (s Snapshot) FieldNames() []string {
-	fields := []string{"profile", "attr", "items", "grants"}
+	fields := make([]string, 0, len(CoreFields)+len(s.Ext))
+	fields = append(fields, CoreFields[:]...)
 	for name := range s.Ext {
-		fields = append(fields, "ext:"+name)
+		fields = append(fields, FieldExtPrefix+name)
 	}
 	return fields
 }

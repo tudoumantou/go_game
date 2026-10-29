@@ -128,7 +128,7 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 			resp.Code = int32(errcode.ErrShopBagFull)
 			return false, nil
 		}
-		if err := module.Spend(c.State, itemDiamond, price); err != nil {
+		if err := module.Spend(c.State, module.ItemGold, price); err != nil {
 			resp.Code = int32(errcode.ErrShopDiamondNotEnough)
 			return false, nil
 		}
@@ -154,7 +154,7 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 	// 背包增量推送（钻石扣减 + 道具增加），一条通知带两条变更。
 	// 协议号走生成常量，不再硬编码 3010。
 	notify := &gamev1.BagChangeNotify{Changes: append([]*gamev1.ItemChange{
-		{ItemUid: int64(itemDiamond), ItemId: itemDiamond, Count: int32(c.State.GetItemCount(itemDiamond)), Change: 2},
+		{ItemUid: int64(module.ItemGold), ItemId: module.ItemGold, Count: int32(c.State.GetItemCount(module.ItemGold)), Change: 2},
 	}, module.ToItemChanges(changes)...)}
 	if raw, err := proto.Marshal(notify); err == nil {
 		_ = c.Context.Reply(codec.MsgBagChangeNotify, raw)

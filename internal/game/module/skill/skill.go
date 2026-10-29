@@ -18,11 +18,11 @@ import (
 // stateKey 同时是 Ext 槽位键、模块名与落库归属标签。
 const stateKey = "skill"
 
-// 升级消耗道具（钻石）。
+// 升级消耗的是金币（module.ItemGold），定义在 module/itemid.go 一处。
 //
-// 与 quest/shop/activity 共用同一个道具 ID 1001——这是全服统一的
-// 「钻石」约定，各模块分别声明常量而不是抽公共包，避免模块间耦合。
-const upgradeItemID int32 = 1001
+// 这里曾写「与 quest/shop/activity 共用 1001，各模块分别声明以避免耦合」。
+// 那个理由站不住：耦合的不是模块，是同一个道具 ID；各写一份只是把编译期
+// 依赖换成了「靠人保证六份相等」的运行时约定。
 
 // Data 是技能模块的私有状态：skill_id -> 等级。
 //
@@ -142,7 +142,7 @@ func onUpgrade(c *module.Ctx[Data], req *gamev1.SkillUpgradeReq) error {
 			resp.Code = int32(errcode.ErrSkillMaxLevel)
 			return false, nil
 		}
-		if err := module.Spend(c.State, upgradeItemID, cost); err != nil {
+		if err := module.Spend(c.State, module.ItemGold, cost); err != nil {
 			resp.Code = int32(errcode.ErrSkillNoResource)
 			return false, nil
 		}

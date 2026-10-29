@@ -105,7 +105,7 @@ func (s *Store) AcquireLease(ctx context.Context, playerID int64) (int64, error)
 // player.State，AddItem/RemoveItem/Grant 已在入口保证非负与 int32 上限；
 // 在这里复检要对 items 反序列化一遍（100 件约 5µs），与本次优化目的相反。
 func validateField(field string, raw []byte) error {
-	name, ok := strings.CutPrefix(field, "ext:")
+	name, ok := strings.CutPrefix(field, FieldExtPrefix)
 	if !ok {
 		return nil
 	}
@@ -124,16 +124,16 @@ func validateField(field string, raw []byte) error {
 // 返回 nil 表示该字段没有内容可写（模块未持有状态），调用方跳过。
 func marshalField(state Snapshot, field string) ([]byte, error) {
 	switch field {
-	case "profile":
+	case FieldProfile:
 		return json.Marshal(state.Profile)
-	case "attr":
+	case FieldAttr:
 		return json.Marshal(state.Attr)
-	case "items":
+	case FieldItems:
 		return json.Marshal(state.Items)
-	case "grants":
+	case FieldGrants:
 		return json.Marshal(state.AppliedGrants)
 	}
-	name, ok := strings.CutPrefix(field, "ext:")
+	name, ok := strings.CutPrefix(field, FieldExtPrefix)
 	if !ok {
 		return nil, fmt.Errorf("writebehind: unknown field %q", field)
 	}
@@ -270,10 +270,10 @@ func parseRecord(id int64, values map[string]string) (Record, error) {
 		Ext:      make(map[string]json.RawMessage),
 	}
 	for name, dst := range map[string]any{
-		"profile": &state.Profile,
-		"attr":    &state.Attr,
-		"items":   &state.Items,
-		"grants":  &state.AppliedGrants,
+		FieldProfile: &state.Profile,
+		FieldAttr:    &state.Attr,
+		FieldItems:   &state.Items,
+		FieldGrants:  &state.AppliedGrants,
 	} {
 		if raw := values[name]; raw != "" {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
@@ -282,7 +282,7 @@ func parseRecord(id int64, values map[string]string) (Record, error) {
 		}
 	}
 	for f, raw := range values {
-		name, ok := strings.CutPrefix(f, "ext:")
+		name, ok := strings.CutPrefix(f, FieldExtPrefix)
 		if !ok || raw == "" {
 			continue
 		}

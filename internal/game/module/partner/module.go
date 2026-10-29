@@ -31,8 +31,7 @@ const (
 
 	// fieldLimit 上阵位数。配置里没有这一项，作为玩法常量维护。
 	fieldLimit = 3
-	// itemCoin 金币道具 ID（激活与升星消耗同一种货币）。
-	itemCoin int32 = 1001
+	// 激活与升星消耗同一种货币：金币（module.ItemGold）。
 )
 
 // Data 伙伴状态：partner_id → 星级；Field 是上阵顺序。

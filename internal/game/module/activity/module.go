@@ -23,9 +23,7 @@ import (
 
 const stateKey = "activity"
 
-// 奖励道具（P6 固定：钻石 1001）。
-
-const itemDiamond int32 = 1001
+// 奖励道具固定为金币（module.ItemGold），道具 ID 定义在 module/itemid.go 一处。
 
 // Record 单个活动的进度与领取位图。
 //

@@ -70,6 +70,16 @@ const (
 	// 但要作废的是登录服签发的 token，网关持有 Redis 客户端直接删。
 	MsgIDLogoutReq  uint32 = 100
 	MsgIDLogoutResp uint32 = 101
+
+	// MsgIDErrorNotify 通用错误推送（gate/v1 system.proto 的 ErrorNotify）。
+	//
+	// 定义在这里而不是 pkg/codec/msgids_gen.go：那条生成链只收带
+	// `// @msg` 注解的业务协议，本消息在 proto 里标注的是 `// MsgID: 20`，
+	// 因此两边都没有它，调用方只能写裸数字 20。
+	//
+	// 后果不是「不方便」而是「不可查」：把 20 改成别的值只会在客户端
+	// 静默收不到错误提示，服务端一切正常——这类号必须有名字。
+	MsgIDErrorNotify uint32 = 20
 )
 
 // IsClientMsgID 判断是否客户端消息号（内部号段不暴露）

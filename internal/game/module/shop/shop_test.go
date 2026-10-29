@@ -49,12 +49,12 @@ func buy(t *testing.T, m *module.Bound[Data], ctx *module.Context, rec *modulete
 func TestBuyDeductsAndGrants(t *testing.T) {
 	cfg := firstGoods(t)
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 1000)
+	st.AddItem(module.ItemGold, 1000)
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 2)
 	require.EqualValues(t, int32(errcode.OK), resp.Code, fmt.Sprintf("buy: %+v", resp))
 	require.EqualValues(t, 2, resp.Bought)
-	require.EqualValues(t, 1000-2*cfg.Col3, st.GetItemCount(itemDiamond), "钻石必须按单价×数量扣")
+	require.EqualValues(t, 1000-2*cfg.Col3, st.GetItemCount(module.ItemGold), "钻石必须按单价×数量扣")
 	require.EqualValues(t, 2*cfg.Col4, st.GetItemCount(int32(cfg.Col2)), "道具按数量发放")
 	require.Equal(t, 1, rec.Count(codec.MsgShopBuyResp), "一次请求只能回一个包")
 }
@@ -63,53 +63,53 @@ func TestBuyDeductsAndGrants(t *testing.T) {
 func TestBuyNotEnoughDiamond(t *testing.T) {
 	cfg := firstGoods(t)
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, cfg.Col3-1) // 差一个
+	st.AddItem(module.ItemGold, cfg.Col3-1) // 差一个
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 1)
 	require.EqualValues(t, int32(errcode.ErrShopDiamondNotEnough), resp.Code, fmt.Sprintf("got %+v", resp))
 	require.EqualValues(t, 0, st.GetItemCount(int32(cfg.Col2)), "扣费失败不能发货")
-	require.EqualValues(t, cfg.Col3-1, st.GetItemCount(itemDiamond), "失败请求不能部分扣费")
+	require.EqualValues(t, cfg.Col3-1, st.GetItemCount(module.ItemGold), "失败请求不能部分扣费")
 }
 
 // TestBuyBagFullDoesNotCharge 背包放不下：预检阶段就拒绝，一分钱都不扣。
 func TestBuyBagFullDoesNotCharge(t *testing.T) {
 	cfg := firstGoods(t)
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 1000)
+	st.AddItem(module.ItemGold, 1000)
 	st.SetCanHold(false)
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 1)
 	require.EqualValues(t, int32(errcode.ErrShopBagFull), resp.Code, fmt.Sprintf("got %+v", resp))
-	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond), "满包时不能扣钱")
+	require.EqualValues(t, 1000, st.GetItemCount(module.ItemGold), "满包时不能扣钱")
 	require.EqualValues(t, 0, st.GetItemCount(int32(cfg.Col2)))
 }
 
 // TestBuyUnknownGoods 商品不存在：直接拒绝，不碰任何状态。
 func TestBuyUnknownGoods(t *testing.T) {
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 1000)
+	st.AddItem(module.ItemGold, 1000)
 
 	resp := buy(t, m, ctx, rec, 999999, 1)
 	require.EqualValues(t, int32(errcode.ErrShopGoodsNotExist), resp.Code)
-	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond))
+	require.EqualValues(t, 1000, st.GetItemCount(module.ItemGold))
 }
 
 // TestBuyClampsCount 数量非法时按 1 处理，过大时截到 999。
 func TestBuyClampsCount(t *testing.T) {
 	cfg := firstGoods(t)
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 100000)
+	st.AddItem(module.ItemGold, 100000)
 
 	resp := buy(t, m, ctx, rec, cfg.Id, 0) // 按 1 个
 	require.EqualValues(t, int32(errcode.OK), resp.Code)
-	require.EqualValues(t, 100000-cfg.Col3, st.GetItemCount(itemDiamond), "应只扣 1 个的价钱")
+	require.EqualValues(t, 100000-cfg.Col3, st.GetItemCount(module.ItemGold), "应只扣 1 个的价钱")
 }
 
 // TestListShowsBought 列表展示本周期已购次数。
 func TestListShowsBought(t *testing.T) {
 	cfg := firstGoods(t)
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 1000)
+	st.AddItem(module.ItemGold, 1000)
 	require.EqualValues(t, int32(errcode.OK), buy(t, m, ctx, rec, cfg.Id, 1).Code)
 
 	raw, err := moduletest.Call(m, ctx, rec, codec.MsgShopListReq, codec.MsgShopListResp, &gamev1.ShopListReq{})
@@ -179,7 +179,7 @@ func TestBuyKeyUsesConfiguredShopID(t *testing.T) {
 		`[{"id":9,"col1":2,"col2":1002,"col3":5,"col4":1}]`)
 
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 10000)
+	st.AddItem(module.ItemGold, 10000)
 
 	resp := buy(t, m, ctx, rec, 9, 1)
 	require.EqualValues(t, int32(errcode.OK), resp.Code)
@@ -200,7 +200,7 @@ func TestGoodsInMissingShopHiddenAndUnbuyable(t *testing.T) {
 		`[{"id":9,"col1":99,"col2":1002,"col3":5,"col4":1}]`)
 
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 10000)
+	st.AddItem(module.ItemGold, 10000)
 
 	// 列表不展示
 	raw, err := moduletest.Call(m, ctx, rec, codec.MsgShopListReq, codec.MsgShopListResp, &gamev1.ShopListReq{})
@@ -214,7 +214,7 @@ func TestGoodsInMissingShopHiddenAndUnbuyable(t *testing.T) {
 	// 直接买也不行
 	resp := buy(t, m, ctx, rec, 9, 1)
 	require.EqualValues(t, int32(errcode.ErrShopGoodsNotExist), resp.Code)
-	require.EqualValues(t, 10000, st.GetItemCount(itemDiamond), "拒绝时不能扣钱")
+	require.EqualValues(t, 10000, st.GetItemCount(module.ItemGold), "拒绝时不能扣钱")
 }
 
 // TestWithinLimit 限购判定边界：0 表示不限、恰好买满允许、多一份拒绝。
@@ -250,14 +250,14 @@ func TestBuyRejectsOverLimit(t *testing.T) {
 		`[{"id":1,"col1":1,"col2":1002,"col3":10,"col4":1,"col5":2}]`)
 
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 1000)
+	st.AddItem(module.ItemGold, 1000)
 
 	require.EqualValues(t, int32(errcode.OK), buy(t, m, ctx, rec, 1, 2).Code, "买满 2 份应当成功")
-	diamondAfterBuy := st.GetItemCount(itemDiamond)
+	diamondAfterBuy := st.GetItemCount(module.ItemGold)
 
 	resp := buy(t, m, ctx, rec, 1, 1)
 	require.EqualValues(t, int32(errcode.ErrShopLimitExceeded), resp.Code, fmt.Sprintf("got %+v", resp))
-	require.EqualValues(t, diamondAfterBuy, st.GetItemCount(itemDiamond), "被限购拒绝时不能扣钱")
+	require.EqualValues(t, diamondAfterBuy, st.GetItemCount(module.ItemGold), "被限购拒绝时不能扣钱")
 	require.EqualValues(t, 2, st.GetItemCount(1002), "也不能多发货")
 }
 
@@ -271,11 +271,11 @@ func TestBuySingleRequestOverLimit(t *testing.T) {
 		`[{"id":1,"col1":1,"col2":1002,"col3":10,"col4":1,"col5":2}]`)
 
 	m, st, rec, ctx := newTestModule()
-	st.AddItem(itemDiamond, 1000)
+	st.AddItem(module.ItemGold, 1000)
 
 	resp := buy(t, m, ctx, rec, 1, 3) // 一次要 3 份，限购 2
 	require.EqualValues(t, int32(errcode.ErrShopLimitExceeded), resp.Code)
-	require.EqualValues(t, 1000, st.GetItemCount(itemDiamond), "拒绝时一分钱都不能扣")
+	require.EqualValues(t, 1000, st.GetItemCount(module.ItemGold), "拒绝时一分钱都不能扣")
 	require.EqualValues(t, 0, st.GetItemCount(1002))
 }
 

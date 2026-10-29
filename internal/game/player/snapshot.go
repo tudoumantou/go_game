@@ -53,16 +53,16 @@ func (s *State) Field(name string) ([]byte, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	switch name {
-	case "profile":
+	case writebehind.FieldProfile:
 		return json.Marshal(s.profile)
-	case "attr":
+	case writebehind.FieldAttr:
 		return json.Marshal(s.attr)
-	case "items":
+	case writebehind.FieldItems:
 		return json.Marshal(s.items)
-	case "grants":
+	case writebehind.FieldGrants:
 		return json.Marshal(s.appliedGrants)
 	}
-	mod, ok := strings.CutPrefix(name, "ext:")
+	mod, ok := strings.CutPrefix(name, writebehind.FieldExtPrefix)
 	if !ok {
 		return nil, fmt.Errorf("player: unknown snapshot field %q", name)
 	}
@@ -79,10 +79,10 @@ func (s *State) Field(name string) ([]byte, error) {
 func (s *State) Fields() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]string, 0, 4+len(s.ext))
-	out = append(out, "profile", "attr", "items", "grants")
+	out := make([]string, 0, len(writebehind.CoreFields)+len(s.ext))
+	out = append(out, writebehind.CoreFields[:]...)
 	for name := range s.ext {
-		out = append(out, "ext:"+name)
+		out = append(out, writebehind.FieldExtPrefix+name)
 	}
 	return out
 }

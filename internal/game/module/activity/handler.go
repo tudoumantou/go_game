@@ -220,7 +220,7 @@ func onClaim(c *module.Ctx[Data], req *gamev1.ActivityClaimReq) error {
 		}
 		// 发奖：target * 20 钻石；满包/超限时不发也不置领取位。
 		gain := int64(cfg.Col3) * 20
-		changes, grantErr := module.Grant(c.State, []module.ItemGrant{{ItemID: itemDiamond, Count: gain}})
+		changes, grantErr := module.Grant(c.State, []module.ItemGrant{{ItemID: module.ItemGold, Count: gain}})
 		if grantErr != nil {
 			resp.Code = int32(errcode.ErrActivityBagFull)
 			return false, nil

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"game_study/internal/common/constant"
+	"game_study/internal/common/errcode"
 	"game_study/internal/gateway/conn"
 	"game_study/internal/gateway/session"
 	"game_study/pkg/codec"
@@ -372,7 +373,10 @@ func (h *Handler) handleHeartbeat(ctx context.Context, msg proto.Message) error 
 //     先断会导致客户端收不到 LogoutResp，只能靠读 EOF 猜结果。
 //
 // 不作废成功也要断连：token 还在是安全隐患，但把连接留着更糟
-// （用户会继续用一条「已登出」的连接发业务包）。回 code=1005 让客户端重试。
+// （用户会继续用一条「已登出」的连接发业务包）。回 ErrServerBusy 让客户端重试。
+//
+// 错误码一律取 errcode 常量，不写字面量：这里曾直接写 1005/1002，
+// 与 errcode.ErrServerBusy/ErrTokenExpired 是同一个数的两份定义。
 func (h *Handler) handleLogout(ctx context.Context, _ proto.Message) error {
 	connID := ctx.Value(ctxKeyConnID{}).(int64)
 	sess := h.sessMgr.GetByConn(connID)
@@ -384,7 +388,7 @@ func (h *Handler) handleLogout(ctx context.Context, _ proto.Message) error {
 	if token := sess.Token(); token != "" && h.revoker != nil {
 		if err := h.revoker(token); err != nil {
 			h.logger.Warn("revoke token failed", "conn_id", connID, "err", err)
-			code = 1005 // 服务器繁忙：token 未能作废，客户端应重试登出
+			code = int32(errcode.ErrServerBusy) // token 未能作废，客户端应重试登出
 		}
 	}
 
@@ -417,8 +421,9 @@ func (h *Handler) handleHandshakeReq(ctx context.Context, msg proto.Message) err
 		aid, err := h.validator(req.Token)
 		if err != nil {
 			h.logger.Warn("token invalid", "conn_id", connID, "err", err)
-			// 1001 参数错误 / 1002 token 过期，见 4.10
-			code = 1002
+			// token 无效一律回「登录已过期」（4.10）：真正的参数错误在校验器
+			// 内部就能分辨，但客户端对两种情况的处置相同——重新登录。
+			code = int32(errcode.ErrTokenExpired)
 		} else {
 			accountID = aid
 		}

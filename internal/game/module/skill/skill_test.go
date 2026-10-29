@@ -132,7 +132,7 @@ func TestLearnAndUpgrade(t *testing.T) {
 	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)])
 
-	st.items[upgradeItemID] = 1000
+	st.items[module.ItemGold] = 1000
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
 	err = m.OnMessage(ctx, codec.MsgSkillUpgradeReq, upgrade)
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestLearnAndUpgrade(t *testing.T) {
 	require.EqualValues(t, 2, d.Levels[int32(cfg.Id)])
 	cost, ok := upgradeCost(1)
 	require.True(t, ok, "1 级必须有升级配置")
-	require.EqualValues(t, 1000-cost, st.GetItemCount(upgradeItemID),
+	require.EqualValues(t, 1000-cost, st.GetItemCount(module.ItemGold),
 		"消耗必须来自 skill_upgrade 表，而不是 skill.Col3 * level")
 }
 
@@ -172,7 +172,7 @@ func TestUpgradeWithoutResource(t *testing.T) {
 	require.NoError(t, err)
 	d, _ := m.State(ctx)
 	require.EqualValues(t, 1, d.Levels[int32(cfg.Id)], "level changed without resource")
-	require.EqualValues(t, 0, st.GetItemCount(upgradeItemID), "item deducted on failed upgrade")
+	require.EqualValues(t, 0, st.GetItemCount(module.ItemGold), "item deducted on failed upgrade")
 }
 
 // TestUpgradeStopsAtMaxLevel 配置里没有「当前等级」的行 = 已满级。
@@ -193,14 +193,14 @@ func TestUpgradeStopsAtMaxLevel(t *testing.T) {
 		*dst = Data{Levels: map[int32]int32{int32(cfg.Id): top}}
 		return true
 	}))
-	st.items[upgradeItemID] = 100000
+	st.items[module.ItemGold] = 100000
 
 	upgrade, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
 	require.NoError(t, m.OnMessage(ctx, codec.MsgSkillUpgradeReq, upgrade))
 
 	d, _ := m.State(ctx)
 	require.EqualValues(t, top, d.Levels[int32(cfg.Id)], "满级后等级不能再涨")
-	require.EqualValues(t, 100000, st.GetItemCount(upgradeItemID), "满级不能扣钱")
+	require.EqualValues(t, 100000, st.GetItemCount(module.ItemGold), "满级不能扣钱")
 
 	resp := &gamev1.SkillUpgradeResp{}
 	require.NoError(t, proto.Unmarshal(rec[codec.MsgSkillUpgradeResp], resp))
@@ -219,18 +219,18 @@ func TestUpgradeCostComesFromTable(t *testing.T) {
 		*dst = Data{Levels: map[int32]int32{int32(cfg.Id): 1}}
 		return true
 	}))
-	st.items[upgradeItemID] = 10000
+	st.items[module.ItemGold] = 10000
 	up, _ := proto.Marshal(&gamev1.SkillUpgradeReq{SkillId: int32(cfg.Id)})
 	require.NoError(t, m.OnMessage(ctx, codec.MsgSkillUpgradeReq, up))
 
 	cost1, ok := upgradeCost(1)
 	require.True(t, ok)
-	require.EqualValues(t, 10000-cost1, st.GetItemCount(upgradeItemID))
+	require.EqualValues(t, 10000-cost1, st.GetItemCount(module.ItemGold))
 
 	// 2 级升 3 级：表里是 300 而不是 100*2 的巧合值，能区分「查表」与「线性」
 	if cost2, ok := upgradeCost(2); ok {
 		require.NoError(t, m.OnMessage(ctx, codec.MsgSkillUpgradeReq, up))
-		require.EqualValues(t, 10000-cost1-cost2, st.GetItemCount(upgradeItemID))
+		require.EqualValues(t, 10000-cost1-cost2, st.GetItemCount(module.ItemGold))
 	}
 }
 

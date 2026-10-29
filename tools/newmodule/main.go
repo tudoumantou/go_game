@@ -283,22 +283,35 @@ func handlerTmpl(name string, pairs []msgPair) string {
 	var b strings.Builder
 	first := pairs[0]
 
-	// 第一个处理器给完整骨架（取状态 → 判错 → 回包），其余是简版，
+	// 第一个处理器给完整骨架（读状态 → 判错 → 回包），其余是简版，
 	// 避免整文件复制同一段样板。
+	//
+	// 状态读写一律走 Repo.View/Mutate，不出现 Get/Save：Repository 接口
+	// 只有这五个方法（见 module/repository.go），旧的 Get/Save 在 24 个
+	// 模块迁完后已删除。模板曾经生成 c.Repo.Get()，于是「新建的模块
+	// 第一件事是先修编译错误」——生成器与基座脱节，比没有生成器更费时间。
 	fmt.Fprintf(&b, `
 // %s 处理 %s。
 //
-// 完整骨架：取状态 → 判错 → 回包。其余处理器是简版，照这个补。
+// 完整骨架：读状态 → 判错 → 回包。其余处理器是简版，照这个补。
+//
+// View 只读：fn 里对 d 的修改不会回写，需要改状态用 Mutate
+// （fn 返回 changed=true 才编码回写并标脏）。
 func %s(c *module.Ctx[Data], req *gamev1.%s) error {
-	d, err := c.Repo.Get()
+	resp := &gamev1.%s{}
+	err := c.Repo.View(func(d *Data) error {
+		_ = d   // 按业务读 d 的字段
+		_ = req // 按业务读 req 的字段
+		return nil
+	})
 	if err != nil {
-		return c.Fail(&gamev1.%s{Code: int32(errcode.ErrSystem)}, err)
+		// 服务端真故障：FailCode 置码并回包（Define 形态的处理器没有
+		// resp 形参，基座不知道回什么，所以它内部会显式 Reply）。
+		return c.FailCode(resp, errcode.ErrSystem)
 	}
-	_ = d   // 按业务读 d 的字段
-	_ = req // 按业务读 req 的字段
-	return c.Reply(&gamev1.%s{})
+	return c.Reply(resp)
 }
-`, first.handlerName(), first.req, first.handlerName(), first.req, first.resp, first.resp)
+`, first.handlerName(), first.req, first.handlerName(), first.req, first.resp)
 
 	for _, p := range pairs[1:] {
 		fmt.Fprintf(&b, `

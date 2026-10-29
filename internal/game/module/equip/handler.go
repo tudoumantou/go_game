@@ -244,7 +244,7 @@ func onEnhance(c *module.Ctx[Data], req *gamev1.EquipEnhanceReq) error {
 			resp.Code = int32(errcode.ErrEquipMaxEnhance)
 			return false, nil
 		}
-		if err := module.Spend(c.State, itemDiamond, cfg.Col2); err != nil {
+		if err := module.Spend(c.State, module.ItemGold, cfg.Col2); err != nil {
 			resp.Code = int32(errcode.ErrEquipNoMaterial)
 			return false, nil
 		}

@@ -408,14 +408,25 @@ func (s *State) touch(module string) {
 // fieldOf 模块名 → Redis Hash field 名。
 //
 // 核心四块有固定字段名，其余模块名都对应自己的 Ext 槽位。
+//
+// 两个反直觉的映射都在这一个 switch 里，且必须在这一个 switch 里：
+//
+//	"bag" → "items"   背包模块的脏标记落到核心字段 items 上，因为它改的
+//	                  就是玩家道具表；模块名叫 bag、字段名叫 items 是两套
+//	                  命名（一个来自玩法、一个来自数据形态）。
+//	其余  → "ext:<名>" 模块私有槽位。
+//
+// 因此 MarkDirty("items") 是错的（会落到 ext:items 这个不存在的槽位），
+// 正确写法是 MarkDirty("bag")。这个坑没法靠命名消除——字段名是线上
+// 契约不能改，模块名是玩法概念不能改，只能在这里写清楚。
 func fieldOf(module string) string {
 	switch module {
-	case "profile", "attr", "grants":
+	case writebehind.FieldProfile, writebehind.FieldAttr, writebehind.FieldGrants:
 		return module
 	case "bag":
-		return "items"
+		return writebehind.FieldItems
 	default:
-		return "ext:" + module
+		return writebehind.FieldExtPrefix + module
 	}
 }
 

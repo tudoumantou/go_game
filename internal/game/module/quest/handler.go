@@ -171,9 +171,9 @@ func onClaim(c *module.Ctx[Data], req *gamev1.QuestClaimReq) error {
 			return false, nil
 		}
 
-		// 发奖：经验 + 钻石（配置约定 target*100 经验、target*10 钻石）。
+		// 发奖：经验 + 金币（配置约定 target*100 经验、target*10 金币）。
 		// 满包/超限时整个领取被拒，不会出现「状态已置领、道具没发」。
-		grants := []module.ItemGrant{{ItemID: 1001, Count: int64(cfg.Col3) * 10}}
+		grants := []module.ItemGrant{{ItemID: module.ItemGold, Count: int64(cfg.Col3) * 10}}
 		bagChanges, grantErr := module.Grant(c.State, grants)
 		if grantErr != nil {
 			resp.Code = int32(errcode.ErrQuestBagFull)

@@ -27,7 +27,7 @@ type fakeState struct {
 func newFakeState(id int64, coin int64) *fakeState {
 	return &fakeState{
 		id:    id,
-		items: map[int32]int64{itemCoin: coin},
+		items: map[int32]int64{module.ItemGold: coin},
 		bonus: map[string]int64{},
 		ext:   map[string]json.RawMessage{},
 	}
@@ -91,7 +91,7 @@ func TestActivateAndStarUp(t *testing.T) {
 	var act gamev1.PartnerActivateResp
 	_ = proto.Unmarshal(*raw, &act)
 	require.EqualValues(t, errcode.OK, act.Code)
-	got := st.items[itemCoin]
+	got := st.items[module.ItemGold]
 	require.EqualValues(t, 10_000-cfg.Col3, got, fmt.Sprintf("coin = %d, want %d", got, 10_000-cfg.Col3))
 
 	// 重复激活：拒绝且不扣钱。
@@ -99,7 +99,7 @@ func TestActivateAndStarUp(t *testing.T) {
 	require.NoError(t, err)
 	_ = proto.Unmarshal(*raw, &act)
 	require.EqualValues(t, errcode.ErrPartnerOwned, act.Code)
-	got = st.items[itemCoin]
+	got = st.items[module.ItemGold]
 	require.EqualValues(t, 10_000-cfg.Col3, got, fmt.Sprintf("duplicate activate must not charge: %d", got))
 
 	// 升星：1→2 消耗 partner_star 里 (当前星级=1) 的 col3。
@@ -112,7 +112,7 @@ func TestActivateAndStarUp(t *testing.T) {
 	_ = proto.Unmarshal(*raw, &up)
 	require.EqualValues(t, errcode.OK, up.Code, fmt.Sprintf("star up code=%d star=%d", up.Code, up.Star))
 	require.EqualValues(t, 2, up.Star)
-	got = st.items[itemCoin]
+	got = st.items[module.ItemGold]
 	require.EqualValues(t, 10_000-cfg.Col3-cost, got, fmt.Sprintf("coin after star up = %d", got))
 }
 
