@@ -32,7 +32,7 @@ import (
 // 「一人一会」的前置判断、哨兵错误到业务码的翻译都在模块层，需要能
 // 脱离 MySQL 验证。*Repo 隐式实现它，装配层不变。
 type guildRepo interface {
-	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 pkg/sqlstore）。
 	Ready() bool
 	FindByPlayer(ctx context.Context, playerID int64) (*Guild, error)
 	Create(ctx context.Context, name string, leaderID int64) (int64, error)

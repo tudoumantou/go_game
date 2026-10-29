@@ -8,9 +8,9 @@ import (
 	"context"
 	"fmt"
 
-	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // Repo 聊天记录仓储。
@@ -19,12 +19,12 @@ import (
 // 历史是流水数据、量随聊天天数增长，放玩家快照 JSON 列会把快照撑爆，
 // 因此独立成表直写。db 可为 nil（无 DB 环境），调用方需判空降级。
 type Repo struct {
-	*module.Shared
+	*sqlstore.Base
 }
 
 // NewRepo 创建仓储。
 func NewRepo(database *db.DB) *Repo {
-	return &Repo{Shared: module.NewShared(database, "chat")}
+	return &Repo{Base: sqlstore.New(database, "chat")}
 }
 
 // Insert 落库一条聊天记录（uk_owner_msg 幂等，重复插入忽略）。

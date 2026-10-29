@@ -11,19 +11,19 @@ import (
 	"time"
 
 	"game_study/internal/common/errcode"
-	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // Repo 好友仓储：所有写操作都在事务里完成，保证双边一致。
 type Repo struct {
-	*module.Shared
+	*sqlstore.Base
 }
 
 // NewRepo 创建仓储。
 func NewRepo(database *db.DB) *Repo {
-	return &Repo{Shared: module.NewShared(database, "friend")}
+	return &Repo{Base: sqlstore.New(database, "friend")}
 }
 
 // List 读取好友与待我处理的申请。

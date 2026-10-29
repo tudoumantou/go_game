@@ -12,9 +12,9 @@ import (
 	"fmt"
 	"strings"
 
-	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // Repo 邮件仓储。
@@ -22,12 +22,12 @@ import (
 // MySQL 直写（不过 Persister）：邮件是流水型数据、与玩家快照解耦，
 // db 由组装层注入；模块层入口对 repo==nil 的处理见各方法注释。
 type Repo struct {
-	*module.Shared
+	*sqlstore.Base
 }
 
 // NewRepo 创建仓储。
 func NewRepo(database *db.DB) *Repo {
-	return &Repo{Shared: module.NewShared(database, "mail")}
+	return &Repo{Base: sqlstore.New(database, "mail")}
 }
 
 // Insert 插入邮件，返回邮件 ID。

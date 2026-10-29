@@ -10,8 +10,8 @@ import (
 	"errors"
 	"testing"
 
-	"game_study/internal/game/module"
 	pkgseat "game_study/pkg/seat"
+	"game_study/pkg/sqlstore"
 )
 
 // TestStoreWithoutDBReturnsErrNoDB 无连接时每个入口都要报「没库」。
@@ -25,19 +25,19 @@ func TestStoreWithoutDBReturnsErrNoDB(t *testing.T) {
 	if s.Ready() {
 		t.Fatal("NewStore(nil).Ready() = true, want false")
 	}
-	if err := s.EnsureRooms(ctx, []pkgseat.RoomSnapshot{{ID: 1}}); !errors.Is(err, module.ErrNoDB) {
+	if err := s.EnsureRooms(ctx, []pkgseat.RoomSnapshot{{ID: 1}}); !errors.Is(err, sqlstore.ErrNoDB) {
 		t.Errorf("EnsureRooms err = %v, want ErrNoDB", err)
 	}
-	if _, err := s.Load(ctx); !errors.Is(err, module.ErrNoDB) {
+	if _, err := s.Load(ctx); !errors.Is(err, sqlstore.ErrNoDB) {
 		t.Errorf("Load err = %v, want ErrNoDB", err)
 	}
-	if err := s.Save(ctx, pkgseat.RoomSnapshot{ID: 1}); !errors.Is(err, module.ErrNoDB) {
+	if err := s.Save(ctx, pkgseat.RoomSnapshot{ID: 1}); !errors.Is(err, sqlstore.ErrNoDB) {
 		t.Errorf("Save err = %v, want ErrNoDB", err)
 	}
-	if err := s.SavePlayer(ctx, 7, pkgseat.SeatRef{RoomID: 1, SeatIndex: 2}, 100); !errors.Is(err, module.ErrNoDB) {
+	if err := s.SavePlayer(ctx, 7, pkgseat.SeatRef{RoomID: 1, SeatIndex: 2}, 100); !errors.Is(err, sqlstore.ErrNoDB) {
 		t.Errorf("SavePlayer err = %v, want ErrNoDB", err)
 	}
-	if err := s.DeletePlayer(ctx, 7, pkgseat.SeatRef{RoomID: 1, SeatIndex: 2}); !errors.Is(err, module.ErrNoDB) {
+	if err := s.DeletePlayer(ctx, 7, pkgseat.SeatRef{RoomID: 1, SeatIndex: 2}); !errors.Is(err, sqlstore.ErrNoDB) {
 		t.Errorf("DeletePlayer err = %v, want ErrNoDB", err)
 	}
 }

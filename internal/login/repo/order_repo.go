@@ -23,6 +23,7 @@ import (
 
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 
 	mysqlDriver "github.com/go-sql-driver/mysql"
 )
@@ -50,12 +51,12 @@ var (
 
 // OrderRepo 充值订单仓储。
 type OrderRepo struct {
-	db *db.DB
+	*sqlstore.Base
 }
 
 // NewOrderRepo 创建仓储。
 func NewOrderRepo(database *db.DB) *OrderRepo {
-	return &OrderRepo{db: database}
+	return &OrderRepo{Base: sqlstore.New(database, "order")}
 }
 
 // Create 创建订单；order_id 冲突返回 ErrOrderExists。
@@ -63,7 +64,7 @@ func NewOrderRepo(database *db.DB) *OrderRepo {
 // （时钟回拨/极端随机碰撞）按已存在处理，调用方可重试或直接视为
 // 「重复下单」。
 func (r *OrderRepo) Create(ctx context.Context, order *model.RechargeOrder) error {
-	_, err := model.InsertRechargeOrder(ctx, r.db.DB, order)
+	_, err := model.InsertRechargeOrder(ctx, r.SQL(), order)
 	if err != nil {
 		// 知识点：errors.As 提取驱动特定错误类型——MySQL 用错误码
 		// 1062（ER_DUP_ENTRY）表达唯一键冲突，这是「用数据库约束
@@ -85,7 +86,7 @@ func (r *OrderRepo) FindByOrderID(ctx context.Context, orderID string) (*model.R
 	                  paid_at, delivered_at, created_at, updated_at
 	           FROM recharge_order WHERE order_id = ? LIMIT 1`
 	var o model.RechargeOrder
-	err := r.db.QueryRowContext(ctx, q, orderID).Scan(
+	err := r.DB().QueryRowContext(ctx, q, orderID).Scan(
 		&o.Id, &o.OrderId, &o.PlayerId, &o.ProductId, &o.AmountFen, &o.Channel, &o.Status,
 		&o.PaidAt, &o.DeliveredAt, &o.CreatedAt, &o.UpdatedAt,
 	)
@@ -107,7 +108,7 @@ func (r *OrderRepo) FindByOrderID(ctx context.Context, orderID string) (*model.R
 func (r *OrderRepo) MarkPaid(ctx context.Context, orderID string, paidAt time.Time) (bool, error) {
 	const q = `UPDATE recharge_order SET status = ?, paid_at = ?
 	           WHERE order_id = ? AND status = ?`
-	res, err := r.db.ExecContext(ctx, q, OrderStatusPaid, paidAt, orderID, OrderStatusPending)
+	res, err := r.DB().ExecContext(ctx, q, OrderStatusPaid, paidAt, orderID, OrderStatusPending)
 	if err != nil {
 		return false, fmt.Errorf("mark paid: %w", err)
 	}
@@ -124,7 +125,7 @@ func (r *OrderRepo) MarkPaid(ctx context.Context, orderID string, paidAt time.Ti
 func (r *OrderRepo) MarkDelivered(ctx context.Context, orderID string, deliveredAt time.Time) (bool, error) {
 	const q = `UPDATE recharge_order SET status = ?, delivered_at = ?
 	           WHERE order_id = ? AND status = ?`
-	res, err := r.db.ExecContext(ctx, q, OrderStatusDelivered, deliveredAt, orderID, OrderStatusPaid)
+	res, err := r.DB().ExecContext(ctx, q, OrderStatusDelivered, deliveredAt, orderID, OrderStatusPaid)
 	if err != nil {
 		return false, fmt.Errorf("mark delivered: %w", err)
 	}
@@ -149,7 +150,7 @@ func (r *OrderRepo) ListPaidUndelivered(ctx context.Context, limit int) ([]*mode
 	           WHERE status = ?
 	           ORDER BY paid_at ASC
 	           LIMIT ?`
-	rows, err := r.db.QueryContext(ctx, q, OrderStatusPaid, limit)
+	rows, err := r.DB().QueryContext(ctx, q, OrderStatusPaid, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list paid undelivered: %w", err)
 	}
@@ -181,7 +182,7 @@ func (r *OrderRepo) InsertRecord(ctx context.Context, order *model.RechargeOrder
 	const q = `INSERT INTO recharge_record (order_id, player_id, product_id, amount_fen, channel)
 	           VALUES (?, ?, ?, ?, ?)
 	           ON DUPLICATE KEY UPDATE order_id = order_id`
-	_, err := r.db.ExecContext(ctx, q, order.OrderId, order.PlayerId, order.ProductId, order.AmountFen, order.Channel)
+	_, err := r.DB().ExecContext(ctx, q, order.OrderId, order.PlayerId, order.ProductId, order.AmountFen, order.Channel)
 	if err != nil {
 		return fmt.Errorf("insert recharge_record: %w", err)
 	}

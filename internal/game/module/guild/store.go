@@ -10,9 +10,9 @@ import (
 	"database/sql"
 	"errors"
 
-	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // Repo 公会仓储。
@@ -20,12 +20,12 @@ import (
 // db 可为 nil（无 DB 环境）：模块层所有入口判空后按「降级成功」回包，
 // 保证无依赖环境下协议演示不中断。
 type Repo struct {
-	*module.Shared
+	*sqlstore.Base
 }
 
 // NewRepo 创建仓储。
 func NewRepo(database *db.DB) *Repo {
-	return &Repo{Shared: module.NewShared(database, "guild")}
+	return &Repo{Base: sqlstore.New(database, "guild")}
 }
 
 // FindByPlayer 查询玩家所在公会。

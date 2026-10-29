@@ -9,24 +9,24 @@
 // 就能查占座，不用扫 JSON）。两者由同一轮变更驱动（房间 onChange / 座位
 // onSeat），不会各自演化出不一致的规则；实际写入由 writer 合并成批。
 //
-// 仓储基座是 module.Shared（与公会/队伍/好友/聊天/邮件同源）：抢位置是
+// 仓储基座是 pkg/sqlstore.Base（与公会/队伍/好友/聊天/邮件同源）：抢位置是
 // game 进程内最后一个还自己写 `struct{ db *db.DB }` 的仓储，也是最后一个
 // 「无 DB 怎么办」有独立答案的地方。座位现在没有跨表事务（两张表各写各的，
-// 由房间快照兜底纠正），所以只用到基座的 Ready/SQL 两层。
+// 由房间快照兜底纠正），所以只用到基座的 Ready/DB 两层。
 package seat
 
 import (
 	"context"
 	"encoding/json"
 
-	"game_study/internal/game/module"
 	"game_study/pkg/db"
 	pkgseat "game_study/pkg/seat"
+	"game_study/pkg/sqlstore"
 )
 
 // Store 抢位置持久化。
 type Store struct {
-	*module.Shared
+	*sqlstore.Base
 }
 
 // NewStore 创建仓储。
@@ -34,7 +34,7 @@ type Store struct {
 // database 为 nil 表示本进程不接数据库：调用方据此决定不挂载 Store
 // （见 initSeat），而不是让 Store 自己「降级成什么都不做」。
 func NewStore(database *db.DB) *Store {
-	return &Store{Shared: module.NewShared(database, "seat")}
+	return &Store{Base: sqlstore.New(database, "seat")}
 }
 
 // EnsureRooms 幂等补齐固定房间行（高 1 / 中 3 / 低 6）。
@@ -43,7 +43,7 @@ func NewStore(database *db.DB) *Store {
 // 看到「座位没有落库」这一句，而不是看到一个 panic 栈。
 func (s *Store) EnsureRooms(ctx context.Context, rooms []pkgseat.RoomSnapshot) error {
 	if !s.Ready() {
-		return module.ErrNoDB
+		return sqlstore.ErrNoDB
 	}
 	for _, r := range rooms {
 		if _, err := s.DB().ExecContext(ctx,
@@ -61,7 +61,7 @@ func (s *Store) EnsureRooms(ctx context.Context, rooms []pkgseat.RoomSnapshot) e
 // 导致所有房间都恢复不了。
 func (s *Store) Load(ctx context.Context) ([]pkgseat.RoomSnapshot, error) {
 	if !s.Ready() {
-		return nil, module.ErrNoDB
+		return nil, sqlstore.ErrNoDB
 	}
 	rows, err := s.DB().QueryContext(ctx, "SELECT id, tier, room_index, slots FROM seat_room")
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *Store) Load(ctx context.Context) ([]pkgseat.RoomSnapshot, error) {
 // Save 写回一个房间（只更新 slots）。
 func (s *Store) Save(ctx context.Context, snap pkgseat.RoomSnapshot) error {
 	if !s.Ready() {
-		return module.ErrNoDB
+		return sqlstore.ErrNoDB
 	}
 	raw, err := json.Marshal(snap.Slots)
 	if err != nil {
@@ -116,7 +116,7 @@ func (s *Store) Save(ctx context.Context, snap pkgseat.RoomSnapshot) error {
 // SavePlayer 写入/更新玩家的占座数据。
 func (s *Store) SavePlayer(ctx context.Context, playerID int64, ref pkgseat.SeatRef, occupiedAt int64) error {
 	if !s.Ready() {
-		return module.ErrNoDB
+		return sqlstore.ErrNoDB
 	}
 	_, err := s.DB().ExecContext(ctx,
 		"INSERT INTO seat_player (player_id, room_id, seat_index, occupied_at) VALUES (?, ?, ?, ?) "+
@@ -133,7 +133,7 @@ func (s *Store) SavePlayer(ctx context.Context, playerID int64, ref pkgseat.Seat
 // 玩家数据凭空消失（同房间换座时 room_id 也相同，只有 seat_index 能区分）。
 func (s *Store) DeletePlayer(ctx context.Context, playerID int64, ref pkgseat.SeatRef) error {
 	if !s.Ready() {
-		return module.ErrNoDB
+		return sqlstore.ErrNoDB
 	}
 	_, err := s.DB().ExecContext(ctx,
 		"DELETE FROM seat_player WHERE player_id = ? AND room_id = ? AND seat_index = ?",

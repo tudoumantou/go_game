@@ -22,19 +22,20 @@ import (
 
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // AccountRepo 账号仓储。
 // 依赖 *db.DB（database/sql 的薄封装）：所有方法第一个参数都是
 // ctx——DB 查询必须可取消，否则慢 SQL 会拖住请求 goroutine。
 type AccountRepo struct {
-	db *db.DB
+	*sqlstore.Base
 }
 
 // NewAccountRepo 创建仓储。
 // 依赖注入 *db.DB：单测传 sqlmock/内存库即可，不起真 MySQL。
 func NewAccountRepo(database *db.DB) *AccountRepo {
-	return &AccountRepo{db: database}
+	return &AccountRepo{Base: sqlstore.New(database, "account")}
 }
 
 // FindOrCreateByDevice 按设备找账号，没有则创建游客账号。
@@ -55,7 +56,7 @@ func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (
 	const q = `SELECT id, status FROM account WHERE device = ? ORDER BY id LIMIT 1`
 	var id int64
 	var status int32
-	err := r.db.QueryRowContext(ctx, q, device).Scan(&id, &status)
+	err := r.DB().QueryRowContext(ctx, q, device).Scan(&id, &status)
 	if err == nil {
 		return id, status, nil
 	}
@@ -82,7 +83,7 @@ func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (
 		// 无法表达「从未登录」，NullTime 的 Valid 标志可以
 		LastLoginAt: sql.NullTime{Time: time.Now(), Valid: true},
 	}
-	res, err := model.InsertAccount(ctx, r.db.DB, acc)
+	res, err := model.InsertAccount(ctx, r.SQL(), acc)
 	if err != nil {
 		return 0, 0, fmt.Errorf("insert account: %w", err)
 	}
@@ -98,7 +99,7 @@ func (r *AccountRepo) FindOrCreateByDevice(ctx context.Context, device string) (
 // 这是审计性质的数据，丢了不影响本次登录的正确性。
 func (r *AccountRepo) TouchLogin(ctx context.Context, accountID int64) error {
 	const q = `UPDATE account SET last_login_at = ? WHERE id = ?`
-	_, err := r.db.ExecContext(ctx, q, time.Now(), accountID)
+	_, err := r.DB().ExecContext(ctx, q, time.Now(), accountID)
 	return err
 }
 

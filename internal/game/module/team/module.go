@@ -36,7 +36,7 @@ import (
 // 决定能不能创建」「仓储错误怎么翻译成业务码」这些编排逻辑在模块层，
 // 需要能脱离 MySQL 验证。*Repo 隐式实现它，装配层不变。
 type teamRepo interface {
-	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 pkg/sqlstore）。
 	Ready() bool
 	FindByPlayer(ctx context.Context, playerID int64) (*Team, error)
 	Create(ctx context.Context, leaderID int64, copyID int32) (int64, error)

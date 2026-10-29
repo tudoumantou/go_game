@@ -31,7 +31,7 @@ import (
 )
 
 type mailRepo interface {
-	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 pkg/sqlstore）。
 	Ready() bool
 	UnreadCount(ctx context.Context, playerID int64) (int64, error)
 	Insert(ctx context.Context, m *model.Mail) (int64, error)

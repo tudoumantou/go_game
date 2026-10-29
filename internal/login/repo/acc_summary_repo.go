@@ -25,6 +25,7 @@ import (
 
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 const (
@@ -36,13 +37,13 @@ const (
 
 // AccSummaryRepo 账号摘要仓储。
 type AccSummaryRepo struct {
-	db  *db.DB
+	*sqlstore.Base
 	rdb redis.UniversalClient
 }
 
 // NewAccSummaryRepo 创建仓储。
 func NewAccSummaryRepo(database *db.DB, rdb redis.UniversalClient) *AccSummaryRepo {
-	return &AccSummaryRepo{db: database, rdb: rdb}
+	return &AccSummaryRepo{Base: sqlstore.New(database, "acc_summary"), rdb: rdb}
 }
 
 // shardAccSummary 计算分片下标（与 DDL 物理表命名一致，0..31）。
@@ -86,7 +87,7 @@ func (r *AccSummaryRepo) Get(ctx context.Context, accuid int64) (*model.AccSumma
 func (r *AccSummaryRepo) load(ctx context.Context, accuid int64) (*model.AccSummary, error) {
 	const q = `SELECT accuid, nickname, avatar, level, last_login_at, created_at, updated_at
 	           FROM %s WHERE accuid = ? LIMIT 1`
-	row := r.db.QueryRowContext(ctx, fmt.Sprintf(q, accSummaryTable(accuid)), accuid)
+	row := r.DB().QueryRowContext(ctx, fmt.Sprintf(q, accSummaryTable(accuid)), accuid)
 	var m model.AccSummary
 	err := row.Scan(&m.Accuid, &m.Nickname, &m.Avatar, &m.Level,
 		&m.LastLoginAt, &m.CreatedAt, &m.UpdatedAt)
@@ -109,7 +110,7 @@ func (r *AccSummaryRepo) Upsert(ctx context.Context, m *model.AccSummary) error 
 	           VALUES (?,?,?,?,?)
 	           ON DUPLICATE KEY UPDATE nickname = VALUES(nickname), avatar = VALUES(avatar),
 	                                 level = VALUES(level), last_login_at = VALUES(last_login_at)`
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf(q, accSummaryTable(m.Accuid)),
+	_, err := r.DB().ExecContext(ctx, fmt.Sprintf(q, accSummaryTable(m.Accuid)),
 		m.Accuid, m.Nickname, m.Avatar, m.Level, m.LastLoginAt)
 	if err != nil {
 		return fmt.Errorf("upsert acc_summary: %w", err)

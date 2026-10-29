@@ -24,6 +24,7 @@ import (
 
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 const (
@@ -35,13 +36,13 @@ const (
 
 // UserRoleRepo 角色索引仓储。
 type UserRoleRepo struct {
-	db  *db.DB
+	*sqlstore.Base
 	rdb redis.UniversalClient
 }
 
 // NewUserRoleRepo 创建仓储。
 func NewUserRoleRepo(database *db.DB, rdb redis.UniversalClient) *UserRoleRepo {
-	return &UserRoleRepo{db: database, rdb: rdb}
+	return &UserRoleRepo{Base: sqlstore.New(database, "user_role"), rdb: rdb}
 }
 
 // shardUserRole 计算分片下标（0..14，与 DDL 物理表命名一致）。
@@ -89,7 +90,7 @@ func (r *UserRoleRepo) ListByAccount(ctx context.Context, accountID int64) ([]*m
 func (r *UserRoleRepo) loadByAccount(ctx context.Context, accountID int64) ([]*model.UserRole, error) {
 	const q = `SELECT account_id, player_id, server_id, nickname, level, created_at, updated_at
 	           FROM %s WHERE account_id = ? ORDER BY player_id`
-	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(q, userRoleTable(accountID)), accountID)
+	rows, err := r.DB().QueryContext(ctx, fmt.Sprintf(q, userRoleTable(accountID)), accountID)
 	if err != nil {
 		return nil, fmt.Errorf("list user_role: %w", err)
 	}
@@ -117,7 +118,7 @@ func (r *UserRoleRepo) Upsert(ctx context.Context, m *model.UserRole) error {
 	           VALUES (?,?,?,?,?)
 	           ON DUPLICATE KEY UPDATE server_id = VALUES(server_id),
 	                                 nickname = VALUES(nickname), level = VALUES(level)`
-	_, err := r.db.ExecContext(ctx, fmt.Sprintf(q, userRoleTable(m.AccountId)),
+	_, err := r.DB().ExecContext(ctx, fmt.Sprintf(q, userRoleTable(m.AccountId)),
 		m.AccountId, m.PlayerId, m.ServerId, m.Nickname, m.Level)
 	if err != nil {
 		return fmt.Errorf("upsert user_role: %w", err)

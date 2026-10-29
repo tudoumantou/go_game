@@ -29,7 +29,7 @@ import (
 // 抽成接口只为一件事：让「频道校验」「三路投递」「方向还原」这些纯编排逻辑
 // 能在内存里测，不必为一条断言拉起 MySQL。*Repo 隐式实现它，装配层不变。
 type chatRepo interface {
-	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 module.Shared）。
+	// Ready 数据库是否可用；无 DB 环境时模块降级回包（见 pkg/sqlstore）。
 	Ready() bool
 	Insert(ctx context.Context, ownerID, peerID, msgID int64, direction int32, channel int32, content string) error
 	ListRecent(ctx context.Context, ownerID, peerID int64, limit int) ([]ChatLine, error)
