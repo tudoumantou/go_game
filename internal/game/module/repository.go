@@ -67,6 +67,11 @@ type Repository[T any] interface {
 	//
 	// 顺序是「先查键 → 执行 fn → 成功后才占键」：fn 失败时键不被占用，
 	// 重投的请求还能重试。反过来（先占键再执行）会把一次失败变成永久丢失。
+	//
+	// 当前还没有业务用到它（充值/跨服重投的幂等走的是 player 层）。保留是
+	// 因为它是 State.ClaimBiz 的唯一替代入口——ClaimBiz 自带落库链路
+	// （applied_grants 列），绕过它手写一遍就会漏掉「只发奖也要标脏」这一步，
+	// 而那正是键丢失、重投二次发奖的根因。
 	Once(key string, fn func(*T) (changed bool, err error)) error
 
 	// Touch 槽位已存在时标脏，保证内存改动随下一轮 flush 落库。
@@ -79,6 +84,10 @@ type Repository[T any] interface {
 	Touch() error
 
 	// Reset 清空状态：槽位删除并标脏，下次 View 回到 newFn 的空状态。
+	//
+	// 当前没有业务调用，保留是因为它是「清空某个模块进度」的唯一合法入口
+	// （重置活动、运维补偿脚本）。没有它，那类代码会去写 State.SetExt(name, nil)，
+	// 而 Ext 槽位是基座的实现细节——`convention_test.go` 也禁止模块直接碰它。
 	Reset() error
 }
 

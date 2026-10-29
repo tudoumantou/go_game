@@ -178,6 +178,8 @@ var stateCallRules = []stateCallRule{
 	{"State", "ClaimBiz", "幂等键只走 c.Repo.Once(key, fn)：手工占键容易漏标脏，「只发奖」的请求会丢键"},
 	{"State", "CanHold", "容量预检只走 module.Grant / module.PrecheckGrant：自己调容易漏掉 int32 溢出检查"},
 	{"State", "MarkDirty", "有 Ext 槽位的模块用 c.Repo.Touch()，它会跳过空槽位，不为没玩过的玩家写空状态"},
+	{"State", "Ext", "Ext 槽位是基座的实现细节：读用 c.Repo.View，写用 c.Repo.Mutate，清空用 c.Repo.Reset"},
+	{"State", "SetExt", "Ext 槽位是基座的实现细节：读用 c.Repo.View，写用 c.Repo.Mutate，清空用 c.Repo.Reset"},
 }
 
 // TestModulesUseRepository 守住「状态读写只有一个入口」。
