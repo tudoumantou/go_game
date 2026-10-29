@@ -118,9 +118,7 @@ func (b *Bound[D]) IsStateless(uint32) bool { return b.stateless }
 // 处理器走 Route/HandleRoute，那两个天然有 D。
 func (b *Bound[D]) addRoute(reqID uint32, spec routeSpec) {
 	b.Handle(reqID, func(ctx *Context, msgID uint32, body []byte) error {
-		if b.clock != nil && ctx.Clock == nil {
-			ctx.Clock = b.clock
-		}
+		b.applyClock(ctx)
 		return spec.h(ctx, msgID, body)
 	})
 	// 响应声明仍要登记：缓存不可用时的业务错误回包靠它。
@@ -177,6 +175,21 @@ func (b *Bound[D]) SetClock(fn func() time.Time) *Bound[D] {
 	return b
 }
 
+// applyClock 把模块时钟挂到本次调用上下文上（已有则不动）。
+//
+// 所有入口都要调：路由、登录、下线、事件。曾经只在 addRoute 里做，
+// 结果是「登录钩子里的 c.Now() 永远拿到系统时间」——依赖时钟的登录
+// 钩子模块（登录礼包的跨日判定）没法用注入时钟测试，只能自己再持一个
+// now 字段绕开框架。那不是模块的问题，是注入点漏了。
+//
+// ctx.Clock 已非空时不覆盖：一个 Context 可能被多个模块看到，
+// 先设的赢，避免后注册的模块悄悄改掉别人的时钟。
+func (b *Bound[D]) applyClock(ctx *Context) {
+	if b.clock != nil && ctx.Clock == nil {
+		ctx.Clock = b.clock
+	}
+}
+
 // HandleRoute 注册一条路由：协议号由消息类型反查，回什么由处理器决定。
 //
 // 与旧 HandleR 的区别：不预先绑定响应协议，因此不限制「一问一答」——
@@ -219,19 +232,28 @@ func Route[D any, R proto.Message](b *Bound[D], req R, h func(*Ctx[D], R) error)
 // 名字不带 On 前缀：OnLogin 已被 Module 接口占用（生命周期入口），
 // 这里是「注册钩子」而不是「实现接口方法」。
 func (b *Bound[D]) WithLogin(fn func(*Ctx[D]) error) *Bound[D] {
-	b.loginFn = func(ctx *Context) error { return fn(b.newCtx(ctx, 0)) }
+	b.loginFn = func(ctx *Context) error {
+		b.applyClock(ctx)
+		return fn(b.newCtx(ctx, 0))
+	}
 	return b
 }
 
 // WithLogout 设置玩家下线钩子。
 func (b *Bound[D]) WithLogout(fn func(*Ctx[D]) error) *Bound[D] {
-	b.logoutFn = func(ctx *Context) error { return fn(b.newCtx(ctx, 0)) }
+	b.logoutFn = func(ctx *Context) error {
+		b.applyClock(ctx)
+		return fn(b.newCtx(ctx, 0))
+	}
 	return b
 }
 
 // WithEvent 设置事件消费钩子（任务/活动这类进度模块用）。
 func (b *Bound[D]) WithEvent(fn func(*Ctx[D], Event)) *Bound[D] {
-	b.eventFn = func(ctx *Context, evt Event) { fn(b.newCtx(ctx, 0), evt) }
+	b.eventFn = func(ctx *Context, evt Event) {
+		b.applyClock(ctx)
+		fn(b.newCtx(ctx, 0), evt)
+	}
 	return b
 }
 

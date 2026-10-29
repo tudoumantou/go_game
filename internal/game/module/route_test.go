@@ -7,6 +7,7 @@ package module
 
 import (
 	"testing"
+	"time"
 
 	"game_study/pkg/codec"
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -126,6 +127,43 @@ func TestBoundMsgIDsIsCopy(t *testing.T) {
 	require.Len(t, ids, 1)
 	ids[0] = 0
 	require.Equal(t, codecUseItemReq(t), b.MsgIDs()[0])
+}
+
+// TestBoundClockReachesAllHooks 注入的时钟在路由之外的钩子里也生效。
+//
+// 曾经 SetClock 只在 addRoute 里挂 ctx.Clock，登录/下线/事件三个钩子拿到的
+// 还是系统时间。后果不是「少一个测试便利」——loginreward 为此在模块里自己
+// 又持了一个 now 字段绕开框架，长成了第五种模块形态。注入点漏一个是骨架
+// 分裂的起点，所以这条用例覆盖全部四个入口。
+func TestBoundClockReachesAllHooks(t *testing.T) {
+	fixed := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return fixed }
+
+	b := Define[boundData]("clock").
+		SetClock(clock).
+		WithLogin(func(c *Ctx[boundData]) error {
+			require.Equal(t, fixed, c.Now(), "登录钩子应看到注入时钟")
+			return nil
+		}).
+		WithLogout(func(c *Ctx[boundData]) error {
+			require.Equal(t, fixed, c.Now(), "下线钩子应看到注入时钟")
+			return nil
+		}).
+		WithEvent(func(c *Ctx[boundData], _ Event) {
+			require.Equal(t, fixed, c.Now(), "事件钩子应看到注入时钟")
+		})
+	b.HandleRoute(&gamev1.SigninInfoReq{}, func(c *Ctx[boundData]) error {
+		require.Equal(t, fixed, c.Now(), "路由应看到注入时钟")
+		return nil
+	})
+
+	// 四个入口各用一个新的 Context：真实运行时每条消息也是新 Context，
+	// 复用会让「ctx.Clock 非空则不覆盖」把后续注入吃掉。
+	newCtx := func() *Context { return &Context{State: &thinState{id: 1}, CacheEnabled: true} }
+	require.NoError(t, b.OnMessage(newCtx(), codecSigninInfoReq(t), nil))
+	require.NoError(t, b.OnLogin(newCtx()))
+	require.NoError(t, b.OnLogout(newCtx()))
+	b.OnEvent(newCtx(), Event{Type: "kill", Delta: 1})
 }
 
 // 协议号反查失败的 message 类型在测试里只出现一次，抽成小函数避免重复。

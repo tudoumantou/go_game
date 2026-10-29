@@ -317,7 +317,7 @@ func (s *Server) initModules() {
 		}
 		s.modules.Register(activity.M)
 		s.modules.Register(signin.M)
-		s.modules.Register(loginreward.New(s.logger))
+		s.modules.Register(loginreward.M.WithLogger(s.logger))
 		// 榜单查询代理到中心服；未配置中心服时模块回「暂不可用」而不是空榜。
 		s.modules.Register(rankmodule.New(rankQuerier{cli: s.centerCli}, s.logger))
 		// 好友：关系直写 MySQL 事务（双人状态不适合放单玩家快照），缓存只用于在线展示。
@@ -393,7 +393,6 @@ func (s *Server) initSeat() {
 	seatmod.SetRouter(s.seatMgr)
 	s.logger.Info("seat rooms initialized", "rooms", s.seatMgr.Count())
 }
-
 
 // startKafkaConsumers 启动充值/邮件/跨服私聊的消费组。
 func (s *Server) startKafkaConsumers(deduper pkgmq.Deduper) error {

@@ -1,8 +1,8 @@
 // persist.go —— Ext 槽位 ↔ player_login 行 的转换。
 //
-// 本模块没有客户端协议，走 Thin + 手工 RegisterFlat（gencodec 的 @flat
-// 生成只覆盖「单结构体整体落库」的场景，这里的 load/save 需要零值语义，
-// 手写更直接）。
+// 业务文件只关心 Data；「Data 怎么变成 player_login 表的一行」集中在这里。
+// 迁移前这里是手工 LoadExt/SaveExt + RegisterFlat（Ext 的 JSON 就是表行），
+// 现在与 quest/equip 一致：Ext 存 Data，落库时经 Codec 转成行。
 package loginreward
 
 import (
@@ -14,36 +14,35 @@ import (
 
 // init 注册持久化：player_login 主键为 (player_id)。
 func init() {
-	writebehind.RegisterFlat[model.PlayerLogin](stateKey, model.PlayerLoginFlat, validate)
+	writebehind.RegisterStateful(stateKey, model.PlayerLoginFlat,
+		writebehind.StateCodec[model.PlayerLogin, Data]{
+			ToRow:   toRow,
+			FromRow: fromRow,
+		},
+		validate,
+	)
+}
+
+// toRow 把业务结构转成表行；player_id 由落库层传入，Data 里不存冗余主键。
+func toRow(playerID int64, d *Data) (*model.PlayerLogin, error) {
+	return &model.PlayerLogin{
+		PlayerId: playerID,
+		LastDay:  d.LastDay,
+		Streak:   d.Streak,
+	}, nil
+}
+
+// fromRow 把表行还原成业务结构。
+func fromRow(row *model.PlayerLogin) (*Data, error) {
+	return &Data{LastDay: row.LastDay, Streak: row.Streak}, nil
 }
 
 // validate 落库前校验：天数与连续计数不能为负。
 //
 // 零值合法（未发放过），负数一定是数据损坏。
-func validate(row *model.PlayerLogin) error {
-	if row.LastDay < 0 || row.Streak < 0 {
-		return fmt.Errorf("invalid login state: day=%d streak=%d", row.LastDay, row.Streak)
+func validate(d *Data) error {
+	if d.LastDay < 0 || d.Streak < 0 {
+		return fmt.Errorf("invalid login state: day=%d streak=%d", d.LastDay, d.Streak)
 	}
 	return nil
-}
-
-// load 读取登录状态；从未登录过返回零值（LastDay=0 不等于任何自然日序号）。
-func load(state writebehind.ExtState) (*Data, error) {
-	row, err := writebehind.LoadExt[model.PlayerLogin](state, stateKey)
-	if err != nil {
-		return nil, err
-	}
-	if row == nil {
-		return &Data{}, nil
-	}
-	return &Data{LastDay: row.LastDay, Streak: row.Streak}, nil
-}
-
-// save 把发放事实写回 Ext 槽位；落库调度由 Write-Behind 负责。
-func save(state writebehind.ExtState, playerID int64, d *Data) error {
-	return writebehind.SaveExt(state, stateKey, &model.PlayerLogin{
-		PlayerId: playerID,
-		LastDay:  d.LastDay,
-		Streak:   d.Streak,
-	})
 }
