@@ -12,6 +12,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
+	"game_study/pkg/timeutil"
 
 	gamev1 "game_study/pkg/pb/game/v1"
 	"google.golang.org/protobuf/proto"
@@ -30,7 +31,7 @@ import (
 //
 // Grant 失败时一个道具都不会加，所以「状态没前进 = 奖励没发」始终成立。
 func onGrant(c *module.Ctx[Data]) error {
-	day := businessDay(c.Now())
+	day := timeutil.BusinessDay(c.Now())
 
 	var (
 		changes  []*gamev1.ItemChange // 背包变更，落库成功后下发

@@ -17,6 +17,7 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"game_study/pkg/timeutil"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 )
@@ -130,7 +131,7 @@ func TestNormalizeResetsAcrossDays(t *testing.T) {
 	if !dailyRefresh() {
 		t.Skip("当前配置不按日刷新")
 	}
-	today := businessDay(time.Now())
+	today := timeutil.BusinessDay(time.Now())
 	d := &Data{Day: today - 1, Bought: map[string]int32{"1:1": 5}}
 	require.True(t, normalize(d, today), "跨天应产生改动")
 	require.Empty(t, d.Bought, "旧周期次数必须清零")

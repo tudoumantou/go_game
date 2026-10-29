@@ -109,7 +109,7 @@ func TestFirstLoginGrants(t *testing.T) {
 	require.EqualValues(t, 100, st.GetItemCount(1001))
 	d := loadData(t, st)
 	require.EqualValues(t, 1, d.Streak, fmt.Sprintf("state: %+v", d))
-	require.EqualValues(t, businessDay(day(0)), d.LastDay)
+	require.EqualValues(t, timeutil.BusinessDay(day(0)), d.LastDay)
 }
 
 // TestConsecutiveStreak 连续第二天发第 2 档。
@@ -153,7 +153,7 @@ func TestBreakResetsStreak(t *testing.T) {
 func TestBeyondMaxTier(t *testing.T) {
 	st := newFakeState(1)
 	// 手工塞一个「昨天已领、连续 2 天」的状态，模拟已连续登录两天的玩家。
-	raw, err := json.Marshal(&Data{LastDay: businessDay(day(0)), Streak: 2})
+	raw, err := json.Marshal(&Data{LastDay: timeutil.BusinessDay(day(0)), Streak: 2})
 	require.NoError(t, err)
 	st.SetExt(stateKey, raw)
 

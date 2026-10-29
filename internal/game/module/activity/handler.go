@@ -23,6 +23,7 @@ import (
 	"game_study/pkg/gamedata"
 	pkgmq "game_study/pkg/mq"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"game_study/pkg/timeutil"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -148,8 +149,12 @@ func instanceIDFor(activityID int32, now int64) string {
 		_, _, period := activity.Window(int32(cfg.Col1), now)
 		return fmt.Sprintf("%d-%d", activityID, period)
 	}
-	// 无周期配置：按天兜底，保证实例 ID 单调不减
-	return fmt.Sprintf("%d-%d", activityID, now/86400)
+	// 无周期配置：按天兜底，保证实例 ID 单调不减。
+	//
+	// 必须用 BusinessDayUnix 而不是 now/86400：后者是 UTC 日界，
+	// 与商店限购/登录礼包的北京日界差 8 小时——同一玩家会在
+	// 「今天还能买」的同时看到「活动还是昨天那一轮」。
+	return fmt.Sprintf("%d-%d", activityID, timeutil.BusinessDayUnix(now))
 }
 
 // onList 活动列表（配置 + 进度 + 是否已领）。

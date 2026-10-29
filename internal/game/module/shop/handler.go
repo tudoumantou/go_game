@@ -25,6 +25,7 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
+	"game_study/pkg/timeutil"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -47,7 +48,7 @@ func onList(c *module.Ctx[Data]) error {
 	resp := &gamev1.ShopListResp{}
 	err := c.Repo.View(func(d *Data) error {
 		// 跨天归零只影响本次展示，不写回：下次读会重新算一遍，行为一致。
-		normalize(d, businessDay(time.Now()))
+		normalize(d, timeutil.BusinessDay(time.Now()))
 		for _, cfg := range gamedata.ShopGoodsCfgList() {
 			shopID := int32(cfg.Col1) // 商品归属的商店
 			if !shopExists(shopID) {
@@ -108,7 +109,7 @@ func onBuy(c *module.Ctx[Data], req *gamev1.ShopBuyReq) error {
 		// 先跨天归零再读已购次数：否则「昨天买满了今天买不了」。
 		// 归零本身不算改动——它只是把过期的计数清掉，真正的 changed 是
 		// 下面的 Bought 累加；失败路径不写回，下次读会按新的一天重算。
-		today := businessDay(time.Now())
+		today := timeutil.BusinessDay(time.Now())
 		normalize(d, today)
 		key := goodsKey(shopID, req.GoodsId)
 
@@ -195,9 +196,8 @@ func dailyRefresh() bool {
 	return gamedata.ShopRefreshCfgList()[0].Col2 == "daily"
 }
 
-// businessDay 北京时间自然日序号。
+// 跨天判定用 timeutil.BusinessDay：北京自然日序号，全服一份口径。
 //
-// 与 loginreward/signin 同一口径（UTC+8 固定偏移）：进程跑在
-// UTC 容器里也不能改变「今天」的归属，跨天清零才对得上玩家体感。
-
-func businessDay(now time.Time) int64 { return (now.Unix() + 8*60*60) / 86400 }
+// 原先这里有一份本地 businessDay，注释写着「与 loginreward/signin 同一口径」
+// ——靠注释维持的约定等于没有约定：活动模块那份漏了 +8 偏移，
+// 于是限购在北京 0 点重置、活动实例等到北京 8 点才换。

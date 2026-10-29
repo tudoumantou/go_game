@@ -358,3 +358,46 @@ func TestModulesDeclareWithDefine(t *testing.T) {
 	}
 	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
 }
+
+// TestModulesDoNotComputeDayIndex 禁止模块自己算「今天是第几天」。
+//
+// 指纹是 86400（一天的秒数）：它出现在业务代码里，就意味着这里有一份
+// 本地的日序号实现。v3.21 之前有三份——商店、登录礼包、活动，
+// 前两份是 (Unix+8h)/86400，活动那份漏了偏移、按 UTC 日界切，
+// 表现为「限购在北京 0 点重置，活动实例要等到北京 8 点才换」。
+//
+// 为什么用 AST 而不是文本匹配：解释这条规则的注释里就会写
+// 「不要用 now/86400」，文本匹配会把解释本身判成违规。
+func TestModulesDoNotComputeDayIndex(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	scanned := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		files, err := filepath.Glob(filepath.Join(e.Name(), "*.go"))
+		require.NoError(t, err)
+		for _, file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				continue
+			}
+			scanned++
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, file, nil, 0)
+			require.NoErrorf(t, err, "parse %s", file)
+			ast.Inspect(f, func(n ast.Node) bool {
+				lit, ok := n.(*ast.BasicLit)
+				if !ok || lit.Kind != token.INT || lit.Value != "86400" {
+					return true
+				}
+				t.Errorf("%s: 自己算了日序号（86400）—— 跨天判定一律用 "+
+					"timeutil.BusinessDay / BusinessDayUnix，否则北京日界与 UTC 日界会分叉",
+					fset.Position(lit.Pos()))
+				return true
+			})
+		}
+	}
+	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
+}
