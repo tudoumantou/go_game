@@ -18,10 +18,10 @@
 // 模块形态：module.Define[Data]（v3.17 迁移）。
 //
 // 迁移前是「嵌入 module.Thin + 自己持 now 字段 + 手工 LoadExt/SaveExt」的
-// 第五种形态：有 Ext 快照却不走 Repository，业务层看得见 writebehind。
+// 一种独立形态：有 Ext 快照却不走 Repository，业务层看得见 writebehind。
 // 当时绕开框架的直接诱因是 Bound.SetClock 只在路由路径生效，登录钩子里的
 // c.Now() 拿不到注入时钟——注入点漏了一个，模块就自己长出一套。
-// 修好 applyClock 之后本模块回到与其他 13 个模块一致的写法。
+// 修好 applyClock 之后本模块回到与其他模块一致的写法。
 //
 // 文件分工（docs/模块开发约定.md §2）：
 //

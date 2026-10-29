@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// onLogout 下线时通知场景移除实体（经 ThinLogout 挂接）。
+// onLogout 下线时通知场景移除实体（经 WithLogout 挂接）。
 //
 // 这是三条清理路径中的第一条（另两条：Actor 终止、心跳超时）。
 // 它可能失败——信箱满或场景 Actor 已停——所以场景侧必须有心跳兜底，
@@ -23,7 +23,7 @@ import (
 //
 // 恒返回 nil 是契约选择：OnLogout 的职责是「尽力通知」，不是「保证清理」；
 // 下线流程不能被一条离场通知卡住（返回 error 会中断登出链路）。
-func (m *Module) onLogout(ctx *module.Context) error {
+func (m *Module) onLogout(ctx *module.Ctx[module.NoState]) error {
 	// SceneID<=0：从未进过场景的玩家，无需通知任何 Actor
 	sceneID := ctx.State.Profile().SceneID
 	if sceneID <= 0 {

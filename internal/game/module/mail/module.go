@@ -56,8 +56,11 @@ const mailTable = "mail"
 //
 // 无内存态、无锁：邮件数据全在 MySQL，OnMessage 在玩家 Actor 内串行执行，
 // 跨玩家一致性由 DB 约束（唯一键）与快照业务键分工保证。
+//
+// 基座是 Define[NoState]：邮件本身没有 Ext 槽位；领取的幂等键寄生在
+// 玩家快照上（ApplyOnce），那是 Context 的能力，与 D 的选择无关。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 
 	// repo 仓储；nil 表示无 DB 环境（列表/领取降级，离线发放报错，见各方法）
 	repo   mailRepo
@@ -111,24 +114,23 @@ func (m *Module) AttachIndex(table string, oi *cache.OwnerIndex) {
 // New 创建邮件模块。
 func New(repo mailRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
-	m.Thin = module.NewThin("mail",
-		module.ThinLogger(logger),
-		module.ThinLogin(m.onLogin),
-		module.ThinLogout(m.onLogout),
-	)
-	module.Handle(m.Thin, m.onList)
-	module.Handle(m.Thin, m.onTake)
-	module.Handle(m.Thin, m.onDelete)
+	m.Bound = module.Define[module.NoState]("mail").
+		WithLogger(logger).
+		WithLogin(m.onLogin).
+		WithLogout(m.onLogout)
+	module.Handle(m.Bound, m.onList)
+	module.Handle(m.Bound, m.onTake)
+	module.Handle(m.Bound, m.onDelete)
 	return m
 }
 
-// onLogin 登录时拉一次未读数（经 ThinLogin 挂接）。
+// onLogin 登录时拉一次未读数（经 WithLogin 挂接）。
 //
 // 目前只记 Debug 日志（红点以客户端列表请求为准，这里是服务端留痕，
 // 供「玩家反馈没收到邮件」时对账）。
 // 查询失败直接上抛：OnLogin 失败会中断登录流程——DB 故障时拒绝放行
 // 好过放行后玩家发现奖励全丢。
-func (m *Module) onLogin(ctx *module.Context) error {
+func (m *Module) onLogin(ctx *module.Ctx[module.NoState]) error {
 	n, err := m.repo.UnreadCount(context.Background(), ctx.State.PlayerID())
 	if err != nil {
 		return err
@@ -139,11 +141,11 @@ func (m *Module) onLogin(ctx *module.Context) error {
 	return nil
 }
 
-// onLogout 下线时触发一次常规 flush 周期（经 ThinLogout 挂接）。
+// onLogout 下线时触发一次常规 flush 周期（经 WithLogout 挂接）。
 //
 // 邮件无 Ext 快照，MarkDirty 只是触发一次常规 flush 周期（与其他模块
 // 生命周期保持一致，无害）；真正的数据在 MySQL，发送时已直写。
-func (m *Module) onLogout(ctx *module.Context) error {
+func (m *Module) onLogout(ctx *module.Ctx[module.NoState]) error {
 	ctx.State.MarkDirty("mail")
 	return nil
 }

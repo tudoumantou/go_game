@@ -16,17 +16,23 @@
 //     （如签到按「今天已领」事实去重）。不满足的协议不要注册进 Thin，
 //     或由外层类型自行实现 DiscardableAware 覆盖嵌入方法。
 //   - Thin 不持有任何玩家状态：模块仍是「单例 + Context.State 外置」形态。
-//   - 需要 MySQL 直写事务的关系型模块（好友/公会/队伍）不建议用 Thin——
-//     它们的复杂度在事务而不在接口样板， Thin 省不下什么。
 //
-// 与 Define 的分工（两者是同一个内核的两层门面，不是两套体系）：
+// 定位：Thin 是基座内核，**业务模块不直接用它**，一律经 Define 声明
+// （D 取状态结构体 = 有 Ext 槽位；取 NoState = 没有）。判据不是「模块
+// 复不复杂」——好友/公会/队伍直写事务，照样是 Define[NoState]：
 //
-//	Define[D]  状态是「一个结构体」→ 自动管 Ext 编解码（Repo.Get/Save）
-//	Thin       状态不在 Ext（独立表 / 外部依赖注入）→ 只提供接口管线
+//	基座管的是「接口管线 + 生命周期 + 时钟注入」，
+//	需不需要 Ext 槽位只是 D 的选择，与事务复杂度无关。
+//
+// 直接 NewThin 只出现在本包的测试里（测的是 Thin 自身）。
+// convention_test.go 的 TestModulesDeclareWithDefine 守这条线。
+//
+// 与 Define 的分工（同一内核的两层门面，不是两套体系）：
+//
+//	Define[D]  唯一入口：D 决定要不要 Ext 槽位，链式装配日志/钩子/时钟
+//	Thin       内核：Module 七件套、协议分发、错误回包都在这里
 //
 // Define 内部就是 Stateful→Thin，所以 Thin 的能力它全有（含 module.Handle）。
-// 选择依据只有一个：**要不要 Repo**。要就用 Define，不要就用 Thin；
-// 纯只读代理则用 Define[NoState] + Stateless()。
 package module
 
 import (
@@ -61,17 +67,20 @@ type respSpec struct {
 	prototype proto.Message
 }
 
-// Thin 「薄模块」基座：Module + DiscardableAware + CacheFailureAware 的预装配实现。
+// Thin 模块基座内核：Module + DiscardableAware + CacheFailureAware 的预装配实现。
 //
-// 用法：
+// 用法（业务模块不这么写，这是 Define 内部做的事，测试里直接用它验证内核）：
 //
-//	m := &Module{}
-//	m.Thin = module.NewThin("chat",
+//	th := module.NewThin("demo",
 //		module.ThinLogger(logger),
-//		module.ThinLogin(m.onLogin),
+//		module.ThinLogin(onLogin),
 //	)
-//	module.Handle(m.Thin, m.onSend)      // 一问一答（协议号由类型反查）
-//	module.Handle(m.Thin, m.onHistory)
+//	module.Handle(th, onSend)      // 一问一答（协议号由类型反查）
+//
+// 业务侧的对应写法是 Define：
+//
+//	m.Bound = module.Define[module.NoState]("chat").WithLogger(logger).WithLogin(m.onLogin)
+//	module.Handle(m.Bound, m.onSend)
 //
 // 生命周期钩子都是可选的：不挂 Login/Logout 就是空实现，
 // 与手写 Module 时「用不到就 return nil」完全一致。注册入口见 route.go。

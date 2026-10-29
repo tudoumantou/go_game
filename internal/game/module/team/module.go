@@ -49,13 +49,10 @@ type teamRepo interface {
 //
 // 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
 // 串行执行；跨玩家的并发安全由数据库（唯一键 + FOR UPDATE）保证。
-
-// Module 组队模块。
 //
-// 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
-// 串行执行；跨玩家的并发安全由数据库（唯一键 + FOR UPDATE）保证。
+// 基座是 Define[NoState]：队伍没有玩家快照内的进度，D 取 NoState。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 
 	// repo 仓储；nil 表示无 DB 环境，入口降级为「直接成功/不在队」回包
 	repo   teamRepo
@@ -73,14 +70,13 @@ func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 // New 创建组队模块。
 func New(repo teamRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
-	m.Thin = module.NewThin("team",
-		module.ThinLogger(logger),
-		module.ThinLogout(m.onLogout),
-	)
-	module.Handle(m.Thin, m.onInfo)
-	module.Handle(m.Thin, m.onCreate)
-	module.Handle(m.Thin, m.onJoin)
-	module.Handle(m.Thin, m.onLeave)
+	m.Bound = module.Define[module.NoState]("team").
+		WithLogger(logger).
+		WithLogout(m.onLogout)
+	module.Handle(m.Bound, m.onInfo)
+	module.Handle(m.Bound, m.onCreate)
+	module.Handle(m.Bound, m.onJoin)
+	module.Handle(m.Bound, m.onLeave)
 	return m
 }
 
@@ -89,9 +85,9 @@ func New(repo teamRepo, logger *log.Logger) *Module {
 // 与公会的关键语义差异：公会掉线不退会（持久社交关系，防误退），
 // 队伍掉线退队（临时关系，防挂机占位坑队友）——同一生命周期钩子
 // 在不同模块承载相反的产品决策。
-// 注意：这是与 Thin 的日志器、守卫同处一个基座的钩子，Thin 只负责
+// 注意：这是与基座的日志器、守卫同处一个基座的钩子，基座只负责
 // 在 OnLogout 时调用它；错误被忽略——登出流程不能被 DB 抖动卡住。
-func (m *Module) onLogout(ctx *module.Context) error {
+func (m *Module) onLogout(ctx *module.Ctx[module.NoState]) error {
 	if !m.ready() {
 		return nil
 	}

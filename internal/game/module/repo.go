@@ -82,10 +82,22 @@ type Handler[D any] func(c *Ctx[D]) error
 // 房间数据都不属于模块私有进度，不需要 Ext 槽位，但它们的处理器仍然要
 // 拿 Context、要回包、要挂在同一个基座上。用 NoState 让它们与签到、任务
 // 共用 Define/Route 这套写法，而不是退回去再引入一套「无状态基座」。
+//
+// 现役 12 个模块用它（profile/attr/bag/item/rank/chat/friend/guild/team/
+// mail/battle/scene），覆盖三种本来形态各异的数据源：MySQL 直写事务、
+// Redis 权威、进程内存。差异在数据放在哪，不在基座——这正是「统一一套」
+// 的意思：换的是 D，不是换基座。
+//
+// 注意：NoState 只表达「没有 Ext 槽位」，不等于「不修改玩家状态」。像邮件
+// 领取那样在 NoState 模块里发道具、占幂等键是允许的（走 Context 的能力）。
+// 声明「整条协议不碰 State」是另一件事，见 Bound.Stateless。
 type NoState = struct{}
 
 // Bound 由 Define 产出的模块：内嵌 Stateful，Module 接口（Name/MsgIDs/分发/
 // 生命周期/可丢弃声明）仍由 Thin 预装配，业务只写 Handler。
+//
+// 这是业务模块唯一的基座入口：D 是状态结构体就自动管 Ext 编解码，
+// D 是 NoState 就只有接口管线。全仓 20 个模块共用它，注册处见 server_start.go。
 type Bound[D any] struct {
 	*Stateful[D]
 	clock func() time.Time

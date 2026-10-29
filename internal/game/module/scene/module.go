@@ -38,9 +38,10 @@ import (
 // 转发型模块：无自有可变状态（mgr 是进程级共享的场景管理器，只读引用），
 // OnMessage 在玩家 Actor 内串行执行，不需要锁。
 type Module struct {
-	// Thin 提供 Module 七件套与协议注册；本模块只在 OnLogout 有实际逻辑
-	// （下线时通知场景移除实体），其余生命周期无操作。
-	*module.Thin
+	// 基座是 Define[NoState]：位置与视野由场景 Actor 独占，本模块不持有
+	// 玩家快照内的状态，只做协议翻译与投递。生命周期里只有 OnLogout 有
+	// 实际逻辑（下线时通知场景移除实体），其余无操作。
+	*module.Bound[module.NoState]
 
 	// mgr 场景 Actor 管理器：按 scene_id 解析场景 Actor 的 PID
 	mgr    *scn.Manager
@@ -50,16 +51,15 @@ type Module struct {
 // New 创建场景模块。
 func New(mgr *scn.Manager, logger *log.Logger) *Module {
 	m := &Module{mgr: mgr, logger: logger}
-	m.Thin = module.NewThin("scene",
-		module.ThinLogger(logger),
-		module.ThinLogout(m.onLogout),
-	)
+	m.Bound = module.Define[module.NoState]("scene").
+		WithLogger(logger).
+		WithLogout(m.onLogout)
 	// 进入/移动不在这里回包：请求转给场景 Actor，结果由场景广播异步送达
 	// （MsgSceneEntityNotify / MsgSceneEnterResp）。没有请求-响应配对，
 	// 所以用 Handle；回包的两个协议用 HandleR。
 	m.Handle(codec.MsgSceneEnterReq, m.onEnter)
 	m.Handle(codec.MsgSceneMoveReq, m.onMove)
 	m.HandleR(codec.MsgSceneLeaveReq, codec.MsgSceneLeaveResp, &gamev1.SceneLeaveResp{}, m.onLeave)
-	module.Handle(m.Thin, m.onSync)
+	module.Handle(m.Bound, m.onSync)
 	return m
 }

@@ -39,13 +39,12 @@ type chatRepo interface {
 //
 // 无玩家态：所有状态在 MySQL（历史）与 Redis（在线/暂存），模块只做编排，
 // 因此 OnMessage 在玩家 Actor 内执行但不读写任何共享结构，无需加锁。
-
-// Module 聊天模块。
 //
-// 无玩家态：所有状态在 MySQL（历史）与 Redis（在线/暂存），模块只做编排，
-// 因此 OnMessage 在玩家 Actor 内执行但不读写任何共享结构，无需加锁。
+// 基座是 Define[NoState]：与签到/任务同一套（Bound），只是 D 取 NoState
+// ——没有 Ext 槽位可挂。保留 New 注入依赖是为了测试能各带一份假仓储，
+// 不把 repo/messenger 挂成包级变量。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 
 	// repo 历史仓储；nil 表示无 DB 环境（降级：只校验 + 投递，不留历史）
 	repo      chatRepo
@@ -81,12 +80,11 @@ func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
 		// 默认 1 条/秒、突发 3：连发三句还来得及，第四句开始挡。
 		chatLimiter: ratelimit.NewKeyed(1, 3, 10*time.Minute),
 	}
-	m.Thin = module.NewThin("chat",
-		module.ThinLogger(logger),
-		module.ThinLogout(m.onLogout),
-	)
-	module.Handle(m.Thin, m.onSend)
-	module.Handle(m.Thin, m.onHistory)
+	m.Bound = module.Define[module.NoState]("chat").
+		WithLogger(logger).
+		WithLogout(m.onLogout)
+	module.Handle(m.Bound, m.onSend)
+	module.Handle(m.Bound, m.onHistory)
 	return m
 }
 
@@ -95,7 +93,7 @@ func New(repo chatRepo, messenger Messenger, logger *log.Logger) *Module {
 // 聊天无 Ext 快照，这里 MarkDirty 只是让 Persister 走一次常规周期
 // （保持与其他模块的生命周期行为一致，无害）；真正要落的历史在 MySQL，
 // 发送时已直写，不依赖登出触发。
-func (m *Module) onLogout(ctx *module.Context) error {
+func (m *Module) onLogout(ctx *module.Ctx[module.NoState]) error {
 	ctx.State.MarkDirty("chat")
 	return nil
 }

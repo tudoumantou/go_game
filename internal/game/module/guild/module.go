@@ -44,13 +44,11 @@ type guildRepo interface {
 //
 // 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
 // 串行执行；跨玩家的并发安全由数据库（唯一键 + FOR UPDATE）保证。
-
-// Module 公会模块。
 //
-// 无内存态、无锁：全部状态走 MySQL 事务，OnMessage 在玩家 Actor 内
-// 串行执行；跨玩家的并发安全由数据库（唯一键 + FOR UPDATE）保证。
+// 基座是 Define[NoState]：公会没有玩家快照内的进度，D 取 NoState，
+// 与签到/任务共用一套接口管线，不再手写 OnSave/OnLogin/OnLogout。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 
 	// repo 仓储；nil 表示无 DB 环境，各入口降级为「直接成功」回包
 	repo   guildRepo
@@ -68,22 +66,13 @@ func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 // New 创建公会模块。
 func New(repo guildRepo, logger *log.Logger) *Module {
 	m := &Module{repo: repo, logger: logger}
-	m.Thin = module.NewThin("guild", module.ThinLogger(logger))
-	module.Handle(m.Thin, m.onInfo)
-	module.Handle(m.Thin, m.onCreate)
-	module.Handle(m.Thin, m.onJoin)
-	module.Handle(m.Thin, m.onQuit)
+	m.Bound = module.Define[module.NoState]("guild").WithLogger(logger)
+	module.Handle(m.Bound, m.onInfo)
+	module.Handle(m.Bound, m.onCreate)
+	module.Handle(m.Bound, m.onJoin)
+	module.Handle(m.Bound, m.onQuit)
 	return m
 }
-
-// OnSave 实现 module.Module。
-func (m *Module) OnSave(ctx context.Context) error { return nil }
-
-// OnLogin 实现 module.Module。
-func (m *Module) OnLogin(ctx *module.Context) error { return nil }
-
-// OnLogout 实现 module.Module。
-func (m *Module) OnLogout(ctx *module.Context) error { return nil }
 
 // onInfo 查询所在公会；IsLeader 由 LeaderID 与本人比较得出。
 //

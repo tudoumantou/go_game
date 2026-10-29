@@ -215,8 +215,10 @@ func TestModulesUseRepository(t *testing.T) {
 
 // moduleHasExtState 判断模块是否持有 Ext 状态：存在 Define[非 NoState] 即为是。
 //
-// 手写基座（chat/mail/friend/guild/team/scene）没有 Define，返回 false——
-// 它们的状态在独立表或玩家快照的固定字段里，确实没有 Repository 可挂。
+// 形态从源码推导而不是维护白名单：白名单漏写一条，MarkDirty 规则对该模块
+// 就静默失效了。Declare[NoState] 的模块（chat/mail/friend/guild/team/
+// battle/scene/profile/attr/bag/item/rank）返回 false——它们的状态在独立表、
+// Redis 或进程内存里，确实没有 Repository 可挂。
 func moduleHasExtState(files []string) bool {
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -294,4 +296,65 @@ func callRecvAndMethod(call *ast.CallExpr) (recv, method string) {
 		return "", ""
 	}
 	return owner.Sel.Name, sel.Sel.Name
+}
+
+// ── 基座形态的唯一性 ─────────────────────────────────────────────────
+//
+// 业务模块只有一个基座入口：Define。D 取状态结构体就是「有 Ext 槽位」，
+// 取 NoState 就是「没有」——两者是同一个 Bound，同一套接口管线。
+//
+// 为什么需要静态检查：NewThin 是基座**内核**，业务直接用它等于绕过
+// Define 的时钟注入、链式装配与 NoState 的类型表达，然后又多出一种
+// 「打开这个模块要学另一套写法」的形态。历史上正是这样长出过四种写法。
+//
+// 允许的例外只有基座自己的测试（thin_test.go / route_test.go，它们测的
+// 就是 Thin 本身），模块子目录里一律不许出现。
+func TestModulesDeclareWithDefine(t *testing.T) {
+	banned := map[string]string{
+		"NewThin":     "业务模块用 module.Define[D]（无 Ext 槽位就 D 取 module.NoState），不要直接 NewThin",
+		"ThinLogger":  "日志器走 Define(...).WithLogger(l)",
+		"ThinLogin":   "上线钩子走 Define(...).WithLogin(fn)",
+		"ThinLogout":  "下线钩子走 Define(...).WithLogout(fn)",
+		"ThinGuard":   "前置校验走 Define(...).Guard(fn)",
+		"ThinOnEvent": "事件钩子走 Define(...).WithEvent(fn)",
+	}
+
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	scanned := 0
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "moduletest" {
+			continue
+		}
+		files, err := filepath.Glob(filepath.Join(e.Name(), "*.go"))
+		require.NoError(t, err)
+		for _, file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				continue
+			}
+			scanned++
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, file, nil, 0)
+			require.NoErrorf(t, err, "parse %s", file)
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				hint, bad := banned[sel.Sel.Name]
+				if !bad {
+					return true
+				}
+				t.Errorf("%s: 直接用了 module.%s —— %s",
+					fset.Position(call.Pos()), sel.Sel.Name, hint)
+				return true
+			})
+		}
+	}
+	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
 }

@@ -19,7 +19,9 @@ import (
 )
 
 type Module struct {
-	*module.Thin
+	// 基座是 Define[NoState]：战斗没有 Ext 槽位（会话/队列是本模块的
+	// 自有内存态，随进程生死），但与签到/任务共用同一套接口管线。
+	*module.Bound[module.NoState]
 
 	cross  CrossCaller
 	center CenterMatcher
@@ -52,12 +54,12 @@ func New(cross CrossCaller, center CenterMatcher, pusher Pusher, logger *log.Log
 		queue:    make(map[string][]int64),
 		queued:   make(map[int64]bool),
 	}
-	m.Thin = module.NewThin("battle", module.ThinLogger(logger))
-	module.Handle(m.Thin, m.onMatch)
+	m.Bound = module.Define[module.NoState]("battle").WithLogger(logger)
+	module.Handle(m.Bound, m.onMatch)
 	// 战报是单向上报：客户端不等回包，服务端也没有响应协议可回。
 	// 用 Handle 而不是 HandleR（后者要求声明响应）。
 	m.Handle(codec.MsgBattleOpReport, m.onOpReport)
-	module.Handle(m.Thin, m.onResultReport)
+	module.Handle(m.Bound, m.onResultReport)
 	return m
 }
 

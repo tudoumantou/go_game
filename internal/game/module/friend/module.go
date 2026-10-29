@@ -32,15 +32,13 @@ type onlineChecker interface {
 
 // Module 好友模块。
 //
-// 嵌入 Thin：接口七件套与错误回包由基座提供；四个处理器经 module.Typed
-// 拿到解包后的请求与待填的响应，不再手写 Unmarshal / reply。
-
-// Module 好友模块。
+// 嵌入 Bound[NoState]：接口七件套与错误回包由基座提供；六个处理器经
+// module.Handle 拿到解包后的请求与待填的响应，不再手写 Unmarshal / reply。
 //
-// 嵌入 Thin：接口七件套与错误回包由基座提供；四个处理器经 module.Typed
-// 拿到解包后的请求与待填的响应，不再手写 Unmarshal / reply。
+// 关系型模块也用 Define：D 取 NoState 即可——基座管的是「接口管线 +
+// 生命周期」，需不需要 Ext 槽位只是 D 的选择，不影响能不能直写事务。
 type Module struct {
-	*module.Thin
+	*module.Bound[module.NoState]
 
 	repo   *Repo
 	online onlineChecker
@@ -58,13 +56,13 @@ func (m *Module) ready() bool { return m.repo != nil && m.repo.Ready() }
 // New 创建模块；online 可为 nil（列表全部显示离线）。
 func New(database *db.DB, online onlineChecker, logger *log.Logger) *Module {
 	m := &Module{repo: NewRepo(database), online: online, logger: logger}
-	m.Thin = module.NewThin("friend", module.ThinLogger(logger))
-	module.Handle(m.Thin, m.onList)
-	module.Handle(m.Thin, m.onApply)
-	module.Handle(m.Thin, m.onHandle)
-	module.Handle(m.Thin, m.onDelete)
-	module.Handle(m.Thin, m.onBlock)
-	module.Handle(m.Thin, m.onUnblock)
+	m.Bound = module.Define[module.NoState]("friend").WithLogger(logger)
+	module.Handle(m.Bound, m.onList)
+	module.Handle(m.Bound, m.onApply)
+	module.Handle(m.Bound, m.onHandle)
+	module.Handle(m.Bound, m.onDelete)
+	module.Handle(m.Bound, m.onBlock)
+	module.Handle(m.Bound, m.onUnblock)
 	return m
 }
 
