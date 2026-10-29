@@ -29,6 +29,7 @@ import (
 	internalv2 "game_study/pkg/pb/internalv2"
 	"game_study/pkg/periodic"
 	"game_study/pkg/sqlstore"
+	"game_study/pkg/timeutil"
 )
 
 // rankEntry 归档回调的条目类型（rank.Service 用内部协议结构）。
@@ -370,10 +371,20 @@ func (s *Service) flushStats(ctx context.Context) error {
 
 // windowRange 把「现在」对齐到统计窗口：1m/5m/1h 对齐到整分/整 5 分/整点，1d 对齐到当天零点。
 //
-// 1m/5m/1h 用 time.Truncate（按 Unix 零点截断，不受时区影响）；1d 必须
-// 特殊处理——Truncate(24h) 在跨夏令时的时区会切出偏移的「零点」，
-// 用 Date() 取本地零点更稳。default 兜 1m：未知窗口宁可按最小粒度对齐，
-// 也不产出错位的 window_start（错位的起点会让 UPSERT 覆盖写串行）。
+// 1m/5m/1h 用 time.Truncate（按 Unix 零点截断，不受时区影响），这些是纯时长桶，
+// 与时区无关。
+//
+// 1d 必须落在**业务时区**（timeutil.BusinessZone）的零点上，不能取进程本地零点：
+// 容器默认 UTC 时 now.Location() 是 UTC，桶会从北京时间 08:00 开始，与玩法侧
+// timeutil.BusinessDay 的日界差 8 小时——运维在北京看「今日统计」，会看到日
+// 曲线在早上 8 点才换桶，而玩家的每日任务在 0 点就重置了。
+//
+// time.Date(...) + 固定时区而不是 Truncate(24h)：后者按 Unix 零点切，在 UTC 下
+// 切出来的是 UTC 零点（同上问题）；固定时区又不受宿主 tzdata 与夏令时影响
+// （北京无夏令时，+8 是常量）。
+//
+// default 兜 1m：未知窗口宁可按最小粒度对齐，也不产出错位的 window_start
+// （错位的起点会让 UPSERT 覆盖写串行）。
 func windowRange(now time.Time, window string) (time.Time, time.Time) {
 	switch window {
 	case stats.Window1m:
@@ -386,8 +397,9 @@ func windowRange(now time.Time, window string) (time.Time, time.Time) {
 		start := now.Truncate(time.Hour)
 		return start, start.Add(time.Hour)
 	case stats.Window1d:
-		y, m, d := now.Date()
-		start := time.Date(y, m, d, 0, 0, 0, 0, now.Location())
+		in := now.In(timeutil.BusinessZone)
+		y, m, d := in.Date()
+		start := time.Date(y, m, d, 0, 0, 0, 0, timeutil.BusinessZone)
 		return start, start.Add(24 * time.Hour)
 	default:
 		start := now.Truncate(time.Minute)

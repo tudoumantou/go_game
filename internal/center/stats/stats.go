@@ -302,7 +302,7 @@ func (s *Service) Snapshot(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		redisKey := fmt.Sprintf("stats:%s:%s", gid, feat)
+		redisKey := statsKey(gid, feat)
 
 		e.se.mu.Lock()
 		vals := make(map[string]int64, len(windowSpec))
@@ -352,6 +352,17 @@ func (s *Service) Features() []string {
 	return out
 }
 
+// statsKey Redis 聚合哈希的键：stats:{group}:{feature}。
+//
+// 单独成函数不是为了少几个字符：这个 key 在本文件出现三处（读窗口、合并、
+// 数实例），而 splitKey 只解析「实例标识」不碰它。三处各拼一遍时，任何一处
+// 改了分隔符或字段顺序，另外两处不会报错——只会在 GM 面板上表现为「合并
+// 读到 0 条」或「实例数恒为 0」。反向解析不存在（没有 splitStatsKey），
+// 所以这里就是唯一权威。
+func statsKey(groupID, feature string) string {
+	return fmt.Sprintf("stats:%s:%s", groupID, feature)
+}
+
 func splitKey(k string) (groupID, feature string, ok bool) {
 	// 按第一个 '|' 切分：group 或 feature 里含 '|' 时归属于前段，
 	// 约定 group/feature 命名不带 '|'，切分无歧义
@@ -380,7 +391,7 @@ func (s *Service) instanceOf() string {
 // HGetAll 一次取回全部实例的 field：合并是读多写少路径（归档时一次），
 // 一次往返优于逐 field HGet。
 func (s *Service) MergedMetrics(ctx context.Context, groupID, feature string) map[string]int64 {
-	key := fmt.Sprintf("stats:%s:%s", groupID, feature)
+	key := statsKey(groupID, feature)
 	fields, err := s.rdb.HGetAll(ctx, key).Result()
 	if err != nil || len(fields) == 0 {
 		return nil
@@ -405,7 +416,7 @@ func (s *Service) MergedMetrics(ctx context.Context, groupID, feature string) ma
 // 是「合并到底合了几个」的唯一直接证据。Redis 出错返回 0——
 // 诊断接口，调用方（GM）看到 0 会去查 Redis，不会误判成「没数据」。
 func (s *Service) InstanceCount(ctx context.Context, groupID, feature string) int64 {
-	n, err := s.rdb.HLen(ctx, fmt.Sprintf("stats:%s:%s", groupID, feature)).Result()
+	n, err := s.rdb.HLen(ctx, statsKey(groupID, feature)).Result()
 	if err != nil {
 		return 0
 	}

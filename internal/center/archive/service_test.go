@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"game_study/internal/center/stats"
+	"game_study/pkg/timeutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -51,4 +52,23 @@ func TestStableID(t *testing.T) {
 	require.EqualValues(t, b, a, "stable id must be deterministic")
 	require.NotEqualValues(t, c, a, "different players must get different mail ids")
 	require.False(t, a <= 0, "mail id must be positive")
+}
+
+// TestWindowRangeDailyUsesBusinessZone 1d 桶必须落在业务时区零点。
+//
+// 此前用 now.Date() + now.Location()：容器默认 UTC 时切出的是 UTC 零点，
+// 与玩法侧 timeutil.BusinessDay（北京日界）差 8 小时——运维在北京看「今日
+// 统计」会发现日曲线到早上 8 点才换桶，而玩家的每日任务 0 点就重置了。
+//
+// 用「UTC 17:00」这个时刻是因为它正好骑在日界上：北京已是次日 01:00，
+// UTC 还是当日 17:00。按本地时区算会得到昨天的桶，按业务时区算才是今天。
+func TestWindowRangeDailyUsesBusinessZone(t *testing.T) {
+	now := time.Date(2025, 12, 31, 17, 0, 0, 0, time.UTC) // 北京 2026-01-01 01:00
+
+	start, end := windowRange(now, stats.Window1d)
+	want := time.Date(2026, 1, 1, 0, 0, 0, 0, timeutil.BusinessZone)
+
+	require.True(t, want.Equal(start), "1d 起点应是北京零点，实际 %v（UTC %v）", start, start.UTC())
+	require.Equal(t, 24*time.Hour, end.Sub(start))
+	require.EqualValues(t, 0, start.In(timeutil.BusinessZone).Hour())
 }
