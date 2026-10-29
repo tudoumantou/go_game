@@ -81,7 +81,7 @@ func newRig(t *testing.T, authed bool) *rig {
 
 // send 按连接的加密状态发一个包：有 cipher 走密文（内层 msgID 与外层一致），
 // 没有则走明文。
-func (r *rig) send(t *testing.T, msgID uint16) {
+func (r *rig) send(t *testing.T, msgID uint32) {
 	t.Helper()
 	body := []byte{}
 	if r.clientCipher != nil {
@@ -97,7 +97,7 @@ func (r *rig) send(t *testing.T, msgID uint16) {
 // 威胁模型是「客户端伪造内部 gRPC 号」：注册表恰好没注册它们，
 // 所以会走「透传业务包」分支——显式检查把这条路径封死。
 func TestRejectsInternalMsgID(t *testing.T) {
-	for _, msgID := range []uint16{9000, 9001, 9999} {
+	for _, msgID := range []uint32{9000, 9001, 9999} {
 		r := newRig(t, true)
 		r.send(t, msgID)
 		require.True(t, r.c.IsClosed(), "内部号 %d 必须被拒绝并断连", msgID)
@@ -111,7 +111,7 @@ func TestRejectsInternalMsgID(t *testing.T) {
 // 这里刻意不含 1（心跳）：心跳是本地处理的消息，会真的回包；而测试里的连接
 // 没跑 Serve 写循环，回包会阻塞到超时——那是 send 路径的事，与号段隔离无关。
 func TestAllowsClientMsgID(t *testing.T) {
-	for _, msgID := range []uint16{1002, 2001, 3001, 7001, 8999} {
+	for _, msgID := range []uint32{1002, 2001, 3001, 7001, 8999} {
 		r := newRig(t, true)
 		r.send(t, msgID)
 		require.False(t, r.c.IsClosed(), "客户端号 %d 不该被拒", msgID)
@@ -125,7 +125,7 @@ func TestAllowsClientMsgID(t *testing.T) {
 // 这是既有的 pre-auth 闸门，在解密之前就用外层 MsgID 判定；
 // 与号段隔离是两道独立防线，所以未鉴权时先被它挡掉。
 func TestUnauthedRejectsBusinessMsg(t *testing.T) {
-	for _, msgID := range []uint16{2001, 3001, 9001} {
+	for _, msgID := range []uint32{2001, 3001, 9001} {
 		r := newRig(t, false)
 		r.send(t, msgID)
 		require.True(t, r.c.IsClosed(), "未鉴权连接的业务包 %d 必须断连", msgID)
@@ -134,7 +134,7 @@ func TestUnauthedRejectsBusinessMsg(t *testing.T) {
 
 // TestAllowsPreAuthMsg 未鉴权时心跳/握手要放行，否则连登录都进不来。
 func TestAllowsPreAuthMsg(t *testing.T) {
-	for _, msgID := range []uint16{constant.MsgIDHeartbeatReq, constant.MsgIDHandshakeReq} {
+	for _, msgID := range []uint32{constant.MsgIDHeartbeatReq, constant.MsgIDHandshakeReq} {
 		r := newRig(t, false)
 		require.NotPanics(t, func() { r.send(t, msgID) }, "pre-auth 消息 %d 不能 panic", msgID)
 		require.False(t, r.c.IsClosed(), "pre-auth 消息 %d 不该断连", msgID)
@@ -255,7 +255,7 @@ func TestLogoutBeforeAuthRejected(t *testing.T) {
 }
 
 // encryptedPacket 用客户端 cipher 构造一个加密包（内外 msgID 一致）。
-func encryptedPacket(t *testing.T, c *crypto.SessionCipher, msgID uint16) codec.Packet {
+func encryptedPacket(t *testing.T, c *crypto.SessionCipher, msgID uint32) codec.Packet {
 	t.Helper()
 	ct, _, err := c.Encrypt(msgID, nil)
 	require.NoError(t, err)

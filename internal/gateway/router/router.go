@@ -173,7 +173,7 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 	}
 
 	var plaintext []byte
-	var msgID uint16
+	var msgID uint32
 	var err error
 
 	if sess.IsAuthed() || sess.Cipher() != nil {
@@ -204,7 +204,7 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 	// 注册表恰好没注册这些号（所以下面会走透传分支），但那是「碰巧」
 	// 而非契约：靠注册表兜底时，将来谁把一个内部号注册进客户端表，
 	// 客户端就能直接触发它。这里显式挡一次，把协议隔离写成代码。
-	if !constant.IsClientMsgID(uint32(msgID)) {
+	if !constant.IsClientMsgID(msgID) {
 		h.logger.Warn("reject internal msg id from client", "conn_id", c.ID(), "msg_id", msgID)
 		_ = c.Close(fmt.Errorf("internal msg id %d not allowed", msgID))
 		return
@@ -217,7 +217,7 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 			h.logger.Warn("no forwarder for business msg", "msg_id", msgID)
 			return
 		}
-		if err := h.forward(sess, uint32(msgID), plaintext); err != nil {
+		if err := h.forward(sess, msgID, plaintext); err != nil {
 			h.logger.Warn("forward failed", "msg_id", msgID, "err", err)
 		}
 		return
@@ -242,7 +242,7 @@ func (h *Handler) OnPacket(c *conn.Conn, p codec.Packet) {
 // 两个消息都发生在 token 鉴权之前，是全流程唯一的明文协议阶段
 // （15 章握手）：ClientKeyExchange 里客户端用网关 RSA 公钥加密
 // pre-master，网关私钥解密后双方派生同一把 AES-GCM 会话密钥。
-func (h *Handler) handleCryptoHandshake(c *conn.Conn, sess *session.Session, msgID uint16, body []byte) error {
+func (h *Handler) handleCryptoHandshake(c *conn.Conn, sess *session.Session, msgID uint32, body []byte) error {
 	// 握手状态机随会话走：ServerHello 时由 server.onAccept 注入
 	hs := sess.HandshakeServer()
 	if hs == nil {
@@ -316,7 +316,7 @@ func (h *Handler) OnClose(c *conn.Conn, err error) {
 // isPreAuthMsg 鉴权前放行的系统消息白名单。
 // 覆盖握手全链路：ServerHello → ClientKeyExchange → Finished →
 // HandshakeReq/Resp（token 鉴权）；心跳随时可用来保活。
-func isPreAuthMsg(msgID uint16) bool {
+func isPreAuthMsg(msgID uint32) bool {
 	return msgID == constant.MsgIDHeartbeatReq || msgID == constant.MsgIDServerHello ||
 		msgID == constant.MsgIDClientKeyExchange || msgID == constant.MsgIDFinished ||
 		msgID == constant.MsgIDHandshakeReq || msgID == constant.MsgIDHandshakeResp

@@ -129,8 +129,28 @@ func TestSessionCipherRoundTripAndReplay(t *testing.T) {
 	copy(bad, ct1)
 	// 这里无法直接改密文里的 seq，但可测 seq 单调递增
 	for i := 0; i < 3; i++ {
-		_, seq, err := s.Encrypt(uint16(1001+i), plain)
+		_, seq, err := s.Encrypt(1001+uint32(i), plain)
 		require.NoError(t, err)
 		require.EqualValues(t, uint32(i+2), seq)
 	}
+}
+
+// TestEncryptRejectsMsgIDOverWire 内层头也只有 2 字节给 msgID。
+//
+// 与 pkg/codec 的外层检查是同一个协议事实：超界时报错而不是截断，
+// 否则内外层 msgID 会对不上（外层报错、内层已截断），排查时看到的是
+// 两个不相干的数字。
+func TestEncryptRejectsMsgIDOverWire(t *testing.T) {
+	s, err := NewSessionCipher(bytes.Repeat([]byte{7}, 32))
+	require.NoError(t, err)
+
+	if _, _, err := s.Encrypt(maxWireMsgID+1, []byte("x")); err == nil {
+		t.Fatal("Encrypt 接受了超出 wire 范围的 msgID")
+	}
+	// 边界值要能过，且能原样解回来。
+	ct, _, err := s.Encrypt(maxWireMsgID, []byte("x"))
+	require.NoError(t, err)
+	id, _, _, err := s.Decrypt(ct)
+	require.NoError(t, err)
+	require.EqualValues(t, maxWireMsgID, id)
 }

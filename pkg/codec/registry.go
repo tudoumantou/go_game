@@ -30,7 +30,7 @@ type Handler func(ctx context.Context, msg proto.Message) error
 // 一张表只应对应一个 handler（一号一义），重复注册会 panic。
 type HandlerRegistry struct {
 	// handlers MsgID 到处理函数的映射；启动期写满后只读。
-	handlers map[uint16]Handler
+	handlers map[uint32]Handler
 }
 
 // NewHandlerRegistry 创建处理器注册表。
@@ -38,7 +38,7 @@ type HandlerRegistry struct {
 // 返回空表；注册点通常在各业务模块的 init（或显式 Setup 函数）中，
 // 保证进程开始 accept 连接前表已完备。
 func NewHandlerRegistry() *HandlerRegistry {
-	return &HandlerRegistry{handlers: make(map[uint16]Handler)}
+	return &HandlerRegistry{handlers: make(map[uint32]Handler)}
 }
 
 // Register 注册处理器。
@@ -49,7 +49,7 @@ func NewHandlerRegistry() *HandlerRegistry {
 // Go 细节：panic 信息带上 msgID，运维可从崩溃日志直接定位冲突双方；
 // 与 MessageRegistry.Register 的 panic 语义一致（fail-fast 三件套的
 // 第三处，前两处是消息工厂与 writebehind 注册表）。
-func (r *HandlerRegistry) Register(msgID uint16, h Handler) {
+func (r *HandlerRegistry) Register(msgID uint32, h Handler) {
 	if _, ok := r.handlers[msgID]; ok {
 		panic(fmt.Sprintf("handler for msgID %d already registered", msgID))
 	}
@@ -66,7 +66,7 @@ func (r *HandlerRegistry) Register(msgID uint16, h Handler) {
 //
 // Go 细节：同步调用（而非 go h(...)）保证单连接内消息顺序处理，
 // 也天然形成背压——慢 handler 拖慢后续消息，而不是无限堆积 goroutine。
-func (r *HandlerRegistry) Handle(ctx context.Context, msgID uint16, msg proto.Message) error {
+func (r *HandlerRegistry) Handle(ctx context.Context, msgID uint32, msg proto.Message) error {
 	h, ok := r.handlers[msgID]
 	if !ok {
 		return fmt.Errorf("handler for msgID %d not found", msgID)
@@ -78,7 +78,7 @@ func (r *HandlerRegistry) Handle(ctx context.Context, msgID uint16, msg proto.Me
 //
 // 供启动期自检（协议号有工厂但无 handler = 消息能解没人处理）与
 // 运行期路由决策；只读、可并发。
-func (r *HandlerRegistry) Has(msgID uint16) bool {
+func (r *HandlerRegistry) Has(msgID uint32) bool {
 	_, ok := r.handlers[msgID]
 	return ok
 }

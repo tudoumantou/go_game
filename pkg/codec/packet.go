@@ -27,6 +27,12 @@ const (
 	// 的 MaxPacketSize（64KB）对齐；超限的包应在业务层分帧，而不是硬发——
 	// 长度超限若静默截断，会变成另一个「合法」长度，是协议层最难排查的故障。
 	LengthFieldSize = 2
+	// maxWireMsgID wire 上 msg_id 能表示的最大值（2 字节）。
+	//
+	// 比 MaxPacketSize 更硬的上限：分段号段上限 9999 已经够用，这里的
+	// 65535 是传输格式的天花板——把内部类型放宽到 uint32 不代表线上的包
+	// 也跟着变宽，包格式是已下发的客户端契约。
+	maxWireMsgID = 0xFFFF
 )
 
 // Packet 解码后的逻辑包（body 为 AES-GCM 加密后的二进制，需 SessionCipher 解密）。
@@ -45,8 +51,12 @@ const (
 // 取舍），调用方复用读缓冲时必须自行拷贝，否则后一个包会覆盖前一个包的 Body。
 // 结构体按值传递时只拷贝三个字加切片头，成本可忽略。
 type Packet struct {
-	// MsgID 消息号；uint16 与 LengthFieldSize 同宽，协议层按定长解析。
-	MsgID uint16
+	// MsgID 消息号。
+	//
+	// 类型是 uint32（与协议表、模块注册表、路由表同宽），wire 上仍写 2 字节：
+	// 窄化只发生在 EncodePacket 一处，超范围直接报错而不是截断——截断会把
+	// 3001 变成 3001-65536 这样的另一个「合法」号，收端解成完全不相干的协议。
+	MsgID uint32
 	// Seq 发送序号；接收端防重放检测的输入。
 	Seq uint32
 	// Body 加密体；注意切片别名语义（见结构体注释），非拷贝。
@@ -70,12 +80,17 @@ func EncodePacket(p Packet) ([]byte, error) {
 	if len(p.Body) > constant.MaxPacketSize-HeaderSize-LengthFieldSize {
 		return nil, fmt.Errorf("body too large: %d", len(p.Body))
 	}
+	// 唯一的窄化点：内部 uint32 → wire 2 字节。超范围必须报错，不能截断
+	// （见 Packet.MsgID 的说明）。
+	if p.MsgID > maxWireMsgID {
+		return nil, fmt.Errorf("msg id %d exceeds wire limit %d", p.MsgID, maxWireMsgID)
+	}
 	length := HeaderSize + len(p.Body)
 	// 总长 = Length 字段自身（LengthFieldSize）+ header + body；
 	// Length 字段里记录的只是后两部分，与接收端 ReadLength 的约定对齐
 	buf := make([]byte, LengthFieldSize+length)
 	binary.BigEndian.PutUint16(buf[0:], uint16(length))
-	binary.BigEndian.PutUint16(buf[LengthFieldSize:], p.MsgID)
+	binary.BigEndian.PutUint16(buf[LengthFieldSize:], uint16(p.MsgID))
 	binary.BigEndian.PutUint32(buf[LengthFieldSize+2:], p.Seq)
 	copy(buf[LengthFieldSize+HeaderSize:], p.Body)
 	return buf, nil
@@ -98,7 +113,7 @@ func DecodePacket(data []byte) (Packet, error) {
 		return Packet{}, fmt.Errorf("packet too short: %d", len(data))
 	}
 	return Packet{
-		MsgID: binary.BigEndian.Uint16(data[0:]),
+		MsgID: uint32(binary.BigEndian.Uint16(data[0:])),
 		Seq:   binary.BigEndian.Uint32(data[2:]),
 		Body:  data[HeaderSize:],
 	}, nil

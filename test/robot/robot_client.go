@@ -250,11 +250,11 @@ func (c *Client) call(msgID uint32, req proto.Message, respID uint32, resp proto
 	if err != nil {
 		return err
 	}
-	enc, seq, err := c.cipher.Encrypt(uint16(msgID), body)
+	enc, seq, err := c.cipher.Encrypt(msgID, body)
 	if err != nil {
 		return err
 	}
-	if err := c.writePacket(codec.Packet{MsgID: uint16(msgID), Seq: seq, Body: enc}); err != nil {
+	if err := c.writePacket(codec.Packet{MsgID: msgID, Seq: seq, Body: enc}); err != nil {
 		return err
 	}
 
@@ -263,7 +263,7 @@ func (c *Client) call(msgID uint32, req proto.Message, respID uint32, resp proto
 		if err != nil {
 			return fmt.Errorf("wait resp %d: %w", respID, err)
 		}
-		if uint32(pkt.MsgID) != respID {
+		if pkt.MsgID != respID {
 			// 推送/其它消息：缓存起来给后续 Wait* 用，不能丢
 			c.pendingPush = append(c.pendingPush, pkt)
 			continue
@@ -541,7 +541,7 @@ func (c *Client) nextPush(msgID uint32, timeout time.Duration) (codec.Packet, bo
 		if err != nil {
 			return codec.Packet{}, false, err
 		}
-		if uint32(pkt.MsgID) == msgID {
+		if pkt.MsgID == msgID {
 			return pkt, true, nil
 		}
 		c.pendingPush = append(c.pendingPush, pkt)

@@ -34,7 +34,7 @@ type MessageFactory func() proto.Message
 // 本类型因此把写全部收敛到启动期，用「约定」换掉运行期的锁开销。
 type MessageRegistry struct {
 	// factories MsgID 到工厂的映射；启动期写满后不再变动（只读）。
-	factories map[uint16]MessageFactory
+	factories map[uint32]MessageFactory
 }
 
 // NewMessageRegistry 创建注册表。
@@ -45,7 +45,7 @@ type MessageRegistry struct {
 // Go 细节：make 在堆上分配并初始化空 map；未初始化的 nil map 能读不能写
 // （写入直接 panic），所以构造函数里必须 make。
 func NewMessageRegistry() *MessageRegistry {
-	return &MessageRegistry{factories: make(map[uint16]MessageFactory)}
+	return &MessageRegistry{factories: make(map[uint32]MessageFactory)}
 }
 
 // Register 注册一个消息工厂。
@@ -58,7 +58,7 @@ func NewMessageRegistry() *MessageRegistry {
 // Go 细节：panic 用于「绝不该发生的编程错误」，与返回 error 的业务失败
 // 区分；启动期 panic 会被进程守护拉起重试，故障在部署阶段即暴露，
 // 而不是带病上线。
-func (r *MessageRegistry) Register(msgID uint16, factory MessageFactory) {
+func (r *MessageRegistry) Register(msgID uint32, factory MessageFactory) {
 	if _, ok := r.factories[msgID]; ok {
 		panic(fmt.Sprintf("msgID %d already registered", msgID))
 	}
@@ -70,7 +70,7 @@ func (r *MessageRegistry) Register(msgID uint16, factory MessageFactory) {
 // 与 Register 行为完全一致（Register 本身就 panic），保留它是为了
 // 声明式/生成代码调用点的语义自描述：调用处即声明「此号必须可用」。
 // Must 前缀是生成代码与表驱动初始化里的常见惯用法。
-func (r *MessageRegistry) MustRegister(msgID uint16, factory MessageFactory) {
+func (r *MessageRegistry) MustRegister(msgID uint32, factory MessageFactory) {
 	r.Register(msgID, factory)
 }
 
@@ -83,7 +83,7 @@ func (r *MessageRegistry) MustRegister(msgID uint16, factory MessageFactory) {
 //
 // Go 细节：map 读的 comma-ok 形式（f, ok := m[k]）把「键不存在」与
 // 「值为零值」区分开，这里 ok=false 即未注册。
-func (r *MessageRegistry) Create(msgID uint16) (proto.Message, error) {
+func (r *MessageRegistry) Create(msgID uint32) (proto.Message, error) {
 	f, ok := r.factories[msgID]
 	if !ok {
 		return nil, fmt.Errorf("msgID %d not registered", msgID)
@@ -100,7 +100,7 @@ func (r *MessageRegistry) Create(msgID uint16) (proto.Message, error) {
 //
 // Go 细节：fmt.Errorf 的 %w 动词包装下层错误而非抹掉，调用方可用
 // errors.Is/As 还原链路上的原始错误（如 proto 的具体解析错误类型）。
-func (r *MessageRegistry) Unmarshal(msgID uint16, body []byte) (proto.Message, error) {
+func (r *MessageRegistry) Unmarshal(msgID uint32, body []byte) (proto.Message, error) {
 	m, err := r.Create(msgID)
 	if err != nil {
 		return nil, err
@@ -115,7 +115,7 @@ func (r *MessageRegistry) Unmarshal(msgID uint16, body []byte) (proto.Message, e
 //
 // 供网关在收到未知 MsgID 时做决策：Has 为 false 时回错误包或直接断开，
 // 而不是走到 Create 才报错。只读、无锁、可并发调用。
-func (r *MessageRegistry) Has(msgID uint16) bool {
+func (r *MessageRegistry) Has(msgID uint32) bool {
 	_, ok := r.factories[msgID]
 	return ok
 }

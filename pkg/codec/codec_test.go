@@ -61,3 +61,20 @@ func TestHandlerRegistry(t *testing.T) {
 	require.NoError(t, err, fmt.Sprintf("handle: %v", err))
 	require.True(t, called, "handler not called")
 }
+
+// TestEncodePacketRejectsMsgIDOverWire 超过 2 字节的消息号必须报错。
+//
+// 内部类型是 uint32，wire 仍是 2 字节：窄化只在这一处。若静默截断，
+// 70000 会变成 4464——一个看起来完全合法的号，收端会路由到不相干的
+// 协议上，症状是「偶发串包」，查起来比重启还慢。
+func TestEncodePacketRejectsMsgIDOverWire(t *testing.T) {
+	if _, err := EncodePacket(Packet{MsgID: maxWireMsgID + 1}); err == nil {
+		t.Fatal("EncodePacket 接受了超出 wire 范围的 msgID")
+	}
+	// 边界值本身要能过（65535 是 2 字节能表示的最大值）。
+	buf, err := EncodePacket(Packet{MsgID: maxWireMsgID})
+	require.NoError(t, err)
+	pkt, err := DecodePacket(buf[LengthFieldSize:])
+	require.NoError(t, err)
+	require.Equal(t, uint32(maxWireMsgID), pkt.MsgID)
+}

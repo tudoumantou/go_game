@@ -50,29 +50,30 @@ const (
 // 为什么握手消息能明文：密钥交换（RSA）还没完成，握手期间没有可用加密
 // 通道，只能明文交换公钥与随机盐——这是协议设计的固有窗口，靠「握手
 // 消息不承载敏感信息」来兜底，而不是靠加密。
-// 类型统一 uint16：wire 上 msg_id 占 2 字节，与常量类型一致可防超范围赋值。
+// 类型统一 uint32：与 pkg/codec 的协议表、模块注册表、网关路由表同一宽度，
+// 调用链上不再出现 uint16/uint32 互转。wire 仍是 2 字节（已下发的客户端
+// 协议），窄化只发生在 EncodePacket 一处，且带范围校验。
 // 握手请求/应答复用登录段（1001/1002）：语义上属于登录流程，
 // 段归属按业务域而非按「谁在处理它」划分。
 const (
-	MsgIDHeartbeatReq      uint16 = 1
-	MsgIDHeartbeatResp     uint16 = 2
-	MsgIDKickNotify        uint16 = 10
-	MsgIDServerHello       uint16 = 11 // 网关→客户端：RSA 公钥 + 随机盐
-	MsgIDClientKeyExchange uint16 = 12 // 客户端→网关：RSA 加密的 pre-master
-	MsgIDFinished          uint16 = 13 // 双向：握手完成确认
-	MsgIDHandshakeReq      uint16 = 1001
-	MsgIDHandshakeResp     uint16 = 1002
+	MsgIDHeartbeatReq      uint32 = 1
+	MsgIDHeartbeatResp     uint32 = 2
+	MsgIDKickNotify        uint32 = 10
+	MsgIDServerHello       uint32 = 11 // 网关→客户端：RSA 公钥 + 随机盐
+	MsgIDClientKeyExchange uint32 = 12 // 客户端→网关：RSA 加密的 pre-master
+	MsgIDFinished          uint32 = 13 // 双向：握手完成确认
+	MsgIDHandshakeReq      uint32 = 1001
+	MsgIDHandshakeResp     uint32 = 1002
 
 	// 连接管理段（100-199）：登出。
 	// 100/101 落在连接段而非登录段——登出作用在「已建立的网关连接」上，
 	// 但要作废的是登录服签发的 token，网关持有 Redis 客户端直接删。
-	MsgIDLogoutReq  uint16 = 100
-	MsgIDLogoutResp uint16 = 101
+	MsgIDLogoutReq  uint32 = 100
+	MsgIDLogoutResp uint32 = 101
 )
 
 // IsClientMsgID 判断是否客户端消息号（内部号段不暴露）
-// 入参用 uint32（宽于 wire 的 uint16）：防调用方把更大范围的值窄化前
-// 误判；判定只需 <9000 一次比较，O(1)。
+// 入参与全链路同为 uint32，判定只需 <9000 一次比较，O(1)。
 // 网关出站/入站都过它：内部 gRPC 消息（9000+）绝不流向客户端 socket，
 // 客户端伪造的内部号在入口被丢弃——协议隔离的执行点。
 func IsClientMsgID(id uint32) bool {

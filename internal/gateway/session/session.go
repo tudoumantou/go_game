@@ -258,7 +258,7 @@ func (s *Session) Close(err error) {
 // 知识点：先在读锁下快照 cipher 再出锁使用——加密是 CPU 密集操作
 // （AES-GCM 每秒可做数十万次，但持锁做仍会阻塞其他读者），出锁
 // 后 cipher 对象本身不可变，快照安全。
-func (s *Session) Send(msgID uint16, plaintext []byte) error {
+func (s *Session) Send(msgID uint32, plaintext []byte) error {
 	s.mu.RLock()
 	cipher := s.cipher
 	s.mu.RUnlock()
@@ -276,7 +276,7 @@ func (s *Session) Send(msgID uint16, plaintext []byte) error {
 //
 // 与 Send 对称：cipher 未就绪即拒绝。解密成功后需校验内层 msgID 与
 // 外层一致（router.OnPacket 负责），防重放/错序包混入。
-func (s *Session) Decrypt(body []byte) (msgID uint16, seq uint32, plaintext []byte, err error) {
+func (s *Session) Decrypt(body []byte) (msgID uint32, seq uint32, plaintext []byte, err error) {
 	s.mu.RLock()
 	cipher := s.cipher
 	s.mu.RUnlock()

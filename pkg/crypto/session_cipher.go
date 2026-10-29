@@ -19,6 +19,14 @@ import (
 	"sync"
 )
 
+// maxWireMsgID 线上 msgID 的上限（内层头 2 字节）。
+//
+// 与 pkg/codec 的 maxWireMsgID 是同一个协议事实的两处表达：外层包头与
+// 内层密文头都写 2 字节。没有提取成共享常量，是因为本包是叶子依赖
+// （不 import 任何 internal 包），为省一个常量把 pkg/crypto 反向依赖到
+// internal/common/constant 不划算。两处都是「超界即报错」，行为一致。
+const maxWireMsgID = 0xFFFF
+
 // SessionCipher 维护一条连接的加解密与 Seq 状态。
 //
 // 生命周期：一条连接一个实例（握手完成后由握手状态机的 SessionKey
@@ -70,7 +78,13 @@ func NewSessionCipher(key []byte) (*SessionCipher, error) {
 // Go 知识点：锁内只做「取号」（临界区压到最小），耗时的 GCM 加密放
 // 锁外——多写者并发时取号串行、加密并行；binary.BigEndian 即网络
 // 字节序，收发两端必须一致（大端）才能互解。
-func (s *SessionCipher) Encrypt(msgID uint16, plaintext []byte) ([]byte, uint32, error) {
+func (s *SessionCipher) Encrypt(msgID uint32, plaintext []byte) ([]byte, uint32, error) {
+	if msgID > maxWireMsgID {
+		// 内层 msgID 也是 2 字节（与外层包头同一个协议事实）。超界时报错
+		// 而不是让 PutUint16 截断——截断后的内层号与外层号不一致，
+		// 收端会在「内外层校验」处断连，排查成本远高于这里返回一个错误。
+		return nil, 0, fmt.Errorf("msg id %d exceeds wire limit %d", msgID, maxWireMsgID)
+	}
 	s.mu.Lock()
 	seq := s.sendSeq
 	s.sendSeq++
@@ -78,7 +92,7 @@ func (s *SessionCipher) Encrypt(msgID uint16, plaintext []byte) ([]byte, uint32,
 
 	// body = msgID(2B) | seq(4B) | plaintext
 	body := make([]byte, 6+len(plaintext))
-	binary.BigEndian.PutUint16(body[0:], msgID)
+	binary.BigEndian.PutUint16(body[0:], uint16(msgID))
 	binary.BigEndian.PutUint32(body[2:], seq)
 	copy(body[6:], plaintext)
 
@@ -101,7 +115,7 @@ func (s *SessionCipher) Encrypt(msgID uint16, plaintext []byte) ([]byte, uint32,
 // Go 知识点：plaintext = body[6:] 是**别名切片**（与 body 共享底层
 // 数组）——零拷贝切分；body 是本函数新分配的局部变量，调用方持有
 // plaintext 期间无人改写 body，别名安全。
-func (s *SessionCipher) Decrypt(ciphertext []byte) (msgID uint16, seq uint32, plaintext []byte, err error) {
+func (s *SessionCipher) Decrypt(ciphertext []byte) (msgID uint32, seq uint32, plaintext []byte, err error) {
 	body, err := s.gcm.Decrypt(ciphertext)
 	if err != nil {
 		return 0, 0, nil, fmt.Errorf("decrypt: %w", err)
@@ -109,7 +123,7 @@ func (s *SessionCipher) Decrypt(ciphertext []byte) (msgID uint16, seq uint32, pl
 	if len(body) < 6 {
 		return 0, 0, nil, fmt.Errorf("body too short")
 	}
-	msgID = binary.BigEndian.Uint16(body[0:])
+	msgID = uint32(binary.BigEndian.Uint16(body[0:]))
 	seq = binary.BigEndian.Uint32(body[2:])
 	plaintext = body[6:]
 

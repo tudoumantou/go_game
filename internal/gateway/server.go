@@ -365,13 +365,13 @@ func (s *Server) deliverToClient(sessionID uint64, msgID uint32, body []byte) {
 		s.logger.Warn("downlink session not found", "session_id", sessionID, "msg_id", msgID)
 		return
 	}
-	if err := sess.Send(uint16(msgID), body); err != nil {
+	if err := sess.Send(msgID, body); err != nil {
 		s.logger.Warn("downlink send failed", "session_id", sessionID, "msg_id", msgID, "err", err)
 	}
 	// 踢下线：发出通知后主动断开，不依赖客户端配合（R3.1）。
 	// 先 Send 再 Close，保证客户端能收到原因；断连会触发 OnUnbind，
 	// 游戏服按会话身份校验忽略迟到的解绑请求。
-	if msgID == uint32(constant.MsgIDKickNotify) {
+	if msgID == constant.MsgIDKickNotify {
 		s.logger.Info("session kicked by game server", "session_id", sessionID)
 		s.sessMgr.Remove(sess)
 		sess.Close(nil)
