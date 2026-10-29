@@ -441,3 +441,56 @@ func TestModulesDoNotComputeDayIndex(t *testing.T) {
 	}
 	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
 }
+
+// TestModulesDefineNoStateExplicitly 无状态模块必须写 module.NoState，不许写 struct{}。
+//
+// 两者类型等价（NoState 是 struct{} 的别名），编译器看不出差别。但模块形态
+// 推导（moduleHasExtState）读的是源码里的 "NoState" 字面量：写 struct{} 的模块
+// 会被当成「有 Ext 槽位」，于是它失去 MarkDirty 的豁免——明明是 NoState 模块，
+// 规则却按有状态模块判。seat 曾这么写，是全仓唯一实例。
+//
+// 为什么不改 moduleHasExtState 去认 struct{}：认两个字面量只是把脆弱性翻倍。
+// 「无状态就写 NoState」这条约定本身是文档与代码的共同语言（repo.go 里
+// 有整段解释为什么这个别名存在），统一写法比让判据兼容两种写法更划算。
+func TestModulesDefineNoStateExplicitly(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	require.NoError(t, err)
+
+	scanned := 0
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "moduletest" {
+			continue
+		}
+		files, err := filepath.Glob(filepath.Join(e.Name(), "*.go"))
+		require.NoError(t, err)
+		for _, file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				continue
+			}
+			scanned++
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, file, nil, 0)
+			require.NoErrorf(t, err, "parse %s", file)
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				idx, ok := call.Fun.(*ast.IndexExpr)
+				if !ok {
+					return true
+				}
+				if recv := exprString(idx.X); recv != "module.Define" && recv != "Define" {
+					return true
+				}
+				if _, isStruct := idx.Index.(*ast.StructType); isStruct {
+					t.Errorf("%s: 用了 Define[struct{}] —— 无状态模块写 module.NoState："+
+						"两者类型等价，但形态推导靠这个字面量判断有没有 Ext 槽位",
+						fset.Position(call.Pos()))
+				}
+				return true
+			})
+		}
+	}
+	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
+}

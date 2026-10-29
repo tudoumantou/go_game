@@ -17,9 +17,13 @@ import (
 // 新增消息只在末尾追加；确需改号必须同步客户端版本，并在此显式更新基线。
 var wireBaseline = map[string]uint32{
 	"EnterGameReq":           1010,
+	"EnterGameResp":          1011,
 	"CreateRoleReq":          1020,
+	"CreateRoleResp":         1021,
 	"PlayerInfoReq":          2001,
 	"PlayerInfoResp":         2002,
+	"AttrChangeNotify":       2010,
+	"LevelInfoNotify":        2011,
 	"UseItemReq":             3001,
 	"UseItemResp":            3002,
 	"BagListReq":             3003,
@@ -110,6 +114,7 @@ var wireBaseline = map[string]uint32{
 	"PartnerFieldResp":       6908,
 	"MailListReq":            7001,
 	"MailListResp":           7002,
+	"MailNewNotify":          7010,
 	"MailTakeAttachmentReq":  7020,
 	"MailTakeAttachmentResp": 7021,
 	"MailDeleteReq":          7022,

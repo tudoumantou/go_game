@@ -20,6 +20,7 @@ message EnterGameReq { // MsgID: 1010
   int64 role_id = 1;
 }
 
+// @msg 1011
 message EnterGameResp { // MsgID: 1011
   int32  code        = 1; // 0 成功；2003 无角色
   int64  role_id     = 2;
@@ -33,6 +34,7 @@ message CreateRoleReq { // MsgID: 1020
   int32  career = 2; // 职业 ID
 }
 
+// @msg 1021
 message CreateRoleResp { // MsgID: 1021
   int32  code    = 1; // 2004 重名 / 2005 非法字符
   int64  role_id = 2;
@@ -60,6 +62,7 @@ message AttrPair {
 }
 
 // 属性增量推送（升级/装备/称号等导致的变化）
+// @msg 2010
 message AttrChangeNotify { // MsgID: 2010 [Push]
   repeated AttrDiff diffs = 1;
 }
@@ -77,6 +80,7 @@ message AttrDiff {
 
 // ---------- level.proto ----------
 // 等级变化推送（升级/获得经验后）
+// @msg 2011
 message LevelInfoNotify { // MsgID: 2011 [Push]
   int32 level    = 1; // 当前等级
   int64 exp      = 2; // 当前经验
@@ -810,6 +814,7 @@ message MailSummary {
 }
 
 // 新邮件到达推送（Kafka gs.mail 幂等投递）
+// @msg 7010
 message MailNewNotify { // MsgID: 7010 [Push]
   int64  mail_id       = 1;
   string title         = 2;

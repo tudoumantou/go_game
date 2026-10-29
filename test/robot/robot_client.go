@@ -277,10 +277,10 @@ func (c *Client) call(msgID uint32, req proto.Message, respID uint32, resp proto
 	return fmt.Errorf("no response for msgID %d (expect %d)", msgID, respID)
 }
 
-// EnterGame 进游戏（1010/1011）。
+// EnterGame 进游戏（EnterGameReq/EnterGameResp）。
 func (c *Client) EnterGame() (*gamev1.EnterGameResp, error) {
 	resp := &gamev1.EnterGameResp{}
-	if err := c.call(1010, &gamev1.EnterGameReq{}, 1011, resp); err != nil {
+	if err := c.call(codec.MsgEnterGameReq, &gamev1.EnterGameReq{}, codec.MsgEnterGameResp, resp); err != nil {
 		return nil, err
 	}
 	if resp.RoleId > 0 {
@@ -289,11 +289,11 @@ func (c *Client) EnterGame() (*gamev1.EnterGameResp, error) {
 	return resp, nil
 }
 
-// CreateRole 创角（1020/1021）。
+// CreateRole 创角（CreateRoleReq/CreateRoleResp）。
 func (c *Client) CreateRole(name string, career int32) (*gamev1.CreateRoleResp, error) {
 	resp := &gamev1.CreateRoleResp{}
 	req := &gamev1.CreateRoleReq{Name: name, Career: career}
-	if err := c.call(1020, req, 1021, resp); err != nil {
+	if err := c.call(codec.MsgCreateRoleReq, req, codec.MsgCreateRoleResp, resp); err != nil {
 		return nil, err
 	}
 	if resp.RoleId > 0 {
@@ -302,53 +302,53 @@ func (c *Client) CreateRole(name string, career int32) (*gamev1.CreateRoleResp, 
 	return resp, nil
 }
 
-// PlayerInfo 拉取玩家信息（2001/2002）。
+// PlayerInfo 拉取玩家信息（PlayerInfoReq/PlayerInfoResp）。
 func (c *Client) PlayerInfo() (*gamev1.PlayerInfoResp, error) {
 	resp := &gamev1.PlayerInfoResp{}
-	if err := c.call(2001, &gamev1.PlayerInfoReq{}, 2002, resp); err != nil {
+	if err := c.call(codec.MsgPlayerInfoReq, &gamev1.PlayerInfoReq{}, codec.MsgPlayerInfoResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// BagList 背包列表（3003/3004）。
+// BagList 背包列表（BagListReq/BagListResp）。
 func (c *Client) BagList() (*gamev1.BagListResp, error) {
 	resp := &gamev1.BagListResp{}
-	if err := c.call(3003, &gamev1.BagListReq{}, 3004, resp); err != nil {
+	if err := c.call(codec.MsgBagListReq, &gamev1.BagListReq{}, codec.MsgBagListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// UseItem 使用道具（3001/3002）。
+// UseItem 使用道具（UseItemReq/UseItemResp）。
 func (c *Client) UseItem(itemID, count int32) (*gamev1.UseItemResp, error) {
 	resp := &gamev1.UseItemResp{}
 	req := &gamev1.UseItemReq{ItemUid: int64(itemID), Count: count}
-	if err := c.call(3001, req, 3002, resp); err != nil {
+	if err := c.call(codec.MsgUseItemReq, req, codec.MsgUseItemResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// MailList 邮件列表（7001/7002）。
+// MailList 邮件列表（MailListReq/MailListResp）。
 func (c *Client) MailList() (*gamev1.MailListResp, error) {
 	resp := &gamev1.MailListResp{}
-	if err := c.call(7001, &gamev1.MailListReq{}, 7002, resp); err != nil {
+	if err := c.call(codec.MsgMailListReq, &gamev1.MailListReq{}, codec.MsgMailListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// TakeMail 领取邮件附件（7020/7021）。
+// TakeMail 领取邮件附件（MailTakeAttachmentReq/MailTakeAttachmentResp）。
 func (c *Client) TakeMail(mailID int64) (*gamev1.MailTakeAttachmentResp, error) {
 	resp := &gamev1.MailTakeAttachmentResp{}
-	if err := c.call(7020, &gamev1.MailTakeAttachmentReq{MailId: mailID}, 7021, resp); err != nil {
+	if err := c.call(codec.MsgMailTakeAttachmentReq, &gamev1.MailTakeAttachmentReq{MailId: mailID}, codec.MsgMailTakeAttachmentResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// RankList 榜单查询（6701/6702）。
+// RankList 榜单查询（RankListReq/RankListResp）。
 //
 // 中心服不可用时服务端回 code 6702 而不是空榜——调用方必须区分这两种情况。
 func (c *Client) RankList(rankType string) (*gamev1.RankListResp, error) {
@@ -361,7 +361,7 @@ func (c *Client) RankList(rankType string) (*gamev1.RankListResp, error) {
 
 // ---------------- B5 场景（R9） ----------------
 
-// SceneEnter 进入场景（4001/4002）。X/Y 为 0 时由服务端钳制。
+// SceneEnter 进入场景（SceneEnterReq/SceneEnterResp）。X/Y 为 0 时由服务端钳制。
 func (c *Client) SceneEnter(sceneID, x, y int32) (*gamev1.SceneEnterResp, error) {
 	resp := &gamev1.SceneEnterResp{}
 	req := &gamev1.SceneEnterReq{SceneId: sceneID, X: x, Y: y}
@@ -371,7 +371,7 @@ func (c *Client) SceneEnter(sceneID, x, y int32) (*gamev1.SceneEnterResp, error)
 	return resp, nil
 }
 
-// SceneMove 移动到目标坐标（4003/4004）。Seq 由调用方给，回执带回。
+// SceneMove 移动到目标坐标（SceneMoveReq/SceneMoveResp）。Seq 由调用方给，回执带回。
 func (c *Client) SceneMove(x, y, seq int32) (*gamev1.SceneMoveResp, error) {
 	resp := &gamev1.SceneMoveResp{}
 	req := &gamev1.SceneMoveReq{X: x, Y: y, Seq: seq}
@@ -381,7 +381,7 @@ func (c *Client) SceneMove(x, y, seq int32) (*gamev1.SceneMoveResp, error) {
 	return resp, nil
 }
 
-// SceneLeave 离开当前场景（4005/4006）。
+// SceneLeave 离开当前场景（SceneLeaveReq/SceneLeaveResp）。
 func (c *Client) SceneLeave() (*gamev1.SceneLeaveResp, error) {
 	resp := &gamev1.SceneLeaveResp{}
 	if err := c.call(codec.MsgSceneLeaveReq, &gamev1.SceneLeaveReq{}, codec.MsgSceneLeaveResp, resp); err != nil {
@@ -390,7 +390,7 @@ func (c *Client) SceneLeave() (*gamev1.SceneLeaveResp, error) {
 	return resp, nil
 }
 
-// SceneSync 拉取当前场景全量视野（4020/4021）。
+// SceneSync 拉取当前场景全量视野（SceneSyncReq/SceneSyncResp）。
 func (c *Client) SceneSync(sceneID int32) (*gamev1.SceneSyncResp, error) {
 	resp := &gamev1.SceneSyncResp{}
 	req := &gamev1.SceneSyncReq{SceneId: sceneID}
@@ -400,7 +400,7 @@ func (c *Client) SceneSync(sceneID int32) (*gamev1.SceneSyncResp, error) {
 	return resp, nil
 }
 
-// WaitSceneNotify 等待一条场景实体通知（4010）。
+// WaitSceneNotify 等待一条场景实体通知（SceneEntityNotify）。
 func (c *Client) WaitSceneNotify(timeout time.Duration) (*gamev1.SceneEntityNotify, error) {
 	pkt, ok, err := c.nextPush(codec.MsgSceneEntityNotify, timeout)
 	if err != nil {
@@ -422,28 +422,28 @@ func (c *Client) WaitSceneNotify(timeout time.Duration) (*gamev1.SceneEntityNoti
 
 // ---------------- B1 等级 / 任务 ----------------
 
-// QuestList 任务列表（7101/7102）。
+// QuestList 任务列表（QuestListReq/QuestListResp）。
 func (c *Client) QuestList() (*gamev1.QuestListResp, error) {
 	resp := &gamev1.QuestListResp{}
-	if err := c.call(7101, &gamev1.QuestListReq{}, 7102, resp); err != nil {
+	if err := c.call(codec.MsgQuestListReq, &gamev1.QuestListReq{}, codec.MsgQuestListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// QuestAccept 接取任务（7103/7104）。
+// QuestAccept 接取任务（QuestAcceptReq/QuestAcceptResp）。
 func (c *Client) QuestAccept(questID int32) (*gamev1.QuestAcceptResp, error) {
 	resp := &gamev1.QuestAcceptResp{}
-	if err := c.call(7103, &gamev1.QuestAcceptReq{QuestId: questID}, 7104, resp); err != nil {
+	if err := c.call(codec.MsgQuestAcceptReq, &gamev1.QuestAcceptReq{QuestId: questID}, codec.MsgQuestAcceptResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// QuestClaim 领取任务奖励（7105/7106）。
+// QuestClaim 领取任务奖励（QuestClaimReq/QuestClaimResp）。
 func (c *Client) QuestClaim(questID int32) (*gamev1.QuestClaimResp, error) {
 	resp := &gamev1.QuestClaimResp{}
-	if err := c.call(7105, &gamev1.QuestClaimReq{QuestId: questID}, 7106, resp); err != nil {
+	if err := c.call(codec.MsgQuestClaimReq, &gamev1.QuestClaimReq{QuestId: questID}, codec.MsgQuestClaimResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -451,55 +451,55 @@ func (c *Client) QuestClaim(questID int32) (*gamev1.QuestClaimResp, error) {
 
 // ---------------- B2 装备 / 技能 ----------------
 
-// EquipList 装备列表（3101/3102）。
+// EquipList 装备列表（EquipListReq/EquipListResp）。
 func (c *Client) EquipList() (*gamev1.EquipListResp, error) {
 	resp := &gamev1.EquipListResp{}
-	if err := c.call(3101, &gamev1.EquipListReq{}, 3102, resp); err != nil {
+	if err := c.call(codec.MsgEquipListReq, &gamev1.EquipListReq{}, codec.MsgEquipListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// EquipWear 穿戴装备（3103/3104）。
+// EquipWear 穿戴装备（EquipWearReq/EquipWearResp）。
 func (c *Client) EquipWear(uid int64) (*gamev1.EquipWearResp, error) {
 	resp := &gamev1.EquipWearResp{}
-	if err := c.call(3103, &gamev1.EquipWearReq{Uid: uid}, 3104, resp); err != nil {
+	if err := c.call(codec.MsgEquipWearReq, &gamev1.EquipWearReq{Uid: uid}, codec.MsgEquipWearResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// EquipTakeOff 脱下装备（3105/3106）。
+// EquipTakeOff 脱下装备（EquipTakeOffReq/EquipTakeOffResp）。
 func (c *Client) EquipTakeOff(uid int64) (*gamev1.EquipTakeOffResp, error) {
 	resp := &gamev1.EquipTakeOffResp{}
-	if err := c.call(3105, &gamev1.EquipTakeOffReq{Uid: uid}, 3106, resp); err != nil {
+	if err := c.call(codec.MsgEquipTakeOffReq, &gamev1.EquipTakeOffReq{Uid: uid}, codec.MsgEquipTakeOffResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// SkillList 技能列表（3201/3202）。
+// SkillList 技能列表（SkillListReq/SkillListResp）。
 func (c *Client) SkillList() (*gamev1.SkillListResp, error) {
 	resp := &gamev1.SkillListResp{}
-	if err := c.call(3201, &gamev1.SkillListReq{}, 3202, resp); err != nil {
+	if err := c.call(codec.MsgSkillListReq, &gamev1.SkillListReq{}, codec.MsgSkillListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// SkillLearn 学习技能（3203/3204）。
+// SkillLearn 学习技能（SkillLearnReq/SkillLearnResp）。
 func (c *Client) SkillLearn(skillID int32) (*gamev1.SkillLearnResp, error) {
 	resp := &gamev1.SkillLearnResp{}
-	if err := c.call(3203, &gamev1.SkillLearnReq{SkillId: skillID}, 3204, resp); err != nil {
+	if err := c.call(codec.MsgSkillLearnReq, &gamev1.SkillLearnReq{SkillId: skillID}, codec.MsgSkillLearnResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// SkillUpgrade 升级技能（3205/3206）。
+// SkillUpgrade 升级技能（SkillUpgradeReq/SkillUpgradeResp）。
 func (c *Client) SkillUpgrade(skillID int32) (*gamev1.SkillUpgradeResp, error) {
 	resp := &gamev1.SkillUpgradeResp{}
-	if err := c.call(3205, &gamev1.SkillUpgradeReq{SkillId: skillID}, 3206, resp); err != nil {
+	if err := c.call(codec.MsgSkillUpgradeReq, &gamev1.SkillUpgradeReq{SkillId: skillID}, codec.MsgSkillUpgradeResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -507,21 +507,21 @@ func (c *Client) SkillUpgrade(skillID int32) (*gamev1.SkillUpgradeResp, error) {
 
 // ---------------- B3 聊天 ----------------
 
-// ChatSend 发送聊天（6001/6002）。
+// ChatSend 发送聊天（ChatSendReq/ChatSendResp）。
 func (c *Client) ChatSend(channel int32, peerID int64, content string) (*gamev1.ChatSendResp, error) {
 	resp := &gamev1.ChatSendResp{}
 	req := &gamev1.ChatSendReq{Channel: channel, PeerId: peerID, Content: content}
-	if err := c.call(6001, req, 6002, resp); err != nil {
+	if err := c.call(codec.MsgChatSendReq, req, codec.MsgChatSendResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// ChatHistory 拉取聊天历史（6020/6021）。
+// ChatHistory 拉取聊天历史（ChatHistoryReq/ChatHistoryResp）。
 func (c *Client) ChatHistory(peerID int64, limit int32) (*gamev1.ChatHistoryResp, error) {
 	resp := &gamev1.ChatHistoryResp{}
 	req := &gamev1.ChatHistoryReq{PeerId: peerID, Limit: limit}
-	if err := c.call(6020, req, 6021, resp); err != nil {
+	if err := c.call(codec.MsgChatHistoryReq, req, codec.MsgChatHistoryResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -549,9 +549,9 @@ func (c *Client) nextPush(msgID uint32, timeout time.Duration) (codec.Packet, bo
 	return codec.Packet{}, false, nil
 }
 
-// WaitChatNotify 等待一条聊天推送（6010），用于验证跨服投递。
+// WaitChatNotify 等待一条聊天推送（ChatMessageNotify），用于验证跨服投递。
 func (c *Client) WaitChatNotify(timeout time.Duration) (*gamev1.ChatMessageNotify, error) {
-	pkt, ok, err := c.nextPush(6010, timeout)
+	pkt, ok, err := c.nextPush(codec.MsgChatMessageNotify, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -571,145 +571,145 @@ func (c *Client) WaitChatNotify(timeout time.Duration) (*gamev1.ChatMessageNotif
 
 // ---------------- B4 公会 / 组队 / 副本 / 商店 / 活动 ----------------
 
-// GuildInfo 公会信息（6101/6102）。
+// GuildInfo 公会信息（GuildInfoReq/GuildInfoResp）。
 func (c *Client) GuildInfo() (*gamev1.GuildInfoResp, error) {
 	resp := &gamev1.GuildInfoResp{}
-	if err := c.call(6101, &gamev1.GuildInfoReq{}, 6102, resp); err != nil {
+	if err := c.call(codec.MsgGuildInfoReq, &gamev1.GuildInfoReq{}, codec.MsgGuildInfoResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// GuildCreate 创建公会（6103/6104）。
+// GuildCreate 创建公会（GuildCreateReq/GuildCreateResp）。
 func (c *Client) GuildCreate(name string) (*gamev1.GuildCreateResp, error) {
 	resp := &gamev1.GuildCreateResp{}
-	if err := c.call(6103, &gamev1.GuildCreateReq{Name: name}, 6104, resp); err != nil {
+	if err := c.call(codec.MsgGuildCreateReq, &gamev1.GuildCreateReq{Name: name}, codec.MsgGuildCreateResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// GuildJoin 加入公会（6105/6106）。
+// GuildJoin 加入公会（GuildJoinReq/GuildJoinResp）。
 func (c *Client) GuildJoin(guildID int64) (*gamev1.GuildJoinResp, error) {
 	resp := &gamev1.GuildJoinResp{}
-	if err := c.call(6105, &gamev1.GuildJoinReq{GuildId: guildID}, 6106, resp); err != nil {
+	if err := c.call(codec.MsgGuildJoinReq, &gamev1.GuildJoinReq{GuildId: guildID}, codec.MsgGuildJoinResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// GuildQuit 退出公会（6107/6108）。
+// GuildQuit 退出公会（GuildQuitReq/GuildQuitResp）。
 func (c *Client) GuildQuit() (*gamev1.GuildQuitResp, error) {
 	resp := &gamev1.GuildQuitResp{}
-	if err := c.call(6107, &gamev1.GuildQuitReq{}, 6108, resp); err != nil {
+	if err := c.call(codec.MsgGuildQuitReq, &gamev1.GuildQuitReq{}, codec.MsgGuildQuitResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// TeamInfo 队伍信息（6201/6202）。
+// TeamInfo 队伍信息（TeamInfoReq/TeamInfoResp）。
 func (c *Client) TeamInfo() (*gamev1.TeamInfoResp, error) {
 	resp := &gamev1.TeamInfoResp{}
-	if err := c.call(6201, &gamev1.TeamInfoReq{}, 6202, resp); err != nil {
+	if err := c.call(codec.MsgTeamInfoReq, &gamev1.TeamInfoReq{}, codec.MsgTeamInfoResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// TeamCreate 创建队伍（6203/6204）。
+// TeamCreate 创建队伍（TeamCreateReq/TeamCreateResp）。
 func (c *Client) TeamCreate(copyID int32) (*gamev1.TeamCreateResp, error) {
 	resp := &gamev1.TeamCreateResp{}
-	if err := c.call(6203, &gamev1.TeamCreateReq{CopyId: copyID}, 6204, resp); err != nil {
+	if err := c.call(codec.MsgTeamCreateReq, &gamev1.TeamCreateReq{CopyId: copyID}, codec.MsgTeamCreateResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// TeamJoin 加入队伍（6205/6206）。
+// TeamJoin 加入队伍（TeamJoinReq/TeamJoinResp）。
 func (c *Client) TeamJoin(teamID int64) (*gamev1.TeamJoinResp, error) {
 	resp := &gamev1.TeamJoinResp{}
-	if err := c.call(6205, &gamev1.TeamJoinReq{TeamId: teamID}, 6206, resp); err != nil {
+	if err := c.call(codec.MsgTeamJoinReq, &gamev1.TeamJoinReq{TeamId: teamID}, codec.MsgTeamJoinResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// TeamLeave 退出队伍（6207/6208）。
+// TeamLeave 退出队伍（TeamLeaveReq/TeamLeaveResp）。
 func (c *Client) TeamLeave() (*gamev1.TeamLeaveResp, error) {
 	resp := &gamev1.TeamLeaveResp{}
-	if err := c.call(6207, &gamev1.TeamLeaveReq{}, 6208, resp); err != nil {
+	if err := c.call(codec.MsgTeamLeaveReq, &gamev1.TeamLeaveReq{}, codec.MsgTeamLeaveResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// CopyList 副本列表（6301/6302）。
+// CopyList 副本列表（CopyListReq/CopyListResp）。
 func (c *Client) CopyList() (*gamev1.CopyListResp, error) {
 	resp := &gamev1.CopyListResp{}
-	if err := c.call(6301, &gamev1.CopyListReq{}, 6302, resp); err != nil {
+	if err := c.call(codec.MsgCopyListReq, &gamev1.CopyListReq{}, codec.MsgCopyListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// CopySettle 副本结算（6303/6304）。
+// CopySettle 副本结算（CopySettleReq/CopySettleResp）。
 func (c *Client) CopySettle(copyID, star int32) (*gamev1.CopySettleResp, error) {
 	resp := &gamev1.CopySettleResp{}
-	if err := c.call(6303, &gamev1.CopySettleReq{CopyId: copyID, Star: star}, 6304, resp); err != nil {
+	if err := c.call(codec.MsgCopySettleReq, &gamev1.CopySettleReq{CopyId: copyID, Star: star}, codec.MsgCopySettleResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// ShopList 商店列表（6401/6402）。
+// ShopList 商店列表（ShopListReq/ShopListResp）。
 func (c *Client) ShopList() (*gamev1.ShopListResp, error) {
 	resp := &gamev1.ShopListResp{}
-	if err := c.call(6401, &gamev1.ShopListReq{}, 6402, resp); err != nil {
+	if err := c.call(codec.MsgShopListReq, &gamev1.ShopListReq{}, codec.MsgShopListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// ShopBuy 购买商品（6403/6404）。
+// ShopBuy 购买商品（ShopBuyReq/ShopBuyResp）。
 func (c *Client) ShopBuy(goodsID, count int32) (*gamev1.ShopBuyResp, error) {
 	resp := &gamev1.ShopBuyResp{}
-	if err := c.call(6403, &gamev1.ShopBuyReq{GoodsId: goodsID, Count: count}, 6404, resp); err != nil {
+	if err := c.call(codec.MsgShopBuyReq, &gamev1.ShopBuyReq{GoodsId: goodsID, Count: count}, codec.MsgShopBuyResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// SigninInfo 查询当前角色七日签到状态（6601/6602）。
+// SigninInfo 查询当前角色七日签到状态（SigninInfoReq/SigninInfoResp）。
 func (c *Client) SigninInfo() (*gamev1.SigninInfoResp, error) {
 	resp := &gamev1.SigninInfoResp{}
-	if err := c.call(6601, &gamev1.SigninInfoReq{}, 6602, resp); err != nil {
+	if err := c.call(codec.MsgSigninInfoReq, &gamev1.SigninInfoReq{}, codec.MsgSigninInfoResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// SigninClaim 领取今日签到奖励（6603/6604），重复请求不会再次发奖。
+// SigninClaim 领取今日签到奖励（SigninClaimReq/SigninClaimResp），重复请求不会再次发奖。
 func (c *Client) SigninClaim() (*gamev1.SigninClaimResp, error) {
 	resp := &gamev1.SigninClaimResp{}
-	if err := c.call(6603, &gamev1.SigninClaimReq{}, 6604, resp); err != nil {
+	if err := c.call(codec.MsgSigninClaimReq, &gamev1.SigninClaimReq{}, codec.MsgSigninClaimResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// ActivityList 活动列表（6501/6502）。
+// ActivityList 活动列表（ActivityListReq/ActivityListResp）。
 func (c *Client) ActivityList() (*gamev1.ActivityListResp, error) {
 	resp := &gamev1.ActivityListResp{}
-	if err := c.call(6501, &gamev1.ActivityListReq{}, 6502, resp); err != nil {
+	if err := c.call(codec.MsgActivityListReq, &gamev1.ActivityListReq{}, codec.MsgActivityListResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// ActivityClaim 活动领奖（6503/6504）。
+// ActivityClaim 活动领奖（ActivityClaimReq/ActivityClaimResp）。
 func (c *Client) ActivityClaim(activityID int32) (*gamev1.ActivityClaimResp, error) {
 	resp := &gamev1.ActivityClaimResp{}
-	if err := c.call(6503, &gamev1.ActivityClaimReq{ActivityId: activityID}, 6504, resp); err != nil {
+	if err := c.call(codec.MsgActivityClaimReq, &gamev1.ActivityClaimReq{ActivityId: activityID}, codec.MsgActivityClaimResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -717,18 +717,18 @@ func (c *Client) ActivityClaim(activityID int32) (*gamev1.ActivityClaimResp, err
 
 // ---------------- P13 战斗 / 跨服 ----------------
 
-// Match 发起匹配（5002/5003）。
+// Match 发起匹配（MatchReq/MatchResp）。
 func (c *Client) Match(mode string) (*gamev1.MatchResp, error) {
 	resp := &gamev1.MatchResp{}
-	if err := c.call(5002, &gamev1.MatchReq{Mode: mode}, 5003, resp); err != nil {
+	if err := c.call(codec.MsgMatchReq, &gamev1.MatchReq{Mode: mode}, codec.MsgMatchResp, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// WaitBattleStart 等待开战通知（5001 推送）。
+// WaitBattleStart 等待开战通知（BattleStartNotify 推送）。
 func (c *Client) WaitBattleStart(timeout time.Duration) (*gamev1.BattleStartNotify, error) {
-	pkt, ok, err := c.nextPush(5001, timeout)
+	pkt, ok, err := c.nextPush(codec.MsgBattleStartNotify, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -746,23 +746,23 @@ func (c *Client) WaitBattleStart(timeout time.Duration) (*gamev1.BattleStartNoti
 	return msg, nil
 }
 
-// BattleOp 上报战斗操作（5021，无响应）。
+// BattleOp 上报战斗操作（BattleOpReport，无响应）。
 func (c *Client) BattleOp(roomID uint64, msgID uint32, body []byte) error {
 	req := &gamev1.BattleOpReport{RoomId: roomID, MsgId: msgID, Body: body}
 	raw, err := proto.Marshal(req)
 	if err != nil {
 		return err
 	}
-	enc, seq, err := c.cipher.Encrypt(5021, raw)
+	enc, seq, err := c.cipher.Encrypt(codec.MsgBattleOpReport, raw)
 	if err != nil {
 		return err
 	}
-	return c.writePacket(codec.Packet{MsgID: 5021, Seq: seq, Body: enc})
+	return c.writePacket(codec.Packet{MsgID: codec.MsgBattleOpReport, Seq: seq, Body: enc})
 }
 
-// WaitBattleSync 等待对手战斗事件（5020 推送）。
+// WaitBattleSync 等待对手战斗事件（BattleSyncNotify 推送）。
 func (c *Client) WaitBattleSync(timeout time.Duration) (*gamev1.BattleSyncNotify, error) {
-	pkt, ok, err := c.nextPush(5020, timeout)
+	pkt, ok, err := c.nextPush(codec.MsgBattleSyncNotify, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -780,7 +780,7 @@ func (c *Client) WaitBattleSync(timeout time.Duration) (*gamev1.BattleSyncNotify
 	return msg, nil
 }
 
-// BattleResult 上报战斗结论（5010/5011）。
+// BattleResult 上报战斗结论（BattleResultReport/BattleSettleNotify）。
 func (c *Client) BattleResult(roomID uint64, token string, result int32) (*gamev1.BattleSettleNotify, error) {
 	resp := &gamev1.BattleSettleNotify{}
 	req := &gamev1.BattleResultReport{
@@ -789,15 +789,15 @@ func (c *Client) BattleResult(roomID uint64, token string, result int32) (*gamev
 		Result:      result,
 		FinishedAt:  time.Now().Unix(),
 	}
-	if err := c.call(5010, req, 5011, resp); err != nil {
+	if err := c.call(codec.MsgBattleResultReport, req, codec.MsgBattleSettleNotify, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
 }
 
-// WaitBattleSettle 等待结算推送（5011 推送，兜底路径）。
+// WaitBattleSettle 等待结算推送（BattleSettleNotify 推送，兜底路径）。
 func (c *Client) WaitBattleSettle(timeout time.Duration) (*gamev1.BattleSettleNotify, error) {
-	pkt, ok, err := c.nextPush(5011, timeout)
+	pkt, ok, err := c.nextPush(codec.MsgBattleSettleNotify, timeout)
 	if err != nil {
 		return nil, err
 	}

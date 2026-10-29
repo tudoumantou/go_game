@@ -23,6 +23,7 @@ import (
 
 	"game_study/internal/game/module"
 	"game_study/pkg/actor"
+	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 
@@ -30,9 +31,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// 下行推送协议号（4.9：2011 等级变化）。数值与客户端协议表绑定，
-// 改动前先确认 Demo 客户端已同步。
-const msgIDLevelInfoNotify uint32 = 2011
+// 下行推送：等级变化（4.9）。号取生成常量，不在这里写第二份。
+//
+// 曾经是 `const msgIDLevelInfoNotify uint32 = 2011`：proto 里只标了
+// `// MsgID:` 而没有 `@msg`，生成链不产出它，于是每个用到的地方都得
+// 自己写一遍数字——改号时服务端这一半不会跟着变。
 
 // SetKickHook 注入跨节点顶号回调（组装层在 Spawn 前调用）。
 //
@@ -826,7 +829,7 @@ func (a *Actor) addExp(n int64) (bool, int32) {
 			ExpMax: a.state.ExpMax(),
 		}
 		if raw, err := proto.Marshal(notify); err == nil {
-			_ = a.send(msgIDLevelInfoNotify, raw)
+			_ = a.send(codec.MsgLevelInfoNotify, raw)
 		}
 	}
 	if up {

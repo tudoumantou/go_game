@@ -27,7 +27,7 @@ var router Router
 func SetRouter(r Router) { router = r }
 
 // M 抢位置模块唯一实例。
-var M = module.Define[struct{}]("seat")
+var M = module.Define[module.NoState]("seat")
 
 func init() {
 	module.Route(M, &gamev1.SeatOccupyReq{}, onOccupy)
@@ -36,7 +36,7 @@ func init() {
 }
 
 // onOccupy 占座/抢夺。
-func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
+func onOccupy(c *module.Ctx[module.NoState], req *gamev1.SeatOccupyReq) error {
 	resp := &gamev1.SeatOccupyResp{Code: int32(errcode.OK)}
 	tier := pkgseat.Tier(req.GetTier())
 	roomIndex, seatIndex := int(req.GetRoomIndex()), int(req.GetSeatIndex())
@@ -55,7 +55,7 @@ func onOccupy(c *module.Ctx[struct{}], req *gamev1.SeatOccupyReq) error {
 }
 
 // onLeave 主动离开。
-func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
+func onLeave(c *module.Ctx[module.NoState], req *gamev1.SeatLeaveReq) error {
 	resp := &gamev1.SeatLeaveResp{Code: int32(errcode.OK)}
 	tier := pkgseat.Tier(req.GetTier())
 	roomIndex, seatIndex := int(req.GetRoomIndex()), int(req.GetSeatIndex())
@@ -74,7 +74,7 @@ func onLeave(c *module.Ctx[struct{}], req *gamev1.SeatLeaveReq) error {
 }
 
 // onQuery 拉取全部房间/座位状态。
-func onQuery(c *module.Ctx[struct{}]) error {
+func onQuery(c *module.Ctx[module.NoState]) error {
 	resp := &gamev1.SeatQueryResp{Code: int32(errcode.OK)}
 	if router == nil {
 		resp.Code = int32(errcode.ErrSystem)

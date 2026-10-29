@@ -122,10 +122,9 @@ func (m *Manager) GetOrSpawn(ctx context.Context, playerID int64) (*actor.PID, e
 		return pid, nil
 	}
 
-	if m.presence != nil && m.nodeID != "" {
-		if owner, online := m.presence.IsOnline(ctx, playerID); online && owner != m.nodeID {
-			return &actor.PID{ID: playerPID(playerID), Node: owner}, nil
-		}
+	// 归属在别的节点：返回远端 PID，让调用方走跨节点投递而不是就地 Spawn
+	if pid, ok := m.remotePID(ctx, playerID); ok {
+		return pid, nil
 	}
 
 	m.mu.Lock()
@@ -179,13 +178,30 @@ func (m *Manager) Resolve(ctx context.Context, playerID int64) (*actor.PID, bool
 	if ok {
 		return pid, true
 	}
+	if pid, ok := m.remotePID(ctx, playerID); ok {
+		return pid, true
+	}
+	return nil, false
+}
+
+// remotePID 查在线归属表：玩家在线且归属不在本节点时返回远端 PID。
+//
+// 抽出来的理由不是省三行，而是「本地未命中时该不该认为玩家在别的节点」
+// 这个判断只能有一份：GetOrSpawn 用它决定「就地建 Actor 还是转投」，
+// Resolve 用它决定「返回远端还是 not found」。两处各写一遍时，只要某次
+// 只改一边，就会出现「A 路径在本节点建了 Actor、B 路径仍把消息投往远端」
+// 的双写分叉——两份内存对同一份快照各写各的 CAS。
+//
+// presence/nodeID 未注入（单机/测试）时恒为 false，退化为纯本地查询。
+func (m *Manager) remotePID(ctx context.Context, playerID int64) (*actor.PID, bool) {
 	if m.presence == nil || m.nodeID == "" {
 		return nil, false
 	}
-	if owner, online := m.presence.IsOnline(ctx, playerID); online && owner != m.nodeID {
-		return &actor.PID{ID: playerPID(playerID), Node: owner}, true
+	owner, online := m.presence.IsOnline(ctx, playerID)
+	if !online || owner == m.nodeID {
+		return nil, false
 	}
-	return nil, false
+	return &actor.PID{ID: playerPID(playerID), Node: owner}, true
 }
 
 // Remove 移除玩家（下线）。

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"time"
 
+	"game_study/internal/common/constant"
 	"game_study/internal/game/player"
 	"game_study/internal/game/service"
 	"game_study/pkg/actor"
@@ -79,11 +80,13 @@ func (s *Server) persistPlayer(ctx context.Context, playerID int64) error {
 }
 
 // 会话级协议号（未选角时由组装层直接处理，不进 Actor）。
+//
+// 三个号都取常量，不写字面量：1011/1021 曾经因为 proto 只标了 `// MsgID:`
+// 而没有生成常量，注册处只能手写数字——改号时服务端这一半不会跟着变。
+// 现在它们在 msgids_gen.go 里有名字，这里只是给 switch 用的短别名。
 const (
 	msgIDEnterGame  = codec.MsgEnterGameReq
 	msgIDCreateRole = codec.MsgCreateRoleReq
-	// msgIDKickNotify 与网关 common.MsgIDKickNotify 保持一致：10。
-	msgIDKickNotify uint32 = 10
 )
 
 // OnBind 实现 rpc.StreamHandler：按 account_id 查角色，有角色才拉起 Actor。
@@ -258,7 +261,7 @@ func (s *Server) kickSession(sessionID uint64, reason string) {
 	if err != nil {
 		return
 	}
-	if err := s.sendToClient(sessionID, msgIDKickNotify, body); err != nil {
+	if err := s.sendToClient(sessionID, constant.MsgIDKickNotify, body); err != nil {
 		s.logger.Info("kick stale session failed; waiting for stale unbind",
 			"session_id", sessionID, "reason", reason, "err", err)
 		return
@@ -453,21 +456,21 @@ func (s *Server) handleEnterGame(ctx context.Context, sessionID uint64, accountI
 
 	if s.roleSvc == nil {
 		resp.Code = 2003
-		return s.reply(sessionID, 1011, resp)
+		return s.reply(sessionID, codec.MsgEnterGameResp, resp)
 	}
 	role, err := s.roleSvc.FindByAccount(ctx, accountID)
 	if err != nil {
 		resp.Code = 2003 // 无角色
-		return s.reply(sessionID, 1011, resp)
+		return s.reply(sessionID, codec.MsgEnterGameResp, resp)
 	}
 	resp.RoleId = role.Id
 	if err := s.bindPlayer(ctx, sessionID, role.Id); err != nil {
 		return err
 	}
-	if err := s.reply(sessionID, 1011, resp); err != nil {
+	if err := s.reply(sessionID, codec.MsgEnterGameResp, resp); err != nil {
 		return err
 	}
-	// 离线暂存补投（12.6.2）：必须放在 1011 之后 ——
+	// 离线暂存补投（12.6.2）：必须放在进游戏回执之后 ——
 	// 客户端收到进游戏回执才开始处理推送，过早补投会被当成「未知消息」丢掉。
 	go s.drainOffline(role.Id, sessionID)
 	return nil
@@ -483,13 +486,13 @@ func (s *Server) handleCreateRole(ctx context.Context, sessionID uint64, account
 	resp := &gamev1.CreateRoleResp{}
 	if s.roleSvc == nil {
 		resp.Code = 5000
-		return s.reply(sessionID, 1021, resp)
+		return s.reply(sessionID, codec.MsgCreateRoleResp, resp)
 	}
 	roleID, err := s.roleSvc.Create(ctx, accountID, req.Name, req.Career)
 	if err != nil {
 		resp.Code = mapCreateRoleErr(err)
 		s.logger.Info("create role failed", "account_id", accountID, "err", err)
-		return s.reply(sessionID, 1021, resp)
+		return s.reply(sessionID, codec.MsgCreateRoleResp, resp)
 	}
 	resp.Code = 0
 	resp.RoleId = roleID
@@ -501,7 +504,7 @@ func (s *Server) handleCreateRole(ctx context.Context, sessionID uint64, account
 	s.mu.Unlock()
 	// 创角即有会话 → 在线；Actor 留到首个业务包再创建
 	s.markOnline(ctx, roleID)
-	return s.reply(sessionID, 1021, resp)
+	return s.reply(sessionID, codec.MsgCreateRoleResp, resp)
 }
 
 // reply 序列化并下行。

@@ -8,9 +8,13 @@ package codec
 // 客户端协议消息号（与服务端模块 OnMessage 分发的常量一一对应）
 const (
 	MsgEnterGameReq           uint32 = 1010
+	MsgEnterGameResp          uint32 = 1011
 	MsgCreateRoleReq          uint32 = 1020
+	MsgCreateRoleResp         uint32 = 1021
 	MsgPlayerInfoReq          uint32 = 2001
 	MsgPlayerInfoResp         uint32 = 2002
+	MsgAttrChangeNotify       uint32 = 2010
+	MsgLevelInfoNotify        uint32 = 2011
 	MsgUseItemReq             uint32 = 3001
 	MsgUseItemResp            uint32 = 3002
 	MsgBagListReq             uint32 = 3003
@@ -107,6 +111,7 @@ const (
 	MsgPartnerFieldResp       uint32 = 6908
 	MsgMailListReq            uint32 = 7001
 	MsgMailListResp           uint32 = 7002
+	MsgMailNewNotify          uint32 = 7010
 	MsgMailTakeAttachmentReq  uint32 = 7020
 	MsgMailTakeAttachmentResp uint32 = 7021
 	MsgMailDeleteReq          uint32 = 7022
@@ -129,9 +134,13 @@ const (
 // msgNames 消息号 → message 名（日志与排障用，避免只看到数字）
 var msgNames = map[uint32]string{
 	1010: "EnterGameReq",
+	1011: "EnterGameResp",
 	1020: "CreateRoleReq",
+	1021: "CreateRoleResp",
 	2001: "PlayerInfoReq",
 	2002: "PlayerInfoResp",
+	2010: "AttrChangeNotify",
+	2011: "LevelInfoNotify",
 	3001: "UseItemReq",
 	3002: "UseItemResp",
 	3003: "BagListReq",
@@ -228,6 +237,7 @@ var msgNames = map[uint32]string{
 	6908: "PartnerFieldResp",
 	7001: "MailListReq",
 	7002: "MailListResp",
+	7010: "MailNewNotify",
 	7020: "MailTakeAttachmentReq",
 	7021: "MailTakeAttachmentResp",
 	7022: "MailDeleteReq",
@@ -250,9 +260,13 @@ var msgNames = map[uint32]string{
 // msgIDs message 名 → 消息号
 var msgIDs = map[string]uint32{
 	"EnterGameReq":           1010,
+	"EnterGameResp":          1011,
 	"CreateRoleReq":          1020,
+	"CreateRoleResp":         1021,
 	"PlayerInfoReq":          2001,
 	"PlayerInfoResp":         2002,
+	"AttrChangeNotify":       2010,
+	"LevelInfoNotify":        2011,
 	"UseItemReq":             3001,
 	"UseItemResp":            3002,
 	"BagListReq":             3003,
@@ -349,6 +363,7 @@ var msgIDs = map[string]uint32{
 	"PartnerFieldResp":       6908,
 	"MailListReq":            7001,
 	"MailListResp":           7002,
+	"MailNewNotify":          7010,
 	"MailTakeAttachmentReq":  7020,
 	"MailTakeAttachmentResp": 7021,
 	"MailDeleteReq":          7022,
@@ -381,4 +396,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 117 }
+func MsgCount() int { return 122 }

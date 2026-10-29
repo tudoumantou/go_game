@@ -154,3 +154,50 @@ func TestRepoProtoDeclarations(t *testing.T) {
 	problems := validate(decls, segs)
 	require.Empty(t, problems, fmt.Sprintf("repo proto declarations invalid:\n%s", strings.Join(problems, "\n")))
 }
+
+// TestRepoProtocolMessagesHaveMsgAnnotation 客户端协议消息必须带 `// @msg`。
+//
+// 为什么补这条：生成链只认 @msg，而 proto 里长期并存第二种写法
+// `message XxxResp { // MsgID: 1011 }`——人能读到，工具读不到。后果是这批号
+// 在 Go 侧没有常量，服务端只能手写数字（1011/1021 曾各写 3 处），改号时
+// 只有 proto 注释会变，代码不会。
+//
+// 判据用命名后缀（Req/Resp/Notify）而不是「有没有 MsgID 注释」：后者正是
+// 要被淘汰的那套写法，用它当判据等于让漏注解的消息继续合法存在。
+// 子结构（SeatRoom/AttrDiff/MailEntry 等）不以三个后缀结尾，不会被误伤。
+func TestRepoProtocolMessagesHaveMsgAnnotation(t *testing.T) {
+	const dir = "../../api/proto/game/v1"
+	decls, err := scanProtos(dir)
+	require.NoError(t, err, "scan")
+	has := make(map[string]bool, len(decls))
+	for _, d := range decls {
+		has[d.Name] = true
+	}
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	checked := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".proto") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		require.NoError(t, err)
+		for i, line := range strings.Split(string(data), "\n") {
+			m := reMessage.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			name := m[1]
+			if !strings.HasSuffix(name, "Req") && !strings.HasSuffix(name, "Resp") &&
+				!strings.HasSuffix(name, "Notify") {
+				continue
+			}
+			checked++
+			require.True(t, has[name],
+				"%s:%d: %s 缺 `// @msg <id>` 注解——客户端协议号只有这一个声明点，"+
+					"不写就不会生成常量，调用处只能写裸数字", e.Name(), i+1, name)
+		}
+	}
+	require.Greater(t, checked, 100, "没扫到协议消息，检查逻辑本身失效了")
+}
