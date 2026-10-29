@@ -420,12 +420,30 @@ func (s *Server) buildIDTables(ctx context.Context) {
 	s.logger.Info("idtab build done", "built", built, "failed", failed)
 }
 
+// defaultReconcileInterval 是 idtab.reconcile_interval 缺省/非法时的兜底。
+//
+// 与配置默认值同一个数，但必须在这里再兜一次：核对停摆不会报错，
+// 只会让 ID 表与库里悄悄漂移，等到「玩家 ID 被判不存在」才暴露。
+const defaultReconcileInterval = 10 * time.Minute
+
+// reconcileInterval 读 idtab.reconcile_interval，非法值回落默认。
+//
+// ID 表与归属索引共用这一个值：两者都是「ZCARD/COUNT 与库里行数对一次」，
+// 拆成两个配置项只会让运维配了一个以为两个都改了。
+func (s *Server) reconcileInterval() time.Duration {
+	if d, err := config.ParseDuration(s.cfg.IDTab.ReconcileInterval); err == nil && d > 0 {
+		return d
+	}
+	return defaultReconcileInterval
+}
+
 // maintainIDTables ID 表维护（12.5.3）。
 //
-//   - 每 10 分钟：对热表做数量核对，不一致则重建（重建期间回落 DB，不阻塞查询）
+//   - 每 reconcile_interval（默认 10 分钟）：对热表做数量核对，不一致则重建
+//     （重建期间回落 DB，不阻塞查询）
 //   - 每小时：清理孤儿实体 hash（e:{table}:{id} 存在但 idtab 无此 id）
 func (s *Server) maintainIDTables(ctx context.Context) {
-	reconcile := time.NewTicker(10 * time.Minute)
+	reconcile := time.NewTicker(s.reconcileInterval())
 	defer reconcile.Stop()
 	clean := time.NewTicker(time.Hour)
 	defer clean.Stop()
@@ -525,7 +543,7 @@ func (s *Server) buildOwnerIndexes(ctx context.Context) {
 // （重建期间 Members 回落 DB，不阻塞登录）。只核对索引，实体 hash 的
 // 孤儿清理由 IDTable.CleanOrphans 负责（同一个 e:{table}:{id} 空间）。
 func (s *Server) maintainOwnerIndexes(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(s.reconcileInterval())
 	defer ticker.Stop()
 
 	for {

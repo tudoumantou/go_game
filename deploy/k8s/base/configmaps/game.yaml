@@ -52,7 +52,6 @@ data:
       dirty_ttl: 10m
     
     idtab:
-      build_on_start: true         # 启动构建 Redis ID 表
       build_page_size: 5000
       reconcile_interval: 10m      # 数量对账
     

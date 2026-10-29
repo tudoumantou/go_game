@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"game_study/pkg/config"
 	"game_study/pkg/log"
@@ -32,4 +33,27 @@ func TestOnUnbindIgnoresStaleSession(t *testing.T) {
 	// 新会话的登记不受影响
 	_, ok = s.sessions[2]
 	require.True(t, ok, "authoritative session lost")
+}
+
+// TestReconcileInterval 核对周期必须来自配置，非法值回落默认。
+//
+// v3.21 之前 idtab.reconcile_interval 配了不生效（两个维护循环各写死
+// 10 * time.Minute）。这条用例锁住「改配置能改变周期」，并确认非法值
+// 不会把核对关掉（d<=0 会让 ticker panic，解析失败必须回落而不是传 0）。
+func TestReconcileInterval(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{"未配置", "", 10 * time.Minute},
+		{"合法值", "30m", 30 * time.Minute},
+		{"解析失败", "半小时", 10 * time.Minute},
+		{"零值", "0s", 10 * time.Minute},
+		{"负数", "-5m", 10 * time.Minute},
+	}
+	for _, c := range cases {
+		s := &Server{cfg: &config.Config{IDTab: config.IDTabConfig{ReconcileInterval: c.raw}}}
+		require.Equal(t, c.want, s.reconcileInterval(), c.name)
+	}
 }

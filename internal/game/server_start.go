@@ -141,6 +141,12 @@ func (s *Server) initIDTable() {
 	// 构建在后台进行：ready 未置位期间所有存在性判断回落 DB，服务可正常启动。
 	if s.database != nil && s.redis != nil {
 		s.idTable = cache.NewIDTable(s.redis.GetClient(), s.database.DB)
+		// 分页大小来自 idtab.build_page_size（此前配了不生效，构建固定用
+		// 组件默认 5000）。只在正数时设置：SetPageSize 对 <=0 是忽略，
+		// 但显式判断让「配 0 会怎样」在装配处就能读懂。
+		if ps := s.cfg.IDTab.BuildPageSize; ps > 0 {
+			s.idTable.SetPageSize(int64(ps))
+		}
 		if s.roleSvc != nil {
 			s.roleSvc.SetIDTable(s.idTable)
 		}
@@ -218,6 +224,14 @@ func (s *Server) attachOwnerIndexes() {
 
 	if len(s.indexMappings) == 0 {
 		return
+	}
+	// 与 ID 表同一份分页配置：两处都是「一次性全表扫 + 写 Redis」，
+	// 分页大小影响的是构建期的内存峰值与单批 RT，配一个值管两处比
+	// 让运维猜「另一个在哪配」更好。
+	if ps := s.cfg.IDTab.BuildPageSize; ps > 0 {
+		for _, oi := range s.ownerIdx {
+			oi.SetPageSize(int64(ps))
+		}
 	}
 	go s.buildOwnerIndexes(s.runCtx)
 	go s.maintainOwnerIndexes(s.runCtx)

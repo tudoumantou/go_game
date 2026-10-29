@@ -293,9 +293,23 @@ type FlushConfig struct {
 }
 
 type IDTabConfig struct {
-	BuildOnStart      bool   `yaml:"build_on_start"`     // 启动时构建 ID 表
-	BuildPageSize     int    `yaml:"build_page_size"`    // 构建分页（对应 IDTable.SetPageSize）
-	ReconcileInterval string `yaml:"reconcile_interval"` // 数量核对周期（默认 10m）
+	// BuildPageSize 构建 ID 表/归属索引时的分页行数（默认 5000）。
+	// 消费方：internal/game/server_start.go 装配时调 IDTable.SetPageSize
+	// 与 OwnerIndex.SetPageSize。配 0 或负数走组件默认值。
+	BuildPageSize int `yaml:"build_page_size"`
+
+	// ReconcileInterval 数量核对周期（默认 10m）。
+	// 消费方：internal/game/server.go 的 maintainIDTables / maintainOwnerIndexes。
+	// 解析失败或 <=0 时回落默认值——核对停摆不会报错，只会让索引悄悄漂移。
+	ReconcileInterval string `yaml:"reconcile_interval"`
+
+	// 关于 build_on_start（v3.21 删除）：它从来没有被读过，而且语义是伪需求
+	// ——构建本来就是 `go buildIDTables(...)` 异步进行的，不阻塞启动；
+	// 把它关掉只会让 ID 表永不 ready，所有存在性判断回落 DB、性能掉一半，
+	// 日志一个字都没有。留着它等于给「性能掉了但没人知道」留一个开关。
+	//
+	// 旧配置里的 build_on_start 会被 yaml 忽略（未开 KnownFields），
+	// 不报错也不生效——与它此前的行为一致。
 
 	// Mappings 一对多索引的声明（见 docs/缓存架构设计.md）。
 	//
