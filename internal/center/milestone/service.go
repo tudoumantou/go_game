@@ -25,6 +25,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/sqlstore"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -63,7 +64,7 @@ return val - old
 // 无 producer 只建任务不发奖，无 rdb 判定路径不工作，db 存任务断点。
 // now 可注入：测试据此把活动推到「已结束/未开始」等时间边界。
 type Service struct {
-	db       *db.DB
+	*sqlstore.Base
 	rdb      redis.UniversalClient
 	producer *pkgmq.Producer
 	consumer *pkgmq.Consumer
@@ -73,7 +74,7 @@ type Service struct {
 
 // New 创建服务。
 func New(database *db.DB, rdb redis.UniversalClient, producer *pkgmq.Producer, consumer *pkgmq.Consumer, logger *log.Logger) *Service {
-	return &Service{db: database, rdb: rdb, producer: producer, consumer: consumer, logger: logger, now: time.Now}
+	return &Service{Base: sqlstore.New(database, "milestone"), rdb: rdb, producer: producer, consumer: consumer, logger: logger, now: time.Now}
 }
 
 // RunConsumer 阻塞消费贡献上报，直到 ctx 取消。
@@ -195,7 +196,7 @@ func (s *Service) createTasks(ctx context.Context) error {
 			// INSERT IGNORE：重复展开时保持已有状态（已完成不会被重置为待发）。
 			// 与 UPSERT 的区别：任务行一旦存在就保留原 status——已发奖（done）
 			// 的任务不能被一次重跑打回待发，那会重复发奖
-			if _, err := s.db.DB.ExecContext(ctx, `
+			if _, err := s.SQL().ExecContext(ctx, `
 				INSERT IGNORE INTO activity_grant_task (id, instance_id, milestone_id, player_id, status, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?)`,
 				task.Id, task.InstanceId, task.MilestoneId, task.PlayerId, task.Status, task.UpdatedAt); err != nil {
@@ -216,7 +217,7 @@ func (s *Service) createTasks(ctx context.Context) error {
 // 顺序「先发后标记」：标记意味着承诺已送达；反过来先标记后发送，
 // 进程在两者之间崩溃就会丢奖励。发送失败保持 pending 重试。
 func (s *Service) grantPending(ctx context.Context) error {
-	rows, err := s.db.DB.QueryContext(ctx, `
+	rows, err := s.SQL().QueryContext(ctx, `
 		SELECT id, instance_id, milestone_id, player_id
 		FROM activity_grant_task WHERE status = ? ORDER BY id LIMIT ?`, statusPending, batchSize)
 	// ORDER BY id + LIMIT：按稳定顺序取批，中断后下一轮从断点续，
@@ -265,7 +266,7 @@ func (s *Service) grantPending(ctx context.Context) error {
 				}
 			}
 		}
-		if _, err := s.db.DB.ExecContext(ctx,
+		if _, err := s.SQL().ExecContext(ctx,
 			`UPDATE activity_grant_task SET status = ?, updated_at = ? WHERE id = ?`,
 			statusDone, s.now().Unix(), t.id); err != nil {
 			// 逐条 UPDATE 而非批量：单条失败即中断本批，已成功的保持 done，

@@ -20,6 +20,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/sqlstore"
 )
 
 // LoginLogConsumer 把登录流水写入 login_log 表。
@@ -29,17 +30,18 @@ import (
 // 也不做业务去重：流水是事实记录，重投产生重复行不影响玩家状态。
 // 字段契约：consumer 由外部装配（含 topic/group 选择）；db 为 nil 时
 // handle 返回错误（装配缺失应暴露，不该静默丢消息）。
+// 连接池经 sqlstore.Base 提供，nil 判断统一走 Ready()。
 type LoginLogConsumer struct {
 	consumer *pkgmq.Consumer
-	db       *db.DB
-	logger   *log.Logger
+	*sqlstore.Base
+	logger *log.Logger
 }
 
 // NewLoginLogConsumer 创建消费者。
 // 依赖全部外部注入（pkg/mq.Consumer + db.DB + logger），内部不新建连接——
 // 与 Group 的装配方式保持一致，便于测试替换。
 func NewLoginLogConsumer(consumer *pkgmq.Consumer, database *db.DB, logger *log.Logger) *LoginLogConsumer {
-	return &LoginLogConsumer{consumer: consumer, db: database, logger: logger}
+	return &LoginLogConsumer{consumer: consumer, Base: sqlstore.New(database, "login_log"), logger: logger}
 }
 
 // Run 阻塞消费。
@@ -76,13 +78,13 @@ func (c *LoginLogConsumer) handle(ctx context.Context, env *pkgmq.Envelope) erro
 	}
 	// db 缺失是装配错误（Group 里 deps.DB 为 nil 时本不该被创建），
 	// 显式报错而不是 panic——让上层看到消费者停止并记录原因。
-	if c.db == nil {
+	if !c.Ready() {
 		return fmt.Errorf("login log consumer without database")
 	}
 	// 用生成的 InsertLoginLog：列名来自 schema，加列/改列时编译期就能发现。
 	// 参数化与 ctx 取消语义不变（生成函数内部仍是 ExecContext）。
 	// 重复行由「登录流水不去重」的设计兜底（每次登录尝试都是一条独立事实）。
-	_, err := model.InsertLoginLog(ctx, c.db.DB, &model.LoginLog{
+	_, err := model.InsertLoginLog(ctx, c.SQL(), &model.LoginLog{
 		AccountId: msg.AccountID,
 		PlayerId:  msg.PlayerID,
 		Ip:        msg.IP,

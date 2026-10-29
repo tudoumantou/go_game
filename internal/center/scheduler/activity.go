@@ -23,6 +23,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/sqlstore"
 )
 
 // Service 活动实例调度。
@@ -31,7 +32,7 @@ import (
 // now 可注入让测试控制「当前处于哪个周期」——周期算法的边界
 // （跨期瞬间、刚上线）全靠它覆盖。
 type Service struct {
-	db       *db.DB
+	*sqlstore.Base
 	producer *pkgmq.Producer
 	logger   *log.Logger
 	now      func() time.Time
@@ -41,7 +42,7 @@ type Service struct {
 // 降级而不是失败：调度下发是优化项，没有 Kafka 的中心服仍能把
 // 活动状态落库，游戏服侧算法独立算窗口，功能不残缺。
 func New(database *db.DB, producer *pkgmq.Producer, logger *log.Logger) *Service {
-	return &Service{db: database, producer: producer, logger: logger, now: time.Now}
+	return &Service{Base: sqlstore.New(database, "scheduler"), producer: producer, logger: logger, now: time.Now}
 }
 
 // Run 由 leader 生命周期驱动，30s 一次：活动边界最长一天，秒级精度没有意义。
@@ -94,7 +95,7 @@ func (s *Service) syncOne(ctx context.Context, activityID int32, durationDays in
 	start, end, period := activity.Window(durationDays, now)
 	instanceID := fmt.Sprintf("%d-%d", activityID, period)
 
-	row, err := model.FindActivityInstanceByPK(ctx, s.db.DB, instanceID)
+	row, err := model.FindActivityInstanceByPK(ctx, s.SQL(), instanceID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -111,7 +112,7 @@ func (s *Service) syncOne(ctx context.Context, activityID int32, durationDays in
 		Version:    start, // 版本 = 开始时间，单调递增
 		UpdatedAt:  now,
 	}
-	if _, err := model.UpsertActivityInstanceByPK(ctx, s.db.DB, ins); err != nil {
+	if _, err := model.UpsertActivityInstanceByPK(ctx, s.SQL(), ins); err != nil {
 		return err
 	}
 	s.publish(ctx, ins, "start")

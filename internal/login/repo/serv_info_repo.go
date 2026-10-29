@@ -22,6 +22,7 @@ import (
 	"game_study/pkg/cache"
 	"game_study/pkg/db"
 	"game_study/pkg/model"
+	"game_study/pkg/sqlstore"
 )
 
 // servInfoCacheTTL 全量缓存有效期；区服配置变更低频，5 分钟足够，
@@ -29,15 +30,17 @@ import (
 const servInfoCacheTTL = 5 * time.Minute
 
 // ServInfoRepo 服务器列表仓储。
-// 依赖注入 *db.DB 与 redis.UniversalClient（可空）：无 Redis 时退化为直读 MySQL。
+//
+// 基座是 pkg/sqlstore.Base（与其余仓储同源）；rdb 可空，无 Redis 时退化为
+// 直读 MySQL——缓存是加速层，不是正确性前提。
 type ServInfoRepo struct {
-	db  *db.DB
+	*sqlstore.Base
 	rdb redis.UniversalClient
 }
 
 // NewServInfoRepo 创建仓储。
 func NewServInfoRepo(database *db.DB, rdb redis.UniversalClient) *ServInfoRepo {
-	return &ServInfoRepo{db: database, rdb: rdb}
+	return &ServInfoRepo{Base: sqlstore.New(database, "serv_info"), rdb: rdb}
 }
 
 // List 列出全部区服（cache-aside）。
@@ -68,7 +71,7 @@ func (r *ServInfoRepo) List(ctx context.Context) ([]*model.ServInfo, error) {
 func (r *ServInfoRepo) loadAll(ctx context.Context) ([]*model.ServInfo, error) {
 	const q = `SELECT id, name, ip, port, open_time, status, recommend, created_at, updated_at
 	           FROM serv_info ORDER BY id`
-	rows, err := r.db.QueryContext(ctx, q)
+	rows, err := r.DB().QueryContext(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("list serv_info: %w", err)
 	}

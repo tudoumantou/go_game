@@ -26,6 +26,7 @@ import (
 	"game_study/pkg/model"
 	pkgmq "game_study/pkg/mq"
 	internalv2 "game_study/pkg/pb/internalv2"
+	"game_study/pkg/sqlstore"
 )
 
 // rankEntry 归档回调的条目类型（rank.Service 用内部协议结构）。
@@ -74,7 +75,7 @@ type Config struct {
 //   - 出口：producer（Kafka 发奖邮件），nil 时归档照常、只跳过发奖；
 //   - 横切：cfg（配置）、logger、now（时钟注入——测试据此模拟「赛季已到期」）。
 type Service struct {
-	db       *db.DB
+	*sqlstore.Base
 	rank     *rank.Service
 	stats    *stats.Service
 	producer *pkgmq.Producer
@@ -102,7 +103,7 @@ func New(database *db.DB, rankSvc *rank.Service, statsSvc *stats.Service,
 		cfg.GroupID = "group-01"
 	}
 	return &Service{
-		db: database, rank: rankSvc, stats: statsSvc,
+		Base: sqlstore.New(database, "archive"), rank: rankSvc, stats: statsSvc,
 		producer: producer, cfg: cfg, logger: logger,
 		now: time.Now,
 	}
@@ -163,7 +164,7 @@ func (s *Service) Tick(ctx context.Context) error {
 // （errors.Is 能穿透多层 %w）。首次启动的起点记「现在」而不是 rank
 // 服务的创建时间——归档只关心「从哪刻起算一期」。
 func (s *Service) currentSeason(ctx context.Context) (string, int64, error) {
-	row, err := model.FindCenterSeasonByPK(ctx, s.db.DB, seasonRowID)
+	row, err := model.FindCenterSeasonByPK(ctx, s.SQL(), seasonRowID)
 	if err == nil {
 		return row.Season, row.StartedAt, nil
 	}
@@ -182,7 +183,7 @@ func (s *Service) currentSeason(ctx context.Context) (string, int64, error) {
 // saveSeason 写入赛季起点（单行表 UPSERT）。
 // UpdatedAt 每次刷新：排查时能看出这条全局状态最后被谁、何时改动。
 func (s *Service) saveSeason(ctx context.Context, season string, startedAt int64) error {
-	_, err := model.UpsertCenterSeasonByPK(ctx, s.db.DB, &model.CenterSeason{
+	_, err := model.UpsertCenterSeasonByPK(ctx, s.SQL(), &model.CenterSeason{
 		Id:        seasonRowID,
 		Season:    season,
 		StartedAt: startedAt,
@@ -232,7 +233,7 @@ func (s *Service) rotateIfDue(ctx context.Context) error {
 // done 态直接跳过——一个赛季只会完整结算一次。
 func (s *Service) archiveOne(ctx context.Context, season, rankType string) error {
 	taskID := season + ":" + rankType
-	task, err := model.FindRankArchiveTaskByPK(ctx, s.db.DB, taskID)
+	task, err := model.FindRankArchiveTaskByPK(ctx, s.SQL(), taskID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -266,7 +267,7 @@ func (s *Service) archiveOne(ctx context.Context, season, rankType string) error
 		}
 		// 一批一个事务：要么整批入库要么整体回滚，不留半批历史；
 		// 回调返回错误即中断归档（rank.Archive 向上传播），由 leader 下轮重试
-		if err := s.db.Tx(ctx, func(tx *sql.Tx) error {
+		if err := s.Tx(ctx, func(tx *sql.Tx) error {
 			return model.UpsertRankHistoryBatch(ctx, tx, rows)
 		}); err != nil {
 			return err
@@ -286,7 +287,7 @@ func (s *Service) archiveOne(ctx context.Context, season, rankType string) error
 // saveTask 更新归档断点（UPSERT 单行）。
 // rows 记录实际写入行数：done 时非 0 说明本期确实产出了历史，运维可核对。
 func (s *Service) saveTask(ctx context.Context, id, season, rankType string, status int32, rows int) error {
-	_, err := model.UpsertRankArchiveTaskByPK(ctx, s.db.DB, &model.RankArchiveTask{
+	_, err := model.UpsertRankArchiveTaskByPK(ctx, s.SQL(), &model.RankArchiveTask{
 		Id:           id,
 		Season:       season,
 		RankType:     rankType,
@@ -363,7 +364,7 @@ func (s *Service) flushStats(ctx context.Context) error {
 				// 所以用 ON DUPLICATE KEY 覆盖同一窗口，而不是插入新行。
 				// 补跑/重跑同一窗口必须是覆盖语义，否则每次落库多一行，
 				// GM 查询把多行累加成错误值。
-				if _, err := s.db.DB.ExecContext(ctx, `
+				if _, err := s.SQL().ExecContext(ctx, `
 					INSERT INTO feature_stats (group_id, feature, window_start, window_end, value, updated_at)
 					VALUES (?, ?, ?, ?, ?, NOW())
 					ON DUPLICATE KEY UPDATE window_end = VALUES(window_end), value = VALUES(value)`,
