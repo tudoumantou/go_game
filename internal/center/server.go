@@ -284,9 +284,11 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("CenterServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
 		"group", s.groupID, "cross_nodes", s.cfg.Cross.Nodes)
 	// 阻塞点：Start 的返回即「关闭信号已到达」，main 随后编排 Shutdown
-	//（两阶段优雅退出的第一阶段在这里结束，见 cmd/center/main.go）
+	//（两阶段优雅退出的第一阶段在这里结束，见 pkg/bootstrap）
 	<-ctx.Done()
-	return ctx.Err()
+	// 返回 nil 而不是 ctx.Err()：契约是「只有启动失败才返回 error」。
+	// 返回 ctx.Err() 会让调用方当成启动失败而直接退出，Shutdown 永不执行。
+	return nil
 }
 
 // tickLoop 统一节拍循环（1s）：节点心跳巡检、匹配放宽、中转重试、指标上报。

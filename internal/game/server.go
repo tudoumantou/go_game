@@ -202,7 +202,10 @@ func (s *Server) Start(ctx context.Context) error {
 	started = true
 	// 阻塞运行期：外部 ctx 只负责通知，不停任何组件（见 runCtx 字段注释）。
 	<-ctx.Done()
-	return ctx.Err()
+	// 返回 nil 而不是 ctx.Err()：本函数的契约是「只有启动失败才返回 error」。
+	// 返回 ctx.Err() 会让调用方把它当成启动失败而直接退出，Shutdown 永不执行
+	// ——这条契约曾经在六个进程里各写错一次（v3.19 修复）。
+	return nil
 }
 
 // readiness 就绪探针：DB/Redis 可用才允许接流量（19.6 探针表）。

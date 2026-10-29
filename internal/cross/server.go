@@ -102,7 +102,10 @@ func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("CrossServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
 		"node", s.cfg.Server.Name)
 	<-ctx.Done()
-	return ctx.Err()
+	// 返回 nil 而不是 ctx.Err()：契约是「只有启动失败才返回 error」。
+	// 返回 ctx.Err() 会让调用方当成启动失败而直接退出，Shutdown 永不执行
+	// （房间不会兜底结算、metrics 不会关）。
+	return nil
 }
 
 // reportRoomStats 定期上报房间与节点指标。

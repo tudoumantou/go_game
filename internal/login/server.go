@@ -224,9 +224,12 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.logger.Info("LoginServer started", "addr", s.cfg.Server.HTTPAddr)
 	// 阻塞至停机信号：与 gateway.Start 同款契约（进程生命周期由
-	// main 的 shutdown 编排控制）
+	// pkg/bootstrap 的关闭编排控制）
 	<-ctx.Done()
-	return ctx.Err()
+	// 返回 nil 而不是 ctx.Err()：契约是「只有启动失败才返回 error」。
+	// 返回 ctx.Err() 会让调用方当成启动失败而直接退出，Shutdown 永不执行
+	// （支付回调链路不会按序关闭）。
+	return nil
 }
 
 // reconcileLoop 每小时对账：已支付未发货订单重投（13.3 模式③）。

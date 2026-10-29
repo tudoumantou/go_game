@@ -9,28 +9,29 @@
 //	game 服（玩家 Actor） --内部 RPC--> map 服（地图事务）
 //	map 服 --交接单--> game 服（资产入包）
 //
-// 本进程启动顺序：配置 → 世界管理器（25 个场景循环）→ 加载世界 → 阻塞等信号。
-// 没有 Redis/MySQL 硬依赖之前（M1），可以用最小配置直接跑起来做联调。
+// 设计取舍：启动样板统一在 pkg/bootstrap，但本进程有三处与其余五个不同，
+// 全部收在下面的 mapServer 适配器里（而不是让 bootstrap 长出一堆开关）：
+//  1. New 需要 MapConfig（不是整个 cfg）与 runtime.Logger；
+//  2. gRPC 服务的注册必须在 Start 之前（gRPC 不允许运行中改服务表）；
+//  3. 生命周期方法叫 Run 而不是 Start。
 //
-// 设计取舍：main 只做组装与生命周期，不含业务。signal.NotifyContext 把
-// SIGINT/SIGTERM 转成 ctx 取消；关闭走两阶段（先拒新写、再等在途事务），
-// 任何一步超时都强停，保证发布窗口可控。
+// 另外，本进程此前**没有接 metrics**——它是第六份 main.go，抄模板时漏了。
+// 现在由适配器在 Start 里补上（/metrics、/healthz、/readyz 一并可用）。
 package main
 
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"game_study/internal/worldmap"
 	maprpc "game_study/internal/worldmap/rpc"
+	"game_study/pkg/bootstrap"
 	"game_study/pkg/config"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 	rpcpkg "game_study/pkg/rpc"
 
 	// automaxprocs：按 cgroup CPU 配额设置 GOMAXPROCS（K8s 限核时
@@ -38,93 +39,113 @@ import (
 	_ "go.uber.org/automaxprocs"
 )
 
-var (
-	// configPath 默认指向 dev 配置；生产用 -config 覆盖。
-	configPath = flag.String("config", "configs/map/map-dev.yaml", "配置文件路径")
-	// version 由构建时 -ldflags "-X main.version=..." 注入。
-	version = "dev"
-)
+// version 构建时 -ldflags "-X main.version=..." 注入（-X 只能改写字符串变量）。
+var version = "dev"
 
 func main() {
-	flag.Parse()
+	bootstrap.Run(bootstrap.Options{
+		Name:          "map",
+		DefaultConfig: "configs/map/map-dev.yaml",
+		Version:       version,
+		// 地图是「等在途事务」型服务：超时太短会把已提交的命令截断成结果未知。
+		// 30s 是原实现的经验值（比游戏服短，因为它没有 Actor 排空与 Kafka 刷出）。
+		ShutdownBudget: 30 * time.Second,
+		Build:          buildMapServer,
+	})
+}
 
-	logger := log.New("map")
-	logger.Info("MapServer starting", "version", version, "config", *configPath)
-
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		logger.Error("load config failed", "err", err)
-		os.Exit(1)
-	}
-	logger = log.New("map", log.WithLevel(cfg.Log.Level))
-
+// buildMapServer 组装地图服务。失败即拒绝启动（bootstrap 会打日志并非零退出）。
+func buildMapServer(cfg *config.Config, logger *log.Logger) (bootstrap.Server, error) {
 	if !cfg.Map.Enabled {
-		// 显式失败而不是静默空转：map 进程起来却没启用地图，
-		// 说明配置指向错了文件（比如拿了 game 的配置），静默运行会让人误以为部署成功。
-		logger.Error("map.enabled=false，该进程无任何世界可服务，请检查配置")
-		os.Exit(1)
+		// 显式失败而不是静默空转：map 进程起来却没启用地图，说明配置指向错了
+		// 文件（比如拿了 game 的配置），静默运行会让人误以为部署成功。
+		return nil, errors.New("map.enabled=false，该进程无任何世界可服务，请检查配置")
 	}
 
 	verifier, err := tokenVerifier(cfg)
 	if err != nil {
-		logger.Error("map 鉴权配置无效", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("map 鉴权配置无效: %w", err)
 	}
 
 	// MySQL 连接配置从顶层段取（与其它服务共用一套连接参数）；
 	// 为空则走内存模式，适合本地联调。
-	srv, err := worldmap.New(cfg.Map, loggerAdapter{logger},
+	base, err := worldmap.New(cfg.Map, loggerAdapter{logger},
 		worldmap.WithMySQL(cfg.MySQL),
 		worldmap.WithTokenVerifier(verifier),
 	)
 	if err != nil {
-		logger.Error("map server init failed", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("map server init failed: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// gRPC 服务：注册必须在 Start 之前（gRPC 不允许运行中改服务表）。
+	// 注册必须在 Start 之前：gRPC 不允许运行中改服务表。
 	rs := rpcpkg.NewServer(cfg.Server.GRPCAddr, logger)
-	srv.API().Register(rs.GRPCServer())
+	base.API().Register(rs.GRPCServer())
+
+	return &mapServer{base: base, rs: rs, logger: logger, cfg: cfg}, nil
+}
+
+// mapServer 把 worldmap.Server 适配成 bootstrap.Server。
+//
+// 适配点：生命周期方法名（Run/Shutdown）、gRPC 的起停（外部持有）、
+// metrics（本进程原先没有）。
+type mapServer struct {
+	base       *worldmap.Server
+	rs         *rpcpkg.Server
+	logger     *log.Logger
+	cfg        *config.Config
+	metricsSrv *metrics.Server
+}
+
+// Start 起指标与 gRPC，然后阻塞在世界管理器上。
+//
+// 顺序：指标最先（它失败要尽早暴露，且它不影响业务正确性——放在业务之前
+// 起，业务起来时就已可观测）；gRPC 次之（客户端连上时服务已注册）；
+// 最后才是 Run（加载世界、跑场景循环）。
+func (m *mapServer) Start(ctx context.Context) error {
+	if m.cfg.Metrics.Enable {
+		metrics.Init(m.cfg.Server.Name)
+		mSrv, err := metrics.NewServer(m.cfg.Metrics.Addr, nil)
+		if err != nil {
+			return fmt.Errorf("metrics server: %w", err)
+		}
+		mSrv.Start()
+		m.metricsSrv = mSrv
+		m.logger.Info("metrics server started", "addr", mSrv.Addr())
+	}
+
 	go func() {
-		if err := rs.Start(ctx); err != nil && ctx.Err() == nil {
-			logger.Error("grpc server stopped with error", "err", err)
+		if err := m.rs.Start(ctx); err != nil && ctx.Err() == nil {
+			m.logger.Error("grpc server stopped with error", "err", err)
 		}
 	}()
 
-	runErr := srv.Run(ctx)
-	rs.Stop()
-	logger.Info("shutdown signal received")
+	return m.base.Run(ctx)
+}
 
-	// 关闭预算：地图是"等在途事务"型服务，超时太短会把已提交的命令
-	// 截断成结果未知。默认 30s，允许配置覆盖。
-	total := 30 * time.Second
-	if d, err := config.ParseDuration(cfg.Shutdown.TotalTimeout); err == nil && d > 0 {
-		total = d
+// Shutdown 先停 gRPC（不再接新命令），再交给世界管理器收尾（拒新写 →
+// 等在途事务 → 关场景 → 释放租约），最后停指标。
+//
+// gRPC 必须在最前：世界管理器的排空依赖「不再有新命令进来」，
+// 反序会让排空永远收敛不到零。
+func (m *mapServer) Shutdown(ctx context.Context) error {
+	m.rs.Stop()
+	err := m.base.Shutdown(ctx)
+	if m.metricsSrv != nil {
+		err = errors.Join(err, m.metricsSrv.Stop(ctx))
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), total)
-	defer cancel()
-	shutdownErr := srv.Shutdown(shutdownCtx)
-
-	if err := errors.Join(runErr, shutdownErr); err != nil {
-		logger.Error("map server exit with error", "err", err)
-		os.Exit(1)
-	}
-	logger.Info("MapServer stopped")
+	return err
 }
 
 // tokenVerifier 构造内部 RPC 鉴权器。
 //
 // dev/test 环境用静态 token（配置 map 段暂时没有 token 字段，先用环境变量
 // MAP_INTERNAL_TOKEN）；生产未配置 token 时直接拒绝启动——
-// 地图服务暴露的是"改别人家城池"的能力，不能默认裸奔。
+// 地图服务暴露的是「改别人家城池」的能力，不能默认裸奔。
 func tokenVerifier(cfg *config.Config) (maprpc.TokenVerifier, error) {
 	token := os.Getenv("MAP_INTERNAL_TOKEN")
 	if token == "" {
 		// 生产环境没有 token 等于允许任意内部调用者伪造 player_id，
-		// 这是"改别人家城池"级别的风险，必须拒绝启动。
+		// 这是「改别人家城池」级别的风险，必须拒绝启动。
 		if cfg.Server.Env == "prod" {
 			return nil, fmt.Errorf("MAP_INTERNAL_TOKEN 未设置：生产环境不允许裸奔")
 		}
@@ -140,7 +161,7 @@ func tokenVerifier(cfg *config.Config) (maprpc.TokenVerifier, error) {
 // loggerAdapter 把项目日志器适配成 runtime.Logger。
 //
 // 为什么用适配器而不是让 runtime 直接依赖 pkg/log：
-// runtime 是纯领域运行时，测试里只需要"能记日志"，不应该被迫
+// runtime 是纯领域运行时，测试里只需要「能记日志」，不应该被迫
 // 拉起真实日志器（它可能写文件、连 Kafka）。三个方法的小接口
 // 让测试可以传一个把日志收进 slice 的假实现。
 type loggerAdapter struct{ l *log.Logger }

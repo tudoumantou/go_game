@@ -277,6 +277,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// TCPServer 内部 accept goroutine + 每连接一个 Serve goroutine
 	s.tcpSrv = netpkg.NewTCPServer(s.cfg.Server.TCPAddr, s.onAccept)
 	if err := s.tcpSrv.Start(ctx); err != nil {
+		// pkg/net 的契约是「用 ctx.Err() 表示正常关服」（见 TCPServer.Start），
+		// 这里往上转成 nil：本服务的契约是「只有启动失败才返回 error」。
+		// 直接透传会让调用方把 SIGTERM 当成启动失败而跳过 Shutdown。
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	return nil

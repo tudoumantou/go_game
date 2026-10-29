@@ -11,7 +11,11 @@ server:
   name: map
   env: dev
   grpc_addr: ":9400"
-  http_addr: ":9401"
+metrics:
+  # 地图进程原先没有任何 HTTP 端点，这个端口一直空着；
+  # 接 metrics 后它承载 /metrics、/healthz、/readyz。
+  enable: true
+  addr: ":9401"
 
 log:
   level: warn
