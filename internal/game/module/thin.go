@@ -66,17 +66,15 @@ type respSpec struct {
 // 用法：
 //
 //	m := &Module{}
-//	m.Thin = module.NewThin("signin",
+//	m.Thin = module.NewThin("chat",
 //		module.ThinLogger(logger),
-//		module.ThinErrCode(codeSystem),
-//		module.ThinGuard(RequireCache),
-//		module.ThinInit(m.initConfig),
+//		module.ThinLogin(m.onLogin),
 //	)
-//	m.HandleR(MsgInfoReq, MsgInfoResp, &gamev1.SigninInfoResp{}, m.onInfo)
-//	m.HandleR(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, m.onClaim)
+//	module.Handle(m.Thin, m.onSend)      // 一问一答（协议号由类型反查）
+//	module.Handle(m.Thin, m.onHistory)
 //
 // 生命周期钩子都是可选的：不挂 Login/Logout 就是空实现，
-// 与手写 Module 时「用不到就 return nil」完全一致。
+// 与手写 Module 时「用不到就 return nil」完全一致。注册入口见 route.go。
 type Thin struct {
 	name    string
 	logger  *log.Logger

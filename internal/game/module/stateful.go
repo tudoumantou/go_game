@@ -28,22 +28,25 @@ import (
 
 // Stateful 单结构体模块基座。
 //
-// 用法：
+// 现役模块通过 Define 使用它（Define 就是「Stateful + 默认 logger」的门面）：
 //
-//	type Data struct { Days []int32; Rewards map[int32]int64 }
+//	var M = module.Define[Data]("signin", newData).Guard(module.RequireCache)
 //
-//	m.Stateful = module.NewStateful("signin", newData,
-//		module.ThinLogger(logger),
-//		module.ThinErrCode(codeSystem),
-//	)
-//	m.HandleR(MsgClaimReq, MsgClaimResp, &gamev1.SigninClaimResp{}, m.onClaim)
-//
-//	func (m *Module) onClaim(ctx *module.Context, _ uint32, _ []byte) error {
-//		return m.Mutate(ctx, func(d *Data) bool {
-//			d.Days = append(d.Days, today)
-//			return true          // 有改动 → 写回 Ext 并标脏
-//		})
+//	func init() {
+//		module.Route(M, &gamev1.SigninClaimReq{}, onClaim)
 //	}
+//
+//	func onClaim(c *module.Ctx[Data], _ *gamev1.SigninClaimReq) error {
+//		d, err := c.Repo.Get()        // 取状态
+//		d.Days = append(d.Days, today)
+//		if err := c.Repo.Save(d); err != nil {
+//			return err
+//		}
+//		return c.Reply(&gamev1.SigninClaimResp{Code: 0})
+//	}
+//
+// 也可以直接 NewStateful 组装（需要完全自定义日志/钩子时），
+// 注册入口同样是 module.Handle / module.Route。
 //
 // Go 知识点：泛型参数 T 通过 newFn 的签名推断（func() *T），调用处不必写
 // 显式的类型实参；基座本身不做反射，序列化走 encoding/json 的常规路径。
