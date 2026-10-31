@@ -202,8 +202,8 @@ type Actor struct {
 	repo     *Repository
 	// preloader 非缓存模式的并行预加载器（结果只在组装 State 时用一次）。
 	preloader *Preloader
-	// onDirty 任一数据变更 → 通知 flusher 排落库；缓存权威模式下为空
-	// （持久化由 Redis 脏队列 + writebehind worker 负责，不走 flusher）。
+	// onDirty 任一数据变更 → 通知 flusher 排落库。
+	// 内存权威下所有玩家都走它（落库唯一来源是内存，见 savePlayer）。
 	onDirty  func(playerID int64)
 	sendFunc SendFunc
 
@@ -229,8 +229,11 @@ type Actor struct {
 	// writebehind 的落库确认。
 	token int64
 
-	// cacheVersion 本地已知的 Redis 快照版本（仅用于落库确认与日志）；
-	// 提交成功则前进为新版本，失败保持旧值（下轮按同一版本重试）。
+	// cacheVersion 本地已知的 Redis 快照版本。
+	//
+	// R14 之后它只反映「加载 / 重建副本时的版本」：常规消息走异步回写，
+	// 不等回写结果，因此不再每条消息推进。用途剩两个——日志与落库确认；
+	// 正确性不依赖它（版本栅栏在 Lua 与 player_writebehind 两侧）。
 	cacheVersion int64
 	// cacheReload 下一条消息前必须重新 LoadCached：上一次提交已回滚或
 	// 结果未知，内存相对 Redis 已过期，先恢复权威状态再进业务。
@@ -606,9 +609,27 @@ func (a *Actor) onUnbind(ctx *actor.Context, msg *UnbindMsg) {
 	}
 	a.online = false
 	a.sessionID = 0
-	// 标记 dirty，由 flusher 统一落库
-	if a.onDirty != nil {
-		a.onDirty(a.playerID)
+	// 下线强制落盘（R14）：不等 flusher 的 60s 窗口。
+	//
+	// 为什么必须在这里等：下线是「这个玩家的会话结束了」的唯一确定信号。
+	// 旧的写法只是 MarkDirty，把数据交给 60s 后的批量落库——期间进程重启/
+	// 崩溃/滚动发布，这段进度就永远消失了，而玩家对此毫无感知（他已经下线，
+	// 下次登录看到的是旧数据）。下线路径上多等一次单玩家事务（毫秒级）
+	// 换取「下线即入库」，这笔账在任何玩法里都划算。
+	//
+	// 失败时仍然 MarkDirty 交回 flusher：一次 SQL 抖动不该变成玩家掉进度，
+	// 让重试机制接手是正确姿势（restart 前仍有机会落库）。
+	if err := a.savePlayer(ctx); err != nil {
+		a.logger.Warn("offline persist failed, fall back to flusher",
+			"player_id", a.playerID, "err", err)
+		if a.onDirty != nil {
+			a.onDirty(a.playerID)
+		}
+	}
+	// 副本也刷平：别的玩家读这个角色（阵容/排行/资料）时，不该看到一个
+	// 「已经下线但停在 200ms 前」的视图。失败只告警——副本不是权威。
+	if err := a.flushReplica(); err != nil {
+		a.logger.Warn("offline replica flush failed", "player_id", a.playerID, "err", err)
 	}
 	a.logger.Info("player offline", "session_id", msg.SessionID)
 }
@@ -715,6 +736,15 @@ func (a *Actor) resyncCache(version int64) error {
 	if a.repo == nil || a.repo.cache == nil {
 		return nil
 	}
+	// 先把这个玩家积压的异步回写刷平，再 Drop。
+	//
+	// 不刷的直接后果：Drop + Seed 之后，队列里那条「更旧的字段」才落地——
+	// 它会把刚重建好的 hash 改回旧值（比如充值前的余额），而且 syncScript
+	// 会把 version 再 +1，让这份旧副本被判定为「不落后于库」，加载侧就再也
+	// 不会用库覆盖它。这是异步回写引入的新竞态，必须在重建前堵住。
+	if err := a.flushReplica(); err != nil {
+		a.logger.Warn("flush pending replica before resync failed", "player_id", a.playerID, "err", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := a.repo.cache.Drop(ctx, a.playerID); err != nil {
@@ -750,6 +780,13 @@ func (a *Actor) onSave(ctx *actor.Context, msg *SaveMsg) {
 	replySave(msg.Done, a.savePlayer(ctx))
 }
 
+// saveTimeout 单次落库的事务超时。
+//
+// 必须有：落库在 Actor 线程内执行（onSave / 下线强制落盘），一次挂住的
+// SQL 会让整个玩家信箱停摆——比慢更糟的是「不知道要等多久」。10s 覆盖
+// 「大背包 + 慢盘」的极端情况，超过就是数据库侧故障，应当失败重试。
+const saveTimeout = 10 * time.Second
+
 // savePlayer 真正执行落库，返回第一个错误（模块钩子或 SQL 失败）。
 //
 // 内存权威：这里就是所有玩家数据的落库入口，不管缓存开没开。数据源是
@@ -768,7 +805,9 @@ func (a *Actor) savePlayer(ctx *actor.Context) error {
 		}
 	}
 	if a.repo != nil {
-		if err := a.repo.Save(context.Background(), a.state); err != nil {
+		saveCtx, cancel := context.WithTimeout(context.Background(), saveTimeout)
+		defer cancel()
+		if err := a.repo.Save(saveCtx, a.state); err != nil {
 			a.logger.Error("save player failed", "err", err)
 			return err // SQL 失败优先于模块钩子错误
 		}

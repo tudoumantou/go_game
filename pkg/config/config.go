@@ -59,11 +59,12 @@ type Config struct {
 	Token TokenConfig `yaml:"token"`
 	Pay   PayConfig   `yaml:"pay"`
 	// 游戏服
-	Actor  ActorConfig  `yaml:"actor"`
-	Cross  CrossConfig  `yaml:"cross"`
-	Flush  FlushConfig  `yaml:"flush"`
-	IDTab  IDTabConfig  `yaml:"idtab"`
-	Center CenterConfig `yaml:"center"`
+	Actor   ActorConfig   `yaml:"actor"`
+	Cross   CrossConfig   `yaml:"cross"`
+	Flush   FlushConfig   `yaml:"flush"`
+	Replica ReplicaConfig `yaml:"replica"`
+	IDTab   IDTabConfig   `yaml:"idtab"`
+	Center  CenterConfig  `yaml:"center"`
 	// 中心服
 	Report     ReportConfig     `yaml:"report"`
 	Rank       RankConfig       `yaml:"rank"`
@@ -292,8 +293,24 @@ type FlushConfig struct {
 	DirtyTTL   string `yaml:"dirty_ttl"`  // 脏 key 存活上限（异常兜底）
 }
 
-type IDTabConfig struct {
-	// BuildPageSize 构建 ID 表/归属索引时的分页行数（默认 5000）。
+// ReplicaConfig Redis 副本的异步回写（R14）。
+//
+// 消费方：internal/game/server_start.go 的 initRedis → writebehind.NewReplica。
+// 零值全部走组件默认（200ms / 256 / 100000 / 300），未配 replica 段的老配置
+// 无需改动即可获得异步回写。
+type ReplicaConfig struct {
+	// Interval 批量刷写周期。200ms 是「跨节点读的新鲜度」与「Redis 写压力」
+	// 的折中；调到秒级以上会让别的玩家看到明显过期的数据（排行榜/阵容）。
+	Interval string `yaml:"interval"`
+	// MaxBatch 单轮最多刷多少个玩家（一轮 = 一次 pipeline RTT）。
+	MaxBatch int `yaml:"max_batch"`
+	// MaxPending 待刷玩家上限；超限丢最旧的（Redis 长时间不可用时保内存）。
+	MaxPending int `yaml:"max_pending"`
+	// MaxAttempts 单条记录最大重试次数；超过即丢弃并告警。
+	MaxAttempts int `yaml:"max_attempts"`
+}
+
+type IDTabConfig struct { // BuildPageSize 构建 ID 表/归属索引时的分页行数（默认 5000）。
 	// 消费方：internal/game/server_start.go 装配时调 IDTable.SetPageSize
 	// 与 OwnerIndex.SetPageSize。配 0 或负数走组件默认值。
 	BuildPageSize int `yaml:"build_page_size"`

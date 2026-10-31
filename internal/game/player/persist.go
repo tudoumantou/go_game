@@ -37,10 +37,20 @@ import (
 // 索引挂载全项目一个答案，玩家快照不再是「另有一套判断」的那一处。
 type Repository struct {
 	*sqlstore.Base
+	// cache Redis 副本（读写、版本、租约）。
 	cache *writebehind.Store
+	// replica 副本的**异步**回写通道（R14）。
+	//
+	// 非 nil 时常规消息走「编码 → 入队 → 立即回包」；nil 时退回同步 Sync
+	// （单测与无 Redis 环境），行为与改造前一致。用一个可选字段而不是把
+	// 两条路都塞进 Store：Store 只描述「怎么写副本」，要不要等是调用方的决定。
+	replica *writebehind.Replica
 }
 
 func (r *Repository) SetCache(store *writebehind.Store) { r.cache = store }
+
+// SetReplica 装配异步回写通道（在 SetCache 之后调用）。
+func (r *Repository) SetReplica(rep *writebehind.Replica) { r.replica = rep }
 
 // CacheEnabled 是否启用缓存权威模式。
 //

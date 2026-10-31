@@ -97,6 +97,7 @@ func Init(service string) {
 		registerConn()
 		registerMessage()
 		registerActor()
+		registerReplica()
 		registerFlush()
 		registerChannel()
 		registerCross()
@@ -385,6 +386,89 @@ func ActorCountAdd(delta float64) {
 		return
 	}
 	actorCountGauge.Add(delta)
+}
+
+// ============================ Replica（Redis 副本异步回写） ============================
+
+// replica 子系统指标：供 pkg/writebehind.Replica 使用。
+//
+// 三个指标对应三种故障形态：
+//   - pending 持续高位：Redis 写不动或连接打满，副本越落越远；
+//   - lag 上涨：待刷玩家的等待时间，超 2s 说明跨节点读到的已明显落后；
+//   - dropped 非零：队列打满/重试用尽/租约被接管，副本已经丢数据。
+var (
+	replicaPending *prometheus.GaugeVec
+	replicaLag     *prometheus.GaugeVec
+	replicaRows    *prometheus.CounterVec
+	replicaFail    *prometheus.CounterVec
+	replicaDropped *prometheus.CounterVec
+)
+
+func registerReplica() {
+	replicaPending = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "replica", Name: "pending_players",
+		Help: "待回写副本的玩家数（合并后）",
+	}, []string{"service"})
+	replicaLag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "replica", Name: "lag_seconds",
+		Help: "单轮内最旧一条记录的等待秒数（副本新鲜度）",
+	}, []string{"service"})
+	replicaRows = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "replica", Name: "rows_total",
+		Help: "累计回写成功次数",
+	}, []string{"service"})
+	replicaFail = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "replica", Name: "failures_total",
+		Help: "回写失败次数（记录留在队列重试）",
+	}, []string{"service"})
+	replicaDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "replica", Name: "dropped_total",
+		Help: "丢弃的回写记录（reason: queue_full/max_attempts/lease_superseded）",
+	}, []string{"service", "reason"})
+	registry.MustRegister(replicaPending, replicaLag, replicaRows, replicaFail, replicaDropped)
+}
+
+// ReplicaPending 设置待回写玩家数。
+func ReplicaPending(n int) {
+	if !enabled.Load() {
+		return
+	}
+	replicaPending.WithLabelValues(Service()).Set(float64(n))
+}
+
+// ReplicaLag 设置副本新鲜度（秒）。
+//
+// 告警建议：lag > 2s 持续 1 分钟 → 副本已落后到影响跨节点读；
+// lag > 10s 或 pending > 10000 → Redis 基本不可用，按故障处理。
+func ReplicaLag(seconds float64) {
+	if !enabled.Load() {
+		return
+	}
+	replicaLag.WithLabelValues(Service()).Set(seconds)
+}
+
+// ReplicaRows 回写成功条数。
+func ReplicaRows(n int) {
+	if !enabled.Load() || n <= 0 {
+		return
+	}
+	replicaRows.WithLabelValues(Service()).Add(float64(n))
+}
+
+// ReplicaFail 回写失败次数。
+func ReplicaFail() {
+	if !enabled.Load() {
+		return
+	}
+	replicaFail.WithLabelValues(Service()).Inc()
+}
+
+// ReplicaDropped 丢弃记录（副本丢数据，但内存权威不受影响）。
+func ReplicaDropped(reason string) {
+	if !enabled.Load() {
+		return
+	}
+	replicaDropped.WithLabelValues(Service(), reason).Inc()
 }
 
 // ============================ Flusher ============================

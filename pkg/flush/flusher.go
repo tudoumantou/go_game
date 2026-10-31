@@ -1,8 +1,10 @@
 // pkg/flush/flusher.go —— Write-Behind 分片落库
 //
 // 职责：接收 MarkDirty/MarkDelete 登记，由 N 个分片 worker 在错峰时刻
-// 把脏玩家批量写库、把墓碑批量删除。这是「非缓存玩家」的落库通道；
-// 缓存玩家（Redis 权威）走 pkg/writebehind 的脏队列，两条通道互补。
+// 把脏玩家批量写库、把墓碑批量删除。这是**所有玩家**的落库通道——
+// 内存权威之后，落库的唯一来源是 Actor 内存（Redis 只是副本，可能落后，
+// 拿它落库等于写回旧值）。历史上「缓存玩家走 writebehind 脏队列」的那条
+// 通道已随 v3.6 删除。
 //
 // 设计取舍（详见设计文档 12.4）：
 //   - 攒批窗口：不即时写，等一个落库周期（默认 60s）把期间所有修改合并，
@@ -223,8 +225,20 @@ func (f *Flusher) MarkDirty(playerID int64) {
 	f.shards[idx].mark(playerID)
 }
 
-// ShardIndex 根据 playerID 计算分片。
+// MarkClean 从脏集合里摘掉一个玩家（关服强制落盘成功后调用）。
 //
+// 为什么需要它：关服路径先对每个在线玩家做一次同步保存，再 FlushAll 兜底。
+// 不清脏的话，刚保存过的那批玩家会在同一轮关服里被完整写第二遍——关服
+// 总预算（默认 20s/步）全浪费在重复事务上，真正的失败项反而挤不进去。
+//
+// 语义上安全：MarkClean 只是「这个玩家现在不脏」，与 flusher 的 at-least-once
+// 不冲突——落库失败时调用方根本不会调用它。
+func (f *Flusher) MarkClean(playerID int64) {
+	idx := ShardIndex(playerID, len(f.shards))
+	f.shards[idx].unmark(playerID)
+}
+
+// ShardIndex 根据 playerID 计算分片。//
 // 用 crc32 而不是 playerID % shardCount：ID 由发号器分配时往往带连续性/
 // 低位规律，取模会把相邻 ID 挤到同片；crc32 打散后分布均匀。
 // shardCount <=0 兜底返回 0（防御配置错误，宁可集中也不 panic）。
@@ -433,6 +447,15 @@ func (s *shard) mark(playerID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirty[playerID] = struct{}{}
+}
+
+// unmark 摘掉一个脏玩家（MarkClean 的分片实现）。
+//
+// delete 对不存在的 key 是 no-op，因此对「本来就不脏」的玩家调用安全。
+func (s *shard) unmark(playerID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.dirty, playerID)
 }
 
 // dirtyCount 当前脏实体数。

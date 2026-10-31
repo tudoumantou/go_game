@@ -78,6 +78,9 @@ type Server struct {
 
 	redis      *cache.Client
 	cacheStore *writebehind.Store // Redis 快照副本（只读写副本，不承载落库）
+	// replica 副本的异步回写通道（R14）：Actor 编码后入队即返回，
+	// 由它 200ms 批量刷进 Redis；下线/关服前必须 Flush（见 Shutdown）。
+	replica    *writebehind.Replica
 	presence   *cache.Presence
 	producer   *pkgmq.Producer
 	consumers  *gamemq.Group
@@ -299,6 +302,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		return nil
 	})
+	// persist-all-players：关服强制落盘（R14）。
+	//
+	// 与 flush-all 的分工：这里对**每个仍在内存里的玩家**各发一次 SaveMsg，
+	// 不依赖脏标记；flush-all 只处理「被 MarkDirty 过」的玩家。两者都要，
+	// 因为脏标记是业务调用 touch() 才有的（漏标 = 静默不落库），而关服是
+	// 我们唯一能兜住这种漏洞的时机——多写一遍的代价远小于丢一个玩家的进度。
+	//
+	// 顺序：先这里（逐个玩家、并发受限），再 flush-all（重试失败项）。
+	mgr.Register("persist-all-players", shutdown.PhaseFlush, func(ctx context.Context) error {
+		return s.persistAllPlayers(ctx)
+	})
 	mgr.Register("flush-all", shutdown.PhaseFlush, func(ctx context.Context) error {
 		var errs []error
 		// 落库只有一条路：flusher 从 Actor 内存取数写库。
@@ -310,6 +324,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			s.flusher.Stop()
 		}
 		return errors.Join(errs...)
+	})
+	// flush-replica：把异步回写队列刷平（R14）。
+	//
+	// 必须在 close-redis 之前：队列里是「最后 200ms 的改动」，不刷就随进程
+	// 消失——副本落后会让别的节点/下次登录读到一个停机的瞬间快照。
+	mgr.Register("flush-replica", shutdown.PhaseFlush, func(ctx context.Context) error {
+		if s.replica == nil {
+			return nil
+		}
+		if err := s.replica.Flush(ctx); err != nil {
+			return fmt.Errorf("replica: %w", err)
+		}
+		return nil
 	})
 
 	mgr.Register("stop-cross", shutdown.PhaseStop, func(context.Context) error {
@@ -328,6 +355,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		// 先取消内部生命周期（定时器与后台 worker 退出），再停分片。
 		if s.runCancel != nil {
 			s.runCancel()
+		}
+		if s.replica != nil {
+			// 排在 runCancel 之后：runCtx 取消已让后台循环退出，Stop 只等它
+			// 真正结束——否则它可能在 close-redis 之后还去碰连接池。
+			s.replica.Stop()
 		}
 		if s.actorSys != nil {
 			s.actorSys.Stop()
@@ -372,6 +404,68 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	s.logger.Info("game stopped")
+	return nil
+}
+
+// persistAllConcurrency 关服强制落盘的并发度。
+//
+// 32 的依据：一次 Save 是一个小事务（player + attr + 脏道具 + 脏模块），
+// 单条毫秒级；32 并发能在 20s 的关闭步预算内覆盖万级在线，同时不会把
+// 连接池（默认 MaxOpenConns 量级）一次抽干导致全部排队超时。
+const persistAllConcurrency = 32
+
+// persistAllPlayers 关服强制落盘：对仍在内存里的每个玩家各保存一次。
+//
+// 为什么不能只依赖 flusher.FlushAll：后者只处理「被 MarkDirty 过」的玩家，
+// 而脏标记依赖业务调用 State 的 touch()。关服是最后一个能兜住「漏标」
+// 的时机——多写一遍的代价远小于丢一个玩家的进度。
+//
+// 失败语义：收集全部错误聚合返回，让关闭流程以非零退出码暴露问题；
+// 单个玩家失败不影响其余玩家（关服最怕的是「一个坏玩家拖死整批」）。
+func (s *Server) persistAllPlayers(ctx context.Context) error {
+	if s.players == nil {
+		return nil
+	}
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		errs   []error
+		saved  int
+		failed int
+		sem    = make(chan struct{}, persistAllConcurrency)
+	)
+	s.players.ForEach(func(playerID int64, _ *actor.PID) {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return // 预算耗尽：剩下的交给 flush-all 与下次启动兜底
+		}
+		wg.Add(1)
+		go func(id int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := s.persistPlayer(ctx, id); err != nil {
+				mu.Lock()
+				failed++
+				errs = append(errs, err)
+				mu.Unlock()
+				return
+			}
+			// 保存成功：从 flusher 脏集合里摘掉，避免紧随其后的 FlushAll
+			// 把同一玩家完整再写一遍（关服预算不该花在重复事务上）。
+			if s.flusher != nil {
+				s.flusher.MarkClean(id)
+			}
+			mu.Lock()
+			saved++
+			mu.Unlock()
+		}(playerID)
+	})
+	wg.Wait()
+	s.logger.Info("shutdown: force persist done", "saved", saved, "failed", failed)
+	if len(errs) > 0 {
+		return fmt.Errorf("persist %d/%d players: %w", failed, saved+failed, errors.Join(errs...))
+	}
 	return nil
 }
 

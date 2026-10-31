@@ -328,37 +328,60 @@ end
 return redis.call('HINCRBY', KEYS[1], 'version', 1)
 `)
 
-// Sync 把内存状态同步到 Redis 副本。
+// EncodeFields 把脏字段编码成 syncScript 需要的参数对（field,value 交替）。
 //
-// 只写副本 + 版本，供跨进程读与崩溃恢复；**不承载落库**——落库由
-// pkg/flush 从 Actor 内存走（副本可能落后，拿它落库等于写回旧值）。
+// 抽出来的理由只有一条：**编码必须在 Actor 线程完成**。异步回写（Replica）
+// 的后台 goroutine 在刷写时，Actor 可能正在处理下一条消息并修改同一个 State
+// ——把 FieldSource 传出去就是数据竞争。所以入队前先把字节拷走。
 //
-// 失败语义由调用方决定：这只是「副本同步失败」，业务继续。
-func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, fields, removed []string, token int64) (int64, error) {
-	if playerID <= 0 {
-		return 0, fmt.Errorf("invalid player id")
-	}
-	args := []interface{}{token}
+// 删除字段编码成 "-name",""（空值占位），与 syncScript 的前缀约定一致。
+func EncodeFields(src FieldSource, fields, removed []string) ([]string, error) {
+	args := make([]string, 0, 2*(len(fields)+len(removed)))
 	for _, f := range fields {
 		raw, err := src.Field(f)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		if raw == nil {
 			continue // 模块没有状态，不写
 		}
 		if err := validateField(f, raw); err != nil {
-			return 0, err
+			return nil, err
 		}
 		args = append(args, f, string(raw))
 	}
 	for _, f := range removed {
 		args = append(args, "-"+f, "")
 	}
-	version, err := syncScript.Run(ctx, s.rdb, []string{
+	return args, nil
+}
+
+// syncCmd 构造一条「写副本 + 版本」命令（单条 Sync 与 Replica 的 pipeline 共用）。
+//
+// 返回 *redis.Cmd 而不是直接执行：调用方既可以立刻 .Int64()（同步路径），
+// 也可以把它塞进 pipeline 批量执行（异步路径）。两条路径必须是**同一个脚本**
+// ——否则租约校验、版本自增会出现两种语义。
+func (s *Store) syncCmd(ctx context.Context, c redis.Scripter, playerID, token int64, args []string) *redis.Cmd {
+	full := make([]interface{}, 0, len(args)+1)
+	full = append(full, token)
+	for _, a := range args {
+		full = append(full, a)
+	}
+	return syncScript.Run(ctx, c, []string{
 		s.stateKey(playerID),
 		s.epochKey(playerID),
-	}, args...).Int64()
+	}, full...)
+}
+
+// SyncArgs 用已编码的参数写副本。
+//
+// 与 Sync 的区别只在于「字段已经序列化好了」——异步回写通道（Replica）
+// 用它，避免后台 goroutine 回读 Actor 状态。
+func (s *Store) SyncArgs(ctx context.Context, playerID, token int64, args []string) (int64, error) {
+	if playerID <= 0 {
+		return 0, fmt.Errorf("invalid player id")
+	}
+	version, err := s.syncCmd(ctx, s.rdb, playerID, token, args).Int64()
 	if err != nil {
 		return 0, err
 	}
@@ -366,6 +389,23 @@ func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, field
 		return 0, ErrConflict
 	}
 	return version, nil
+}
+
+// Sync 把内存状态同步到 Redis 副本（同步写）。
+//
+// 只写副本 + 版本，供跨进程读与崩溃恢复；**不承载落库**——落库由
+// pkg/flush 从 Actor 内存走（副本可能落后，拿它落库等于写回旧值）。
+//
+// 失败语义由调用方决定：这只是「副本同步失败」，业务继续。
+//
+// 使用场景：关服/下线前的强制刷、未装配 Replica 时的降级路径、单测。
+// 常规消息路径走 Replica.Enqueue（异步，不等 RTT）。
+func (s *Store) Sync(ctx context.Context, playerID int64, src FieldSource, fields, removed []string, token int64) (int64, error) {
+	args, err := EncodeFields(src, fields, removed)
+	if err != nil {
+		return 0, err
+	}
+	return s.SyncArgs(ctx, playerID, token, args)
 }
 
 // Drop 删除玩家的热快照（保留租约 epoch）。

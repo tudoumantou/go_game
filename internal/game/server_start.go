@@ -128,11 +128,37 @@ func (s *Server) initRedis() (pkgmq.Deduper, error) {
 		if s.repo != nil {
 			s.cacheStore = writebehind.NewStore(redisClient.GetClient())
 			s.repo.SetCache(s.cacheStore)
+			// 副本异步回写（R14）：常规消息只入队、不等 RTT；
+			// 定时器按 replica.interval 批量刷，下线/关服走 Flush 强刷。
+			s.replica = writebehind.NewReplica(s.cacheStore, writebehind.ReplicaConfig{
+				Interval:    parseDurationOr(s.cfg.Replica.Interval, 0),
+				MaxBatch:    s.cfg.Replica.MaxBatch,
+				MaxPending:  s.cfg.Replica.MaxPending,
+				MaxAttempts: s.cfg.Replica.MaxAttempts,
+			}, s.logger)
+			s.repo.SetReplica(s.replica)
+			s.replica.Start(s.runCtx)
 		}
 		s.presence = cache.NewPresence(redisClient.GetClient())
 		deduper = cache.NewRedisDeduper(redisClient.GetClient())
 	}
 	return deduper, nil
+}
+
+// parseDurationOr 解析配置里的时长；空串/非法值回落 fallback（0 = 组件默认）。
+//
+// 为什么不像其它地方那样忽略错误：replica.interval 写错时，静默回落到默认
+// 200ms 是可接受且安全的；但「日志里一个字都没有」就难排查了，所以留一条
+// Warn（详见调用方）。
+func parseDurationOr(raw string, fallback time.Duration) time.Duration {
+	if raw == "" {
+		return fallback
+	}
+	d, err := config.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+	return d
 }
 
 // initIDTable 建 ID 表（12.5）：Redis + MySQL 都可用才建。
