@@ -53,10 +53,15 @@ type Server struct {
 
 	producer  *pkgmq.Producer
 	delivered *mq.DeliveredConsumer
+	roleIndex *mq.RoleCreatedConsumer
+
+	// userRoleRepo 角色索引（选角列表数据源）：HTTP 读、消费者写，同一个实例。
+	userRoleRepo *repo.UserRoleRepo
 
 	authHandler       *handler.AuthHandler
 	serverListHandler *handler.ServerListHandler
 	rechargeHandler   *handler.RechargeHandler
+	roleListHandler   *handler.RoleListHandler
 }
 
 // New 组装服务器（3.3：配置 → 组件 → 服务 → 注册中心 → 优雅退出）
@@ -119,6 +124,10 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("mysql: %w", err)
 		}
 		s.database = database
+		// 角色索引仓储：选角列表的读入口，也是 gs.role.created 的写入口。
+		// 放在 MySQL 分支里而不是 Kafka 分支里——没有 Kafka 时索引照样可读
+		// （历史数据/手工补写），只是不再自动更新。
+		s.userRoleRepo = repo.NewUserRoleRepo(database, redisClient.GetClient())
 
 		// ③ Kafka（生产者 + 发货确认消费者）
 		// 生产者也未配时 orderProducer 留 nil——NewRechargeService
@@ -144,6 +153,14 @@ func (s *Server) Start(ctx context.Context) error {
 				Brokers: s.cfg.Kafka.Brokers,
 			}, pkgmq.TopicRechargeDelivered, kafkaGroup(s.cfg), s.producer)
 			s.delivered = mq.NewDeliveredConsumer(consumer, rechargeSvc, s.logger)
+
+			// 角色索引消费者（gs.role.created）：游戏服创角 → user_role 索引表。
+			// 与发货确认共用 Kafka 连接但独立 topic/消费组（两者无顺序关系，
+			// 合在一起只会让「创角洪峰」拖慢「发货确认」）。
+			idxConsumer := pkgmq.NewConsumer(pkgmq.Config{
+				Brokers: s.cfg.Kafka.Brokers,
+			}, pkgmq.TopicRoleCreated, kafkaGroup(s.cfg), s.producer)
+			s.roleIndex = mq.NewRoleCreatedConsumer(idxConsumer, s.userRoleRepo, s.logger)
 		}
 	}
 
@@ -186,6 +203,12 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/auth/guest", s.authHandler.GuestLogin)
 	mux.HandleFunc("/v1/server/assign", s.serverListHandler.Assign)
 	mux.HandleFunc("/v1/server/gateway/list", s.serverListHandler.GatewayList)
+	// 选角列表：角色索引的出口。userRoleRepo 为 nil（无 MySQL）时不注册，
+	// 客户端拿到 404 比拿到空的角色列表更接近真相。
+	if s.userRoleRepo != nil {
+		s.roleListHandler = handler.NewRoleListHandler(authSvc, s.userRoleRepo, s.logger)
+		mux.HandleFunc("/v1/role/list", s.roleListHandler.List)
+	}
 	// 充值路由按域注册：rechargeHandler 为 nil（无 MySQL）时这两个
 	// 端点 404——比注册一个必然 500 的 handler 更诚实
 	if s.rechargeHandler != nil {
@@ -204,6 +227,13 @@ func (s *Server) Start(ctx context.Context) error {
 		go func() {
 			if err := s.delivered.Run(ctx); err != nil {
 				s.logger.Error("delivered consumer stopped", "err", err)
+			}
+		}()
+	}
+	if s.roleIndex != nil {
+		go func() {
+			if err := s.roleIndex.Run(ctx); err != nil {
+				s.logger.Error("role index consumer stopped", "err", err)
 			}
 		}()
 	}
@@ -256,6 +286,25 @@ func (s *Server) reconcileLoop(ctx context.Context, svc *service.RechargeService
 	})
 }
 
+// closeConsumers 关闭全部 Kafka 消费者，逐个收集错误。
+//
+// 不用 errors.Join 直接返回的原因：停机编排需要「一个消费者关不掉不影响
+// 另一个提交 offset」，所以这里先各自尝试、再统一交给调用方合并。
+func (s *Server) closeConsumers() []error {
+	var errs []error
+	if s.delivered != nil {
+		if err := s.delivered.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close delivered consumer: %w", err))
+		}
+	}
+	if s.roleIndex != nil {
+		if err := s.roleIndex.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close role index consumer: %w", err))
+		}
+	}
+	return errs
+}
+
 // Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，由 pkg/shutdown 编排）。
 // 顺序即安全顺序：先停 HTTP（不再接新请求）→ 停消费（提交 offset）
 // → Flush + 关生产者（在途消息落盘）→ 关 MySQL → 关 Redis → 停指标。
@@ -276,10 +325,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// DRAINING：停消费（内部提交 offset 后退出）。必须在关 Kafka 之前。
 	mgr.Register("stop-consumer", shutdown.PhaseDraining, func(context.Context) error {
-		if s.delivered == nil {
-			return nil
-		}
-		return s.delivered.Close()
+		// 两个消费者各关一次并汇总错误：任何一个漏关都会让
+		// 「已处理未提交」的消息在重启后重放（幂等能兜住，但没必要）。
+		return errors.Join(s.closeConsumers()...)
 	})
 
 	// FLUSH：把缓冲区里未确认的消息尽量发出；Close 之后 producer 不再收 Send。

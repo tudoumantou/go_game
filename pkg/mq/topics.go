@@ -19,6 +19,11 @@ const (
 	// TopicRechargeDelivered 游戏服发货成功 → 登录服更新订单状态（Key=order_id）
 	// 与 order topic 分开：确认消息可能重发，独立 topic 便于错峰消费/对账。
 	TopicRechargeDelivered = "gs.recharge.delivered"
+	// TopicRoleCreated 游戏服创角成功 → 登录服维护 user_role 角色索引（Key=account_id）
+	// 按账号分区：同一账号在多个区服的角色同步有序，选角列表不会出现
+	// 「先看到新角色、又消失」的回退。生产者是 role_sync_outbox 投递协程，
+	// 不是创角事务本身——保证「有角色行必有一条待投递事件」（见该表注释）。
+	TopicRoleCreated = "gs.role.created"
 	// TopicMail 系统邮件/补偿发放 → 游戏服（Key=player_id）
 	// 按玩家分区：同一玩家的多封邮件有序，避免「后发的先到」。
 	TopicMail = "gs.mail"
@@ -50,6 +55,7 @@ func AllTopics() []string {
 	return []string{
 		TopicRechargeOrder,
 		TopicRechargeDelivered,
+		TopicRoleCreated,
 		TopicMail,
 		TopicChatCross,
 		TopicPlayerEvent,

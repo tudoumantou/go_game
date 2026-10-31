@@ -98,6 +98,7 @@ func Init(service string) {
 		registerMessage()
 		registerActor()
 		registerReplica()
+		registerRoleOutbox()
 		registerFlush()
 		registerChannel()
 		registerCross()
@@ -427,6 +428,72 @@ func registerReplica() {
 		Help: "丢弃的回写记录（reason: queue_full/max_attempts/lease_superseded）",
 	}, []string{"service", "reason"})
 	registry.MustRegister(replicaPending, replicaLag, replicaRows, replicaFail, replicaDropped)
+}
+
+// role_outbox 子系统指标：供 internal/game/mq.RoleOutboxDispatcher 使用。
+//
+// 这条链路影响的是「玩家能不能在选角界面看到自己的角色」，失败不会报错、
+// 只会静默少一行，所以必须有指标兜住可见性：
+//   - pending 持续 > 0：投递协程没跑或 Kafka 不可用，角色正在「隐形」；
+//   - dead_total 增长：重试耗尽的角色，需要人工补投（行还在表里，可查）；
+//   - failed_total 与 pending 一起看：failed 涨但 pending 不降 = 打不通。
+var (
+	roleOutboxPublished *prometheus.CounterVec
+	roleOutboxFailed    *prometheus.CounterVec
+	roleOutboxDead      *prometheus.CounterVec
+	roleOutboxPending   *prometheus.GaugeVec
+)
+
+func registerRoleOutbox() {
+	roleOutboxPublished = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "role_outbox", Name: "published_total",
+		Help: "角色索引事件投递成功次数",
+	}, []string{"service"})
+	roleOutboxFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "role_outbox", Name: "failed_total",
+		Help: "角色索引事件投递失败次数（留待退避重试）",
+	}, []string{"service"})
+	roleOutboxDead = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "role_outbox", Name: "dead_total",
+		Help: "重试耗尽转入 DEAD 的角色数（需人工补投，否则该角色在选角界面不可见）",
+	}, []string{"service"})
+	roleOutboxPending = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "role_outbox", Name: "pending_rows",
+		Help: "本轮回读到的待投递行数",
+	}, []string{"service"})
+	registry.MustRegister(roleOutboxPublished, roleOutboxFailed, roleOutboxDead, roleOutboxPending)
+}
+
+// RoleOutboxPublished 投递成功条数。
+func RoleOutboxPublished(n int) {
+	if !enabled.Load() || n <= 0 {
+		return
+	}
+	roleOutboxPublished.WithLabelValues(Service()).Add(float64(n))
+}
+
+// RoleOutboxFailed 投递失败次数。
+func RoleOutboxFailed() {
+	if !enabled.Load() {
+		return
+	}
+	roleOutboxFailed.WithLabelValues(Service()).Inc()
+}
+
+// RoleOutboxDead 转入 DEAD 的角色数（该角色索引已无法自动补齐）。
+func RoleOutboxDead() {
+	if !enabled.Load() {
+		return
+	}
+	roleOutboxDead.WithLabelValues(Service()).Inc()
+}
+
+// RoleOutboxPendingRows 本轮待投递行数。
+func RoleOutboxPendingRows(n int) {
+	if !enabled.Load() {
+		return
+	}
+	roleOutboxPending.WithLabelValues(Service()).Set(float64(n))
 }
 
 // ReplicaPending 设置待回写玩家数。

@@ -4,6 +4,7 @@
 # 中心 9200/9201，跨服 9300/9301）。
 server:
   name: game-01
+  id: 1                          # 区服 ID，写入登录服 user_role.server_id
   env: dev
   grpc_addr: "0.0.0.0:9100"
 

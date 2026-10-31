@@ -87,6 +87,7 @@ type Config struct {
 type ServerConfig struct {
 	Name             string `yaml:"name"`                  // 服务名，日志/指标标签
 	Env              string `yaml:"env"`                   // dev/staging/prod
+	ID               int32  `yaml:"id"`                    // 区服 ID：写入 user_role.server_id，多区服共用一个登录服时必须唯一
 	TCPAddr          string `yaml:"tcp_addr"`              // 网关：客户端长连接
 	HTTPAddr         string `yaml:"http_addr"`             // 登录服：HTTPS API
 	GRPCAddr         string `yaml:"grpc_addr"`             // 游戏/中心/跨服：gRPC

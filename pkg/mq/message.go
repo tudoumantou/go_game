@@ -111,6 +111,26 @@ type RechargeDeliveredMsg struct {
 	DeliveredAt int64  `json:"delivered_at"` // unix 毫秒
 }
 
+// RoleCreatedMsg 角色索引同步（gs.role.created）
+//
+// 由游戏服的 role_sync_outbox 投递协程生产；登录服消费后 UPSERT user_role，
+// 供选角界面列出该账号在各区服的角色。Key=account_id 保证同账号有序。
+//
+// 幂等键是 PlayerId：一个角色只会被创建一次，重复投递只会重复写同一行
+// （user_role 主键 (account_id, player_id) + uk_player），因此消费端不需要
+// Deduper——DB 唯一键本身就是跨实例、跨重启的最终防线。
+//
+// 语义是「角色索引的当前值」而不是「增量事件」：字段可随改名/升级被覆盖，
+// 消费端按最新值 UPSERT 即可，不需要按事件顺序回放。
+type RoleCreatedMsg struct {
+	PlayerID  int64  `json:"player_id"`
+	AccountID int64  `json:"account_id"`
+	ServerID  int32  `json:"server_id"`
+	Nickname  string `json:"nickname"`
+	Level     int32  `json:"level"`
+	CreatedAt int64  `json:"created_at"` // unix 毫秒
+}
+
 // LoginLogMsg 登录流水（gs.login.log）
 //
 // 每条登录尝试一条，消费端直接落 login_log 表，不做业务去重：

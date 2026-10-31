@@ -84,6 +84,9 @@ type Server struct {
 	presence   *cache.Presence
 	producer   *pkgmq.Producer
 	consumers  *gamemq.Group
+	// roleOutbox 角色索引同步投递器（R17）：创角事务写行，本协程投到
+	// gs.role.created，登录服据此维护 user_role。关服前 Flush 一次。
+	roleOutbox *gamemq.RoleOutboxDispatcher
 	roleSvc    *service.RoleService
 	metricsSrv *metrics.Server
 	idTable    *cache.IDTable // ID 表：存在性判断从 MySQL 挪到 Redis（12.5）
@@ -198,6 +201,7 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := s.startKafkaConsumers(deduper); err != nil {
 		return err
 	}
+	s.startRoleOutbox()
 	if err := s.registerEtcd(); err != nil {
 		return err
 	}
@@ -340,6 +344,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		if err := s.replica.Flush(ctx); err != nil {
 			return fmt.Errorf("replica: %w", err)
 		}
+		return nil
+	})
+
+	// flush-role-outbox：关服前把待投递的角色索引事件投完（R17）。
+	//
+	// 必须排在 close-producer（PhaseStop）之前：Producer.Close 之后不再收
+	// 新消息，剩下的行只能等下次启动补投——而下次启动时玩家可能已经点开
+	// 过选角界面，看到的是一个空列表。
+	//
+	// 与 Run 并发的可能无害：最坏是同一条投两次（user_role 唯一键吸收），
+	// 或两个 PUBLISHED 写同一行（值相同）。为此加锁会让停机路径多一处竞争。
+	mgr.Register("flush-role-outbox", shutdown.PhaseFlush, func(ctx context.Context) error {
+		if s.roleOutbox == nil {
+			return nil
+		}
+		s.roleOutbox.Flush(ctx)
 		return nil
 	})
 

@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"game_study/internal/game/service"
 	"game_study/pkg/db"
@@ -24,14 +25,32 @@ import (
 	"game_study/pkg/sqlstore"
 )
 
+// role_sync_outbox 状态机（与 DDL 注释一致）。
+//
+// 定义在这里而不是 model 包：model 全是生成物，手写常量会在下次 gendb
+// 覆盖时消失；而这张表的使用方只有 player（写）与 mq（投递），
+// player 是两者的共同上游，放在这里不会引入反向依赖。
+const (
+	// RoleOutboxPending 待投递。
+	RoleOutboxPending int32 = 0
+	// RoleOutboxPublished 已投递成功，闲置行。
+	RoleOutboxPublished int32 = 1
+	// RoleOutboxDead 重试耗尽，需人工介入（告警后不再自动重试，
+	// 留着不删是为了让「哪些角色没同步」可查）。
+	RoleOutboxDead int32 = 2
+)
+
 // RoleStore 角色持久化（实现 service.RoleStore）。
 type RoleStore struct {
 	*sqlstore.Base
+	// serverID 本区服 ID，随创角事件写进 user_role.server_id。
+	// 由配置注入而非从库读：区服身份是部署事实，不该依赖某张能改的表。
+	serverID int32
 }
 
 // NewRoleStore 创建角色仓储。
-func NewRoleStore(database *db.DB) *RoleStore {
-	return &RoleStore{Base: sqlstore.New(database, "player_role")}
+func NewRoleStore(database *db.DB, serverID int32) *RoleStore {
+	return &RoleStore{Base: sqlstore.New(database, "player_role"), serverID: serverID}
 }
 
 // FindByAccount 返回账号下最早创建的角色；无角色返回 service.ErrNoRole。
@@ -50,10 +69,15 @@ func (s *RoleStore) FindByAccount(ctx context.Context, accountID int64) (*model.
 	return p, nil
 }
 
-// Create 原子写 player + player_attr + player_item，返回新角色 ID。
+// Create 原子写 player + player_attr + player_item + role_sync_outbox，
+// 返回新角色 ID。
 //
-// 三张表一个事务：创角是「要么全出现、要么全不出现」的复合写入，半成品
+// 四张表一个事务：创角是「要么全出现、要么全不出现」的复合写入，半成品
 // 角色（有 player 行但没 attr/item）会让客户端首屏异常。
+//
+// outbox 行也必须在这个事务里——它是「角色已存在」这一事实向登录服传播的
+// 唯一凭据，晚一步写就存在「角色在、索引不在」的窗口，而这个窗口没有
+// 任何自愈路径（见 role_store.go 里 Outbox 段注释）。
 //
 // SQL 全部来自 gendb 生成的函数（InsertPlayer / InsertPlayerAttr /
 // UpsertPlayerItemBatch），本文件不出现 SQL 字符串——改表结构只需重新
@@ -114,6 +138,26 @@ func (s *RoleStore) Create(ctx context.Context, d service.RoleDraft) (int64, err
 			if err := model.UpsertPlayerItemBatch(ctx, tx, rows); err != nil {
 				return fmt.Errorf("insert initial items: %w", err)
 			}
+		}
+		// 角色索引同步事件，与上面三张表同一事务。
+		//
+		// 为什么不在事务外、也不在这里直接发 Kafka：事务提交成功但消息没发出去，
+		// 玩家有角色而选角列表里没有，且没有任何路径能自愈。写 outbox 让
+		// 「有角色行」和「有待投递事件」成为同一个原子事实，投递失败退化成
+		// 延迟而不是丢失。真正发消息由 mq.RoleOutboxDispatcher 负责。
+		//
+		// Level 与上面 InsertPlayer 的 1 必须一致：这里是选角列表的展示冗余，
+		// 与主行不同步会让玩家看到「0 级角色」。
+		if _, err := model.InsertRoleSyncOutbox(ctx, tx, &model.RoleSyncOutbox{
+			PlayerId:  roleID,
+			AccountId: d.AccountID,
+			ServerId:  s.serverID,
+			Nickname:  d.Name,
+			Level:     1,
+			Status:    RoleOutboxPending,
+			CreatedAt: time.Now().UnixMilli(),
+		}); err != nil {
+			return fmt.Errorf("insert role_sync_outbox: %w", err)
 		}
 		return nil
 	})

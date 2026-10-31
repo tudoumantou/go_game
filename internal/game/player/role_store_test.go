@@ -22,12 +22,14 @@ import (
 )
 
 // newRoleStore 起一个 sqlmock 支撑的仓储。
+// serverID 固定 7：让 outbox 行的 server_id 断言不依赖默认值（0 也合法，
+// 但那会让「配置没注入」和「测试忘了传」看起来一样）。
 func newRoleStore(t *testing.T) (*RoleStore, sqlmock.Sqlmock) {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	return NewRoleStore(&db.DB{DB: sqlDB}), mock
+	return NewRoleStore(&db.DB{DB: sqlDB}, 7), mock
 }
 
 // TestRoleStoreFindByAccount 正常命中与「无行」两条路径：
@@ -75,6 +77,11 @@ func TestRoleStoreCreateCommits(t *testing.T) {
 			roleID, int32(2001), int32(1), nil,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 2))
+	// 角色索引同步行必须与前三张表在同一事务里（R17）：漏写这一行
+	// 等于「角色存在但登录服永远看不到」，且没有任何自愈路径。
+	mock.ExpectExec(`INSERT INTO role_sync_outbox \(`).
+		WithArgs(int64(0), roleID, int64(1001), int32(7), "张三", int32(1), int32(0), int32(0), int64(0), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	got, err := store.Create(context.Background(), service.RoleDraft{
@@ -120,6 +127,26 @@ func TestRoleStoreCreateRollbackOnAttrFailure(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestRoleStoreCreateRollbackOnOutboxFailure outbox 写失败同样整笔回滚。
+//
+// 这是 R17 的核心不变量：宁可让玩家重试一次创角（幂等、代价小），
+// 也不能留下「角色在、选角列表里没有」的状态——那种状态没有自愈路径，
+// 只能等人工补数据。
+func TestRoleStoreCreateRollbackOnOutboxFailure(t *testing.T) {
+	store, mock := newRoleStore(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO player \(`).WillReturnResult(sqlmock.NewResult(10001, 1))
+	mock.ExpectExec(`INSERT INTO player_attr \(`).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO role_sync_outbox \(`).WillReturnError(errors.New("table is full"))
+	mock.ExpectRollback()
+
+	_, err := store.Create(context.Background(), service.RoleDraft{AccountID: 1001, Name: "张三", Career: 1})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "insert role_sync_outbox")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 // TestRoleStoreCreateEmptyItems 没有初始道具时不应产生 player_item 语句
 // （空切片的批量 UPSERT 会拼出非法 SQL）。
 func TestRoleStoreCreateEmptyItems(t *testing.T) {
@@ -128,6 +155,9 @@ func TestRoleStoreCreateEmptyItems(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(`INSERT INTO player \(`).WillReturnResult(sqlmock.NewResult(10001, 1))
 	mock.ExpectExec(`INSERT INTO player_attr \(`).WillReturnResult(sqlmock.NewResult(0, 1))
+	// 空背包只跳过 player_item，outbox 仍要写：没有任何道具的角色同样
+	// 需要出现在选角列表里。
+	mock.ExpectExec(`INSERT INTO role_sync_outbox \(`).WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	_, err := store.Create(context.Background(), service.RoleDraft{AccountID: 1001, Name: "张三", Career: 1})

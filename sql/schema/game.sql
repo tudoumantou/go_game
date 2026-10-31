@@ -50,6 +50,7 @@
 --   player_skill
 --   player_writebehind
 --   rank_archive_task
+--   role_sync_outbox
 --   recharge_order
 --   recharge_record
 --   seat_player
@@ -903,6 +904,34 @@ CREATE TABLE `rank_archive_task` (
   `updated_at` BIGINT NOT NULL DEFAULT 0 COMMENT '最近更新（unix 秒）',
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='赛季归档任务（断点续跑）';
+
+-- ============================================================================
+-- role_sync_outbox.sql
+-- ============================================================================
+-- 角色信息同步 outbox（game → login）：创角事务里与 player 主行一起插入，
+-- 再由后台协程投递到 gs.role.created，登录服据此维护 user_role 索引。
+--
+-- 为什么不是「事务提交后直接发 MQ」：提交成功但进程立刻挂掉/ Broker 抖动，
+-- 玩家已有角色而选角列表里没有——静默丢数据且不可自愈。outbox 让
+-- 「有角色行」与「有待投递事件」在同一事务里，投递只是延迟问题。
+--
+-- 一个角色一行（uk_player）而非追加事件：本表语义是「该角色的索引还没同步」，
+-- 同步完成后置 PUBLISHED 即闲置；将来改名/升级只需把同一行重置为 PENDING。
+CREATE TABLE `role_sync_outbox` (
+  `id`            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `player_id`     BIGINT UNSIGNED NOT NULL COMMENT '角色ID（全局唯一，幂等键）',
+  `account_id`    BIGINT UNSIGNED NOT NULL COMMENT '账号ID（MQ 分区键，保证同账号有序）',
+  `server_id`     INT             NOT NULL DEFAULT 0 COMMENT '区服ID',
+  `nickname`      VARCHAR(64)     NOT NULL DEFAULT '' COMMENT '角色昵称（冗余展示）',
+  `level`         INT             NOT NULL DEFAULT 1 COMMENT '角色等级（冗余展示）',
+  `status`        TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0=PENDING 1=PUBLISHED 2=DEAD',
+  `retry_count`   INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT '已重试次数',
+  `next_retry_ms` BIGINT          NOT NULL DEFAULT 0 COMMENT '下次可投递时间（unix 毫秒）',
+  `created_at`    BIGINT          NOT NULL DEFAULT 0 COMMENT '创建时间（unix 毫秒）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_player` (`player_id`),
+  KEY `idx_pending` (`status`, `next_retry_ms`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='角色信息同步 outbox（game→login）';
 
 -- ============================================================================
 -- recharge_order.sql

@@ -152,6 +152,27 @@ func (s *Server) startGameDataWatch() {
 	}()
 }
 
+// startRoleOutbox 起角色索引 outbox 投递协程（R17）。
+//
+// 放在消费者之后启动：两者都是「向外部系统发消息」的方向，且都不依赖
+// Actor——创角发生在玩家登录之前，那时还没有 Actor 可依赖。
+//
+// 缺任一依赖就静默跳过（而非启动失败）：
+//   - 无 DB：创角服务本身没建（initMySQL 已跳过），没有行可投；
+//   - 无 Kafka：单服部署下登录服与游戏服同机，选角可以不跨进程，
+//     outbox 行留着，等配上 Kafka 重启后由首轮补投。
+func (s *Server) startRoleOutbox() {
+	if s.database == nil || s.producer == nil {
+		return
+	}
+	s.roleOutbox = gamemq.NewRoleOutboxDispatcher(s.database, s.producer, s.logger)
+	go func() {
+		if err := s.roleOutbox.Run(s.runCtx); err != nil {
+			s.logger.Error("role outbox dispatcher stopped", "err", err)
+		}
+	}()
+}
+
 // initMySQL 连业务库；未配 DSN 时整体跳过（单测/演示模式）。
 func (s *Server) initMySQL() error {
 	// ① MySQL（业务库）
@@ -168,7 +189,16 @@ func (s *Server) initMySQL() error {
 		s.repo = player.NewRepository(database)
 		// 创角服务只依赖持久化契约：SQL 与驱动在 player.RoleStore 内部，
 		// service 层不再持有 *db.DB（本轮整改的边界）
-		s.roleSvc = service.NewRoleService(player.NewRoleStore(database), s.logger)
+		// serverID 随创角事件进 outbox，是选角列表区分区服的唯一依据
+		s.roleSvc = service.NewRoleService(
+			player.NewRoleStore(database, s.cfg.Server.ID), s.logger)
+		if s.cfg.Server.ID <= 0 {
+			// 不阻断启动：单区/开发环境没有区服概念，server_id=0 也能用；
+			// 但多区共用一个登录服时，0 会让所有区的角色在选角界面无法区分，
+			// 所以这里必须显式提醒（配置项 server.id）。
+			s.logger.Warn("server.id not set, user_role.server_id will be 0",
+				"name", s.cfg.Server.Name)
+		}
 	}
 	return nil
 }
