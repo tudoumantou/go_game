@@ -12,6 +12,9 @@ package game
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	gamecenter "game_study/internal/game/center"
@@ -51,6 +54,7 @@ import (
 	"game_study/pkg/config"
 	"game_study/pkg/db"
 	"game_study/pkg/flush"
+	"game_study/pkg/gamedata"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
 	"game_study/pkg/ratelimit"
@@ -77,6 +81,75 @@ func (s *Server) startMetrics() error {
 		s.logger.Info("metrics server started", "addr", mSrv.Addr())
 	}
 	return nil
+}
+
+// startGameDataWatch 起配置表热更（R16）。
+//
+// 两条通道并存，职责不同：
+//
+//   - 目录监听（gamedata.watch=true）：无人值守，运维/工具把 JSON 放进去即生效；
+//   - SIGHUP 手动触发：inotify 在容器 bind mount / NFS 上会丢事件，且运维
+//     常常没法改文件（配置在只读挂载或由 sidecar 下发）。发一次 SIGHUP 是
+//     「重新读一遍目录」的标准手法，不依赖任何文件系统特性。
+//
+// 为什么热更不能失败退出：配置表是「运行期可替换的数据」，不是启动依赖。
+// 目录写错/不存在应当降级为「不热更」并留下告警，而不是让整个游戏服起不来
+// ——那会把一次运维失误放大成一次停服。
+func (s *Server) startGameDataWatch() {
+	dir := s.cfg.GameData.Dir
+	if dir == "" {
+		// 未配置 = 不热更，用编译期内嵌快照。见 GameDataConfig 的默认值说明。
+		return
+	}
+
+	if s.cfg.GameData.Watch {
+		go func() {
+			err := gamedata.Watch(s.runCtx, gamedata.WatchOptions{
+				Dir:      dir,
+				Debounce: parseDurationOr(s.cfg.GameData.Debounce, gamedata.DefaultDebounce),
+				Logger:   s.logger,
+				OnReload: func(_ string, took time.Duration) {
+					metrics.GameDataReload("ok", took)
+				},
+				OnError: func(error) {
+					// 失败时快照不变（LoadDir 保证），这里只记指标。
+					// 耗时不观测：失败路径的耗时没有比较意义。
+					metrics.GameDataReload("fail", 0)
+				},
+			})
+			if err != nil {
+				s.logger.Warn("gamedata watcher unavailable, falling back to SIGHUP",
+					"dir", dir, "err", err)
+			}
+		}()
+	} else {
+		s.logger.Info("gamedata watch disabled, SIGHUP reload only", "dir", dir)
+	}
+
+	// SIGHUP：默认动作是终止进程，这里接管成「重载配置表」。
+	// 不接管的话，运维一次误发的 SIGHUP 就是一次停服。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGHUP)
+	go func() {
+		defer signal.Stop(sigCh)
+		for {
+			select {
+			case <-s.runCtx.Done():
+				return
+			case <-sigCh:
+				start := time.Now()
+				version, err := gamedata.LoadDir(dir)
+				if err != nil {
+					metrics.GameDataReload("fail", 0)
+					s.logger.Warn("gamedata reload (SIGHUP) failed, keeping current snapshot",
+						"dir", dir, "err", err)
+					continue
+				}
+				metrics.GameDataReload("ok", time.Since(start))
+				s.logger.Info("gamedata reloaded (SIGHUP)", "dir", dir, "version", version)
+			}
+		}
+	}()
 }
 
 // initMySQL 连业务库；未配 DSN 时整体跳过（单测/演示模式）。

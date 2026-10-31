@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -46,6 +47,18 @@ type TCPServer struct {
 	closeOnce sync.Once
 	// closeErr 缓存首次关闭错误，重复 Stop 返回同一值
 	closeErr error
+	// mu 保护 listener / stopCh：Start 写入、Stop 与 Addr 读取，三者可能
+	// 来自不同 goroutine（shutdown 编排可以在 Start 阻塞期间调 Stop）。
+	// 不加锁就是数据竞争——-race 下必现，且可能读到半写的接口值。
+	mu sync.Mutex
+	// stopCh 由 Stop 关闭：让阻塞在 select 里的 Start 立刻返回。
+	// 没有它时「外部 Stop 但 ctx 未取消」会让 Start 一直挂着，
+	// 表现为关服编排在等一个永远不会返回的 Start。
+	stopCh chan struct{}
+	// stopped 标记 Stop 已经跑过。Start 在 listen 之后必须再看一眼：
+	// Stop 先于 Start 到达时 closeOnce 关掉的是 nil，不补这一判，
+	// 端口会被监听起来且再没人关它（优雅关闭永远等不到）。
+	stopped atomic.Bool
 }
 
 // NewTCPServer 创建 TCP 服务端。
@@ -55,6 +68,7 @@ func NewTCPServer(addr string, handler Handler) *TCPServer {
 	return &TCPServer{
 		addr:    addr,
 		handler: handler,
+		stopCh:  make(chan struct{}),
 	}
 }
 
@@ -68,7 +82,17 @@ func (s *TCPServer) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", s.addr, err)
 	}
+	s.mu.Lock()
 	s.listener = ln
+	s.mu.Unlock()
+
+	// Stop 先于 Start 到达：closeOnce 已经执行过（关的是 nil），
+	// 这里必须自己关，否则端口被监听起来而没有任何人会再关它。
+	// 返回 nil 而非错误：外部已经要求关闭，这属于正常收敛，不是启动失败。
+	if s.stopped.Load() {
+		_ = ln.Close()
+		return nil
+	}
 
 	// 容量 1：只关心「第一个错误」，后续 accept 错误直接走 default 丢弃
 	// （见 acceptLoop），这里不需要缓冲更多。
@@ -80,11 +104,30 @@ func (s *TCPServer) Start(ctx context.Context) error {
 		// 关服信号：先自行 Stop 收敛 listener 与在途连接，再上报取消原因。
 		_ = s.Stop()
 		return ctx.Err()
+	case <-s.stopSignal():
+		// 外部 Stop（ctx 未取消）：监听已收敛，按正常关服返回 nil。
+		// 若这里也返回错误，调用方会把一次「主动关服」当成启动失败。
+		return nil
 	case err := <-acceptErrCh:
 		// 监听级错误（非连接级）：同样先收敛再原样上报。
 		_ = s.Stop()
 		return err
 	}
+}
+
+// stopSignal 返回 stopCh（惰性创建，兼容零值构造）。
+//
+// 直接用字段会让零值 TCPServer 的 select 永久阻塞在 nil channel 上；
+// 测试与手工构造都走这里，保证「Stop 一定能唤醒 Start」这条契约恒成立。
+// 返回双向 channel：Stop 要 close 它，Start 只读——用同一个函数避免
+// 两处各自加锁创建的窗口。
+func (s *TCPServer) stopSignal() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stopCh == nil {
+		s.stopCh = make(chan struct{})
+	}
+	return s.stopCh
 }
 
 // acceptLoop 接受连接循环（内部 goroutine）。
@@ -129,9 +172,17 @@ func (s *TCPServer) acceptLoop(errCh chan<- error) {
 // 顺序即策略：先关 listener（拒新）再 Wait（排空），与「先拒新后排空」对应。
 func (s *TCPServer) Stop() error {
 	s.closeOnce.Do(func() {
-		if s.listener != nil {
-			s.closeErr = s.listener.Close()
+		// 先置标记：Start 若正在 listen 与 accept 之间，会在 listen 之后
+		// 看到它并自行关闭，不会留下「关了还在听」的窗口。
+		s.stopped.Store(true)
+		s.mu.Lock()
+		ln := s.listener
+		s.mu.Unlock()
+		// 顺序：关 listener（拒新）→ 关 stopCh（唤醒 Start）。
+		if ln != nil {
+			s.closeErr = ln.Close()
 		}
+		close(s.stopSignal())
 	})
 	s.wg.Wait()
 	return s.closeErr
@@ -141,6 +192,8 @@ func (s *TCPServer) Stop() error {
 // Start 前调用返回 nil（listener 未创建）：调用方需判空，
 // 端口 0 场景下（让 OS 选端口）只有监听后才知道真实端口。
 func (s *TCPServer) Addr() net.Addr {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener == nil {
 		return nil
 	}

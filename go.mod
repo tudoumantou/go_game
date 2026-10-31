@@ -5,6 +5,7 @@ go 1.22
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/alicebob/miniredis/v2 v2.33.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/prometheus/client_golang v1.19.1
 	github.com/redis/go-redis/v9 v9.7.3

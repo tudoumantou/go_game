@@ -158,6 +158,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := s.startMetrics(); err != nil {
 		return err
 	}
+	// 配置表热更（R16）：目录监听 + SIGHUP。放在最前面，因为后续所有装配
+	// 都可能读 gamedata.Cur()——热更通道先就位，运维在启动过程中下发的配置
+	// 就不会被「启动时读旧表」冲掉。
+	s.startGameDataWatch()
 	if err := s.initMySQL(); err != nil {
 		return err
 	}

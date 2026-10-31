@@ -63,8 +63,10 @@ type Config struct {
 	Cross   CrossConfig   `yaml:"cross"`
 	Flush   FlushConfig   `yaml:"flush"`
 	Replica ReplicaConfig `yaml:"replica"`
-	IDTab   IDTabConfig   `yaml:"idtab"`
-	Center  CenterConfig  `yaml:"center"`
+	// GameData 配置表热更：Dir 为空即不热更（用编译期内嵌快照）。
+	GameData GameDataConfig `yaml:"gamedata"`
+	IDTab    IDTabConfig    `yaml:"idtab"`
+	Center   CenterConfig   `yaml:"center"`
 	// 中心服
 	Report     ReportConfig     `yaml:"report"`
 	Rank       RankConfig       `yaml:"rank"`
@@ -308,6 +310,22 @@ type ReplicaConfig struct {
 	MaxPending int `yaml:"max_pending"`
 	// MaxAttempts 单条记录最大重试次数；超过即丢弃并告警。
 	MaxAttempts int `yaml:"max_attempts"`
+}
+
+// GameDataConfig 配置表热更（R16）。
+//
+// 缺省（Dir 为空）时完全不热更，进程用编译期内嵌快照（pkg/gamedata 的 init）。
+// 这是刻意的默认值：热更目录一旦配错，线上会读到「运维机器上那份半成品配置」，
+// 比「改配置要发版」危险得多，所以必须显式打开。
+type GameDataConfig struct {
+	// Dir 热更目录：读取其中的 `<表名>.json`（文件名即表名，与 setters 的键一致）。
+	Dir string `yaml:"dir"`
+	// Watch 是否监听目录变化。false 时仍可用 SIGHUP 手动触发一次热更，
+	// 适用于容器 bind mount / NFS 这类 inotify 不可靠的场景。
+	Watch bool `yaml:"watch"`
+	// Debounce 事件去抖窗口（默认 200ms）。编辑器保存一个文件通常产生
+	// 2~3 个事件，去抖把它们合并成一次加载。
+	Debounce string `yaml:"debounce"`
 }
 
 type IDTabConfig struct { // BuildPageSize 构建 ID 表/归属索引时的分页行数（默认 5000）。

@@ -103,6 +103,7 @@ func Init(service string) {
 		registerCross()
 		registerLogin()
 		registerIDTab()
+		registerGameData()
 		registerOwnerIndex()
 		registerRedisBreaker()
 		registerCenter()
@@ -792,6 +793,44 @@ func IDTabBuildObserve(table string, d time.Duration) {
 		return
 	}
 	idtabBuildDur.WithLabelValues(Service(), table).Observe(d.Seconds())
+}
+
+// ============================ 配置表热更 ============================
+
+var (
+	gamedataReload    *prometheus.CounterVec
+	gamedataReloadDur *prometheus.HistogramVec
+)
+
+// registerGameData 注册热更指标（R16）。
+//
+// result 只有 ok/fail 两个值：热更是低频运维动作，按表名/目录分标签只会
+// 制造时间序列而不提供新信息——具体哪张表失败看日志里的 err。
+func registerGameData() {
+	gamedataReload = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "gamedata", Name: "reload_total",
+		Help: "配置表热更次数（result=ok/fail；fail 时当前快照保持不变）",
+	}, []string{"service", "result"})
+	gamedataReloadDur = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: Namespace, Subsystem: "gamedata", Name: "reload_duration_seconds",
+		Help:    "热更加载耗时（读目录 + 33 张表解析 + 建索引）",
+		Buckets: []float64{0.005, 0.01, 0.05, 0.1, 0.5, 1, 2},
+	}, []string{"service"})
+	registry.MustRegister(gamedataReload, gamedataReloadDur)
+}
+
+// GameDataReload 记录一次热更结果。
+//
+// took <= 0 时不观测耗时：失败路径（目录不可读、JSON 解析失败）的耗时
+// 没有比较意义，混进直方图会污染「热更变慢」这个告警信号。
+func GameDataReload(result string, took time.Duration) {
+	if !enabled.Load() {
+		return
+	}
+	gamedataReload.WithLabelValues(Service(), result).Inc()
+	if took > 0 {
+		gamedataReloadDur.WithLabelValues(Service()).Observe(took.Seconds())
+	}
 }
 
 // ============================ 归属索引 ============================

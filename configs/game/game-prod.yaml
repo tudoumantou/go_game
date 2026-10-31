@@ -61,6 +61,11 @@ replica:                       # Redis 副本异步回写（R14）：内存权�
   max_pending: 100000          # 待刷上限，超限丢最旧的（Redis 长时间不可用时保内存）
   max_attempts: 300            # 单条最大重试次数，超过即丢弃并告警
 
+gamedata:                      # 配置表热更（R16）：改 JSON 不重启，文件名即表名
+  dir: ""                      # 热更目录（*.json）；空 = 不热更，用编译期内嵌快照
+  watch: true                  # 目录监听；false 时仍可用 SIGHUP 手动触发
+  debounce: 200ms              # 事件去抖（编辑器一次保存通常产生 2~3 个事件）
+
 idtab:
   build_page_size: 5000
   reconcile_interval: 10m      # 数量对账
