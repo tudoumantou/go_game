@@ -72,9 +72,9 @@ func TestEveryPersistPackageImported(t *testing.T) {
 		if !e.IsDir() {
 			continue
 		}
-		// 只检查「按约定把持久化放在 persist.go / persist_gen.go」的模块；
-		// 前者手写、后者由 tools/gencodec 生成。loginreward 的注册写在自己
-		// 文件里，由上面的显式列表兜底。
+		// 只检查「按约定把持久化放在 persist_gen.go」的模块（由 tools/gencodec 生成；
+		// 手写 persist.go 已全仓废弃，见 TestModulesDoNotHandwritePersist）。
+		// loginreward 的注册写在自己文件里，由上面的显式列表兜底。
 		hasPersist := false
 		for _, f := range []string{"persist.go", "persist_gen.go"} {
 			if _, err := os.Stat(filepath.Join("..", e.Name(), f)); err == nil {

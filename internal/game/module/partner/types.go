@@ -20,9 +20,40 @@
 
 package partner
 
+import "fmt"
+
+// Data 是伙伴模块的私有状态：星级表 + 上阵编成。
+//
+// 两个字段必须整体存一列（whole=partners）：Field 是上阵顺序，脱离
+// Stars 无法解释（上阵但未拥有是坏状态）。拆成两列会把「先写哪个」
+// 变成一致性问题，而它们本来就是一个原子的结构。
+//
+// @codec table=player_partner whole=partners new=newData validate=validate verify=validate
 type Data struct {
 	Stars map[int32]int32 `json:"stars"`
 	Field []int32         `json:"field"`
+}
+
+// newData 新玩家的空状态：map 必须初始化，Field 给空切片保证 JSON 是 [] 而不是 null。
+func newData() *Data { return &Data{Stars: map[int32]int32{}, Field: []int32{}} }
+
+// validate 拦住坏快照：上阵位超限、上阵未拥有、重复上阵都会让登录给出
+// 错误加成且无法自愈，宁可整批落库失败，也不把坏状态放进出战计算。
+func validate(d *Data) error {
+	if len(d.Field) > fieldLimit {
+		return fmt.Errorf("partner field has %d entries, limit %d", len(d.Field), fieldLimit)
+	}
+	seen := map[int32]bool{}
+	for _, id := range d.Field {
+		if d.Stars[id] <= 0 {
+			return fmt.Errorf("partner %d on field but not owned", id)
+		}
+		if seen[id] {
+			return fmt.Errorf("partner %d duplicated on field", id)
+		}
+		seen[id] = true
+	}
+	return nil
 }
 
 // M 是伙伴模块的唯一实例。

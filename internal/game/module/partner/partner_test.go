@@ -7,6 +7,7 @@ import (
 
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
+	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	"game_study/pkg/model"
@@ -175,7 +176,25 @@ func TestDecodeRejectsBrokenState(t *testing.T) {
 		`{"stars":{"1":1},"field":[1,1]}`, // 重复上阵
 	}
 	for _, raw := range cases {
-		_, err := fromRow(&model.PlayerPartner{Partners: raw})
+		_, err := DataFromRow(&model.PlayerPartner{Partners: raw})
 		require.Error(t, err, fmt.Sprintf("fromRow must reject %s", raw))
 	}
+}
+
+// TestCodecChecks 持久化编解码（persist_gen.go，由 tools/gencodec 生成）。
+//
+// 守两件事：往返不丢字段；空行读回等于 newData() 且容器字段非 nil。
+// 手写 implementation 时代这两条靠人读代码保证，现在是生成的，交给测试。
+func TestCodecChecks(t *testing.T) {
+	moduletest.CodecChecks(t, newData, DataToRow, DataFromRow, &Data{Stars: map[int32]int32{1: 2}, Field: []int32{1}})
+}
+
+// TestStoredJSONShape 存储格式锁：这一列写进库里的字节形态。
+//
+// 改动 json tag 会让旧快照解成零值且不报错，所以这里的期望值不允许
+// 「顺手更新」——真要改格式，必须同时写数据迁移。
+func TestStoredJSONShape(t *testing.T) {
+	row, err := DataToRow(7, &Data{Stars: map[int32]int32{1: 2}, Field: []int32{1}})
+	require.NoError(t, err)
+	moduletest.JSONColumn(t, row.Partners, `{"stars":{"1":2},"field":[1]}`)
 }

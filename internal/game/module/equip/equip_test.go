@@ -229,7 +229,7 @@ func TestListEmpty(t *testing.T) {
 }
 
 // ============================================================================
-// 持久化适配（persist.go）
+// 持久化适配（persist_gen.go，由 tools/gencodec 生成）
 // ============================================================================
 
 // TestRowRoundTrip 表行往返不丢字段：Equipped=false 不能被 omitempty 吃掉。
@@ -238,25 +238,25 @@ func TestRowRoundTrip(t *testing.T) {
 		{UID: 100, EquipID: equipSword, EnhanceLevel: 2, Quality: 1, Equipped: true},
 		{UID: 101, EquipID: equipArmor},
 	}}
-	row, err := toRow(7, in)
+	row, err := DataToRow(7, in)
 	require.NoError(t, err)
 	require.EqualValues(t, 7, row.PlayerId)
 
-	out, err := fromRow(row)
+	out, err := DataFromRow(row)
 	require.NoError(t, err)
 	require.Equal(t, in.Equips, out.Equips)
 }
 
 // TestFromRowEmptyColumn 空列等价于「一件装备都没有」，而不是报错。
 func TestFromRowEmptyColumn(t *testing.T) {
-	d, err := fromRow(&model.PlayerEquip{PlayerId: 7})
+	d, err := DataFromRow(&model.PlayerEquip{PlayerId: 7})
 	require.NoError(t, err)
 	require.Empty(t, d.Equips)
 }
 
 // TestFromRowBadJSON 坏数据必须报错（宁可整批写回失败，也不静默清空装备）。
 func TestFromRowBadJSON(t *testing.T) {
-	_, err := fromRow(&model.PlayerEquip{PlayerId: 7, Equips: `{"not":"array"}`})
+	_, err := DataFromRow(&model.PlayerEquip{PlayerId: 7, Equips: `{"not":"array"}`})
 	require.Error(t, err)
 }
 
@@ -407,4 +407,22 @@ func TestTakeOffRevertsEnhancedBonus(t *testing.T) {
 	resp := takeOff(t, m, ctx, rec, 100)
 	require.EqualValues(t, int32(errcode.OK), resp.Code)
 	require.EqualValues(t, 0, st.GetAttr("atk"), "卸下必须扣干净，不能剩强化那部分")
+}
+
+// TestCodecChecks 持久化编解码（persist_gen.go，由 tools/gencodec 生成）。
+//
+// 守两件事：往返不丢字段；空行读回等于 newData() 且容器字段非 nil。
+// 手写 implementation 时代这两条靠人读代码保证，现在是生成的，交给测试。
+func TestCodecChecks(t *testing.T) {
+	moduletest.CodecChecks(t, newData, DataToRow, DataFromRow, &Data{Equips: []Entry{{UID: 100, EquipID: 1, EnhanceLevel: 2, Quality: 1, Equipped: true}}})
+}
+
+// TestStoredJSONShape 存储格式锁：这一列写进库里的字节形态。
+//
+// 改动 json tag 会让旧快照解成零值且不报错，所以这里的期望值不允许
+// 「顺手更新」——真要改格式，必须同时写数据迁移。
+func TestStoredJSONShape(t *testing.T) {
+	row, err := DataToRow(7, &Data{Equips: []Entry{{UID: 100, EquipID: 1, EnhanceLevel: 2, Quality: 1, Equipped: true}}})
+	require.NoError(t, err)
+	moduletest.JSONColumn(t, row.Equips, `[{"uid":100,"equip_id":1,"enhance_level":2,"quality":1,"equipped":true}]`)
 }

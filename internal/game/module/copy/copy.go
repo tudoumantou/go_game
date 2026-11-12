@@ -47,8 +47,25 @@ type Record struct {
 //
 // 为什么用 map 而不是每个副本一行表：副本数量随配置增长、行数不可控，
 // 且进度是玩家私有的低频读数据，整体一个 JSON 列足够。
+// @codec table=copy_record new=newData validate=validate
 type Data struct {
-	Records map[int32]Record `json:"records"`
+	Records map[int32]Record `db:"records" json:"records"`
+}
+
+// newData 新玩家的空状态；map 非 nil 是硬约束（onSettle 会写入）。
+func newData() *Data { return &Data{Records: map[int32]Record{}} }
+
+// validate 落库前校验：星级 0-3、次数非负。
+//
+// 星级上界 3 是协议约定（面板只画 3 颗星），写死在校验里而非配置，
+// 因为它同时约束客户端展示与服务端存储。
+func validate(d *Data) error {
+	for id, rec := range d.Records {
+		if id <= 0 || rec.Star < 0 || rec.Star > 3 || rec.PassCount < 0 {
+			return fmt.Errorf("invalid copy %d record %+v", id, rec)
+		}
+	}
+	return nil
 }
 
 // M 副本模块的唯一实例。

@@ -12,6 +12,8 @@
 
 package equip
 
+import "fmt"
+
 type Entry struct {
 	UID          int64 `json:"uid"`
 	EquipID      int32 `json:"equip_id"`
@@ -24,9 +26,34 @@ type Entry struct {
 //
 // 用切片而非 map：持有量小（几十件）、顺序即获得顺序，
 // 且 UID 查找是线性扫描也够快（findEquip）。
-
+//
+// @codec table=player_equip new=newData validate=validate
 type Data struct {
-	Equips []Entry `json:"equips"`
+	Equips []Entry `db:"equips" json:"equips"`
+}
+
+// newData 新玩家的空状态；Equips 给空切片，JSON 序列化才是 [] 而不是 null。
+func newData() *Data { return &Data{Equips: []Entry{}} }
+
+// validate 落库前校验：UID 唯一、强化等级非负。
+//
+// 这是快照落库前的最后一道闸：校验失败会让整批写回失败（宁可丢一批
+// 也不写坏数据），因此只查「结构性不变量」，不查业务规则。
+func validate(d *Data) error {
+	seen := make(map[int64]bool, len(d.Equips))
+	for _, e := range d.Equips {
+		if e.UID <= 0 {
+			return fmt.Errorf("invalid equip uid %d", e.UID)
+		}
+		if e.EnhanceLevel < 0 {
+			return fmt.Errorf("invalid enhance level %d (uid=%d)", e.EnhanceLevel, e.UID)
+		}
+		if seen[e.UID] {
+			return fmt.Errorf("duplicate equip uid %d", e.UID)
+		}
+		seen[e.UID] = true
+	}
+	return nil
 }
 
 // M 装备模块的唯一实例。

@@ -37,7 +37,7 @@ func SignInToRow(playerID int64, d *SignIn) (*model.PlayerSignin, error) {
 }
 
 func SignInFromRow(r *model.PlayerSignin) (*SignIn, error) {
-	d := &SignIn{}
+	d := newSignIn()
 	if r.ClaimedDays != "" {
 		if err := json.Unmarshal([]byte(r.ClaimedDays), &d.Days); err != nil {
 			return nil, fmt.Errorf("decode player_signin.claimed_days: %w", err)

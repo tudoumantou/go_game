@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -234,7 +235,7 @@ func TestUpgradeCostComesFromTable(t *testing.T) {
 	}
 }
 
-// TestSnapshotShape Ext 槽位存的是业务结构（Data），表行转换在 persist.go。
+// TestSnapshotShape Ext 槽位存的是业务结构（Data），表行转换在 persist_gen.go。
 func TestSnapshotShape(t *testing.T) {
 	st := newFakeState(9)
 	ctx := newCtx(st)
@@ -248,8 +249,26 @@ func TestSnapshotShape(t *testing.T) {
 	require.EqualValues(t, 4, decoded.Levels[101])
 
 	// 落库形状由 toRow 决定：整份存 skills 列。
-	row, err := toRow(9, &decoded)
+	row, err := DataToRow(9, &decoded)
 	require.NoError(t, err)
 	require.EqualValues(t, 9, row.PlayerId)
 	require.EqualValues(t, `{"101":4}`, row.Skills)
+}
+
+// TestCodecChecks 持久化编解码（persist_gen.go，由 tools/gencodec 生成）。
+//
+// 守两件事：往返不丢字段；空行读回等于 newData() 且容器字段非 nil。
+// 手写 implementation 时代这两条靠人读代码保证，现在是生成的，交给测试。
+func TestCodecChecks(t *testing.T) {
+	moduletest.CodecChecks(t, newData, DataToRow, DataFromRow, &Data{Levels: map[int32]int32{1: 3}})
+}
+
+// TestStoredJSONShape 存储格式锁：这一列写进库里的字节形态。
+//
+// 改动 json tag 会让旧快照解成零值且不报错，所以这里的期望值不允许
+// 「顺手更新」——真要改格式，必须同时写数据迁移。
+func TestStoredJSONShape(t *testing.T) {
+	row, err := DataToRow(7, &Data{Levels: map[int32]int32{1: 3}})
+	require.NoError(t, err)
+	moduletest.JSONColumn(t, row.Skills, `{"1":3}`)
 }

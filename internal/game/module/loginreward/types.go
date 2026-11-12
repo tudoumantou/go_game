@@ -3,6 +3,8 @@
 // 只放「数据长什么样」，落库转换见 persist.go，业务规则见 handler.go。
 package loginreward
 
+import "fmt"
+
 // Data 是登录礼包的私有状态。
 //
 // 字段语义：
@@ -25,7 +27,21 @@ package loginreward
 //
 // 要改成小写 tag 时必须同时写迁移：读旧格式 → 转换 → 写新格式。
 // loginreward_test.go 的 TestDataDecodesLegacyExtJSON 锁住这个约定。
+//
+// db tag 与 json tag 是两件事：db 决定映射哪一列，json 决定快照里的键名。
+// 这里只加 db，json 继续留空以保持上面的兼容契约。
+// @codec table=player_login validate=validate
 type Data struct {
-	LastDay int64
-	Streak  int32
+	LastDay int64 `db:"last_day"`
+	Streak  int32 `db:"streak"`
+}
+
+// validate 落库前校验：天数与连续计数不能为负。
+//
+// 零值合法（未发放过），负数一定是数据损坏。
+func validate(d *Data) error {
+	if d.LastDay < 0 || d.Streak < 0 {
+		return fmt.Errorf("invalid login state: day=%d streak=%d", d.LastDay, d.Streak)
+	}
+	return nil
 }

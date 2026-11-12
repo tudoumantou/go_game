@@ -25,7 +25,7 @@ gen-check: ## 校验生成物与源码一致（生成到临时目录逐文件比
 	@set -e; tmp=$$(mktemp -d); trap 'rm -rf $$tmp' EXIT; \
 	 $(GO) run ./tools/gendata -in configs/gamedata/xml -out $$tmp/gamedata >/dev/null; \
 	 $(GO) run ./tools/gendb -in sql/schema -out $$tmp/model >/dev/null; \
-	 for f in $$tmp/gamedata/*_gen.go $$tmp/gamedata/data.go; do \
+	 for f in $$tmp/gamedata/*_gen.go; do \
 	   cmp -s "$$f" "pkg/gamedata/$$(basename $$f)" || { echo "不一致: pkg/gamedata/$$(basename $$f)（运行 make gen）"; exit 1; }; \
 	 done; \
 	 for f in $$tmp/model/*_gen.go; do \

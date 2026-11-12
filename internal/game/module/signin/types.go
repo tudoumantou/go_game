@@ -23,7 +23,7 @@ import (
 // Go 知识点：两个字段都没有 json tag，序列化用 Go 字段名（"Days"/"Rewards"）。
 // 这是历史契约（表里已存的数据按这个键名），补 tag 会让旧快照读不出来，
 // 所以注释里显式记录「无 tag 是故意的」。
-// @codec table=player_signin validate=validate
+// @codec table=player_signin new=newSignIn validate=validate
 type SignIn struct {
 	Days    []int32         `db:"claimed_days"`
 	Rewards map[int32]int64 `db:"claimed_rewards"`

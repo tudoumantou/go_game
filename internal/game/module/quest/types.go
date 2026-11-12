@@ -14,6 +14,8 @@
 
 package quest
 
+import "fmt"
+
 type Record struct {
 	Status   int32 `json:"status"`
 	Progress int32 `json:"progress"`
@@ -23,13 +25,30 @@ type Record struct {
 //
 // 「没接取」用「map 里没有这个键」表达，而不是 Status=-1——
 // 少一种状态，领取事实的判定（claimed）就不会有第三态。
-
+//
+// @codec table=player_quest new=newData validate=validate
 type Data struct {
-	Quests map[int32]Record `json:"quests"`
+	Quests map[int32]Record `db:"quests" json:"quests"`
 }
 
 // newData 新玩家的空状态：map 必须初始化，nil map 写会 panic。
-
 func newData() *Data { return &Data{Quests: map[int32]Record{}} }
 
-// M 任务模块的唯一实例。
+// validate 落库前校验状态取值与进度范围，坏数据整批回滚。
+//
+// Status 上界是 statusClaimed：超范围说明快照被改坏，
+// 宁可这批写回失败，也不把非法状态带进数据库。
+func validate(d *Data) error {
+	for id, rec := range d.Quests {
+		if id <= 0 {
+			return fmt.Errorf("invalid quest id %d", id)
+		}
+		if rec.Status < statusDoing || rec.Status > statusClaimed {
+			return fmt.Errorf("invalid quest status %d", rec.Status)
+		}
+		if rec.Progress < 0 {
+			return fmt.Errorf("invalid quest progress %d", rec.Progress)
+		}
+	}
+	return nil
+}

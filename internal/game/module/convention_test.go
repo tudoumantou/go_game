@@ -494,3 +494,35 @@ func TestModulesDefineNoStateExplicitly(t *testing.T) {
 	}
 	require.Greater(t, scanned, 10, "没有扫到模块源码，检查逻辑本身失效了")
 }
+
+// TestModulesDoNotHandwritePersist 持久化编解码只能由 tools/gencodec 生成。
+//
+// 背景：这条规矩是本轮重构的结果。此前 9 个模块里 8 个手写 persist.go、
+// 1 个用生成的 persist_gen.go，两套骨架做同一件事——每个都是
+// RegisterStateful + ToRow(json.Marshal) + FromRow(json.Unmarshal)，
+// 加一个字段就要记得两边都对。
+//
+// 现在统一成「结构体标 @codec（可带 new/whole/verify）→ make gen-codec」。
+// 手写文件一旦回来，下一个改字段的人会同时面对两份实现，而编译器不会报错，
+// 只会表现为「某条路径读出来的数据是旧的」。
+func TestModulesDoNotHandwritePersist(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("读模块目录失败：%v", err)
+	}
+	scanned := 0
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == "moduletest" {
+			continue
+		}
+		scanned++
+		hand := filepath.Join(e.Name(), "persist.go")
+		if _, err := os.Stat(hand); err == nil {
+			t.Errorf("%s: 手写了持久化适配 —— 改为在结构体上标 `// @codec table=<表> [new=<空状态函数>] [whole=<列>]`，"+
+				"再 make gen-codec 生成 persist_gen.go", hand)
+		}
+	}
+	if scanned < 10 {
+		t.Fatalf("只扫到 %d 个模块目录，路径判断失效了", scanned)
+	}
+}

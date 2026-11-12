@@ -13,7 +13,7 @@
 //
 // 产出（全量覆盖，16.4 约定禁止手改）：
 //   - pkg/gamedata/<table>_gen.go  结构体 + 列表 + ByID 索引 + 查询函数
-//   - pkg/gamedata/data.go          注册表汇总（init 汇总 + go:embed 原始 XML）
+//   - pkg/gamedata/data_gen.go      注册表汇总（init 汇总 + go:embed 原始 XML）
 //   - pkg/gamedata/embed/xml/*.xml  XML 源拷贝（go:embed 输入，16.1.3）
 //
 // 可选 -json-out：另导出 <table>.json（热更新输入格式与模板，见 genJSON）。
@@ -58,7 +58,7 @@ type table struct {
 	Rows []rowItem
 }
 
-// main 入口：读 XML → 校验 → 拷贝 embed → 逐表生成 → 汇总 data.go。
+// main 入口：读 XML → 校验 → 拷贝 embed → 逐表生成 → 汇总 data_gen.go。
 //
 // 顺序约束：先校验再落盘（见下方 problems 检查），任何配置错误都不产出半套生成物，
 // 避免「生成到一半」的中间态被后续 make gen 流程当成有效产物。
@@ -148,9 +148,9 @@ func main() {
 		fmt.Printf("已导出 %d 张表的 JSON → %s\n", len(tables), *jsonOut)
 	}
 
-	// 汇总 data.go（含内容哈希版本号）
+	// 汇总 data_gen.go（含内容哈希版本号）
 	if err := genData(*out, tables, dirVersion(embedDir)); err != nil {
-		log.Fatalf("gen data.go: %v", err)
+		log.Fatalf("gen data_gen.go: %v", err)
 	}
 	fmt.Printf("gendata 完成：%d 张表 → %s\n", len(tables), *out)
 }
@@ -290,7 +290,7 @@ func genTable(outDir, name, file string, rows []rowItem) error {
 	return writeGoFile(path, b.String())
 }
 
-// genData 生成汇总 data.go：快照结构 + go:embed 原始 XML + setter/tableNames。
+// genData 生成汇总 data_gen.go：快照结构 + go:embed 原始 XML + setter/tableNames。
 //
 // version 参数来自 dirVersion（embed 目录的内容哈希）：同一份 XML 永远得到
 // 同一个版本号，启动日志打印它即可与线上配置核对，也是热更新后判断
@@ -370,7 +370,7 @@ func genData(outDir string, tables []table, version string) error {
 	b.WriteString("func Summary() string {\n")
 	b.WriteString(fmt.Sprintf("\treturn fmt.Sprintf(\"gamedata: %%d tables, version %%s\", len(tableNames), Version())\n"))
 	b.WriteString("}\n")
-	path := filepath.Join(outDir, "data.go")
+	path := filepath.Join(outDir, "data_gen.go")
 	return writeGoFile(path, b.String())
 }
 

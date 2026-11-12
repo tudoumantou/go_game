@@ -8,6 +8,8 @@
 package skill
 
 import (
+	"fmt"
+
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
 	"game_study/pkg/gamedata"
@@ -28,8 +30,25 @@ const stateKey = "skill"
 //
 // map 的值即等级，隐去「未学习」态：键不存在就是没学过，
 // 与任务模块同一设计（减少状态数量）。
+//
+// @codec table=player_skill new=newData validate=validate
 type Data struct {
-	Levels map[int32]int32 `json:"levels"`
+	Levels map[int32]int32 `db:"skills" json:"levels"`
+}
+
+// newData 新玩家的空状态：map 必须初始化，nil map 写会 panic。
+func newData() *Data { return &Data{Levels: map[int32]int32{}} }
+
+// validate 落库前校验：等级必须为正，技能 ID 合法。
+//
+// 等级 <=0 一律拒绝：0 级没有语义（未学习应该没有键），负数说明数据被改坏。
+func validate(d *Data) error {
+	for id, level := range d.Levels {
+		if id <= 0 || level <= 0 {
+			return fmt.Errorf("invalid skill %d level %d", id, level)
+		}
+	}
+	return nil
 }
 
 // M 技能模块的唯一实例。

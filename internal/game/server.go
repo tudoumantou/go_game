@@ -80,10 +80,10 @@ type Server struct {
 	cacheStore *writebehind.Store // Redis 快照副本（只读写副本，不承载落库）
 	// replica 副本的异步回写通道（R14）：Actor 编码后入队即返回，
 	// 由它 200ms 批量刷进 Redis；下线/关服前必须 Flush（见 Shutdown）。
-	replica    *writebehind.Replica
-	presence   *cache.Presence
-	producer   *pkgmq.Producer
-	consumers  *gamemq.Group
+	replica   *writebehind.Replica
+	presence  *cache.Presence
+	producer  *pkgmq.Producer
+	consumers *gamemq.Group
 	// roleOutbox 角色索引同步投递器（R17）：创角事务写行，本协程投到
 	// gs.role.created，登录服据此维护 user_role。关服前 Flush 一次。
 	roleOutbox *gamemq.RoleOutboxDispatcher

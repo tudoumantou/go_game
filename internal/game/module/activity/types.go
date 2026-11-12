@@ -16,6 +16,8 @@ package activity
 
 import (
 	"context"
+	"fmt"
+
 	pkgmq "game_study/pkg/mq"
 )
 
@@ -25,9 +27,26 @@ type Record struct {
 }
 
 // Data 是活动模块的私有状态：activity_id -> 进度与已领位图。
-
+//
+// @codec table=activity_record new=newData validate=validate
 type Data struct {
-	Records map[int32]Record `json:"records"`
+	Records map[int32]Record `db:"records" json:"records"`
+}
+
+// newData 新玩家的空状态：map 必须初始化。
+func newData() *Data { return &Data{Records: map[int32]Record{}} }
+
+// validate 落库前校验：进度非负、活动 ID 合法。
+func validate(d *Data) error {
+	for id, rec := range d.Records {
+		if id <= 0 {
+			return fmt.Errorf("invalid activity id %d", id)
+		}
+		if rec.Progress < 0 {
+			return fmt.Errorf("invalid activity progress %d (id=%d)", rec.Progress, id)
+		}
+	}
+	return nil
 }
 
 // producer 全服活动贡献上报（R7.3）；nil 表示不上报（单机/测试）。

@@ -293,3 +293,21 @@ func TestListShowsLimit(t *testing.T) {
 	require.NotEmpty(t, resp.Goods)
 	require.EqualValues(t, 7, resp.Goods[0].Limit, "Limit 必须来自配置 col5，不能写死 0")
 }
+
+// TestCodecChecks 持久化编解码（persist_gen.go，由 tools/gencodec 生成）。
+//
+// 守两件事：往返不丢字段；空行读回等于 newData() 且容器字段非 nil。
+// 手写 implementation 时代这两条靠人读代码保证，现在是生成的，交给测试。
+func TestCodecChecks(t *testing.T) {
+	moduletest.CodecChecks(t, newData, DataToRow, DataFromRow, &Data{Day: 100, Bought: map[string]int32{"1_1": 2}})
+}
+
+// TestStoredJSONShape 存储格式锁：这一列写进库里的字节形态。
+//
+// 改动 json tag 会让旧快照解成零值且不报错，所以这里的期望值不允许
+// 「顺手更新」——真要改格式，必须同时写数据迁移。
+func TestStoredJSONShape(t *testing.T) {
+	row, err := DataToRow(7, &Data{Day: 100, Bought: map[string]int32{"1_1": 2}})
+	require.NoError(t, err)
+	moduletest.JSONColumn(t, row.Bought, `{"1_1":2}`)
+}

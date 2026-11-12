@@ -18,9 +18,43 @@
 
 package shop
 
+import "fmt"
+
+// Data 是商店模块的私有状态：本周期所属业务日 + 商品键 -> 已购份数。
+//
+// @codec table=shop_record new=newData validate=validate
 type Data struct {
-	Day    int64            `json:"day"`
-	Bought map[string]int32 `json:"bought"`
+	Day    int64            `db:"day" json:"day"`
+	Bought map[string]int32 `db:"bought" json:"bought"`
+}
+
+// newData 新玩家空状态；Day 由 normalize 在读取时对齐。
+func newData() *Data { return &Data{Bought: map[string]int32{}} }
+
+// validate 落库前校验：次数非负、键非空。
+//
+// 空键也拒绝：键格式由 goodsKey 生成，空键说明状态被外部改坏。
+func validate(d *Data) error {
+	for key, n := range d.Bought {
+		if key == "" || n < 0 {
+			return fmt.Errorf("invalid shop record %q = %d", key, n)
+		}
+	}
+	return nil
+}
+
+// normalize 按业务日重置购买次数，返回是否有改动。
+//
+// 放在读取路径上是原实现的语义：跨天后第一次访问就看到 0，而不是等买家
+// 触发一次写入。列表请求用 Read（不写回），下次读仍会重算，行为一致；
+// 购买请求用 Mutate，改动随这次购买一起落库。
+func normalize(d *Data, today int64) bool {
+	if !dailyRefresh() || d.Day == today {
+		return false
+	}
+	d.Bought = map[string]int32{}
+	d.Day = today
+	return true
 }
 
 // M 商店模块的唯一实例。

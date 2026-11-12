@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"game_study/internal/game/module"
+	"game_study/internal/game/module/moduletest"
 	"game_study/pkg/codec"
 	"game_study/pkg/gamedata"
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -150,4 +151,22 @@ func TestLevelGate(t *testing.T) {
 	d, _ := m.State(ctx)
 	_, ok := d.Records[int32(cfg.Id)]
 	require.False(t, ok, "settle must be rejected below required level")
+}
+
+// TestCodecChecks 持久化编解码（persist_gen.go，由 tools/gencodec 生成）。
+//
+// 守两件事：往返不丢字段；空行读回等于 newData() 且容器字段非 nil。
+// 手写 implementation 时代这两条靠人读代码保证，现在是生成的，交给测试。
+func TestCodecChecks(t *testing.T) {
+	moduletest.CodecChecks(t, newData, DataToRow, DataFromRow, &Data{Records: map[int32]Record{6301: {Star: 2, PassCount: 5, FirstPass: true}}})
+}
+
+// TestStoredJSONShape 存储格式锁：这一列写进库里的字节形态。
+//
+// 改动 json tag 会让旧快照解成零值且不报错，所以这里的期望值不允许
+// 「顺手更新」——真要改格式，必须同时写数据迁移。
+func TestStoredJSONShape(t *testing.T) {
+	row, err := DataToRow(7, &Data{Records: map[int32]Record{6301: {Star: 2, PassCount: 5, FirstPass: true}}})
+	require.NoError(t, err)
+	moduletest.JSONColumn(t, row.Records, `{"6301":{"star":2,"pass_count":5,"first_pass":true}}`)
 }
