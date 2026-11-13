@@ -43,6 +43,12 @@ type Node struct {
 	MemLoad   int
 	MsgQPS    int64
 
+	// ServerID 区服编号（服级）。0 表示节点未声明（老版本节点或非游戏服）。
+	//
+	// 与 ID 的分工：ID 是部署态标识（game-01，扩缩容会变），ServerID 是业务
+	// 标识（跨服表里存的就是它）。跨服玩法按 ServerID 下发，靠这个字段反查 ID。
+	ServerID int32
+
 	// LastSeen 最近一次收到心跳/任意上报的时间
 	// 注册/心跳两条路径都刷新它：只有 Register 没有心跳的节点
 	// 也会因超时被摘除——「注册了但从不说话」视为失联
@@ -203,6 +209,34 @@ func (r *Registry) SenderFor(nodeID string) (Sender, bool) {
 	defer r.mu.RUnlock()
 	s, ok := r.senders[nodeID]
 	return s, ok
+}
+
+// NodeIDForServer 按区服编号反查节点 ID。
+//
+// 线性遍历而不是维护 serverID → nodeID 的反向索引：节点总数是几十量级，
+// 一次遍历比多维护一份可能不一致的索引便宜。调用方是秒级节拍的下发窗口，
+// 不属于热路径。
+//
+// 同一 server_id 被多个节点声明（分线部署，或滚动重启期间新旧进程并存）时
+// 返回按节点 ID 字典序最小的那个，保证结果稳定可复现；调用方应把这种
+// 情况当配置异常告警。
+func (r *Registry) NodeIDForServer(serverID int32) (string, bool) {
+	if serverID == 0 {
+		return "", false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	best := ""
+	for id, n := range r.nodes {
+		if n.ServerID != serverID {
+			continue
+		}
+		if best == "" || id < best {
+			best = id
+		}
+	}
+	return best, best != ""
 }
 
 // ListByType 按类型列出节点（按 ID 排序，保证结果稳定）。

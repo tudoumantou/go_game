@@ -26,6 +26,7 @@ const (
 	CenterService_QueryGlobalRank_FullMethodName   = "/game_study.internal.v2.CenterService/QueryGlobalRank"
 	CenterService_QueryFeatureStats_FullMethodName = "/game_study.internal.v2.CenterService/QueryFeatureStats"
 	CenterService_QueryRank_FullMethodName         = "/game_study.internal.v2.CenterService/QueryRank"
+	CenterService_CrossEnroll_FullMethodName       = "/game_study.internal.v2.CenterService/CrossEnroll"
 )
 
 // CenterServiceClient is the client API for CenterService service.
@@ -39,6 +40,12 @@ type CenterServiceClient interface {
 	QueryFeatureStats(ctx context.Context, in *QueryStatsReq, opts ...grpc.CallOption) (*QueryStatsResp, error)
 	// 玩家榜单一屏查询：Top-N + 我的名次 + 周边，一次往返（游戏服代理客户端请求）
 	QueryRank(ctx context.Context, in *QueryRankReq, opts ...grpc.CallOption) (*QueryRankResp, error)
+	// 跨服玩法报名 / 取消报名（游戏服 → 中心服，Unary 同步等结果）
+	//
+	// 报名由中心服裁决：报名期校验、重复报名幂等（已存在返回成功而非报错），
+	// 成功即写 center 侧报名表，游戏服收到 code=0 才写本地 cross_enroll。
+	// 取消报名为幂等删除，同样以 code=0 为准清理本地行。
+	CrossEnroll(ctx context.Context, in *CrossEnrollReq, opts ...grpc.CallOption) (*CrossEnrollResp, error)
 }
 
 type centerServiceClient struct {
@@ -101,6 +108,16 @@ func (c *centerServiceClient) QueryRank(ctx context.Context, in *QueryRankReq, o
 	return out, nil
 }
 
+func (c *centerServiceClient) CrossEnroll(ctx context.Context, in *CrossEnrollReq, opts ...grpc.CallOption) (*CrossEnrollResp, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CrossEnrollResp)
+	err := c.cc.Invoke(ctx, CenterService_CrossEnroll_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CenterServiceServer is the server API for CenterService service.
 // All implementations must embed UnimplementedCenterServiceServer
 // for forward compatibility.
@@ -112,6 +129,12 @@ type CenterServiceServer interface {
 	QueryFeatureStats(context.Context, *QueryStatsReq) (*QueryStatsResp, error)
 	// 玩家榜单一屏查询：Top-N + 我的名次 + 周边，一次往返（游戏服代理客户端请求）
 	QueryRank(context.Context, *QueryRankReq) (*QueryRankResp, error)
+	// 跨服玩法报名 / 取消报名（游戏服 → 中心服，Unary 同步等结果）
+	//
+	// 报名由中心服裁决：报名期校验、重复报名幂等（已存在返回成功而非报错），
+	// 成功即写 center 侧报名表，游戏服收到 code=0 才写本地 cross_enroll。
+	// 取消报名为幂等删除，同样以 code=0 为准清理本地行。
+	CrossEnroll(context.Context, *CrossEnrollReq) (*CrossEnrollResp, error)
 	mustEmbedUnimplementedCenterServiceServer()
 }
 
@@ -133,6 +156,9 @@ func (UnimplementedCenterServiceServer) QueryFeatureStats(context.Context, *Quer
 }
 func (UnimplementedCenterServiceServer) QueryRank(context.Context, *QueryRankReq) (*QueryRankResp, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method QueryRank not implemented")
+}
+func (UnimplementedCenterServiceServer) CrossEnroll(context.Context, *CrossEnrollReq) (*CrossEnrollResp, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CrossEnroll not implemented")
 }
 func (UnimplementedCenterServiceServer) mustEmbedUnimplementedCenterServiceServer() {}
 func (UnimplementedCenterServiceServer) testEmbeddedByValue()                       {}
@@ -209,6 +235,24 @@ func _CenterService_QueryRank_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CenterService_CrossEnroll_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CrossEnrollReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CenterServiceServer).CrossEnroll(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CenterService_CrossEnroll_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CenterServiceServer).CrossEnroll(ctx, req.(*CrossEnrollReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CenterService_ServiceDesc is the grpc.ServiceDesc for CenterService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -223,6 +267,10 @@ var CenterService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "QueryRank",
 			Handler:    _CenterService_QueryRank_Handler,
+		},
+		{
+			MethodName: "CrossEnroll",
+			Handler:    _CenterService_CrossEnroll_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

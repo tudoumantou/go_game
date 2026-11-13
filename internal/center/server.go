@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"game_study/internal/center/archive"
+	"game_study/internal/center/crossplay"
 	"game_study/internal/center/leader"
 	"game_study/internal/center/match"
 	"game_study/internal/center/milestone"
@@ -82,6 +83,9 @@ type Server struct {
 	archiveSvc   *archive.Service
 	schedSvc     *scheduler.Service
 	milestoneSvc *milestone.Service
+	// crossSvc 跨服玩法（报名裁决 / 分组 / 积分同步）。nil = 未配 MySQL，
+	// 报名时由 rpc 层返回 Code=2，其它功能照常。
+	crossSvc *crossplay.Service
 
 	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
 	// nil = 未配 Kafka，中转退化为单实例模式（OnRelayRequest 里判断）
@@ -255,6 +259,19 @@ func (s *Server) Start(ctx context.Context) error {
 		// 活动实例调度：算当前周期 → 落库 → 下发 gs.activity.schedule（R7.1/R7.2）
 		s.schedSvc = scheduler.New(database, s.producer, s.logger)
 		go s.schedSvc.Run(ctx, s.IsLeader)
+
+		// 跨服玩法：报名裁决 / 分组 / 积分同步下发。
+		// 必须在 centerRPC 已经开始接客之前完成注入——否则启动瞬间的报名
+		// 请求会命中 nil handler 返回「未启用」。这里注册在 gRPC server
+		// 启动之后，但节点要先完成 Register 才会发业务报文，实际有足够提前量。
+		s.crossSvc = crossplay.New(crossplay.NewRepo(database, s.logger), s, s.logger, crossplay.Config{})
+		s.centerRPC.SetCrossHandler(s)
+		// 重启恢复：先读分组表再开定时器，避免定时器拿着空分组去校准。
+		// 恢复失败只告警不回滚——活动期内还能靠各服上报逐步重建。
+		if err := s.crossSvc.Restore(ctx); err != nil {
+			s.logger.Warn("cross play restore failed, start with empty groups", "err", err)
+		}
+		s.crossSvc.Start()
 
 		// 全服里程碑（R7.3/R7.4）：消费贡献 + leader 判定与发奖
 		// 需要 Redis + Kafka 双全：进度在 Redis、任务在 MySQL、奖励走 Kafka
@@ -706,6 +723,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		err := s.producer.Flush(cctx)
 		closeErr := s.producer.Close()
 		return errors.Join(err, closeErr)
+	})
+
+	// FLUSH：跨服玩法把内存里的积分刷一次盘。
+	//
+	// 必须在 close-db 之前：积分以内存为权威，宕机丢可以接受，
+	// 但正常关服丢就是流程错误。Stop 内部自己控制 context，
+	// 不受本阶段 ctx 超时影响。
+	mgr.Register("stop-crossplay", shutdown.PhaseFlush, func(context.Context) error {
+		if s.crossSvc == nil {
+			return nil
+		}
+		s.crossSvc.Stop()
+		return nil
 	})
 
 	// STOP：关 DB、停指标。

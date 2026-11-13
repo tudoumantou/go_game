@@ -55,6 +55,10 @@ type Handler interface {
 	OnKick(k *internalv2.KickNode)
 	// OnConfigPush 配置热更新。
 	OnConfigPush(c *internalv2.ConfigPush)
+	// OnCrossGroupDelta 跨服玩法积分下发（已按本服裁剪）。
+	OnCrossGroupDelta(push *internalv2.CrossGroupDeltaPush)
+	// OnCrossScoreDelta 别的服请求本服改某个玩家的分（传的是差值）。
+	OnCrossScoreDelta(d *internalv2.CrossScoreDelta)
 }
 
 // Client 中心服客户端。
@@ -255,6 +259,14 @@ func (c *Client) dispatch(cmd *internalv2.CenterCommand) {
 		if body.Config != nil {
 			c.h.OnConfigPush(body.Config)
 		}
+	case *internalv2.CenterCommand_CrossGroupDelta:
+		if body.CrossGroupDelta != nil {
+			c.h.OnCrossGroupDelta(body.CrossGroupDelta)
+		}
+	case *internalv2.CenterCommand_CrossScore:
+		if body.CrossScore != nil {
+			c.h.OnCrossScoreDelta(body.CrossScore)
+		}
 	}
 }
 
@@ -344,6 +356,51 @@ func (c *Client) SendFeature(groupID, feature string, metrics map[string]int64) 
 			Ts:      time.Now().Unix(),
 		}},
 	})
+}
+
+// SendCrossScore 上报本服玩家的积分变化（按组打包，绝对值）。
+//
+// 走 Report 流而非 Unary RPC：上报是每 60s 一次的批量动作，几十个服的
+// 节拍差不多会同时到，Unary 会让中心服在整点附近产生连接风暴；流是常驻的。
+func (c *Client) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
+	if len(entries) == 0 {
+		return nil // 没变化就一个字节都不发
+	}
+	return c.Send(&internalv2.NodeReport{
+		Body: &internalv2.NodeReport_Score{Score: &internalv2.CrossScoreBatch{Entries: entries}},
+	})
+}
+
+// SendCrossDelta 请中心服把一条改分通知转给别的服（A 服改不了 B 服玩家的分）。
+//
+// relayID 由调用方生成且必须稳定（同一笔改分重发要用同一个 ID），
+// 接收方按 (from_node, relay_id) 去重——不稳定就会重复加分。
+func (c *Client) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
+	if d == nil || d.GetToServer() == 0 {
+		return fmt.Errorf("cross delta: empty target server")
+	}
+	d.FromNode = c.selfID
+	return c.Send(&internalv2.NodeReport{
+		Body: &internalv2.NodeReport_CrossDelta{CrossDelta: d},
+	})
+}
+
+// CrossEnroll 报名 / 取消报名（Unary，同步等中心服裁决）。
+//
+// 为什么这一条不用流：报名是玩家点出来的，必须当场告诉玩家成功还是失败
+// （「非报名期」这种结果要立刻回包）。用流发出去就变成了单向通知，
+// 客户端只能靠轮询查状态。频率也撑得住——报名集中在一个 24h 窗口里，
+// 单服峰值是每秒几十次，与 RPC 的启动成本完全不冲突。
+func (c *Client) CrossEnroll(ctx context.Context, req *internalv2.CrossEnrollReq) (*internalv2.CrossEnrollResp, error) {
+	c.mu.RLock()
+	conn := c.conn
+	c.mu.RUnlock()
+	if conn == nil {
+		return nil, fmt.Errorf("center not connected")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return internalv2.NewCenterServiceClient(conn).CrossEnroll(ctx, req)
 }
 
 // Ready 流是否已建立过。

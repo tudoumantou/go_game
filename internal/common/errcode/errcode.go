@@ -148,6 +148,12 @@ const (
 	ErrPartnerNoCoin        = commonv1.ErrCode_ERR_CODE_PARTNER_NO_COIN
 	ErrPartnerMaxStar       = commonv1.ErrCode_ERR_CODE_PARTNER_MAX_STAR
 	ErrPartnerFieldFull     = commonv1.ErrCode_ERR_CODE_PARTNER_FIELD_FULL
+	ErrCrossNotEnroll       = commonv1.ErrCode_ERR_CODE_CROSS_NOT_ENROLL
+	ErrCrossCancelDenied    = commonv1.ErrCode_ERR_CODE_CROSS_CANCEL_DENIED
+	ErrCrossNotJoined       = commonv1.ErrCode_ERR_CODE_CROSS_NOT_JOINED
+	ErrCrossNotActive       = commonv1.ErrCode_ERR_CODE_CROSS_NOT_ACTIVE
+	ErrCrossSelfAttack      = commonv1.ErrCode_ERR_CODE_CROSS_SELF_ATTACK
+	ErrCrossTargetGone      = commonv1.ErrCode_ERR_CODE_CROSS_TARGET_GONE
 )
 
 // messages 中文文案表（可热更新；不进协议 wire）
@@ -252,6 +258,12 @@ var messages = map[Code]string{
 	ErrPartnerNoCoin:        "金币不足",
 	ErrPartnerMaxStar:       "已达最高星级",
 	ErrPartnerFieldFull:     "上阵位已满",
+	ErrCrossNotEnroll:       "不在报名期",
+	ErrCrossCancelDenied:    "已分组，不能取消报名",
+	ErrCrossNotJoined:       "未参加该玩法",
+	ErrCrossNotActive:       "跨服玩法尚未开始",
+	ErrCrossSelfAttack:      "不能攻击自己",
+	ErrCrossTargetGone:      "目标已不在玩法中",
 }
 
 // Message 取中文文案（未登记返回通用文案）

@@ -34,6 +34,12 @@ type Handler interface {
 	OnRelayRequest(nodeID string, req *internalv2.RelayRequest)
 	// OnRegister 节点注册（返回需要回给节点的初始指令，如 GroupUpdate）。
 	OnRegister(node *registry.Node) []*internalv2.CenterCommand
+	// OnCrossDelta 中转一条跨服玩法的改分通知（A 服 → 中心服 → B 服）。
+	//
+	// 单独一个方法而不是塞进 Handler.OnRelayRequest：relay 是纯透传
+	// （payload 原样投递，中心服不解包），而改分是资金类操作，中心服
+	// 至少要有「目标节点不存在」的观测点，出问题时才查得到。
+	OnCrossDelta(nodeID string, d *internalv2.CrossScoreDelta)
 }
 
 // Server CenterService 实现。
@@ -55,6 +61,21 @@ type Server struct {
 	rankQuery  RankQuerier
 	rankSearch RankSearcher
 	statsQuery StatsQuerier
+
+	// cross 跨服玩法的业务入口（server 注入）。nil 表示该功能未启用，
+	// 报名返回 Code=2、积分上报静默丢弃 —— 而不是 panic。
+	cross CrossHandler
+}
+
+// CrossHandler 跨服玩法的业务入口。
+//
+// 只声明用到的方法：协议转换留在这里（proto 结构 ↔ 业务参数），
+// 报名期判定、幂等、分组全在 crossplay.Service，两边可独立单测。
+type CrossHandler interface {
+	// Enroll 报名 / 取消报名（req.Cancel 区分）。
+	Enroll(ctx context.Context, req *internalv2.CrossEnrollReq) *internalv2.CrossEnrollResp
+	// OnScoreBatch 接收一批积分上报（按组打包，绝对值）。
+	OnScoreBatch(entries []*internalv2.CrossScoreEntry)
 }
 
 // RankQuerier 排行榜查询（server 注入）。
@@ -98,6 +119,20 @@ func (s *Server) SetRankSearcher(q RankSearcher) { s.rankSearch = q }
 // SetStatsQuerier 注入统计查询实现。
 func (s *Server) SetStatsQuerier(q StatsQuerier) { s.statsQuery = q }
 
+// SetCrossHandler 注入跨服玩法业务入口。
+func (s *Server) SetCrossHandler(h CrossHandler) { s.cross = h }
+
+// CrossEnroll 实现跨服玩法报名（游戏服 → 中心服，Unary 同步等结果）。
+//
+// 未注入 handler 时返回 Code=2 而非 gRPC error：玩家端对 error 的通用处理
+// 是弹「网络错误」，而这里是「功能没开」，用业务码区分才能展示正确文案。
+func (s *Server) CrossEnroll(ctx context.Context, req *internalv2.CrossEnrollReq) (*internalv2.CrossEnrollResp, error) {
+	if s.cross == nil {
+		return &internalv2.CrossEnrollResp{Code: 2, Msg: "跨服玩法未启用"}, nil
+	}
+	return s.cross.Enroll(ctx, req), nil
+}
+
 // Report 实现 bidi 流：一个节点一条。
 //
 // 生命周期：首帧 Register → 注册 + 起下行泵 → 回执初始指令 → 循环收帧
@@ -122,11 +157,12 @@ func (s *Server) Report(stream internalv2.CenterService_ReportServer) error {
 		nodeType = registry.TypeGame
 	}
 	node := &registry.Node{
-		ID:      reg.NodeId,
-		Type:    nodeType,
-		Addr:    reg.Addr,
-		GroupID: reg.GroupId,
-		StartAt: reg.StartAt,
+		ID:       reg.NodeId,
+		Type:     nodeType,
+		Addr:     reg.Addr,
+		GroupID:  reg.GroupId,
+		StartAt:  reg.StartAt,
+		ServerID: reg.ServerId,
 	}
 
 	sess := &session{
@@ -202,17 +238,32 @@ func (s *Server) Report(stream internalv2.CenterService_ReportServer) error {
 				}
 			}
 
+		case *internalv2.NodeReport_Score:
+			// 跨服玩法积分上报：只做转发，业务判定（是否活动期、重复上报）
+			// 全在 crossplay.Service，本包不解释分数含义。
+			if b := body.Score; b != nil && s.cross != nil {
+				s.cross.OnScoreBatch(b.GetEntries())
+			}
+
+		case *internalv2.NodeReport_CrossDelta:
+			// 改分通知：A 服改不了 B 服玩家的分，请中心服转给 B 服。
+			// 与上面那条不同——这条不碰 crossplay.Service，纯粹是路由。
+			if d := body.CrossDelta; d != nil {
+				s.h.OnCrossDelta(sess.nodeID, d)
+			}
+
 		case *internalv2.NodeReport_Register:
 			// 重连后补发 Register：更新信息但不重建会话
 			// 复用现有 session（sendCh/done 不重建）：流一直是同一条，
 			// 重建会话会让注册表里的 Sender 指向已关闭的 channel
 			if r := body.Register; r != nil {
 				s.reg.Register(&registry.Node{
-					ID:      r.NodeId,
-					Type:    defaultType(r.NodeType),
-					Addr:    r.Addr,
-					GroupID: r.GroupId,
-					StartAt: r.StartAt,
+					ID:       r.NodeId,
+					Type:     defaultType(r.NodeType),
+					Addr:     r.Addr,
+					GroupID:  r.GroupId,
+					StartAt:  r.StartAt,
+					ServerID: r.ServerId,
 				}, sess)
 			}
 		}

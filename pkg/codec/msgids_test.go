@@ -139,6 +139,11 @@ var wireBaseline = map[string]uint32{
 	"SeatQueryReq":     8005,
 	"SeatQueryResp":    8006,
 	"SeatRewardNotify": 8010,
+	// 跨服玩法（6909 段，紧接伙伴）
+	"CrossPlayEnrollReq":  6909,
+	"CrossPlayEnrollResp": 6910,
+	"CrossPlayInfoReq":    6911,
+	"CrossPlayInfoResp":   6912,
 }
 
 // TestMsgIDsMatchWireBaseline 逐条比对 wireBaseline：生成表里的号必须与

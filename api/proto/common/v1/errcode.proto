@@ -146,4 +146,17 @@ enum ErrCode {
   ERR_CODE_PARTNER_NO_COIN    = 6904; // 金币不足
   ERR_CODE_PARTNER_MAX_STAR   = 6905; // 已达最高星级
   ERR_CODE_PARTNER_FIELD_FULL = 6906; // 上阵位已满
+
+  // ===== 6950-6959 跨服玩法 =====
+  //
+  // 单独开一段而不是复用 65xx 活动段：跨服玩法的「阶段」与普通活动不同
+  // （它有独立的报名期/分组期/活动期），复用会让客户端提示串台——
+  // 玩家在活动期点报名，看到「活动不在开放期」是错的，他确实在活动期，
+  // 只是不在报名期。
+  ERR_CODE_CROSS_NOT_ENROLL    = 6950; // 不在报名期
+  ERR_CODE_CROSS_CANCEL_DENIED = 6951; // 已分组，不能取消报名
+  ERR_CODE_CROSS_NOT_JOINED    = 6952; // 未参加该玩法
+  ERR_CODE_CROSS_NOT_ACTIVE    = 6953; // 玩法未到进行中
+  ERR_CODE_CROSS_SELF_ATTACK   = 6954; // 不能攻击自己
+  ERR_CODE_CROSS_TARGET_GONE   = 6955; // 目标已不在玩法中
 }

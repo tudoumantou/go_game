@@ -30,6 +30,7 @@ import (
 	"game_study/internal/game/module"
 	"game_study/internal/game/module/battle"
 	"game_study/internal/game/module/chat"
+	"game_study/internal/game/module/crossplay"
 	"game_study/internal/game/module/mail"
 	gamemq "game_study/internal/game/mq"
 	"game_study/internal/game/player"
@@ -115,6 +116,11 @@ type Server struct {
 	centerCli *gamecenter.Client // 到中心服的 Report 流
 	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
 	seatMgr   *seat.Manager      // 抢位置房间管理器（单服座位 + 离线奖励）
+
+	// crossPlayMod 跨服玩法模块。提升为字段而不是局部变量：中心服的下行
+	// 回调（centerHandler.OnCrossGroupDelta）要直接调它，而回调发生在
+	// 装配完成之后的 gRPC 流里，拿不到局部变量。
+	crossPlayMod *crossplay.Module
 
 	// mu 保护下面三张会话映射表的全部读写；players2sess 是
 	// player→session 的唯一权威映射，顶号判定与下行路由都读它，
@@ -300,6 +306,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	})
 
 	// FLUSH：确认落库。失败要出现在返回值里，由 main 非零退出。
+	//
+	// 跨服玩法先刷：它的分数只在内存里（宕机就丢是已确认的取舍），
+	// 此刻 Actor 已 Drain，是最后一次写盘机会。放在玩家落盘之前，
+	// 是因为它不依赖玩家状态、也不该被后面的慢 SQL 拖到超时。
+	mgr.Register("flush-crossplay", shutdown.PhaseFlush, func(ctx context.Context) error {
+		if s.crossPlayMod == nil {
+			return nil
+		}
+		if err := s.crossPlayMod.Flush(ctx); err != nil {
+			// 不阻断关服：分数丢一次只影响若干场对抗的计分，
+			// 让整个进程退不掉更糟。
+			s.logger.Warn("crossplay flush failed on shutdown", "err", err)
+		}
+		return nil
+	})
 	mgr.Register("flush-seat", shutdown.PhaseFlush, func(context.Context) error {
 		// 座位是合并写：Actor 已 Drain，这里把最后一轮脏标记写完再停 worker。
 		if s.seatMgr == nil {

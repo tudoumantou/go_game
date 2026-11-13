@@ -26,6 +26,7 @@ import (
 	"game_study/internal/game/module/battle"
 	"game_study/internal/game/module/chat"
 	"game_study/internal/game/module/copy"
+	"game_study/internal/game/module/crossplay"
 	"game_study/internal/game/module/equip"
 	"game_study/internal/game/module/friend"
 	"game_study/internal/game/module/guild"
@@ -500,6 +501,15 @@ func (s *Server) initModules() {
 		s.modules.Register(partner.M)
 		// 场景：协议转发到场景 Actor，位置与视野由场景 Actor 独占。
 		s.modules.Register(scenemod.New(s.sceneMgr, s.logger))
+		// 跨服玩法：积分是玩法数据不是玩家存档，模块自己管表与内存，
+		// 不进 Ext 槽位、不走 flusher。这里只建实例，后台任务在
+		// startRPCAndClients 里起（要等 centerCli 建好）。
+		s.crossPlayMod = crossplay.New(centerAccessor{srv: s},
+			crossplay.NewRepo(s.database), s.logger,
+			crossplay.WithServerID(s.cfg.Server.ID),
+			crossplay.WithNodeID(s.cfg.Server.Name),
+		)
+		s.modules.Register(s.crossPlayMod)
 	}
 }
 
@@ -640,5 +650,12 @@ func (s *Server) startRPCAndClients() {
 	if s.crossPool != nil {
 		s.crossPool.Start(s.runCtx, s.cfg.Cross.Nodes)
 		s.logger.Info("cross pool started", "nodes", s.cfg.Cross.Nodes)
+	}
+
+	// 跨服玩法：加载库 + 起上报/落库节拍。
+	// 放在这里而不是 initModules 里，是因为它要读 centerCli 与 serverID，
+	// 而那两个在装配顺序上更晚（模块先建好实例，任务后启动）。
+	if s.crossPlayMod != nil {
+		s.crossPlayMod.Start(s.runCtx)
 	}
 }

@@ -12,11 +12,13 @@ package game
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	gamecenter "game_study/internal/game/center"
 	"game_study/internal/game/module/battle"
+	"game_study/internal/game/module/crossplay"
 	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/player"
 	"game_study/pkg/actor"
@@ -366,3 +368,77 @@ func (s *Server) pendSeatReward(rel pkgseat.Release) {
 		s.logger.Warn("pend seat reward failed", "player_id", rel.PlayerID, "err", err)
 	}
 }
+
+// ── 跨服玩法的中心服适配 ─────────────────────────────────────────────
+
+// errCenterDown 中心服不可用。
+var errCenterDown = errors.New("center not configured")
+
+// centerAccessor 把可能为 nil 的中心服客户端包成 crossplay.Center。
+//
+// 为什么不直接传 *gamecenter.Client：nil 指针装进接口会得到一个
+// 「非 nil 接口包着 nil 指针」，调用方法才 panic，判空完全失效。而跨服玩法
+// 在未配中心服的单机环境里必须能降级——报名回「不可用」，界面照常显示。
+type centerAccessor struct{ srv *Server }
+
+// client 返回可用的客户端，未配置时为 nil。
+func (a centerAccessor) client() *gamecenter.Client {
+	if a.srv == nil || a.srv.centerCli == nil {
+		return nil
+	}
+	return a.srv.centerCli
+}
+
+// Ready 实现 crossplay.Center。
+func (a centerAccessor) Ready() bool {
+	c := a.client()
+	return c != nil && c.Ready()
+}
+
+// CrossEnroll 实现 crossplay.Center。
+func (a centerAccessor) CrossEnroll(ctx context.Context, req *internalv2.CrossEnrollReq) (*internalv2.CrossEnrollResp, error) {
+	c := a.client()
+	if c == nil {
+		return nil, errCenterDown
+	}
+	return c.CrossEnroll(ctx, req)
+}
+
+// SendCrossScore 实现 crossplay.Center。
+func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
+	c := a.client()
+	if c == nil {
+		return errCenterDown
+	}
+	return c.SendCrossScore(entries)
+}
+
+// SendCrossDelta 实现 crossplay.Center。
+func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
+	c := a.client()
+	if c == nil {
+		return errCenterDown
+	}
+	return c.SendCrossDelta(d)
+}
+
+// OnCrossGroupDelta 实现 center.Handler：跨服玩法积分下发。
+//
+// 在中心服客户端的 recv goroutine 里执行，模块内部自带锁。
+func (h centerHandler) OnCrossGroupDelta(push *internalv2.CrossGroupDeltaPush) {
+	if h.srv.crossPlayMod == nil {
+		return
+	}
+	h.srv.crossPlayMod.OnGroupDelta(push)
+}
+
+// OnCrossScoreDelta 实现 center.Handler：别的服请求本服改某个玩家的分。
+func (h centerHandler) OnCrossScoreDelta(d *internalv2.CrossScoreDelta) {
+	if h.srv.crossPlayMod == nil {
+		return
+	}
+	h.srv.crossPlayMod.OnScoreDelta(d)
+}
+
+// 编译期断言：适配器必须满足模块的依赖接口。
+var _ crossplay.Center = centerAccessor{}

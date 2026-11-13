@@ -15,6 +15,13 @@ service CenterService {
   rpc QueryFeatureStats(QueryStatsReq) returns (QueryStatsResp);
   // 玩家榜单一屏查询：Top-N + 我的名次 + 周边，一次往返（游戏服代理客户端请求）
   rpc QueryRank(QueryRankReq) returns (QueryRankResp);
+
+  // 跨服玩法报名 / 取消报名（游戏服 → 中心服，Unary 同步等结果）
+  //
+  // 报名由中心服裁决：报名期校验、重复报名幂等（已存在返回成功而非报错），
+  // 成功即写 center 侧报名表，游戏服收到 code=0 才写本地 cross_enroll。
+  // 取消报名为幂等删除，同样以 code=0 为准清理本地行。
+  rpc CrossEnroll(CrossEnrollReq) returns (CrossEnrollResp);
 }
 
 message NodeReport {
@@ -25,6 +32,8 @@ message NodeReport {
     FeatureReport  feature   = 4; // 功能上报（分组统计）
     RelayRequest   relay     = 5; // 中转请求（发给指定节点/广播）
     MatchRequest   match     = 6; // 跨服匹配请求（游戏服发）
+    CrossScoreBatch score    = 7; // 跨服玩法积分上报（按组打包，绝对值）
+    CrossScoreDelta cross_delta = 8; // 跨服玩法改分通知（请求中心服转发给 to_node）
   }
 }
 
@@ -37,6 +46,8 @@ message CenterCommand {
     ConfigPush   config       = 5; // 配置热更新推送
     KickNode     kick         = 6; // 摘除指令（配合优雅关闭）
     MatchAssign  match_assign = 7; // 中心服→CrossServer：分配房间（建房+令牌）
+    CrossGroupDeltaPush cross_group_delta = 8; // 跨服玩法分组积分下发（按服裁剪）
+    CrossScoreDelta cross_score = 9; // 跨服玩法改分通知（转发自发起方游戏服）
   }
 }
 
@@ -46,6 +57,12 @@ message NodeRegister {
   string addr      = 3; // gRPC 地址
   string group_id  = 4; // 所属跨服分组（中心服分配/确认）
   int64  start_at  = 5;
+  // server_id 区服编号（服级，不是进程级）。
+  //
+  // 与 node_id 的分工：node_id 是部署态标识（扩缩容会变），server_id 是业务
+  // 标识（玩家数据里记的、跨服表里存的都是它）。跨服玩法按 server_id 下发，
+  // 中心服据此反查 node_id，因此两者必须显式声明映射，不能靠字符串约定。
+  int32  server_id = 6;
 }
 
 message NodeHeartbeat {
@@ -143,6 +160,99 @@ message GroupUpdate {
   repeated string game_nodes  = 2; // 组内游戏服
   repeated string cross_addrs = 3; // 组内跨服节点 gRPC 地址（游戏服据此建 CrossService 流）
   string action               = 4; // create / dissolve / expand
+}
+
+// ===== 跨服玩法：报名与积分同步 =====
+//
+// 数据归属：积分属于「玩法数据」不是玩家存档，改分不经过玩家 Actor，
+// 所以离线玩家也可以被打、被更新。三张表的归属见
+// docs/跨服玩法表结构设计.md，链路的唯一权威是中心服。
+
+// CrossInfoItem 玩家基本信息的一项（展示用，服务端不解释 k 的含义）。
+//
+// 用 KV 列表而不是固定字段：跨服展示项随版本增（时装/坐骑/称号/公会），
+// 加字段只需上报端多塞一项，展示层认不出的 k 直接忽略。
+message CrossInfoItem {
+  string k = 1; // level / look / guild ...
+  string v = 2;
+}
+
+message CrossEnrollReq {
+  int64  player_id = 1;
+  int32  server_id = 2; // 报名所在区服（服级，不是进程级）
+  int64  power     = 3; // 报名时战力快照，分组排序依据；分组后锁定不再更新
+  repeated CrossInfoItem info = 4;
+  bool   cancel    = 5; // true = 取消报名（幂等删除，其余字段忽略）
+}
+
+message CrossEnrollResp {
+  int32  code        = 1; // 0 成功；1 非报名期；2 内部错误
+  string msg         = 2;
+  string instance_id = 3; // 已分组时非空
+  int32  group_id    = 4; // 已分组时非 0
+}
+
+// CrossScoreEntry 一个玩家在某组内的积分（绝对值，覆盖不累加）。
+message CrossScoreEntry {
+  int32 group_id   = 1;
+  int64 player_id  = 2;
+  int64 score      = 3;
+  int64 power      = 4; // 仅 snapshot 时填，增量下发留 0
+  int64 updated_at = 5; // unix 秒（玩家所在服时钟，只用于展示与排查）
+  // server_id 玩家归属的区服。
+  //
+  // 下发必须带：游戏服要在本地点开「攻击 B 服玩家」时，得知道这个玩家归
+  // 哪个服管（改分只能由他自己服写），否则报文发不出去。中心服侧这份信息
+  // 本来就有（group 成员的 server_id），不下发等于逼游戏服自己维护一份
+  // player_id → server_id 的映射表，两份数据迟早对不上。
+  int32 server_id  = 6;
+}
+
+// CrossScoreBatch 游戏服 → 中心服：一个上报窗口内本服全部变化（按组打包）。
+//
+// 只报变化项，不报全服：中心服收到后直接定位 group_id，省掉 player_id → group 查表。
+message CrossScoreBatch {
+  repeated CrossScoreEntry entries = 1;
+}
+
+message CrossGroupDelta {
+  int32  group_id = 1;
+  repeated CrossScoreEntry players = 2;
+  // snapshot=true 表示全量快照（分组完成、10 分钟校准），false 表示增量。
+  // 接收方对增量做合并、对快照做替换 —— 但两者都跳过「有脏标记的本服玩家」。
+  bool   snapshot = 3;
+}
+
+// CrossGroupDeltaPush 中心服 → 某游戏服：一条报文承载该服涉及的全部组。
+//
+// 不按组推送：1000 组 × 30 服 = 30000 条/分钟会把接收端 tickLoop 打满，
+// 按服聚合后是 30 条/分钟，语义不变（接收方照样按 group_id 分派）。
+message CrossGroupDeltaPush {
+  repeated CrossGroupDelta groups = 1; // 已按本服裁剪
+}
+
+// CrossScoreDelta 跨服分数变更通知：A 服改不了 B 服玩家的分，只能请 B 服自己改。
+//
+// 走 NodeReport.cross_delta → 中心服转成 CenterCommand.cross_score → B 服的
+// 专用字段，而不复用 RelayRequest。差别在**中心服看不看得见这条消息**：
+// relay 是纯透传（payload 原样投递，中心服不解包），而改分是玩法里的资金类
+// 操作，中心服至少要有计数与「目标节点不存在」的丢弃日志，出问题时才有观测点。
+//
+// 必须传差值而不是绝对值：A 服手上的绝对值是 60s 前的快照，直接覆盖会抹掉
+// B 服本地刚产生的增量。
+message CrossScoreDelta {
+  string relay_id    = 1; // 幂等键 sd:{node}:{seq}，接收方按 (from_node, relay_id) 去重
+  int64  player_id   = 2; // 被改分的目标玩家（归属于收件方）
+  int64  delta       = 3; // 负值=扣分
+  int32  group_id    = 4;
+  int64  from_player = 5; // 攻击发起者（审计用）
+  string from_node   = 6; // 发起方节点；中心服转发时回填，接收方据此去重与审计
+  // to_server 目标玩家的区服编号（不是节点 ID）。
+  //
+  // 游戏服只知道玩家的 server_id（表里存的就是它），不知道承载那个服的
+  // 部署态 node_id——那个映射只有中心服有（registry.NodeIDForServer）。
+  // 所以这里传业务标识，由中心服反查路由，游戏服不需要维护映射。
+  int32  to_server   = 7;
 }
 
 // ===== GM/运营查询 =====

@@ -109,6 +109,10 @@ const (
 	MsgPartnerStarUpResp      uint32 = 6906
 	MsgPartnerFieldReq        uint32 = 6907
 	MsgPartnerFieldResp       uint32 = 6908
+	MsgCrossPlayEnrollReq     uint32 = 6909
+	MsgCrossPlayEnrollResp    uint32 = 6910
+	MsgCrossPlayInfoReq       uint32 = 6911
+	MsgCrossPlayInfoResp      uint32 = 6912
 	MsgMailListReq            uint32 = 7001
 	MsgMailListResp           uint32 = 7002
 	MsgMailNewNotify          uint32 = 7010
@@ -235,6 +239,10 @@ var msgNames = map[uint32]string{
 	6906: "PartnerStarUpResp",
 	6907: "PartnerFieldReq",
 	6908: "PartnerFieldResp",
+	6909: "CrossPlayEnrollReq",
+	6910: "CrossPlayEnrollResp",
+	6911: "CrossPlayInfoReq",
+	6912: "CrossPlayInfoResp",
 	7001: "MailListReq",
 	7002: "MailListResp",
 	7010: "MailNewNotify",
@@ -361,6 +369,10 @@ var msgIDs = map[string]uint32{
 	"PartnerStarUpResp":      6906,
 	"PartnerFieldReq":        6907,
 	"PartnerFieldResp":       6908,
+	"CrossPlayEnrollReq":     6909,
+	"CrossPlayEnrollResp":    6910,
+	"CrossPlayInfoReq":       6911,
+	"CrossPlayInfoResp":      6912,
 	"MailListReq":            7001,
 	"MailListResp":           7002,
 	"MailNewNotify":          7010,
@@ -396,4 +408,4 @@ func MsgID(name string) (uint32, bool) {
 }
 
 // MsgCount 已声明消息数（启动自检用）。
-func MsgCount() int { return 122 }
+func MsgCount() int { return 126 }

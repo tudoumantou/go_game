@@ -45,6 +45,8 @@ func TestParityWithProto(t *testing.T) {
 		ErrSigninConfig, ErrSigninRewardLimit, ErrSigninBagFull,
 		ErrPartnerNotFound, ErrPartnerOwned, ErrPartnerNotOwned,
 		ErrPartnerNoCoin, ErrPartnerMaxStar, ErrPartnerFieldFull,
+		ErrCrossNotEnroll, ErrCrossCancelDenied, ErrCrossNotJoined,
+		ErrCrossNotActive, ErrCrossSelfAttack, ErrCrossTargetGone,
 	} {
 		goVals[v] = true
 	}
