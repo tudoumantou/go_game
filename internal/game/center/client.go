@@ -63,7 +63,14 @@ type Handler interface {
 
 // Client 中心服客户端。
 type Client struct {
-	selfID   string
+	selfID string
+	// serverID 本区区服编号（业务标识）。
+	//
+	// 与 selfID 的分工：selfID 是部署态标识（game-01，扩缩容会变），
+	// serverID 是玩家数据里记的、跨服表里存的业务标识。中心服按 serverID
+	// 反查节点给跨服玩法下发，所以两者必须在 Register 里显式声明映射——
+	// 靠「node_id 一定是 game-{server_id}」这种字符串约定，部署一改就失效。
+	serverID int32
 	nodeType string
 	addr     string
 	groupID  string
@@ -109,6 +116,13 @@ func (c *Client) SetNodeType(t string) { c.nodeType = t }
 
 // SetGroup 设置分组（空表示由中心服分配）。
 func (c *Client) SetGroup(g string) { c.groupID = g }
+
+// SetServerID 设置本区区服编号（装配期调用，Register 首帧带上去）。
+//
+// 不设也能跑：中心服拿不到映射时按服下发的路径全部失效（跨服玩法分组与
+// 改分都发不出去），日志里是「target server has no node」。所以装配层
+// 一定要设，0 表示真的没配置。
+func (c *Client) SetServerID(id int32) { c.serverID = id }
 
 // SetPlayerNum 更新在线玩家数（心跳上报）。
 func (c *Client) SetPlayerNum(n int) { c.playerNum.Store(int32(n)) }
@@ -167,6 +181,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 			Addr:     c.addr,
 			GroupId:  c.groupID,
 			StartAt:  time.Now().Unix(),
+			ServerId: c.serverID,
 		}},
 	}); err != nil {
 		return fmt.Errorf("send register: %w", err)

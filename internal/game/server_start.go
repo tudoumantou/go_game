@@ -377,6 +377,9 @@ func (s *Server) initCenterClient() {
 	// 未配置则 battle 降级为本服匹配、远程投递走「本地找不到即失败」。
 	if s.cfg.Center.Addr != "" {
 		s.centerCli = gamecenter.NewClient(s.cfg.Server.Name, s.cfg.Center.Addr, centerHandler{srv: s}, s.logger)
+		// 区服编号必须在首次 Register 之前设好：中心服靠它建立
+		// server_id → node_id 的反查，跨服玩法的按服下发全依赖这条映射。
+		s.centerCli.SetServerID(s.cfg.Server.ID)
 	}
 }
 
