@@ -33,7 +33,7 @@ message NodeReport {
     RelayRequest   relay     = 5; // 中转请求（发给指定节点/广播）
     MatchRequest   match     = 6; // 跨服匹配请求（游戏服发）
     CrossScoreBatch score    = 7; // 跨服玩法积分上报（按组打包，绝对值）
-    CrossScoreDelta cross_delta = 8; // 跨服玩法改分通知（请求中心服转发给 to_node）
+    CrossScoreDelta cross_delta = 8; // 跨服玩法改分（降级路径：NATS 未配时请求中心服转发）
   }
 }
 
@@ -47,7 +47,7 @@ message CenterCommand {
     KickNode     kick         = 6; // 摘除指令（配合优雅关闭）
     MatchAssign  match_assign = 7; // 中心服→CrossServer：分配房间（建房+令牌）
     CrossGroupDeltaPush cross_group_delta = 8; // 跨服玩法分组积分下发（按服裁剪）
-    CrossScoreDelta cross_score = 9; // 跨服玩法改分通知（转发自发起方游戏服）
+    CrossScoreDelta cross_score = 9; // 跨服玩法改分（降级路径：中心服转发自发起方游戏服；默认走 NATS 直达）
   }
 }
 

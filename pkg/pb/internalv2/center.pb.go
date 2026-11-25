@@ -169,7 +169,7 @@ type NodeReport_Score struct {
 }
 
 type NodeReport_CrossDelta struct {
-	CrossDelta *CrossScoreDelta `protobuf:"bytes,8,opt,name=cross_delta,json=crossDelta,proto3,oneof"` // 跨服玩法改分通知（请求中心服转发给 to_node）
+	CrossDelta *CrossScoreDelta `protobuf:"bytes,8,opt,name=cross_delta,json=crossDelta,proto3,oneof"` // 跨服玩法改分（降级路径：NATS 未配时请求中心服转发）
 }
 
 func (*NodeReport_Register) isNodeReport_Body() {}
@@ -346,7 +346,7 @@ type CenterCommand_CrossGroupDelta struct {
 }
 
 type CenterCommand_CrossScore struct {
-	CrossScore *CrossScoreDelta `protobuf:"bytes,9,opt,name=cross_score,json=crossScore,proto3,oneof"` // 跨服玩法改分通知（转发自发起方游戏服）
+	CrossScore *CrossScoreDelta `protobuf:"bytes,9,opt,name=cross_score,json=crossScore,proto3,oneof"` // 跨服玩法改分（降级路径：中心服转发自发起方游戏服；默认走 NATS 直达）
 }
 
 func (*CenterCommand_RelayPush) isCenterCommand_Body() {}
