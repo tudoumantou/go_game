@@ -87,3 +87,10 @@ shutdown:
   total_timeout: 60s
   drain_timeout: 30s
   flush_timeout: 30s
+
+# 跨服玩法异步通道（NATS Core）；url 为空则退回 gRPC 上报/下发
+nats:
+  url: "nats://127.0.0.1:4222"
+  reconnect_wait: "2s"
+  max_reconnect: 60
+  timeout: "2s"

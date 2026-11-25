@@ -46,6 +46,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/natsx"
 	"game_study/pkg/periodic"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
@@ -114,6 +115,7 @@ type Server struct {
 
 	crossPool *gamecross.Pool    // 到跨服节点的连接池
 	centerCli *gamecenter.Client // 到中心服的 Report 流
+	natsBus   *natsx.Bus         // 跨服玩法异步通道（NATS Core）；nil = 未配
 	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
 	seatMgr   *seat.Manager      // 抢位置房间管理器（单服座位 + 离线奖励）
 
@@ -393,6 +395,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	mgr.Register("stop-center", shutdown.PhaseStop, func(context.Context) error {
 		if s.centerCli != nil {
 			s.centerCli.Stop()
+		}
+		return nil
+	})
+	mgr.Register("stop-nats", shutdown.PhaseStop, func(context.Context) error {
+		if s.natsBus != nil {
+			s.natsBus.Close()
 		}
 		return nil
 	})

@@ -97,6 +97,18 @@ type Config struct {
 	Calibrate time.Duration
 	// Phase 阶段来源。nil 时恒为 PhaseActive。
 	Phase PhaseFunc
+	// SendGroup 分组快照/增量的下发函数（serverID 是业务标识）。
+	//
+	// 非 nil 时优先走它（NATS 异步通道），nil 时退回 Dispatcher 的 gRPC
+	// SendTo。用函数钩子而不是再抽一个接口：下发只有一个动作，接口反而
+	// 多一层；且不破坏既有单测里用 fakeDispatcher 验证下发内容的路径。
+	SendGroup func(serverID int32, push *internalv2.CrossGroupDeltaPush) error
+	// IsLeader 周期任务（分组、校准、落库）是否由本实例执行。
+	//
+	// 中心服多实例时，这些任务会写同一份权威状态，必须只由 leader 做，
+	// 否则每个实例各算一份分组、各下一份发。nil 时恒为 true（单实例/
+	// 测试）。报名/收上报这类无主动作不门控，任何实例都能处理。
+	IsLeader func() bool
 }
 
 func (c *Config) normalize() {
@@ -111,6 +123,9 @@ func (c *Config) normalize() {
 	}
 	if c.Phase == nil {
 		c.Phase = func(time.Time) Phase { return PhaseActive }
+	}
+	if c.IsLeader == nil {
+		c.IsLeader = func() bool { return true }
 	}
 }
 
@@ -155,6 +170,10 @@ type Service struct {
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
 
+	// groupedPhase 本期分组是否已执行。只由 tickLoop（单 goroutine）读写，
+	// 不需要锁。离开分组期时清零，保证下一周期会再分一次。
+	groupedPhase bool
+
 	// now 便于测试注入时间。
 	now func() time.Time
 }
@@ -177,6 +196,14 @@ func New(repo Persister, disp Dispatcher, logger *log.Logger, cfg Config) *Servi
 		stopCh:     make(chan struct{}),
 		now:        time.Now,
 	}
+}
+
+// SetSendGroup 注入分组下发通道（NATS 装配期调用）。
+//
+// 用 setter 而不是构造参数：gRPC 路径的既有装配与单测不必改签名，NATS
+// 装配时按需覆盖。nil 还原为 gRPC Dispatcher 路径。
+func (s *Service) SetSendGroup(fn func(serverID int32, push *internalv2.CrossGroupDeltaPush) error) {
+	s.cfg.SendGroup = fn
 }
 
 // Store 暴露内存分组（查询、GM、测试）。
@@ -269,6 +296,10 @@ func (s *Service) OnScoreBatch(entries []*internalv2.CrossScoreEntry) {
 		return
 	}
 	now := s.now().Unix()
+	// 非 leader 只更新内存 Store（供 leader 切换后接管），不碰窗口/落库集合：
+	// 那些集合由 leader 的 tickLoop 消费，非 leader 写进去永远不会被清，
+	// 既是内存泄漏，也会在切换后把陈旧窗口带给新 leader。
+	isLeader := s.cfg.IsLeader()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -282,6 +313,9 @@ func (s *Service) OnScoreBatch(entries []*internalv2.CrossScoreEntry) {
 			// 不在分组里：未报名、已被分到上一期、或 center 重启后分组表还没加载。
 			// 丢弃而不是报错 —— 活动期报名表已清，这里认不出来就是脏数据。
 			continue
+		}
+		if !isLeader {
+			continue // 只更新 Store 副本
 		}
 		s.scoreDirty[m.PlayerID] = m
 		if !changed {
@@ -415,6 +449,29 @@ func (s *Service) tickLoop() {
 			return
 		case <-tick.C:
 			now := s.now()
+			phase := s.Phase()
+
+			// 分组：只在分组期、只由 leader、每期一次。此前没有任何调用点，
+			// 分组永远不会发生——这里补上真正的触发。
+			if phase == PhaseGrouping && !s.groupedPhase {
+				if s.cfg.IsLeader() {
+					if _, err := s.RunGrouping(context.Background()); err != nil {
+						s.logger.Warn("grouping failed", "err", err)
+					} else {
+						s.groupedPhase = true
+					}
+				}
+			} else if phase != PhaseGrouping && phase != PhaseEnroll {
+				// 离开分组期后允许下一期重新分。不放在 PhaseEnroll 清零：
+				// 报名期紧邻分组期，清零后若时钟回拨到分组期会重复分组。
+				s.groupedPhase = false
+			}
+
+			// 只有 leader 跑周期写任务：下发窗口、积分落库、全量校准都会
+			// 改权威状态或对外发消息，多实例同时跑会重复下发、重复落库。
+			if !s.cfg.IsLeader() {
+				continue
+			}
 			s.flushWindows(now)
 			if now.Sub(lastFlush) >= s.cfg.FlushDB {
 				s.flushScores(context.Background())
@@ -529,7 +586,17 @@ func (s *Service) flushScores(ctx context.Context) {
 }
 
 // sendToServer 按区服下发一条报文。
+//
+// 优先走 NATS（cfg.SendGroup）：按 server_id 直接 publish，不依赖该服此刻
+// 有没有 gRPC 流在线——这是相对 gRPC 下发最大的收益，离线服上线后订阅即收。
+// 未配 NATS 时退回 gRPC Dispatcher（按 server_id 反查 node_id）。
 func (s *Service) sendToServer(serverID int32, push *internalv2.CrossGroupDeltaPush) error {
+	if s.cfg.SendGroup != nil {
+		return s.cfg.SendGroup(serverID, push)
+	}
+	if s.disp == nil {
+		return fmt.Errorf("no downlink for server %d", serverID)
+	}
 	nodeID, ok := s.disp.NodeIDForServer(serverID)
 	if !ok {
 		// 该服当前无在线节点：不缓存、不重发。活动期玩家开界面时会回源

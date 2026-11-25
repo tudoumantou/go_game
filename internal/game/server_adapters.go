@@ -24,6 +24,7 @@ import (
 	"game_study/pkg/actor"
 	"game_study/pkg/codec"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/natsx"
 	pkgseat "game_study/pkg/seat"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -405,7 +406,14 @@ func (a centerAccessor) CrossEnroll(ctx context.Context, req *internalv2.CrossEn
 }
 
 // SendCrossScore 实现 crossplay.Center。
+//
+// 优先走 NATS（按 server_id publish 到 score subject）；未配 NATS 时退回
+// gRPC Report 流。NATS 路径下 center 是否有在线流不再是前提——发布是异步的。
 func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
+	if a.srv != nil && a.srv.natsBus != nil && a.srv.natsBus.Ready() {
+		return a.srv.natsBus.Publish(natsx.ScoreSubject(a.srv.cfg.Server.ID),
+			&internalv2.CrossScoreBatch{Entries: entries})
+	}
 	c := a.client()
 	if c == nil {
 		return errCenterDown
@@ -414,7 +422,18 @@ func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) er
 }
 
 // SendCrossDelta 实现 crossplay.Center。
+//
+// NATS 路径下改分直达目标服（delta.{target}），不经中心服中转——这是相对
+// gRPC 方案最大的简化：不需要中心服反查 node_id，也不怕中心服单点抖动。
+// FromNode 仍由本服标识填充，接收端按 (from_node, relay_id) 去重。
 func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
+	if d == nil || d.GetToServer() == 0 {
+		return errCenterDown
+	}
+	if a.srv != nil && a.srv.natsBus != nil && a.srv.natsBus.Ready() {
+		d.FromNode = a.srv.cfg.Server.Name
+		return a.srv.natsBus.Publish(natsx.DeltaSubject(d.GetToServer()), d)
+	}
 	c := a.client()
 	if c == nil {
 		return errCenterDown

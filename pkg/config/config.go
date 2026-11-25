@@ -48,6 +48,7 @@ type Config struct {
 	RPC      RPCConfig      `yaml:"rpc"`
 	Redis    RedisConfig    `yaml:"redis"`
 	Kafka    KafkaConfig    `yaml:"kafka"`
+	Nats     NatsConfig     `yaml:"nats"` // 跨服玩法异步传输（NATS Core）
 	Etcd     EtcdConfig     `yaml:"etcd"`
 	MySQL    MySQLConfig    `yaml:"mysql"`
 	Log      LogConfig      `yaml:"log"`
@@ -243,6 +244,18 @@ type KafkaConfig struct {
 	Brokers              []string `yaml:"brokers"`                // 空 = 自动禁用 Kafka
 	ProducerRequiredAcks string   `yaml:"producer_required_acks"` // all/1/0
 	ConsumerGroup        string   `yaml:"consumer_group"`
+}
+
+// NatsConfig 跨服玩法的异步传输层（NATS Core）配置。
+//
+// URL 为空即禁用：跨服玩法会退回「只有 gRPC 报名可用、积分/分组不同步」的
+// 降级形态，不阻塞进程启动——与 Kafka/Etcd 的「空配置即关闭」保持一致。
+// URL 支持 ${VAR} 环境变量注入，例如 nats://user:pass@host:4222。
+type NatsConfig struct {
+	URL           string `yaml:"url"`
+	ReconnectWait string `yaml:"reconnect_wait"` // 如 "2s"，空取库默认
+	MaxReconnect  int    `yaml:"max_reconnect"`  // 空取库默认
+	Timeout       string `yaml:"timeout"`        // 建连超时，如 "2s"
 }
 
 type EtcdConfig struct {

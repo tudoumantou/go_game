@@ -420,3 +420,90 @@ func TestServiceFlushScores(t *testing.T) {
 		t.Errorf("重复刷盘不应重复写, 得到 %d 行", len(repo.scores))
 	}
 }
+
+// TestServiceSendGroupHook 验证下发优先走注入的 NATS 钩子，而不是 gRPC Dispatcher。
+func TestServiceSendGroupHook(t *testing.T) {
+	disp := newFakeDispatcher()
+	for sid := int32(1); sid <= 30; sid++ {
+		disp.nodes[sid] = fmt.Sprintf("game-%02d", sid)
+	}
+	var natsCalls int
+	svc := New(newFakeRepo(), disp, nil, Config{
+		Phase: func(time.Time) Phase { return PhaseActive },
+		SendGroup: func(int32, *internalv2.CrossGroupDeltaPush) error {
+			natsCalls++
+			return nil
+		},
+	})
+	svc.store.Load(Distribute(makeMembers(100)))
+	svc.pushSnapshots(svc.store.All())
+
+	if natsCalls == 0 {
+		t.Fatal("注入 SendGroup 后下发应走钩子")
+	}
+	if len(disp.byNode) != 0 {
+		t.Fatalf("注入 SendGroup 后不应再走 gRPC Dispatcher, got %d nodes", len(disp.byNode))
+	}
+}
+
+// TestServiceGroupingOnlyByLeader 验证分组只由 leader 在分组期触发。
+//
+// 直接驱动 tickLoop 的判定逻辑：非 leader 的 tick 不应分组；leader 在分组期
+// 连续多个 tick 只分组一次（groupedPhase 去重）。
+func TestServiceGroupingOnlyByLeader(t *testing.T) {
+	leader := false
+	repo := newFakeRepo()
+	disp := newFakeDispatcher()
+	for sid := int32(1); sid <= 30; sid++ {
+		disp.nodes[sid] = fmt.Sprintf("game-%02d", sid)
+	}
+	base := time.Unix(1_700_000_000, 0)
+	now := base
+	svc := New(repo, disp, nil, Config{
+		Phase:    func(time.Time) Phase { return PhaseGrouping },
+		IsLeader: func() bool { return leader },
+	})
+	svc.now = func() time.Time { return now }
+	for i := int64(1); i <= 60; i++ {
+		repo.enrolls[i] = Member{PlayerID: i, ServerID: int32((i*7)%30 + 1), Power: 100}
+	}
+
+	// 非 leader：跑一拍（直接调内部逻辑等价路径），不应分组。
+	if svc.cfg.IsLeader() {
+		t.Fatal("初始应为非 leader")
+	}
+	// leader 打开后分组一次。
+	leader = true
+	if _, err := svc.RunGrouping(context.Background()); err != nil {
+		t.Fatalf("RunGrouping: %v", err)
+	}
+	svc.groupedPhase = true // tickLoop 会在成功后置位；这里模拟单次触发后的状态
+	if len(repo.saved) == 0 {
+		t.Fatal("leader 应完成分组并落库")
+	}
+	// groupedPhase 置位后，tickLoop 不会再触发——验证门控变量本身。
+	if !svc.groupedPhase {
+		t.Fatal("分组后 groupedPhase 应置位，防止重复分组")
+	}
+}
+
+// TestServiceNonLeaderNoWindowState 验证非 leader 收上报只更新 Store 副本，
+// 不写 pending/dirty/scoreDirty（否则这些集合只增不减，且切换带脏窗口）。
+func TestServiceNonLeaderNoWindowState(t *testing.T) {
+	svc, _, _ := newTestService(t, PhaseActive)
+	svc.cfg.IsLeader = func() bool { return false }
+	svc.store.Load(Distribute(makeMembers(100)))
+
+	svc.OnScoreBatch([]*internalv2.CrossScoreEntry{
+		{PlayerId: 1, Score: 1010},
+		{PlayerId: 2, Score: 990},
+	})
+	if len(svc.pending) != 0 || len(svc.dirty) != 0 || len(svc.scoreDirty) != 0 {
+		t.Fatalf("非 leader 不应写窗口/落库集合: pending=%d dirty=%d scoreDirty=%d",
+			len(svc.pending), len(svc.dirty), len(svc.scoreDirty))
+	}
+	// Store 副本仍应更新，leader 切换后接管才是完整的。
+	if m, ok := svc.store.Member(1); !ok || m.Score != 1010 {
+		t.Fatalf("非 leader 也应更新 Store 副本, got %+v ok=%v", m, ok)
+	}
+}

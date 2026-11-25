@@ -58,6 +58,7 @@ import (
 	"game_study/pkg/gamedata"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/natsx"
 	"game_study/pkg/ratelimit"
 	gameetcd "game_study/pkg/registry/etcd"
 	rpcpkg "game_study/pkg/rpc"
@@ -653,6 +654,25 @@ func (s *Server) startRPCAndClients() {
 	if s.crossPool != nil {
 		s.crossPool.Start(s.runCtx, s.cfg.Cross.Nodes)
 		s.logger.Info("cross pool started", "nodes", s.cfg.Cross.Nodes)
+	}
+
+	// 跨服玩法 NATS 异步通道：建连 + 订阅本服下行（分组/改分）。
+	// 未配 URL 时 natsBus 为 nil，玩法退回 gRPC 下行回调，单机调试照常可用。
+	if s.cfg.Nats.URL != "" {
+		rw, _ := config.ParseDuration(s.cfg.Nats.ReconnectWait)
+		to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
+		bus, err := natsx.Connect(natsx.Config{
+			URL:           s.cfg.Nats.URL,
+			ReconnectWait: rw,
+			MaxReconnect:  s.cfg.Nats.MaxReconnect,
+			Timeout:       to,
+		})
+		if err != nil {
+			s.logger.Error("nats connect failed, crossplay falls back to grpc", "err", err)
+		} else {
+			s.natsBus = bus
+			s.startCrossplayNATS(bus)
+		}
 	}
 
 	// 跨服玩法：加载库 + 起上报/落库节拍。

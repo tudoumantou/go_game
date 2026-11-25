@@ -38,6 +38,7 @@ import (
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/natsx"
 	rpcpkg "game_study/pkg/rpc"
 	"game_study/pkg/shutdown"
 
@@ -86,6 +87,8 @@ type Server struct {
 	// crossSvc 跨服玩法（报名裁决 / 分组 / 积分同步）。nil = 未配 MySQL，
 	// 报名时由 rpc 层返回 Code=2，其它功能照常。
 	crossSvc *crossplay.Service
+	// natsBus 跨服玩法异步通道（NATS Core）；nil = 未配 NATS，积分/下发退回 gRPC。
+	natsBus *natsx.Bus
 
 	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
 	// nil = 未配 Kafka，中转退化为单实例模式（OnRelayRequest 里判断）
@@ -264,8 +267,32 @@ func (s *Server) Start(ctx context.Context) error {
 		// 必须在 centerRPC 已经开始接客之前完成注入——否则启动瞬间的报名
 		// 请求会命中 nil handler 返回「未启用」。这里注册在 gRPC server
 		// 启动之后，但节点要先完成 Register 才会发业务报文，实际有足够提前量。
-		s.crossSvc = crossplay.New(crossplay.NewRepo(database, s.logger), s, s.logger, crossplay.Config{})
+		s.crossSvc = crossplay.New(crossplay.NewRepo(database, s.logger), s, s.logger, crossplay.Config{
+			// 分组与周期写任务只由 leader 跑：多实例时否则各算一份分组、各发一版快照。
+			// 方法值在选主之前取也没问题——IsLeader 内部读 election.IsLeader()，
+			// 选主未建立时返回 false，tickLoop 会安全跳过。
+			IsLeader: s.IsLeader,
+		})
 		s.centerRPC.SetCrossHandler(s)
+
+		// NATS 异步通道（NATS Core）：上报订阅 + 下发发布。未配 URL 时 natsBus
+		// 为 nil，玩法退回 gRPC Report 流上报/下发，单机调试照常可用。
+		if s.cfg.Nats.URL != "" {
+			rw, _ := config.ParseDuration(s.cfg.Nats.ReconnectWait)
+			to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
+			bus, err := natsx.Connect(natsx.Config{
+				URL:           s.cfg.Nats.URL,
+				ReconnectWait: rw,
+				MaxReconnect:  s.cfg.Nats.MaxReconnect,
+				Timeout:       to,
+			})
+			if err != nil {
+				return fmt.Errorf("nats: %w", err)
+			}
+			s.natsBus = bus
+			s.startCrossplayNATS(bus)
+		}
+
 		// 重启恢复：先读分组表再开定时器，避免定时器拿着空分组去校准。
 		// 恢复失败只告警不回滚——活动期内还能靠各服上报逐步重建。
 		if err := s.crossSvc.Restore(ctx); err != nil {
@@ -735,6 +762,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			return nil
 		}
 		s.crossSvc.Stop()
+		// 先关 NATS（停止收发），再让后续阶段关库：避免关库后还收到上报。
+		if s.natsBus != nil {
+			s.natsBus.Close()
+		}
 		return nil
 	})
 
