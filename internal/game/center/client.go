@@ -95,6 +95,10 @@ type Client struct {
 	// 重连都给对端一轮全量探测。哨兵名 "center" 用于指标/日志定位。
 	cb *breaker.Breaker
 
+	// timeouts 出向 Unary RPC 的方法级超时。装配期由 SetTimeouts 注入；
+	// 与 cb 一样挂在 Client 上、跨重连保留（超时预算不该因换连接而漂移）。
+	timeouts RPCTimeoutConfig
+
 	// 心跳数据（由业务侧更新）
 	//
 	// atomic 而非锁：写侧是业务 goroutine（SetPlayerNum），读侧只有
@@ -147,6 +151,55 @@ func (c *Client) SetBreaker(opts breaker.Options) { c.initBreaker(opts) }
 
 // BreakerState 当前熔断状态（GM / 健康检查用）。
 func (c *Client) BreakerState() breaker.State { return c.cb.State() }
+
+// DefaultRPCTimeout 出向 Unary RPC 的默认超时（方法未单独配置时）。
+//
+// 与 module.QueryTimeout（管 MySQL）是不同层的预算：这里专管跨服 gRPC。
+// 默认 3s 与改造前的硬编码一致——改造只让它「可配」，不改变默认行为。
+const DefaultRPCTimeout = 3 * time.Second
+
+// RPCTimeoutConfig 方法级 RPC 超时。零值/负数由 SetTimeouts 归一化成默认值。
+type RPCTimeoutConfig struct {
+	CrossEnroll time.Duration
+	QueryRank   time.Duration
+}
+
+// SetTimeouts 覆盖方法级超时（装配期调用；Start 之前）。
+func (c *Client) SetTimeouts(t RPCTimeoutConfig) {
+	if t.CrossEnroll <= 0 {
+		t.CrossEnroll = DefaultRPCTimeout
+	}
+	if t.QueryRank <= 0 {
+		t.QueryRank = DefaultRPCTimeout
+	}
+	c.timeouts = t
+}
+
+// rpcCtx 生成一次 Unary RPC 的 ctx，做两件事：
+//
+//  1. deadline 取 min(上游, 本地配置)：上游若带更早的 deadline（GM 工具、
+//     压测、未来的非 Actor 调用方），尊重它——下游不该等得比上游还久。
+//     Actor 模型下消息入口没有可取消 ctx（见 module.QueryCtx 注释），
+//     这类调用方传的是 Background，本地配置就是唯一预算。
+//  2. 取消信号不继承：Actor 处理完回包后请求 ctx 即取消，若原样透传会掐断
+//     中心服正在进行的写（报名可能已落库，反而留下不一致）。WithoutCancel
+//     只保留 Value（trace span / metadata），丢掉 Done。这也是把 actor.packet
+//     与 center.rpc 串成父子 span 的关键——此前 handler 传 Background，
+//     中心服侧 span 成了新的 root，链路在这里断开。
+func (c *Client) rpcCtx(parent context.Context, local time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if local <= 0 {
+		local = DefaultRPCTimeout // 未调 SetTimeouts 的单测/零装配回落默认
+	}
+	if dl, ok := parent.Deadline(); ok {
+		if remain := time.Until(dl); remain > 0 && remain < local {
+			local = remain
+		}
+	}
+	return context.WithTimeout(context.WithoutCancel(parent), local)
+}
 
 // SetNodeType 设置节点类型（game / cross）。
 func (c *Client) SetNodeType(t string) { c.nodeType = t }
@@ -398,7 +451,7 @@ func (c *Client) QueryRank(ctx context.Context, rankType string, playerID int64,
 	if conn == nil {
 		return nil, fmt.Errorf("center not connected")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := c.rpcCtx(ctx, c.timeouts.QueryRank)
 	defer cancel()
 	return internalv2.NewCenterServiceClient(conn).QueryRank(ctx, &internalv2.QueryRankReq{
 		RankType:       rankType,
@@ -460,7 +513,7 @@ func (c *Client) CrossEnroll(ctx context.Context, req *internalv2.CrossEnrollReq
 	if conn == nil {
 		return nil, fmt.Errorf("center not connected")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	ctx, cancel := c.rpcCtx(ctx, c.timeouts.CrossEnroll)
 	defer cancel()
 	return internalv2.NewCenterServiceClient(conn).CrossEnroll(ctx, req)
 }

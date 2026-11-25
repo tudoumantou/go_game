@@ -18,7 +18,6 @@ package rank
 
 import (
 	"context"
-	"time"
 
 	"game_study/internal/common/errcode"
 	"game_study/internal/game/module"
@@ -37,11 +36,6 @@ const (
 	// maxRankTypeLen 榜单类型字符串长度上限：rankType 会进 Redis key，
 	// 预检超长输入既是 key 规范也是防滥用
 	maxRankTypeLen = 32
-	// queryTimeout 中心服查询超时：榜单是旁路页面，3s 等不到就明确
-	// 告诉用户不可用，占着玩家 Actor 的 OnMessage 更久没有意义
-	// 与 module.QueryTimeout 值相同但不是同一个对象：那个管 MySQL，
-	// 这个管跨服 gRPC。合并会让「中心服慢」和「库慢」变成一个调参项。
-	queryTimeout = 3 * time.Second
 )
 
 // Entry 榜单条目（与中心服协议解耦的中性结构，便于单测注入假实现）。
@@ -124,14 +118,12 @@ func (m *Module) onList(c *module.Ctx[module.NoState], req *gamev1.RankListReq) 
 		return c.FailCode(resp, errcode.ErrRankUnavailable)
 	}
 
-	// WithTimeout 给中心服 RPC 加超时；cancel 必须 defer——
-	// Go  context 契约：WithTimeout 创建的 ctx 不 cancel 会一直占用
-	// 内部计时器直到超时才释放，忘 cancel 是经典的 context 泄漏。
-	// 用 Background 而非请求 ctx：榜单查询是受理后的代理动作，
-	// 请求 ctx 在回包后即取消，会误杀查询。
-	qctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
-	defer cancel()
-	res, err := m.q.Query(qctx, rankType, c.State.PlayerID(), defaultTopN)
+	// 超时不在这里设：由 center client 的 QueryRank 统一按方法级配置施加
+	// （center.timeout.query_rank）。此前这里和 client 各有一个 3s，两个值
+	// 谁紧谁生效——配了新值却不生效，就是被这层旧 3s 截断了。收成一处。
+	// RPCCtx 携带 packet span，让 center.rpc 挂在 actor.packet 下；nil 时
+	// client.rpcCtx 会回落到 Background，单测直调不受影响。
+	res, err := m.q.Query(c.RPCCtx, rankType, c.State.PlayerID(), defaultTopN)
 	if err != nil {
 		// 中心服断连/超时：明确告诉客户端稍后重试，不伪造空榜。
 		m.logger.Debug("rank query failed", "rank_type", rankType, "err", err)

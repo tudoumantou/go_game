@@ -383,6 +383,11 @@ func (s *Server) initCenterClient() {
 		s.centerCli.SetServerID(s.cfg.Server.ID)
 		// 出向 Unary RPC 熔断（报名/排名查询）；未配走默认参数。
 		s.centerCli.SetBreaker(gamecenter.BreakerOptionsFrom(s.cfg.Center.Breaker))
+		// 方法级超时：报名/榜单各自预算。空配置归一化成默认 3s。
+		s.centerCli.SetTimeouts(gamecenter.RPCTimeoutConfig{
+			CrossEnroll: s.cfg.Center.Timeout.CrossEnrollDuration(),
+			QueryRank:   s.cfg.Center.Timeout.QueryRankDuration(),
+		})
 	}
 }
 

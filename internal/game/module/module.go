@@ -111,9 +111,19 @@ type Event struct {
 // 每条玩家消息都会新建一个 Context（轻量值对象），字段由玩家层注入：
 // 模块不直接依赖 player 包，只依赖这里声明的接口，便于单测替换。
 type Context struct {
-	Actor        *actor.Context  // 当前玩家 Actor 的上下文（Send 给其他 Actor）
-	State        PlayerState     // 玩家内存状态（模块的主读写面）
-	TraceID      string          // 链路追踪 ID（日志关联一次登录会话）
+	Actor   *actor.Context // 当前玩家 Actor 的上下文（Send 给其他 Actor）
+	State   PlayerState    // 玩家内存状态（模块的主读写面）
+	TraceID string         // 链路追踪 ID（日志关联一次登录会话）
+	// RPCCtx 模块内发起跨进程调用（中心服 RPC 等）用的父 ctx。
+	//
+	// 由 Actor 在 packet span 内注入（携带 span / trace_id），模块直接传给
+	// client 的 RPC 方法；client 内部会用 WithoutCancel 保留 Value 但去掉
+	// 取消信号。nil 时调用方回落到 Background——单测与无 Actor 的直调合法。
+	//
+	// 为什么不是普通的请求 ctx：Actor 模型下消息一旦开始处理就该做完，
+	// 请求 ctx 在回包后即取消，透传到 RPC 会误杀对端正在进行的写。所以这里
+	// 承载的只是「链路身份」，不是可取消性（后者由 RPC 自己的超时表达）。
+	RPCCtx       context.Context
 	Send         Sender          // 下行发送（nil 时 Reply 静默丢弃，便于单测）
 	Emit         func(evt Event) // 事件广播（nil 表示无订阅方，产生方需判空）
 	AddExp       AddExpFunc      // 加经验回调（nil 表示玩家层未注入，模块需判空）

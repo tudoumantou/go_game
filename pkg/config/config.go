@@ -429,6 +429,31 @@ type CenterConfig struct {
 	// Breaker 出向 Unary RPC 的熔断参数（报名/排名查询）。
 	// 零值 = 用默认阈值 5 / 冷却 5s / 探测 1；Threshold 负数 = 关闭熔断。
 	Breaker BreakerConfig `yaml:"breaker"`
+	// Timeout 方法级 RPC 超时（报名/排名查询分开配）。
+	// 空串取默认 3s；两个值分开是因为报名要同步裁决、榜单是旁路页面，
+	// 两者的等待预算本就不该绑在一起（见 game/center.RPCTimeoutConfig）。
+	Timeout TimeoutConfig `yaml:"timeout"`
+}
+
+// TimeoutConfig 出向 Unary RPC 的方法级超时。
+//
+// 为什么不是全方法一个值：报名是写操作、必须给中心服留出落库时间，
+// 榜单是可丢弃的读、慢了就该早点告诉玩家「稍后重试」。一个值调参时
+// 只能二选一，分开后各自表达各自的预算。
+type TimeoutConfig struct {
+	CrossEnroll string `yaml:"cross_enroll"` // 报名/取消（写）；空 = 3s
+	QueryRank   string `yaml:"query_rank"`   // 榜单查询（读）；空 = 3s
+}
+
+// CrossEnrollDuration / QueryRankDuration 解析配置值；空串或非法值返回 0，
+// 由调用方（client.SetTimeouts）归一化成默认值——与 CooldownDuration 同风格。
+func (t TimeoutConfig) CrossEnrollDuration() time.Duration {
+	d, _ := ParseDuration(t.CrossEnroll)
+	return d
+}
+func (t TimeoutConfig) QueryRankDuration() time.Duration {
+	d, _ := ParseDuration(t.QueryRank)
+	return d
 }
 
 // BreakerConfig 通用客户端熔断参数（出向 RPC 用）。

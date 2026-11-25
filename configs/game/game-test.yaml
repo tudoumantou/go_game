@@ -42,6 +42,9 @@ center:                        # 中心服上报（控制面）
     threshold: 5               # 连续失败阈值；负数关闭
     cooldown: "5s"
     probes: 1
+  timeout:                     # 出向 Unary RPC 方法级超时；空/0 = 3s
+    cross_enroll: "3s"         # 报名写操作（要给中心服留落库时间）
+    query_rank: "2s"           # 榜单读是可丢弃的旁路，早点失败
 
 flush:                         # 10 分片分时落库（worker 共享连接池）
   shard_count: 10

@@ -51,9 +51,12 @@ func (m *Module) onEnroll(c *module.Ctx[module.NoState], req *gamev1.CrossPlayEn
 		creq.Info = infoOf(c.State.Profile(), creq.Power)
 	}
 
-	// 用 context.Background() 而不是请求 ctx：处理器返回后请求 ctx 即取消，
-	// 会把这次 RPC 连同中心服的写一起掐断（中心服那边可能已经写成功了）。
-	res, err := m.center.CrossEnroll(context.Background(), creq)
+	// RPCCtx 只携带链路身份（packet span / trace_id），不带可取消性：
+	// 直接透传请求 ctx 会在处理器返回、回包后取消，把这次 RPC 连同中心服
+	// 的写一起掐断（中心服那边可能已经写成功了）。client.rpcCtx 内部用
+	// WithoutCancel 保留 span、丢掉 Done，并施加方法级超时——既不断链，
+	// 也不会误杀对端的写。nil（单测直调）时回落到 Background。
+	res, err := m.center.CrossEnroll(c.RPCCtx, creq)
 	if err != nil {
 		m.logger.Warn("cross enroll rpc failed", "player", playerID, "err", err)
 		resp.Code = int32(errcode.ErrSystem)

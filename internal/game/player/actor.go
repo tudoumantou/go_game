@@ -660,9 +660,12 @@ func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 	pctx, endSpan := trace.Start(pctx, "actor.packet",
 		attribute.Int("msg_id", int(msg.MsgID)), attribute.Int64("player_id", a.playerID))
 	defer endSpan()
-	_ = pctx // 模块分发目前不接收 context；span 生命周期覆盖整个 Dispatch。
 
 	mctx := a.moduleCtx(ctx)
+	// 把 packet span 传给模块：模块内发起的中心服 RPC 用它作父 ctx，
+	// center.rpc 就成为 actor.packet 的子 span，链路不在 Actor 边界断开。
+	// 超时与取消仍由 client.rpcCtx 处理（WithoutCancel + 方法级 timeout）。
+	mctx.RPCCtx = pctx
 	start := time.Now()
 	err := a.registry.Dispatch(mctx, msg.MsgID, msg.Body)
 	if metrics.Enabled() {
