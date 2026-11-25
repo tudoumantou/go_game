@@ -55,3 +55,10 @@ metrics:
 shutdown:
   total_timeout: 30s
   drain_timeout: 10s
+
+# 链路追踪（OTel SDK + OTLP gRPC，对接 Tempo/Jaeger）
+# 默认关闭：pkg/trace 打点 API 照常可用但为 noop；部署采集端后改为 true。
+trace:
+  enabled: false
+  endpoint: "tempo:4317"
+  sample_ratio: 1.0

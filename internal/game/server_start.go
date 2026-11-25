@@ -381,6 +381,8 @@ func (s *Server) initCenterClient() {
 		// 区服编号必须在首次 Register 之前设好：中心服靠它建立
 		// server_id → node_id 的反查，跨服玩法的按服下发全依赖这条映射。
 		s.centerCli.SetServerID(s.cfg.Server.ID)
+		// 出向 Unary RPC 熔断（报名/排名查询）；未配走默认参数。
+		s.centerCli.SetBreaker(gamecenter.BreakerOptionsFrom(s.cfg.Center.Breaker))
 	}
 }
 

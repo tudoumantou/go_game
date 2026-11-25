@@ -15,14 +15,17 @@
 //
 // 为什么 redis.Nil 不算失败：key 不存在是正常业务结果（EXISTS/HGET），
 // 把它算作故障会让正常业务把熔断器打穿。
+//
+// 状态机本身已上提到 pkg/breaker（通用 client 级熔断器唯一来源）；
+// 本文件只保留 Redis 特有的语义：redis.Nil 豁免、Hook 接入、专用指标。
 package cache
 
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"time"
 
+	"game_study/pkg/breaker"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
 
@@ -36,38 +39,20 @@ import (
 // 挡下的请求」。
 var ErrBreakerOpen = errors.New("cache: redis circuit breaker open")
 
-// BreakerState 熔断状态。
-type BreakerState int32
+// BreakerState 熔断状态。别名指向通用状态机，调用方代码零改动。
+type BreakerState = breaker.State
 
 const (
-	// BreakerClosed 正常放行。
-	BreakerClosed BreakerState = iota
-	// BreakerOpen 快速失败，命令不发出去。
-	BreakerOpen
-	// BreakerHalfOpen 冷却到期，只放行探测请求。
-	BreakerHalfOpen
+	BreakerClosed   = breaker.Closed
+	BreakerOpen     = breaker.Open
+	BreakerHalfOpen = breaker.HalfOpen
 )
-
-// String 状态名（日志/指标用）。
-func (s BreakerState) String() string {
-	switch s {
-	case BreakerOpen:
-		return "open"
-	case BreakerHalfOpen:
-		return "half_open"
-	default:
-		return "closed"
-	}
-}
 
 // 默认参数（配置 0 值时采用）。
 const (
-	// DefaultBreakerThreshold 连续失败多少次打开熔断。
-	DefaultBreakerThreshold = 5
-	// DefaultBreakerCooldown 打开后多久进入半开。
-	DefaultBreakerCooldown = 5 * time.Second
-	// DefaultBreakerProbes 半开状态放行的探测请求数。
-	DefaultBreakerProbes = 1
+	DefaultBreakerThreshold = breaker.DefaultThreshold
+	DefaultBreakerCooldown  = breaker.DefaultCooldown
+	DefaultBreakerProbes    = breaker.DefaultProbes
 )
 
 // BreakerOptions 熔断参数。
@@ -97,114 +82,37 @@ func (o BreakerOptions) normalize() BreakerOptions {
 	return o
 }
 
-// Breaker 熔断器（实现 redis.Hook）。
+// Breaker Redis 专用熔断器：内嵌通用状态机，只叠加 Redis 语义与指标。
 //
-// 并发模型：状态与计数全部是 atomic，热路径（closed 状态）只有一次
-// atomic.Load——Redis 每秒数万次调用，一把互斥锁会成为新的瓶颈。
-// 状态迁移用 CAS，多个 goroutine 同时失败时只有一个负责发通知。
+// 并发模型由 pkg/breaker 保证（atomic + CAS，closed 热路径一次 Load）。
 type Breaker struct {
-	threshold  int32
-	cooldown   int64 // 纳秒
-	probeLimit int32
+	*breaker.Breaker
 
-	state    atomic.Int32
-	failures atomic.Int32
-	openedAt atomic.Int64 // 打开时刻（UnixNano）
-	probes   atomic.Int32 // 半开状态已放行的探测数
-
-	logger *log.Logger
+	// 归一化后的参数，仅用于日志/测试观测；真实判定在内嵌状态机。
+	threshold int32
+	cooldown  time.Duration
+	logger    *log.Logger
 }
 
 // NewBreaker 创建熔断器。
 func NewBreaker(opts BreakerOptions) *Breaker {
 	o := opts.normalize()
-	return &Breaker{
-		threshold:  int32(o.Threshold),
-		cooldown:   int64(o.Cooldown),
-		probeLimit: int32(o.Probes),
-		logger:     log.New("redis"),
+	b := &Breaker{
+		threshold: int32(o.Threshold),
+		cooldown:  o.Cooldown,
+		logger:    log.New("redis"),
 	}
+	b.Breaker = breaker.New(breaker.Options{
+		Threshold: opts.Threshold,
+		Cooldown:  opts.Cooldown,
+		Probes:    opts.Probes,
+		Name:      "redis",
+		OnChange:  func(s breaker.State) { b.notify(BreakerState(s)) },
+	})
+	return b
 }
 
-// State 当前状态。
-func (b *Breaker) State() BreakerState { return BreakerState(b.state.Load()) }
-
-// Failures 当前连续失败计数（观测用）。
-func (b *Breaker) Failures() int { return int(b.failures.Load()) }
-
-// Allow 判断是否可以放行一条命令。
-//
-// 三态语义：
-//   - closed：放行；
-//   - open：冷却未到 → 拒绝；冷却已到 → 尝试切半开，成功者放行探测；
-//   - half_open：探测名额未用完 → 放行，否则拒绝。
-func (b *Breaker) Allow() bool {
-	switch BreakerState(b.state.Load()) {
-	case BreakerClosed:
-		return true
-	case BreakerOpen:
-		if time.Since(time.Unix(0, b.openedAt.Load())) < time.Duration(b.cooldown) {
-			return false
-		}
-		// 冷却到期：只有一个 goroutine 能把状态推进到半开，
-		// 其余人继续按 open 拒绝——避免「刚到期就被一波流量打穿」。
-		b.state.CompareAndSwap(int32(BreakerOpen), int32(BreakerHalfOpen))
-		b.probes.Store(0)
-		return b.allowProbe()
-	default: // half_open
-		return b.allowProbe()
-	}
-}
-
-// allowProbe 半开状态下发放探测名额。
-func (b *Breaker) allowProbe() bool {
-	for {
-		n := b.probes.Load()
-		if n >= b.probeLimit {
-			return false
-		}
-		if b.probes.CompareAndSwap(n, n+1) {
-			return true
-		}
-	}
-}
-
-// Success 记录一次成功：清空失败计数，半开 → 关闭。
-//
-// open 状态下的迟到成功不改变状态：那是熔断打开前发出的在途请求，
-// 让它关闭会导致「刚打开就关」的抖动。等冷却期到，由探测请求决定。
-func (b *Breaker) Success() {
-	b.failures.Store(0)
-	if b.state.CompareAndSwap(int32(BreakerHalfOpen), int32(BreakerClosed)) {
-		b.probes.Store(0)
-		b.notify(BreakerClosed)
-	}
-}
-
-// Failure 记录一次失败：closed 累计到阈值 → 打开；half_open → 重新打开。
-func (b *Breaker) Failure() {
-	switch BreakerState(b.state.Load()) {
-	case BreakerHalfOpen:
-		// 探测失败：立刻回到 open，冷却重新计时。
-		b.trip()
-	case BreakerClosed:
-		if b.failures.Add(1) >= b.threshold {
-			b.trip()
-		}
-	}
-	// open：已熔断，忽略（多半是打开前的在途失败）
-}
-
-// trip 打开熔断并通知（并发失败只有一个 goroutine 触发通知）。
-func (b *Breaker) trip() {
-	b.openedAt.Store(time.Now().UnixNano())
-	b.probes.Store(0)
-	if b.state.Swap(int32(BreakerOpen)) != int32(BreakerOpen) {
-		b.notify(BreakerOpen)
-	}
-}
-
-// notify 状态变化：日志 + 指标。
+// notify 状态变化：日志 + 指标（由通用状态机在 open/closed 迁移时回调）。
 func (b *Breaker) notify(to BreakerState) {
 	if metrics.Enabled() {
 		metrics.RedisBreakerState(int32(to))
@@ -215,21 +123,20 @@ func (b *Breaker) notify(to BreakerState) {
 	if b.logger != nil {
 		if to == BreakerOpen {
 			b.logger.Warn("redis circuit breaker opened; fail fast until cooldown",
-				"threshold", b.threshold, "cooldown", time.Duration(b.cooldown).String())
+				"threshold", b.threshold, "cooldown", b.cooldown.String())
 			return
 		}
 		b.logger.Info("redis circuit breaker closed; traffic resumed")
 	}
 }
 
-// Observe 按命令结果更新状态。
+// Observe 按 Redis 命令结果更新状态。
 func (b *Breaker) Observe(err error) {
 	switch {
 	case err == nil:
 		b.Success()
 	case errors.Is(err, redis.Nil):
-		// key 不存在是正常结果，不是故障
-		b.Success()
+		b.Success() // key 不存在是正常结果，不是故障
 	case errors.Is(err, ErrBreakerOpen):
 		// 被自己拒绝的请求不参与统计（否则拒绝会自我放大）
 	default:

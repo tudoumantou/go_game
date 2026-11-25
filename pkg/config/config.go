@@ -54,6 +54,7 @@ type Config struct {
 	Log      LogConfig      `yaml:"log"`
 	Limit    LimitConfig    `yaml:"limit"`
 	Metrics  MetricsConfig  `yaml:"metrics"`
+	Trace    TraceConfig    `yaml:"trace"`
 	Shutdown ShutdownConfig `yaml:"shutdown"`
 
 	// 登录服
@@ -282,6 +283,17 @@ type MetricsConfig struct {
 	Addr   string `yaml:"addr"` // /metrics 暴露地址
 }
 
+// TraceConfig 链路追踪（OTel SDK + OTLP gRPC）。
+//
+// 零值 = 不启用：pkg/trace 的打点 API 照常工作，但全局是 noop，
+// 单测与未部署 Tempo/Jaeger 的环境无需任何改动。
+type TraceConfig struct {
+	Enabled     bool    `yaml:"enabled"`      // 是否装配 SDK + exporter
+	Endpoint    string  `yaml:"endpoint"`     // OTLP gRPC 地址，如 "tempo:4317"
+	ServiceName string  `yaml:"service_name"` // 空 = 用 server.name
+	SampleRatio float64 `yaml:"sample_ratio"` // 0/1 边界按全采处理
+}
+
 type ShutdownConfig struct {
 	TotalTimeout string `yaml:"total_timeout"` // 关闭总预算，超时强退
 	DrainTimeout string `yaml:"drain_timeout"` // 等在途消息（actor.Drain）
@@ -414,6 +426,16 @@ type CenterConfig struct {
 	Addr             string `yaml:"addr"` // 多地址逗号分隔，故障自动切换
 	ReconnectMaxWait string `yaml:"reconnect_max_wait"`
 	ReportBuffer     int    `yaml:"report_buffer"` // 上报队列深度，满则丢弃/背压
+	// Breaker 出向 Unary RPC 的熔断参数（报名/排名查询）。
+	// 零值 = 用默认阈值 5 / 冷却 5s / 探测 1；Threshold 负数 = 关闭熔断。
+	Breaker BreakerConfig `yaml:"breaker"`
+}
+
+// BreakerConfig 通用客户端熔断参数（出向 RPC 用）。
+type BreakerConfig struct {
+	Threshold int    `yaml:"threshold"` // 连续失败阈值；0=默认，负数=关闭
+	Cooldown  string `yaml:"cooldown"`  // 冷却时长，如 "5s"
+	Probes    int    `yaml:"probes"`    // 半开探测数；0=默认 1
 }
 
 type ReportConfig struct {

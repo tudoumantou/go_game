@@ -1,0 +1,27 @@
+# deploy/monitoring/grafana/provisioning/datasources/tempo.yml
+# 链路数据源：pkg/trace 通过 OTLP gRPC 把 span 发到 tempo:4317，
+# Grafana 用本数据源按 trace_id / service.name 检索（Tempo 1.5+ / Jaeger 1.35+ 均支持 OTLP）。
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: false
+    editable: false
+    jsonData:
+      httpMethod: GET
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+    # tracesToMetrics / tracesToLogs 需要对应数据源 uid；配了就能从 span
+    # 一键跳到指标/日志，做「延迟高 → 看是哪一跳」的闭环排查。
+      tracesToLogs:
+        datasourceUid: loki
+        tags: ["trace_id", "service.name"]
+        mappedTags: []
+        spanStartTimeShift: "-1m"
+        spanEndTimeShift: "1m"

@@ -1,0 +1,128 @@
+# deploy/monitoring/rules/gs-red-use.yml —— RED / USE 记录规则与告警
+#
+# 与 gs-alerts.yml 的分工：那份守「不变量被破坏」（落库失败、Actor panic、
+# 节点掉线）；这份守「服务体验退化」——请求量/错误率/延迟（RED）与
+# 利用率/饱和度/错误（USE），外加新增的 RPC 熔断闸。
+#
+# 指标来源：
+#   gs_message_*     玩家消息处理（网关→游戏服）
+#   gs_rpc_client_*  本进程发往中心服的 Unary RPC（报名/排名查询）
+#   gs_rpc_breaker_* 出向 RPC 的熔断状态
+#   process_* / go_* Go 与进程运行时（bootstrap 里注册的标准 collector）
+groups:
+  - name: game-study-red-use
+    interval: 30s
+    rules:
+      # ---------- Recording rules：让大盘和告警共用同一套表达式 ----------
+      - record: service:gs_message_error_ratio:5m
+        expr: |
+          sum by (service) (rate(gs_message_total{result="error"}[5m]))
+            / clamp_min(sum by (service) (rate(gs_message_total[5m])), 0.001)
+
+      - record: service:gs_rpc_error_ratio:5m
+        expr: |
+          sum by (service) (rate(gs_rpc_client_total{result="error"}[5m]))
+            / clamp_min(sum by (service) (rate(gs_rpc_client_total[5m])), 0.001)
+
+      - record: service:gs_rpc_p99_seconds:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, le) (rate(gs_rpc_client_duration_seconds_bucket[5m])))
+
+      - record: service:gs_message_p99_seconds:5m
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, le) (rate(gs_message_duration_seconds_bucket[5m])))
+
+      # ---------- RED 告警 ----------
+      - alert: RPCErrorRateHigh
+        expr: service:gs_rpc_error_ratio:5m > 0.05
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} 出向 RPC 错误率 {{ $value | humanizePercentage }}"
+          description: "中心服 RPC 连续 3 分钟错误率超 5%，检查中心服健康与熔断状态。"
+
+      - alert: RPCLatencyP99High
+        expr: service:gs_rpc_p99_seconds:5m > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} RPC P99 {{ $value }}s（阈值 1s）"
+          description: "报名/查询RPC 延迟超 1s，玩家侧会感到卡顿；检查中心服负载与 GC。"
+
+      - alert: MessageErrorRateHighByService
+        expr: service:gs_message_error_ratio:5m > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} 消息错误率 {{ $value | humanizePercentage }}"
+          description: "按服务粒度的错误率告警，避免总量被高流量服务掩盖。"
+
+      # ---------- 熔断（新增保护闸的可观测性） ----------
+      - alert: RPCBreakerOpen
+        expr: gs_rpc_breaker_state > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} 的 {{ $labels.name }} RPC 熔断已打开"
+          description: "出向 RPC 正在快速失败，玩家报名/查询走降级路径。检查中心服是否不可达。"
+
+      - alert: RPCBreakerFlapping
+        expr: increase(gs_rpc_breaker_opened_total[30m]) > 6
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} RPC 熔断 30 分钟内打开 {{ $value }} 次"
+          description: "频繁开合说明下游在抖动或阈值偏低；查中心服 GC/重启，考虑调大 threshold/cooldown。"
+
+      - alert: RPCBreakerRejectSpike
+        expr: rate(gs_rpc_breaker_rejected_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} 每秒约 {{ $value }} 次 RPC 被熔断挡下"
+          description: "大量请求未发往中心服就被拒绝，玩家功能处于降级态。"
+
+      # ---------- USE：饱和度 ----------
+      - alert: RPCInflightHigh
+        expr: gs_rpc_client_inflight > 50
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} 在途 RPC {{ $value }}（阈值 50）"
+          description: "出向调用持续堆积，通常是中心服变慢的早期信号，早于错误率上升。"
+
+      - alert: MessageInflightHigh
+        expr: gs_message_inflight > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} 在途消息 {{ $value }}（阈值 5000）"
+          description: "处理速度跟不上接入速度，接近有界队列上限时考虑扩容或限流。"
+
+      - alert: ActorMailboxNearLimit
+        expr: gs_actor_mailbox_depth > 8000
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "分片 {{ $labels.shard }} 信箱 {{ $value }}，接近上限"
+          description: "超过 8000 后再涨就会丢最旧消息，需立即排查是热点玩家还是模块变慢。"
+
+      - alert: ProcessCPUSaturated
+        expr: rate(process_cpu_seconds_total[5m]) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.service }} CPU 利用率 {{ $value | humanizePercentage }}"
+          description: "进程 CPU 持续高于 90%，游戏服单线程 Actor 模型下会直接放大延迟。"

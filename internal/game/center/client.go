@@ -28,7 +28,9 @@ import (
 	"time"
 
 	"game_study/pkg/backoff"
+	"game_study/pkg/breaker"
 	"game_study/pkg/log"
+	"game_study/pkg/metrics"
 	"game_study/pkg/periodic"
 
 	internalv2 "game_study/pkg/pb/internalv2"
@@ -88,6 +90,11 @@ type Client struct {
 	stopCh    chan struct{}
 	stopOnce  sync.Once
 
+	// cb 出向 Unary RPC 的熔断器。挂在 Client 而非 ClientConn 上：
+	// 断线重连会重建 conn，但中心服的故障状态必须跨重连保留，否则每次
+	// 重连都给对端一轮全量探测。哨兵名 "center" 用于指标/日志定位。
+	cb *breaker.Breaker
+
 	// 心跳数据（由业务侧更新）
 	//
 	// atomic 而非锁：写侧是业务 goroutine（SetPlayerNum），读侧只有
@@ -99,7 +106,7 @@ type Client struct {
 
 // NewClient 创建客户端。
 func NewClient(selfID, addr string, h Handler, logger *log.Logger) *Client {
-	return &Client{
+	c := &Client{
 		selfID:   selfID,
 		nodeType: "game",
 		addr:     addr,
@@ -109,7 +116,37 @@ func NewClient(selfID, addr string, h Handler, logger *log.Logger) *Client {
 		stopCh:   make(chan struct{}),
 		version:  "1.0.0",
 	}
+	c.initBreaker(breaker.Options{Name: "center"})
+	return c
 }
+
+// initBreaker 建熔断器并接上日志/指标。
+func (c *Client) initBreaker(opts breaker.Options) {
+	opts.Name = "center"
+	opts.OnChange = func(s breaker.State) {
+		if metrics.Enabled() {
+			metrics.RPCBreakerState(opts.Name, int32(s))
+			if s == breaker.Open {
+				metrics.RPCBreakerOpened(opts.Name)
+			}
+		}
+		if c.logger == nil {
+			return
+		}
+		if s == breaker.Open {
+			c.logger.Warn("center RPC breaker opened; fail fast until cooldown", "center", c.addr)
+		} else {
+			c.logger.Info("center RPC breaker closed; traffic resumed", "center", c.addr)
+		}
+	}
+	c.cb = breaker.New(opts)
+}
+
+// SetBreaker 覆盖熔断参数（装配期调用；Start 之前）。负数 Threshold = 关闭。
+func (c *Client) SetBreaker(opts breaker.Options) { c.initBreaker(opts) }
+
+// BreakerState 当前熔断状态（GM / 健康检查用）。
+func (c *Client) BreakerState() breaker.State { return c.cb.State() }
 
 // SetNodeType 设置节点类型（game / cross）。
 func (c *Client) SetNodeType(t string) { c.nodeType = t }
@@ -161,6 +198,16 @@ func (c *Client) runOnce(ctx context.Context) error {
 	conn, err := grpc.NewClient(c.addr,
 		grpc.WithTransportCredentials(insecureCreds()),
 		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(4<<20)),
+		// 只拦 Unary：Report 流有自己的退避重连，套熔断会把单条上报
+		// 失败误算成整个中心服故障。外层记 RED 指标，内层做熔断闸。
+		grpc.WithChainUnaryInterceptor(c.metricsInterceptor,
+			breaker.UnaryInterceptor(c.cb, breaker.InterceptorOptions{
+				OnReject: func(string) {
+					if metrics.Enabled() {
+						metrics.RPCBreakerRejected("center")
+					}
+				},
+			})),
 	)
 	if err != nil {
 		return fmt.Errorf("dial center %s: %w", c.addr, err)

@@ -107,6 +107,7 @@ func Init(service string) {
 		registerGameData()
 		registerOwnerIndex()
 		registerRedisBreaker()
+		registerRPC()
 		registerCenter()
 		registerKafka()
 		// 开关最后置 true：见函数注释的竞态窗口说明
@@ -1016,6 +1017,110 @@ func RedisBreakerRejected() {
 		return
 	}
 	redisBreakerRejected.WithLabelValues(Service()).Inc()
+}
+
+// ============================ RPC 客户端（RED / 熔断） ============================
+
+var (
+	rpcTotal           *prometheus.CounterVec
+	rpcLatency         *prometheus.HistogramVec
+	rpcInflight        *prometheus.GaugeVec
+	rpcBreakerState    *prometheus.GaugeVec
+	rpcBreakerOpened   *prometheus.CounterVec
+	rpcBreakerRejected *prometheus.CounterVec
+)
+
+// registerRPC 注册出向 RPC 的 RED 指标与熔断指标。
+//
+// 与消息级指标（gs_message_*）分开：消息指标看「玩家请求处理得快不快」，
+// RPC 指标看「本进程依赖的远端服务健不健康」。前者 P99 高可能是自己的
+// Actor 慢，后者 P99 高就是中心服/下游的问题——混在一张图里定位不了。
+//
+// method 标签是 gRPC 全路径（如 /center.CenterService/CrossEnroll），
+// 方法集合在 proto 里是封闭的，不会高基数。
+func registerRPC() {
+	rpcTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "rpc_client", Name: "total",
+		Help: "出向 Unary RPC 调用数（result: ok/error/rejected）",
+	}, []string{"service", "method", "result"})
+	rpcLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: Namespace, Subsystem: "rpc_client", Name: "duration_seconds",
+		Help:    "出向 Unary RPC 耗时（含熔断快速拒绝）",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 3},
+	}, []string{"service", "method"})
+	rpcInflight = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "rpc_client", Name: "inflight",
+		Help: "在途 RPC 数（饱和度：持续增长说明下游变慢、请求在堆积）",
+	}, []string{"service"})
+	rpcBreakerState = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: Namespace, Subsystem: "rpc_breaker", Name: "state",
+		Help: "RPC 熔断状态：0=closed 1=open 2=half_open",
+	}, []string{"service", "name"})
+	rpcBreakerOpened = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "rpc_breaker", Name: "opened_total",
+		Help: "RPC 熔断打开次数（频繁增长说明下游在抖动）",
+	}, []string{"service", "name"})
+	rpcBreakerRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "rpc_breaker", Name: "rejected_total",
+		Help: "被 RPC 熔断快速拒绝的调用数（未发往下游）",
+	}, []string{"service", "name"})
+	registry.MustRegister(rpcTotal, rpcLatency, rpcInflight,
+		rpcBreakerState, rpcBreakerOpened, rpcBreakerRejected)
+}
+
+// RPCRequest 记一次 RPC 结果（result: ok/error/rejected）。
+func RPCRequest(method, result string) {
+	if !enabled.Load() {
+		return
+	}
+	rpcTotal.WithLabelValues(Service(), method, result).Inc()
+}
+
+// RPCObserve 记一次 RPC 耗时。
+func RPCObserve(method string, d time.Duration) {
+	if !enabled.Load() {
+		return
+	}
+	rpcLatency.WithLabelValues(Service(), method).Observe(d.Seconds())
+}
+
+// RPCInflightInc / RPCInflightDec 在途计数（必须配对调用）。
+func RPCInflightInc() {
+	if !enabled.Load() {
+		return
+	}
+	rpcInflight.WithLabelValues(Service()).Inc()
+}
+
+func RPCInflightDec() {
+	if !enabled.Load() {
+		return
+	}
+	rpcInflight.WithLabelValues(Service()).Dec()
+}
+
+// RPCBreakerState 上报熔断状态（0=closed 1=open 2=half_open）。
+func RPCBreakerState(name string, state int32) {
+	if !enabled.Load() {
+		return
+	}
+	rpcBreakerState.WithLabelValues(Service(), name).Set(float64(state))
+}
+
+// RPCBreakerOpened 熔断打开一次。
+func RPCBreakerOpened(name string) {
+	if !enabled.Load() {
+		return
+	}
+	rpcBreakerOpened.WithLabelValues(Service(), name).Inc()
+}
+
+// RPCBreakerRejected 记一条被熔断拒绝的 RPC。
+func RPCBreakerRejected(name string) {
+	if !enabled.Load() {
+		return
+	}
+	rpcBreakerRejected.WithLabelValues(Service(), name).Inc()
 }
 
 // ============================ 中心服 ============================

@@ -43,3 +43,10 @@ shutdown:
   # 10.5：优雅关闭要等存量战斗结束（最多 5 分钟），故总超时须大于 drain
   total_timeout: 360s
   drain_timeout: 300s
+
+# 链路追踪（OTel SDK + OTLP gRPC，对接 Tempo/Jaeger）
+# 默认关闭：pkg/trace 打点 API 照常可用但为 noop；部署采集端后改为 true。
+trace:
+  enabled: false
+  endpoint: "tempo:4317"
+  sample_ratio: 1.0

@@ -26,8 +26,10 @@ import (
 	"game_study/pkg/codec"
 	"game_study/pkg/log"
 	"game_study/pkg/metrics"
+	"game_study/pkg/trace"
 
 	gamev1 "game_study/pkg/pb/game/v1"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -213,6 +215,9 @@ type Actor struct {
 	heartbeatEvery time.Duration // 0 用默认；测试注入短间隔
 	// sessionID 当前权威会话（0 = 不在线）；UNBIND 身份校验与下行都读它。
 	sessionID uint64
+	// traceID 本会话的链路 ID（BindMsg 带来）；onPacket 用它把 Actor 处理
+	// 挂到与网关/RPC 同一条 trace 上，span 耗时可直接对比「卡在哪一跳」。
+	traceID string
 
 	// onKick 跨节点顶号回调（由组装层注入：关闭该玩家在本节点的网关会话）。
 	// 不在这里直接清 sessionID：等网关断连后的 UNBIND 走标准下线流程，
@@ -454,8 +459,11 @@ func (a *Actor) onBind(ctx *actor.Context, msg *BindMsg) {
 	a.online = true
 	// 会话级 trace_id 落到 logger：这条会话的全部业务日志都能被同一 id 串起来。
 	// 从 baseLogger 重建而不是在当前 logger 上再 With，避免多次重连后堆出重复键。
-	if msg.TraceID != "" && a.baseLogger != nil {
-		a.logger = a.baseLogger.With("trace_id", msg.TraceID)
+	if msg.TraceID != "" {
+		a.traceID = msg.TraceID
+		if a.baseLogger != nil {
+			a.logger = a.baseLogger.With("trace_id", msg.TraceID)
+		}
 	}
 
 	// 首次上线：并行预加载全部数据（12.6）；重连时 Actor 未销毁，跳过
@@ -642,6 +650,18 @@ func (a *Actor) onPacket(ctx *actor.Context, msg *PacketMsg) {
 		a.logger.Warn("packet before loaded, drop", "msg_id", msg.MsgID)
 		return
 	}
+	// Actor 处理 span：与网关/RPC 共用同一 trace_id，耗时字段直接回答
+	// 「玩家感到卡的那一下，是网关转发慢还是 Actor 里模块处理慢」。
+	// 未初始化 OTel SDK 时这里是 noop span，热路径只有一次 context 构造。
+	pctx := context.Background()
+	if a.traceID != "" {
+		pctx = trace.WithID(pctx, a.traceID)
+	}
+	pctx, endSpan := trace.Start(pctx, "actor.packet",
+		attribute.Int("msg_id", int(msg.MsgID)), attribute.Int64("player_id", a.playerID))
+	defer endSpan()
+	_ = pctx // 模块分发目前不接收 context；span 生命周期覆盖整个 Dispatch。
+
 	mctx := a.moduleCtx(ctx)
 	start := time.Now()
 	err := a.registry.Dispatch(mctx, msg.MsgID, msg.Body)

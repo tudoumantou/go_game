@@ -42,6 +42,7 @@ import (
 
 	"game_study/pkg/config"
 	"game_study/pkg/log"
+	"game_study/pkg/trace/otelx"
 )
 
 // defaultShutdownBudget 未配置且未指定时的关闭总预算。
@@ -112,6 +113,24 @@ func Run(opts Options) {
 	logger = log.New(opts.Name, log.WithLevel(cfg.Log.Level))
 	logger.Info("config loaded", "name", cfg.Server.Name, "env", cfg.Server.Env)
 
+	// 链路 SDK：未配置时 noop（pkg/trace 的打点 API 照常可用）。失败只告警——
+	// 可观测性不是业务前提，不该因为采集端不可达就拒绝启动游戏服。
+	serviceName := cfg.Trace.ServiceName
+	if serviceName == "" {
+		serviceName = cfg.Server.Name
+	}
+	shutdownTrace, err := otelx.Init(context.Background(), otelx.Config{
+		Enabled:     cfg.Trace.Enabled,
+		Endpoint:    cfg.Trace.Endpoint,
+		ServiceName: serviceName,
+		SampleRatio: cfg.Trace.SampleRatio,
+	})
+	if err != nil {
+		logger.Warn("otel init failed, tracing disabled", "err", err)
+	} else {
+		logger.Info("otel initialized", "endpoint", cfg.Trace.Endpoint, "enabled", cfg.Trace.Enabled)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -154,6 +173,12 @@ func Run(opts Options) {
 	defer cancel()
 
 	shutdownErr := srv.Shutdown(shutdownCtx)
+	// 最后 flush 剩余 span：业务 Shutdown 里产生的 span 也要能上报。
+	if shutdownTrace != nil {
+		if err := shutdownTrace(shutdownCtx); err != nil {
+			logger.Warn("otel shutdown failed", "err", err)
+		}
+	}
 	if err := errors.Join(startErr, shutdownErr); err != nil {
 		logger.Error("shutdown failed", "err", err)
 		os.Exit(1)

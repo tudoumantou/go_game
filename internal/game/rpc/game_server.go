@@ -80,11 +80,11 @@ func NewGameServer(handler StreamHandler, logger *log.Logger) *GameServer {
 // 阻塞至流断开：io.EOF 是对端正常关闭，其余错误在触发 OnUnbind 后上报。
 func (s *GameServer) Channel(stream internalv2.GameService_ChannelServer) error {
 	ctx := stream.Context()
-	// 网关建流时带来的 trace_id：本会话所有日志都带上它，排查时用一条 id
-	// 就能把网关与游戏服两侧的日志串起来（见 pkg/trace）。
+	// 网关建流时带来的 trace 信息：本会话所有日志都带上它，且保留上游
+	// span_id 作为父——Actor/RPC 的 span 才能接到同一条链路上（见 pkg/trace）。
 	logger := s.logger
-	if traceID := trace.FromIncoming(ctx); traceID != "" {
-		ctx = trace.WithID(ctx, traceID)
+	ctx, traceID := trace.FromIncomingWithContext(ctx)
+	if traceID != "" {
 		logger = logger.With("trace_id", traceID)
 	}
 	// 等待第一条 BIND 控制消息建立会话映射
