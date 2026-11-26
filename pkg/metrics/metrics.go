@@ -110,6 +110,7 @@ func Init(service string) {
 		registerRPC()
 		registerCenter()
 		registerKafka()
+		registerNATS()
 		// 开关最后置 true：见函数注释的竞态窗口说明
 		enabled.Store(true)
 	})
@@ -1258,6 +1259,39 @@ func KafkaProduced(topic string, ok bool) {
 		result = "error"
 	}
 	kafkaProduced.WithLabelValues(Service(), topic, result).Inc()
+}
+
+// ============================ NATS 服间总线 ============================
+
+var natsRejected *prometheus.CounterVec
+
+// registerNATS 注册 NATS 接收侧的拒收计数（game/center 进程）。
+//
+// 只有一类指标，因为只有一种值得告警的事件：**收到的消息自称的发送者
+// 与 subject 里的发送者不一致**。正常运行时它恒为 0；一旦上涨，要么有
+// 节点在用别人的名义发消息，要么运维漏配了某条 publish 权限——两种都
+// 需要人看，所以拆成 kind 标签：
+//
+//	sender_mismatch  subject 的 from 与载荷 from_node 不符（伪造/漏配权限）
+//	bad_subject      subject 缺 .from. 后缀或发送者非法（手写客户端）
+//	undecodable      载荷无法解码（版本不一致/非本协议客户端）
+func registerNATS() {
+	natsRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: Namespace, Subsystem: "nats", Name: "rejected_total",
+		Help: "NATS 接收侧拒收的消息数（按原因：sender_mismatch / bad_subject / undecodable）",
+	}, []string{"service", "kind"})
+	registry.MustRegister(natsRejected)
+}
+
+// NATSRejected 一条消息因校验失败被丢弃。
+//
+// kind 是封闭枚举（见 registerNATS），低基数。**不要**把 subject 或节点名
+// 做标签：节点数随扩缩容变化，高基数标签会把 Prometheus 打爆。
+func NATSRejected(kind string) {
+	if !enabled.Load() {
+		return
+	}
+	natsRejected.WithLabelValues(Service(), kind).Inc()
 }
 
 // ============================ HTTP 端点 ============================

@@ -1,0 +1,122 @@
+# NATS 服务端配置示例 —— 「发送者不可伪造」的服务端一半
+#
+# 这份文件不是拿来直接用的：节点名、区服号、环境前缀都要按你的部署改。
+# 它存在的目的是给出**必须这么配**的规则，以及为什么。
+#
+# 背景：NATS Core 不向订阅者提供发布者身份，消息里没有"谁发的"这个元数据。
+# 所以发送者必须写进 subject（{...}.from.{sender}，见 pkg/natsx/doc.go），
+# 再由服务端的 publish 权限把「每个节点只能以自己的名义发」钉死。少了这一层，
+# 载荷里的 from_node 就只是自称，任何能连上 4222 的进程都能冒充任意节点、
+# 甚至冒充中心服下发分组。
+#
+# 三条铁律：
+#   1. 不要设 no_auth_user（设了等于给所有匿名连接一个账号）；
+#   2. 每个节点的 allow_publish 精确到 "*.from.{自己}"，不要写通配的 from 段
+#      —— 写通配（如 prod.*.from.*）等于把整个方案作废；
+#   3. subscribe 可以放开（">"）：读权限泄漏不会让任何人伪造消息，
+#      而收紧读权限会让排查问题（调试订阅）变得很麻烦。
+#
+# 客户端侧对应配置（configs/*/*-prod.yaml）：
+#   nats:
+#     url: "nats://nats:4222"
+#     user: "${NATS_USER}"       # 与本文件里的 user 对应
+#     password: "${NATS_PASSWORD}"
+
+port: 4222
+http: 8222                    # /varz /connz /subsz，排障用
+server_name: "nats-1"
+
+# 集群：数据面单点是不可接受的风险。三节点起步，客户端 URL 列全部节点，
+# nats.go 会在断线时自动换节点重连。
+# cluster {
+#   name: "game"
+#   port: 6222
+#   routes: [
+#     nats-route://nats-1:6222
+#     nats-route://nats-2:6222
+#     nats-route://nats-3:6222
+#   ]
+# }
+
+# 不用 JetStream：跨服链路是 at-most-once 语义，丢一条改分由下一轮全量
+# 上报收敛。开 JetStream 只会带来磁盘与 stream 管理的额外负担。
+jetstream: false
+
+authorization {
+  users = [
+    # ---------------- 游戏服 game-01（区服 1）----------------
+    {
+      user: game-01
+      password: "CHANGE_ME_game01"
+      permissions: {
+        publish: {
+          allow: [
+            # 点对点 relay：可以发给任何节点，但只能署自己的名
+            "prod.relay.node.*.from.game-01"
+            # 分组广播：同上
+            "prod.relay.group.*.from.game-01"
+            # 积分上报：只能报自己这个区服（server_id=1），不能替别的服报
+            "prod.crossplay.score.1.from.game-01"
+            # 跨服改分：目标服任意，发送者只能是自己
+            "prod.crossplay.delta.*.from.game-01"
+          ]
+        }
+        # 读权限全开：自己的点对点/广播/下行 subject 都在里面。
+        # 收别人的消息不构成风险（消息本身带着发送者，接收端会校验）。
+        subscribe: { allow: [">"] }
+      }
+    }
+
+    # ---------------- 游戏服 game-02（区服 2）----------------
+    # 与 game-01 的唯一差别是 from 段与 score 的区服号。
+    {
+      user: game-02
+      password: "CHANGE_ME_game02"
+      permissions: {
+        publish: {
+          allow: [
+            "prod.relay.node.*.from.game-02"
+            "prod.relay.group.*.from.game-02"
+            "prod.crossplay.score.2.from.game-02"
+            "prod.crossplay.delta.*.from.game-02"
+          ]
+        }
+        subscribe: { allow: [">"] }
+      }
+    }
+
+    # ---------------- 中心服 center-01 ----------------
+    # 中心服只发一件事：分组下发。它不收 relay（不参与服间转发）。
+    {
+      user: center-01
+      password: "CHANGE_ME_center01"
+      permissions: {
+        publish: {
+          allow: [
+            "prod.crossplay.group.*.from.center-01"
+          ]
+        }
+        subscribe: { allow: [">"] }
+      }
+    }
+
+    # ---------------- 运维/排障账号（只读）----------------
+    # 用来 nats sub "prod.>" 抓包看链路。只能订阅、不能发布——
+    # 排障账号能发消息是事故隐患。
+    {
+      user: ops-readonly
+      password: "CHANGE_ME_ops"
+      permissions: {
+        publish: { deny: [">"] }
+        subscribe: { allow: [">"] }
+      }
+    }
+  ]
+}
+
+# 传输加密：跨主机部署时启用（客户端侧在 pkg/natsx 里加 nats.Secure()，
+# 目前未接，因为默认部署在同集群内网；一旦跨公网必须补）。
+# tls {
+#   cert_file: "/etc/nats/server-cert.pem"
+#   key_file:  "/etc/nats/server-key.pem"
+# }

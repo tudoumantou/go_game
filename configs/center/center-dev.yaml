@@ -67,12 +67,19 @@ shutdown:
   drain_timeout: 10s
 
 # 跨服玩法唯一通道（NATS Core）；url 为空则玩法不启用（无 gRPC 降级）
-# subject 前缀取 server.env（如 prod.crossplay.score.1），多环境共用集群靠它隔离。
+# subject 前缀取 server.env（如 prod.crossplay.score.1.from.game-01），多环境共用集群靠它隔离。
 nats:
   url: "nats://127.0.0.1:4222"
   reconnect_wait: "2s"
   max_reconnect: 60
   timeout: "2s"
+  # 认证：一个节点一个账号，NATS 侧限定它只能发 "{env}.*.from.{自己}"
+  # （见 deploy/nats/nats.conf.example）。本地开发默认不认证，启动日志会有
+  # 一条 "nats has no auth" 的 Warn —— 说明任何能连 4222 的进程都能冒充任意节点。
+  user: ""
+  password: ""
+  token: ""
+  creds: ""
 
 # 链路追踪（OTel SDK + OTLP gRPC，对接 Tempo/Jaeger）
 # 默认关闭：pkg/trace 打点 API 照常可用但为 noop；部署采集端后改为 true。

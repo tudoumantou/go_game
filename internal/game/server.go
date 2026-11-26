@@ -229,7 +229,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if err := s.registerEtcd(); err != nil {
 		return err
 	}
-	s.startRPCAndClients()
+	if err := s.startRPCAndClients(); err != nil {
+		return err
+	}
 
 	s.logger.Info("GameServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
 		"players", s.players.Count())

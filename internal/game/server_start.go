@@ -643,7 +643,11 @@ func (s *Server) registerEtcd() error {
 }
 
 // startRPCAndClients 起 gRPC server，并连中心服与跨服节点。
-func (s *Server) startRPCAndClients() {
+//
+// 返回错误只有一种情况：NATS 相关的配置本身不成立（节点名/分组名拼不出
+// 合法 subject）。这类错误必须在启动期暴露——跑到运行期就是"消息发不出去
+// 且没人报错"，比启动失败难查得多。
+func (s *Server) startRPCAndClients() error {
 	// ⑦ gRPC server
 	s.gameRPC = rpc.NewGameServer(s, s.logger)
 	s.rpcServer = rpcpkg.NewServer(s.cfg.Server.GRPCAddr, s.logger)
@@ -671,15 +675,41 @@ func (s *Server) startRPCAndClients() {
 	// 未配 URL 时 natsBus 为 nil——玩法整体不启用（报名/上报/改分都被
 	// crossplay.Center.Ready() 拒绝），不存在 gRPC 降级路径。
 	if s.cfg.Nats.URL != "" {
+		// 节点名与分组名会被拼进 subject（relay.node.{self}.from.{self} 等）。
+		// 带 '.'/'*'/'>' 的名字不是"名字怪"，而是**改变路由语义**：名叫
+		// "game.01" 的节点会发到 relay.node.game.01.from.game.01，订阅
+		// relay.node.game.* 的调试卷也能收到它，且它的 relay.group 订阅会
+		// 落到别人的命名空间里。这里直接拒绝启动。
+		if err := natsx.ValidateToken("server.name", s.cfg.Server.Name); err != nil {
+			return fmt.Errorf("nats: %w", err)
+		}
+		if err := natsx.ValidateToken("server.group", s.cfg.Server.Group); err != nil {
+			return fmt.Errorf("nats: %w", err)
+		}
 		rw, _ := config.ParseDuration(s.cfg.Nats.ReconnectWait)
 		to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
-		bus, err := natsx.Connect(natsx.Config{
+		natsCfg := natsx.Config{
 			URL:           s.cfg.Nats.URL,
 			Prefix:        s.cfg.Server.Env,
+			User:          s.cfg.Nats.User,
+			Password:      s.cfg.Nats.Password,
+			Token:         s.cfg.Nats.Token,
+			CredsFile:     s.cfg.Nats.CredsFile,
 			ReconnectWait: rw,
 			MaxReconnect:  s.cfg.Nats.MaxReconnect,
 			Timeout:       to,
-		})
+			// 服务端异步拒绝（权限不足/慢消费者）只从这里出来：不接这个
+			// 回调，越权发布就是"发送方以为成功、接收方永远收不到"。
+			ErrorHandler: func(err error) { s.logger.Warn("nats async error", "err", err) },
+		}
+		// 不配认证也能跑通（本地开发/内网），但必须留一条可搜的警告：
+		// 无认证的总线看起来跟正常的一模一样，只有这一行日志能提示
+		// "任何能连上 4222 的进程都能冒充本节点发消息"。
+		if !natsCfg.HasAuth() {
+			s.logger.Warn("nats has no auth: any client that can reach the bus can impersonate any node",
+				"url", s.cfg.Nats.URL)
+		}
+		bus, err := natsx.Connect(natsCfg)
 		if err != nil {
 			// 没有降级路径：跨服玩法与跨节点 relay 都以这条总线为唯一通道。
 			// 进程继续跑（本服玩法不受影响），但这两项能力不可用——显式说明，
@@ -689,7 +719,7 @@ func (s *Server) startRPCAndClients() {
 			s.natsBus = bus
 			s.startCrossplayNATS(bus)
 			// 通用 relay 接收侧：中心服已退出转发，业务服之间直接经
-			// relay.node.{self} / relay.group.{group} 收发。
+			// relay.node.{self}.from.* / relay.group.{group}.from.* 收发。
 			s.startRelayNATS(bus)
 		}
 	}
@@ -700,4 +730,5 @@ func (s *Server) startRPCAndClients() {
 	if s.crossPlayMod != nil {
 		s.crossPlayMod.Start(s.runCtx)
 	}
+	return nil
 }

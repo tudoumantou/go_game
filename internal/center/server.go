@@ -259,15 +259,32 @@ func (s *Server) Start(ctx context.Context) error {
 		// 下发发布）。未配 URL 时 natsBus 为 nil、玩法不启用——报名仍可经
 		// gRPC 到达，但会被游戏侧的 NATS 就绪检查拒绝。
 		if s.cfg.Nats.URL != "" {
+			// 实例名会拼进下发 subject（crossplay.group.{server}.from.{self}），
+			// 游戏服拿它校验"这条分组确实来自中心服"。名字里带点/通配符会让
+			// 这个校验落到别的 subject 上，启动即拒绝。
+			if err := natsx.ValidateToken("server.name", s.cfg.Server.Name); err != nil {
+				return fmt.Errorf("nats: %w", err)
+			}
 			rw, _ := config.ParseDuration(s.cfg.Nats.ReconnectWait)
 			to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
-			bus, err := natsx.Connect(natsx.Config{
+			natsCfg := natsx.Config{
 				URL:           s.cfg.Nats.URL,
 				Prefix:        s.cfg.Server.Env,
+				User:          s.cfg.Nats.User,
+				Password:      s.cfg.Nats.Password,
+				Token:         s.cfg.Nats.Token,
+				CredsFile:     s.cfg.Nats.CredsFile,
 				ReconnectWait: rw,
 				MaxReconnect:  s.cfg.Nats.MaxReconnect,
 				Timeout:       to,
-			})
+				// 同 game 侧：异步拒绝只能通过这个回调看到。
+				ErrorHandler: func(err error) { s.logger.Warn("nats async error", "err", err) },
+			}
+			if !natsCfg.HasAuth() {
+				s.logger.Warn("nats has no auth: any client that can reach the bus can impersonate any node",
+					"url", s.cfg.Nats.URL)
+			}
+			bus, err := natsx.Connect(natsCfg)
 			if err != nil {
 				return fmt.Errorf("nats: %w", err)
 			}

@@ -24,6 +24,7 @@ import (
 	gameremote "game_study/internal/game/remote"
 	"game_study/pkg/codec"
 	pkgmq "game_study/pkg/mq"
+	"game_study/pkg/natsx"
 	pkgseat "game_study/pkg/seat"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -219,8 +220,16 @@ func (h centerHandler) OnGroupUpdate(g *internalv2.GroupUpdate) {
 	// 记录分组：NATS relay 的广播订阅以它为键。分组可能变化，用 CAS
 	// 判断并只在变化时重订阅，避免每次 GroupUpdate 都重复订阅同一 subject。
 	if gid := g.GetGroupId(); gid != "" && gid != h.srv.relayGroupID {
-		h.srv.relayGroupID = gid
-		h.srv.subscribeRelayGroup(gid)
+		// 分组名会拼进 relay.group.{group}.from.*。这条值来自中心服下发
+		// （外部输入），带 '.'/'*'/'>' 会改写 subject 的路由语义——例如
+		// 一个叫 "group.*" 的分组会让本节点订到所有组的广播。校验不过就
+		// 保留旧分组并告警：宁可广播少收，不能收错。
+		if !natsx.ValidToken(gid) {
+			h.srv.logger.Warn("group update ignored: invalid group id", "group", gid)
+		} else {
+			h.srv.relayGroupID = gid
+			h.srv.subscribeRelayGroup(gid)
+		}
 	}
 	if h.srv.crossPool == nil || len(g.GetCrossAddrs()) == 0 {
 		return
@@ -397,19 +406,25 @@ func (a centerAccessor) CrossEnroll(ctx context.Context, req *internalv2.CrossEn
 //
 // NATS 是积分上报的唯一通道（gRPC Report 上报已删除）。未配 NATS 或连接
 // 未就绪时显式返回错误——模块会把这批重新标脏，下一拍再发。
+//
+// subject 尾部带 .from.{本节点}：NATS 服务端按账号限定了「只能以自己名义
+// 发」，中心服收到后还会拿它和 FromNode 字段比对。两处都不填就会被中心服
+// 直接丢弃，所以这里同时填字段与 subject。
 func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
 	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errCenterDown
 	}
-	return a.srv.natsBus.Publish(a.srv.natsBus.ScoreSubject(a.srv.cfg.Server.ID),
-		&internalv2.CrossScoreBatch{Entries: entries})
+	self := a.srv.cfg.Server.Name
+	return a.srv.natsBus.Publish(a.srv.natsBus.ScoreSubject(a.srv.cfg.Server.ID, self),
+		&internalv2.CrossScoreBatch{Entries: entries, FromNode: self})
 }
 
 // SendCrossDelta 实现 crossplay.Center：把改分发布到 NATS delta subject，
 // 由目标服订阅后本地执行，中心服不参与路由也不转发。
 //
-// FromNode 由本服标识填充，接收端按 (from_node, relay_id) 去重。未配 NATS
-// 或连接未就绪时显式返回错误——不静默丢弃，也没有中心服 gRPC 降级路径。
+// FromNode 由本服标识填充，接收端按 (from_node, relay_id) 去重，并校验它
+// 与 subject 里的发送者一致。未配 NATS 或连接未就绪时显式返回错误——
+// 不静默丢弃，也没有中心服 gRPC 降级路径。
 func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
 	if d == nil || d.GetToServer() == 0 {
 		return errCenterDown
@@ -417,8 +432,9 @@ func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
 	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errCenterDown
 	}
-	d.FromNode = a.srv.cfg.Server.Name
-	return a.srv.natsBus.Publish(a.srv.natsBus.DeltaSubject(d.GetToServer()), d)
+	self := a.srv.cfg.Server.Name
+	d.FromNode = self
+	return a.srv.natsBus.Publish(a.srv.natsBus.DeltaSubject(d.GetToServer(), self), d)
 }
 
 // relayAccessor 实现 remote.NATSRelay：把 Server 的 natsBus 翻译成
@@ -430,7 +446,7 @@ func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
 // 由 remote.Sender 显式上抛（无中心服降级路径）。
 type relayAccessor struct{ srv *Server }
 
-// SendRelayNode 点对点发布到 relay.node.{toNode}。
+// SendRelayNode 点对点发布到 relay.node.{toNode}.from.{self}。
 func (a relayAccessor) SendRelayNode(relayID, toNode string, payload []byte) error {
 	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errors.New("relay: nats bus not ready")
@@ -438,14 +454,15 @@ func (a relayAccessor) SendRelayNode(relayID, toNode string, payload []byte) err
 	if toNode == "" {
 		return errors.New("relay: empty target node")
 	}
-	return a.srv.natsBus.Publish(a.srv.natsBus.RelayNodeSubject(toNode), &internalv2.RelayPush{
+	self := a.srv.cfg.Server.Name
+	return a.srv.natsBus.Publish(a.srv.natsBus.RelayNodeSubject(toNode, self), &internalv2.RelayPush{
 		RelayId:  relayID,
-		FromNode: a.srv.cfg.Server.Name,
+		FromNode: self,
 		Payload:  payload,
 	})
 }
 
-// SendRelayGroup 广播发布到 relay.group.{groupID}。
+// SendRelayGroup 广播发布到 relay.group.{groupID}.from.{self}。
 func (a relayAccessor) SendRelayGroup(relayID, groupID string, payload []byte) error {
 	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errors.New("relay: nats bus not ready")
@@ -453,9 +470,10 @@ func (a relayAccessor) SendRelayGroup(relayID, groupID string, payload []byte) e
 	if groupID == "" {
 		return errors.New("relay: empty group id")
 	}
-	return a.srv.natsBus.Publish(a.srv.natsBus.RelayGroupSubject(groupID), &internalv2.RelayPush{
+	self := a.srv.cfg.Server.Name
+	return a.srv.natsBus.Publish(a.srv.natsBus.RelayGroupSubject(groupID, self), &internalv2.RelayPush{
 		RelayId:  relayID,
-		FromNode: a.srv.cfg.Server.Name,
+		FromNode: self,
 		Payload:  payload,
 	})
 }

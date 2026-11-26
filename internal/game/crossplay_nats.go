@@ -6,6 +6,10 @@
 //
 // 按 server_id 订阅而不是 node_id：subject 是业务标识，游戏服重启/扩缩容
 // 换 node 也能收到发给本服的消息，不需要中心服维护节点映射。
+//
+// 两条订阅都校验发送者（nats_guard.go）。group 这条尤其重要：分组数据决定
+// 跨服玩法里谁能打谁，被某个游戏服伪造成"中心服下发"的破坏力比伪造一条
+// 改分大得多。
 package game
 
 import (
@@ -25,11 +29,15 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	serverID := s.cfg.Server.ID
 
 	// 分组快照 / 增量：center → 本服。
-	if err := natsBus.Subscribe(natsBus.GroupSubject(serverID),
+	groupSubject := natsBus.GroupSubSubject(serverID)
+	if err := natsBus.SubscribeWithSubject(groupSubject,
 		func() proto.Message { return &internalv2.CrossGroupDeltaPush{} },
-		func(msg proto.Message) error {
+		func(subject string, msg proto.Message) error {
 			push, ok := msg.(*internalv2.CrossGroupDeltaPush)
 			if !ok {
+				return nil
+			}
+			if !s.acceptSender(subject, push.GetFromNode(), "crossplay.group") {
 				return nil
 			}
 			s.crossPlayMod.OnGroupDelta(push)
@@ -40,11 +48,15 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	}
 
 	// 跨服改分：别服 → 本服（直达，不经 center）。
-	if err := natsBus.Subscribe(natsBus.DeltaSubject(serverID),
+	deltaSubject := natsBus.DeltaSubSubject(serverID)
+	if err := natsBus.SubscribeWithSubject(deltaSubject,
 		func() proto.Message { return &internalv2.CrossScoreDelta{} },
-		func(msg proto.Message) error {
+		func(subject string, msg proto.Message) error {
 			d, ok := msg.(*internalv2.CrossScoreDelta)
 			if !ok {
+				return nil
+			}
+			if !s.acceptSender(subject, d.GetFromNode(), "crossplay.delta") {
 				return nil
 			}
 			s.crossPlayMod.OnScoreDelta(d)
@@ -55,7 +67,5 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	}
 
 	s.logger.Info("crossplay nats subscribed",
-		"server", serverID,
-		"group", natsBus.GroupSubject(serverID),
-		"delta", natsBus.DeltaSubject(serverID))
+		"server", serverID, "group", groupSubject, "delta", deltaSubject)
 }

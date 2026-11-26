@@ -207,11 +207,18 @@ message CrossScoreEntry {
 
 // CrossScoreBatch 游戏服 → 中心服：一个上报窗口内本服全部变化（按组打包）。
 //
-// 走 NATS crossplay.score.{server} 发布，是本消息的唯一载体（gRPC 上报字段
-// 已删除）；中心服订阅后直接定位 group_id，省掉 player_id → group 查表。
-// 只报变化项，不报全服。
+// 走 NATS {env}.crossplay.score.{server}.from.{node} 发布，是本消息的唯一载体
+// （gRPC 上报字段已删除）；中心服订阅后直接定位 group_id，省掉
+// player_id → group 查表。只报变化项，不报全服。
 message CrossScoreBatch {
   repeated CrossScoreEntry entries = 1;
+  // from_node 发布方节点。
+  //
+  // subject 尾部已经带了 .from.{node}，这里再带一份不是冗余：接收端要拿
+  // 两者比对，不一致即丢弃。subject 由 NATS 服务端的发布权限锁定（每个节点
+  // 的账号只能发 *.from.{自己}），载荷字段则由发送方自己填——两者相符才说明
+  // 「这条消息确实是这个节点发的」，只有其中一份时都可以被伪造。
+  string from_node = 2;
 }
 
 message CrossGroupDelta {
@@ -224,11 +231,18 @@ message CrossGroupDelta {
 
 // CrossGroupDeltaPush 中心服 → 某游戏服：一条报文承载该服涉及的全部组。
 //
-// 走 NATS crossplay.group.{server} 发布，是本消息的唯一载体（gRPC 下发字段
-// 已删除）。不按组推送：1000 组 × 30 服 = 30000 条/分钟会把接收端 tickLoop
-// 打满，按服聚合后是 30 条/分钟，语义不变（接收方照样按 group_id 分派）。
+// 走 NATS {env}.crossplay.group.{server}.from.{center} 发布，是本消息的唯一
+// 载体（gRPC 下发字段已删除）。不按组推送：1000 组 × 30 服 = 30000 条/分钟会
+// 把接收端 tickLoop 打满，按服聚合后是 30 条/分钟，语义不变（接收方照样按
+// group_id 分派）。
 message CrossGroupDeltaPush {
   repeated CrossGroupDelta groups = 1; // 已按本服裁剪
+  // from_node 发布方节点（中心服实例名）。
+  //
+  // 与 CrossScoreBatch.from_node 同理：游戏服拿它和 subject 尾部的发送者
+  // 比对，挡住「某个游戏服冒充中心服下发分组」——分组数据决定跨服玩法里
+  // 谁能打谁，被伪造的破坏力比伪造一条改分大得多。
+  string from_node = 2;
 }
 
 // CrossScoreDelta 跨服分数变更通知：A 服改不了 B 服玩家的分，只能请 B 服自己改。

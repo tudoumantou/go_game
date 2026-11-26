@@ -12,6 +12,7 @@
 package center
 
 import (
+	"game_study/pkg/metrics"
 	"game_study/pkg/natsx"
 	"game_study/pkg/pb/internalv2"
 	"google.golang.org/protobuf/proto"
@@ -27,11 +28,28 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	}
 
 	// 上报：game → center。所有 center 实例都收（广播），保证各自 Store 完整。
-	err := natsBus.Subscribe(natsBus.ScoreWildcard(),
+	//
+	// 每条都要校验发送者：积分上报决定排行榜与跨服对局的匹配依据，一个
+	// 越权的节点可以把别的服的玩家分数改成任意值。subject 里的 send 由
+	// NATS 的 publish 权限锁定，载荷里的 from_node 由发送方填，两者对上
+	// 才认（不一致说明要么在伪造、要么某条 allow_publish 配漏了）。
+	err := natsBus.SubscribeWithSubject(natsBus.ScoreWildcard(),
 		func() proto.Message { return &internalv2.CrossScoreBatch{} },
-		func(msg proto.Message) error {
+		func(subject string, msg proto.Message) error {
 			batch, ok := msg.(*internalv2.CrossScoreBatch)
 			if !ok {
+				return nil
+			}
+			sender, ok := natsx.SenderFromSubject(subject)
+			if !ok {
+				metrics.NATSRejected("bad_subject")
+				s.logger.Warn("score batch rejected: subject has no valid sender", "subject", subject)
+				return nil
+			}
+			if sender != batch.GetFromNode() {
+				metrics.NATSRejected("sender_mismatch")
+				s.logger.Warn("score batch rejected: sender mismatch",
+					"subject", subject, "subject_sender", sender, "claimed", batch.GetFromNode())
 				return nil
 			}
 			s.crossSvc.OnScoreBatch(batch.GetEntries())
@@ -43,10 +61,13 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	}
 
 	// 下发：center → game。注入到 Service，sendToServer 只走它。
+	// 发送者是本中心服实例名：游戏服据此校验"这条分组确实来自中心服"。
+	self := s.cfg.Server.Name
 	s.crossSvc.SetSendGroup(func(serverID int32, push *internalv2.CrossGroupDeltaPush) error {
-		return natsBus.Publish(natsBus.GroupSubject(serverID), push)
+		push.FromNode = self
+		return natsBus.Publish(natsBus.GroupSubject(serverID, self), push)
 	})
 
 	s.logger.Info("crossplay nats attached",
-		"score", natsBus.ScoreWildcard(), "group", natsBus.GroupWildcard())
+		"score", natsBus.ScoreWildcard(), "group", natsBus.GroupWildcard(), "as", self)
 }

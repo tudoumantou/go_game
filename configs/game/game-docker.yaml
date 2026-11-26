@@ -105,12 +105,20 @@ shutdown:
 
 # NATS Core 总线：跨服玩法 + 通用 relay（业务服直达，中心服不转发）。
 # url 为空则整个跨服玩法不启用（无 gRPC 降级），跨节点 relay 同样不可用。
-# subject 前缀取 server.env（实际为 dev.relay.node.game-01 这类），多环境共用集群靠它隔离。
+# subject 前缀取 server.env（实际为 dev.relay.node.game-01.from.game-02 这类，
+# 发送者写在 subject 尾部，服务端据此限定「只能以自己的名义发」），多环境共用集群靠它隔离。
 nats:
   url: "${NATS_URL}"
   reconnect_wait: "2s"
   max_reconnect: 60
   timeout: "2s"
+  # 认证：一个节点一个账号，NATS 侧限定它只能发 "{env}.*.from.{自己}"
+  # （见 deploy/nats/nats.conf.example）。环境变量未设置时展开为空 = 不认证，
+  # 启动日志会打 Warn；生产必须配。
+  user: "${NATS_USER}"
+  password: "${NATS_PASSWORD}"
+  token: ""
+  creds: ""
 
 # 链路追踪（OTel SDK + OTLP gRPC，对接 Tempo/Jaeger）
 # 默认关闭：pkg/trace 打点 API 照常可用但为 noop；部署采集端后改为 true。

@@ -3,8 +3,12 @@
 // 中心服是纯业务中心，业务服之间的消息不经它中转。本文件订阅两条
 // subject，把收到的 RelayPush 解封后投入本地 ActorSystem：
 //
-//	relay.node.{self}   点对点：别的服发给本节点某个 Actor
-//	relay.group.{group} 广播：组内任一服发的组播
+//	relay.node.{self}.from.*   点对点：别的服发给本节点某个 Actor
+//	relay.group.{group}.from.* 广播：组内任一服发的组播
+//
+// 发送者写在 subject 尾部而不是只写在载荷里，是为了让 NATS 服务端的发布
+// 权限能限定「每个节点只能以自己的名义发」；接收端再比对一次载荷的
+// from_node（见 nats_guard.go），两份一致才处理。
 //
 // 投递语义是「尽力而为 + 对账兜底」：玩家下线时 DeliverRemote 返回
 // ErrActorGone，记日志即可——客户端重连会拉全量权威状态。
@@ -16,6 +20,7 @@ package game
 
 import (
 	"game_study/pkg/actor"
+	"game_study/pkg/metrics"
 	"game_study/pkg/natsx"
 	internalv2 "game_study/pkg/pb/internalv2"
 	"google.golang.org/protobuf/proto"
@@ -31,12 +36,15 @@ func (s *Server) startRelayNATS(bus *natsx.Bus) {
 	if bus == nil || s.cfg.Server.Name == "" {
 		return
 	}
-	nodeSubject := bus.RelayNodeSubject(s.cfg.Server.Name)
-	if err := bus.Subscribe(nodeSubject,
+	nodeSubject := bus.RelayNodeSubSubject(s.cfg.Server.Name)
+	if err := bus.SubscribeWithSubject(nodeSubject,
 		func() proto.Message { return &internalv2.RelayPush{} },
-		func(msg proto.Message) error {
+		func(subject string, msg proto.Message) error {
 			push, ok := msg.(*internalv2.RelayPush)
 			if !ok {
+				return nil
+			}
+			if !s.acceptSender(subject, push.GetFromNode(), "relay.node") {
 				return nil
 			}
 			s.onRelayPush(push)
@@ -53,7 +61,7 @@ func (s *Server) startRelayNATS(bus *natsx.Bus) {
 	}
 }
 
-// subscribeRelayGroup 订阅 relay.group.{groupID}。
+// subscribeRelayGroup 订阅 relay.group.{groupID}.from.*。
 //
 // 由 OnGroupUpdate 在分组确定/变化时调用。未建 NATS 时跳过——建连后
 // startRelayNATS 会补订。每个 groupID 只订阅一次：GroupUpdate 可能重复
@@ -62,7 +70,13 @@ func (s *Server) subscribeRelayGroup(groupID string) {
 	if groupID == "" || s.natsBus == nil {
 		return
 	}
-	subject := s.natsBus.RelayGroupSubject(groupID)
+	// 防御性校验：OnGroupUpdate 已经过滤过，但订阅键是拼进 subject 的，
+	// 任何入口漏一次都是路由语义被改写——宁可在这一层再挡一次。
+	if !natsx.ValidToken(groupID) {
+		s.logger.Warn("relay group subscribe skipped: invalid group id", "group", groupID)
+		return
+	}
+	subject := s.natsBus.RelayGroupSubSubject(groupID)
 	// groupSubscriptions 去重：同一分组只订阅一次。
 	if s.groupSubscriptions == nil {
 		s.groupSubscriptions = make(map[string]struct{})
@@ -70,11 +84,14 @@ func (s *Server) subscribeRelayGroup(groupID string) {
 	if _, ok := s.groupSubscriptions[groupID]; ok {
 		return
 	}
-	if err := s.natsBus.Subscribe(subject,
+	if err := s.natsBus.SubscribeWithSubject(subject,
 		func() proto.Message { return &internalv2.RelayPush{} },
-		func(msg proto.Message) error {
+		func(subj string, msg proto.Message) error {
 			push, ok := msg.(*internalv2.RelayPush)
 			if !ok {
+				return nil
+			}
+			if !s.acceptSender(subj, push.GetFromNode(), "relay.group") {
 				return nil
 			}
 			s.onRelayPush(push)
@@ -97,6 +114,7 @@ func (s *Server) onRelayPush(push *internalv2.RelayPush) {
 	}
 	actorID, msg, err := actor.DecodeRemoteEnvelope(push.GetPayload())
 	if err != nil {
+		metrics.NATSRejected("undecodable")
 		s.logger.Warn("relay push decode failed",
 			"from", push.GetFromNode(), "relay_id", push.GetRelayId(), "err", err)
 		return

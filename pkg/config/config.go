@@ -262,6 +262,20 @@ type NatsConfig struct {
 	ReconnectWait string `yaml:"reconnect_wait"` // 如 "2s"，空取库默认
 	MaxReconnect  int    `yaml:"max_reconnect"`  // 空取库默认
 	Timeout       string `yaml:"timeout"`        // 建连超时，如 "2s"
+
+	// 认证：三选一，优先级 creds > token > user/password。
+	//
+	// 一个节点一个账号，账号的 publish 权限限定在 "*.from.{自己}"（见
+	// deploy/nats/nats.conf.example）——这是「消息里的发送者不可伪造」的
+	// 唯一落脚点：NATS Core 不给订阅者提供发布者身份，只能反过来让服务端
+	// 只允许你以自己的名义发。
+	//
+	// 全空 = 无认证（本地开发/内网）。此时任何能连上 4222 的进程都能冒充
+	// 任意节点与中心服，启动日志会打 Warn。生产环境必须配。
+	User      string `yaml:"user"`
+	Password  string `yaml:"password"`
+	Token     string `yaml:"token"`
+	CredsFile string `yaml:"creds"` // NKey/JWT creds 文件路径，与上面三项互斥
 }
 
 type EtcdConfig struct {
