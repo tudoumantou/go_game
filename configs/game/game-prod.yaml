@@ -118,7 +118,7 @@ shutdown:
   flush_timeout: 30s
 
 # NATS Core 总线：跨服玩法 + 通用 relay（业务服直达，中心服不转发）。
-# url 为空则跨服玩法退回 gRPC，跨节点 relay 不可用（无中心服降级）。
+# url 为空则整个跨服玩法不启用（无 gRPC 降级），跨节点 relay 同样不可用。
 nats:
   url: "${NATS_URL}"
   reconnect_wait: "2s"

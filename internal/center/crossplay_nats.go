@@ -20,7 +20,7 @@ import (
 // startCrossplayNATS 把跨服玩法接到 NATS 总线上。
 //
 // 必须在 crossSvc 创建之后调用。返回的 Bus 由 Server 持有并在关服时 Close。
-// natsBus 为 nil（未配 NATS）时不接——玩法退回 gRPC 上报/下发路径。
+// natsBus 为 nil（未配 NATS）时不接——玩法不启用（无 gRPC 降级路径）。
 func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	if s.crossSvc == nil || natsBus == nil {
 		return

@@ -55,8 +55,6 @@ type Handler interface {
 	OnKick(k *internalv2.KickNode)
 	// OnConfigPush 配置热更新。
 	OnConfigPush(c *internalv2.ConfigPush)
-	// OnCrossGroupDelta 跨服玩法积分下发（已按本服裁剪）。
-	OnCrossGroupDelta(push *internalv2.CrossGroupDeltaPush)
 }
 
 // Client 中心服客户端。
@@ -65,9 +63,10 @@ type Client struct {
 	// serverID 本区区服编号（业务标识）。
 	//
 	// 与 selfID 的分工：selfID 是部署态标识（game-01，扩缩容会变），
-	// serverID 是玩家数据里记的、跨服表里存的业务标识。中心服按 serverID
-	// 反查节点给跨服玩法下发，所以两者必须在 Register 里显式声明映射——
-	// 靠「node_id 一定是 game-{server_id}」这种字符串约定，部署一改就失效。
+	// serverID 是玩家数据里记的、跨服表里存的业务标识。跨服玩法按
+	// server_id 路由 NATS subject（score/group/delta），所以两者必须在
+	// Register 里显式声明映射——靠「node_id 一定是 game-{server_id}」
+	// 这种字符串约定，部署一改就失效。
 	serverID int32
 	nodeType string
 	addr     string
@@ -366,10 +365,6 @@ func (c *Client) dispatch(cmd *internalv2.CenterCommand) {
 		if body.Config != nil {
 			c.h.OnConfigPush(body.Config)
 		}
-	case *internalv2.CenterCommand_CrossGroupDelta:
-		if body.CrossGroupDelta != nil {
-			c.h.OnCrossGroupDelta(body.CrossGroupDelta)
-		}
 	}
 }
 
@@ -444,19 +439,6 @@ func (c *Client) SendFeature(groupID, feature string, metrics map[string]int64) 
 			Metrics: metrics,
 			Ts:      time.Now().Unix(),
 		}},
-	})
-}
-
-// SendCrossScore 上报本服玩家的积分变化（按组打包，绝对值）。
-//
-// 走 Report 流而非 Unary RPC：上报是每 60s 一次的批量动作，几十个服的
-// 节拍差不多会同时到，Unary 会让中心服在整点附近产生连接风暴；流是常驻的。
-func (c *Client) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
-	if len(entries) == 0 {
-		return nil // 没变化就一个字节都不发
-	}
-	return c.Send(&internalv2.NodeReport{
-		Body: &internalv2.NodeReport_Score{Score: &internalv2.CrossScoreBatch{Entries: entries}},
 	})
 }
 

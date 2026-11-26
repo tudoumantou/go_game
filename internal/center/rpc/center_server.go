@@ -63,11 +63,12 @@ type Server struct {
 //
 // 只声明用到的方法：协议转换留在这里（proto 结构 ↔ 业务参数），
 // 报名期判定、幂等、分组全在 crossplay.Service，两边可独立单测。
+//
+// 积分上报与分组下发已不再经过 gRPC Report 流（改走 NATS），所以这里只剩
+// 报名一个 Unary 入口——它是同步裁决，仍需要 center 当场回结果。
 type CrossHandler interface {
 	// Enroll 报名 / 取消报名（req.Cancel 区分）。
 	Enroll(ctx context.Context, req *internalv2.CrossEnrollReq) *internalv2.CrossEnrollResp
-	// OnScoreBatch 接收一批积分上报（按组打包，绝对值）。
-	OnScoreBatch(entries []*internalv2.CrossScoreEntry)
 }
 
 // RankQuerier 排行榜查询（server 注入）。
@@ -223,13 +224,6 @@ func (s *Server) Report(stream internalv2.CenterService_ReportServer) error {
 				if w, ok := s.statsQuery.(StatsWriter); ok {
 					w.Write(f)
 				}
-			}
-
-		case *internalv2.NodeReport_Score:
-			// 跨服玩法积分上报：只做转发，业务判定（是否活动期、重复上报）
-			// 全在 crossplay.Service，本包不解释分数含义。
-			if b := body.Score; b != nil && s.cross != nil {
-				s.cross.OnScoreBatch(b.GetEntries())
 			}
 
 		case *internalv2.NodeReport_Register:

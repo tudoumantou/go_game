@@ -1,10 +1,10 @@
 // internal/center/crossplay_bridge.go —— 跨服玩法在中心服的装配与协议转换
 //
 // 职责边界：
-//   - 本文件只做「proto ↔ 业务参数」的转换和依赖注入（把 registry 包装成
-//     crossplay.Dispatcher），业务规则全在 internal/center/crossplay；
-//   - crossplay 包不 import registry：它按 server_id 下发，由本文件负责
-//     反查 node_id 并找到发送通道。
+//   - 本文件只做「proto ↔ 业务参数」的转换和依赖注入，业务规则全在
+//     internal/center/crossplay；
+//   - 跨服玩法只在配了 NATS 时启用：积分上报订阅、分组下发发布都在
+//     crossplay_nats.go 里装配，本文件只保留报名这一个 gRPC Unary 入口。
 //
 // 为什么不放在 server.go：server.go 已经承载了装配顺序，跨服玩法的协议
 // 转换单独成文件，日后加结算/归档时不用再挤进同一个文件。
@@ -14,7 +14,6 @@ package center
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"game_study/internal/center/crossplay"
 	centerRPC "game_study/internal/center/rpc"
@@ -59,31 +58,6 @@ func (s *Server) Enroll(ctx context.Context, req *internalv2.CrossEnrollReq) *in
 	return &internalv2.CrossEnrollResp{Code: code, Msg: msg}
 }
 
-// OnScoreBatch 实现 centerRPC.CrossHandler：接收积分上报。
-func (s *Server) OnScoreBatch(entries []*internalv2.CrossScoreEntry) {
-	if s.crossSvc == nil {
-		return
-	}
-	s.crossSvc.OnScoreBatch(entries)
-}
-
-// NodeIDForServer 实现 crossplay.Dispatcher：区服编号 → 节点 ID。
-func (s *Server) NodeIDForServer(serverID int32) (string, bool) {
-	return s.reg.NodeIDForServer(serverID)
-}
-
-// SendTo 实现 crossplay.Dispatcher：向节点发送一条下行指令。
-func (s *Server) SendTo(nodeID string, cmd *internalv2.CenterCommand) error {
-	sender, ok := s.reg.SenderFor(nodeID)
-	if !ok {
-		return fmt.Errorf("center: node %s not connected", nodeID)
-	}
-	if err := sender.SendCommand(cmd); err != nil {
-		return fmt.Errorf("center: send to %s: %w", nodeID, err)
-	}
-	return nil
-}
-
 // marshalInfo 把 proto 的 KV 列表转成落库 JSON。
 func marshalInfo(items []*internalv2.CrossInfoItem) ([]byte, error) {
 	if len(items) == 0 {
@@ -102,9 +76,6 @@ func marshalInfo(items []*internalv2.CrossInfoItem) ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// 编译期断言：Server 必须同时满足这三个接口，改签名时立刻报错而不是
-// 等到装配那一行才发现。
-var (
-	_ crossplay.Dispatcher   = (*Server)(nil)
-	_ centerRPC.CrossHandler = (*Server)(nil)
-)
+// 编译期断言：Server 必须满足报名接口，改签名时立刻报错而不是等到装配
+// 那一行才发现。
+var _ centerRPC.CrossHandler = (*Server)(nil)

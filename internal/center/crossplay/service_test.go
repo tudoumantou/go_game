@@ -69,37 +69,31 @@ func (f *fakeRepo) LoadGroups(context.Context) ([]Group, error) {
 	return f.saved, nil
 }
 
-// fakeDispatcher 记录下发的报文。
+// fakeDispatcher 记录下发报文——实现 Service 的 SendGroup 钩子。
+// nodes 保留 serverID → node 名的映射，让测试能按节点名断言（与真实 NATS
+// subject 按 server_id 路由对应，只是这里用 node 名做可读的 key）。
 type fakeDispatcher struct {
 	nodes  map[int32]string
-	byNode map[string][]*internalv2.CenterCommand
+	byNode map[string][]*internalv2.CrossGroupDeltaPush
 }
 
 func newFakeDispatcher() *fakeDispatcher {
-	return &fakeDispatcher{nodes: make(map[int32]string), byNode: make(map[string][]*internalv2.CenterCommand)}
+	return &fakeDispatcher{nodes: make(map[int32]string), byNode: make(map[string][]*internalv2.CrossGroupDeltaPush)}
 }
 
-func (f *fakeDispatcher) NodeIDForServer(serverID int32) (string, bool) {
-	id, ok := f.nodes[serverID]
-	return id, ok
-}
-
-func (f *fakeDispatcher) SendTo(nodeID string, cmd *internalv2.CenterCommand) error {
-	f.byNode[nodeID] = append(f.byNode[nodeID], cmd)
+// sendGroup 实现 Config.SendGroup：按 serverID 落到对应节点的记录里。
+func (f *fakeDispatcher) sendGroup(serverID int32, push *internalv2.CrossGroupDeltaPush) error {
+	node, ok := f.nodes[serverID]
+	if !ok {
+		node = fmt.Sprintf("game-%02d", serverID) // 未预置映射时的兜底
+	}
+	f.byNode[node] = append(f.byNode[node], push)
 	return nil
 }
 
 // pushes 取出所有下发的跨服报文（按节点）。
 func (f *fakeDispatcher) pushes() map[string][]*internalv2.CrossGroupDeltaPush {
-	out := make(map[string][]*internalv2.CrossGroupDeltaPush)
-	for node, cmds := range f.byNode {
-		for _, c := range cmds {
-			if p := c.GetCrossGroupDelta(); p != nil {
-				out[node] = append(out[node], p)
-			}
-		}
-	}
-	return out
+	return f.byNode
 }
 
 // newTestService 30 个服（game-01..game-30，与 makeMembers 的 ServerID 对齐），
@@ -111,8 +105,9 @@ func newTestService(t *testing.T, phase Phase) (*Service, *fakeRepo, *fakeDispat
 	for sid := int32(1); sid <= 30; sid++ {
 		disp.nodes[sid] = fmt.Sprintf("game-%02d", sid)
 	}
-	svc := New(repo, disp, nil, Config{
-		Phase: func(time.Time) Phase { return phase },
+	svc := New(repo, nil, Config{
+		Phase:     func(time.Time) Phase { return phase },
+		SendGroup: disp.sendGroup,
 	})
 	return svc, repo, disp
 }
@@ -421,14 +416,10 @@ func TestServiceFlushScores(t *testing.T) {
 	}
 }
 
-// TestServiceSendGroupHook 验证下发优先走注入的 NATS 钩子，而不是 gRPC Dispatcher。
+// TestServiceSendGroupHook 验证下发只走注入的 NATS 钩子（gRPC 下发已删除）。
 func TestServiceSendGroupHook(t *testing.T) {
-	disp := newFakeDispatcher()
-	for sid := int32(1); sid <= 30; sid++ {
-		disp.nodes[sid] = fmt.Sprintf("game-%02d", sid)
-	}
 	var natsCalls int
-	svc := New(newFakeRepo(), disp, nil, Config{
+	svc := New(newFakeRepo(), nil, Config{
 		Phase: func(time.Time) Phase { return PhaseActive },
 		SendGroup: func(int32, *internalv2.CrossGroupDeltaPush) error {
 			natsCalls++
@@ -439,10 +430,21 @@ func TestServiceSendGroupHook(t *testing.T) {
 	svc.pushSnapshots(svc.store.All())
 
 	if natsCalls == 0 {
-		t.Fatal("注入 SendGroup 后下发应走钩子")
+		t.Fatal("下发应走注入的 SendGroup 钩子")
 	}
-	if len(disp.byNode) != 0 {
-		t.Fatalf("注入 SendGroup 后不应再走 gRPC Dispatcher, got %d nodes", len(disp.byNode))
+}
+
+// TestServiceNoDownlinkSkipsPush 未配 NATS（SendGroup=nil）时下发被跳过，
+// 不 panic、不发任何报文——玩法整体未启用。
+func TestServiceNoDownlinkSkipsPush(t *testing.T) {
+	svc := New(newFakeRepo(), nil, Config{
+		Phase: func(time.Time) Phase { return PhaseActive },
+	})
+	svc.store.Load(Distribute(makeMembers(100)))
+	svc.pushSnapshots(svc.store.All()) // 不应 panic
+	svc.calibrate()
+	if err := svc.sendToServer(1, &internalv2.CrossGroupDeltaPush{}); err == nil {
+		t.Fatal("未注入 SendGroup 时 sendToServer 应返回错误")
 	}
 }
 
@@ -453,13 +455,9 @@ func TestServiceSendGroupHook(t *testing.T) {
 func TestServiceGroupingOnlyByLeader(t *testing.T) {
 	leader := false
 	repo := newFakeRepo()
-	disp := newFakeDispatcher()
-	for sid := int32(1); sid <= 30; sid++ {
-		disp.nodes[sid] = fmt.Sprintf("game-%02d", sid)
-	}
 	base := time.Unix(1_700_000_000, 0)
 	now := base
-	svc := New(repo, disp, nil, Config{
+	svc := New(repo, nil, Config{
 		Phase:    func(time.Time) Phase { return PhaseGrouping },
 		IsLeader: func() bool { return leader },
 	})

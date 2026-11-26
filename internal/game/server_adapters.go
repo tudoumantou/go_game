@@ -376,10 +376,13 @@ func (a centerAccessor) client() *gamecenter.Client {
 	return a.srv.centerCli
 }
 
-// Ready 实现 crossplay.Center。
+// Ready 实现 crossplay.Center：跨服玩法是否启用。
+//
+// 玩法强依赖 NATS（积分上报、改分、分组下发全走 NATS），gRPC 只留报名
+// Unary。所以就绪条件看 NATS 而不是 gRPC 流——未配 NATS 时报名/上报/
+// 改分三处守卫都会因此拒绝，整个玩法干净地不可用，不会半瘫。
 func (a centerAccessor) Ready() bool {
-	c := a.client()
-	return c != nil && c.Ready()
+	return a.srv != nil && a.srv.natsBus != nil && a.srv.natsBus.Ready()
 }
 
 // CrossEnroll 实现 crossplay.Center。
@@ -391,20 +394,16 @@ func (a centerAccessor) CrossEnroll(ctx context.Context, req *internalv2.CrossEn
 	return c.CrossEnroll(ctx, req)
 }
 
-// SendCrossScore 实现 crossplay.Center。
+// SendCrossScore 实现 crossplay.Center：按 server_id publish 到 score subject。
 //
-// 优先走 NATS（按 server_id publish 到 score subject）；未配 NATS 时退回
-// gRPC Report 流。NATS 路径下 center 是否有在线流不再是前提——发布是异步的。
+// NATS 是积分上报的唯一通道（gRPC Report 上报已删除）。未配 NATS 或连接
+// 未就绪时显式返回错误——模块会把这批重新标脏，下一拍再发。
 func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
-	if a.srv != nil && a.srv.natsBus != nil && a.srv.natsBus.Ready() {
-		return a.srv.natsBus.Publish(natsx.ScoreSubject(a.srv.cfg.Server.ID),
-			&internalv2.CrossScoreBatch{Entries: entries})
-	}
-	c := a.client()
-	if c == nil {
+	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errCenterDown
 	}
-	return c.SendCrossScore(entries)
+	return a.srv.natsBus.Publish(natsx.ScoreSubject(a.srv.cfg.Server.ID),
+		&internalv2.CrossScoreBatch{Entries: entries})
 }
 
 // SendCrossDelta 实现 crossplay.Center：把改分发布到 NATS delta subject，
@@ -421,16 +420,6 @@ func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
 	}
 	d.FromNode = a.srv.cfg.Server.Name
 	return a.srv.natsBus.Publish(natsx.DeltaSubject(d.GetToServer()), d)
-}
-
-// OnCrossGroupDelta 实现 center.Handler：跨服玩法积分下发。
-//
-// 在中心服客户端的 recv goroutine 里执行，模块内部自带锁。
-func (h centerHandler) OnCrossGroupDelta(push *internalv2.CrossGroupDeltaPush) {
-	if h.srv.crossPlayMod == nil {
-		return
-	}
-	h.srv.crossPlayMod.OnGroupDelta(push)
 }
 
 // relayAccessor 实现 remote.NATSRelay：把 Server 的 natsBus 翻译成

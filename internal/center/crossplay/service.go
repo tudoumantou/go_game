@@ -78,18 +78,6 @@ func (p Phase) String() string {
 // 管理器的环境（测试、单机调试）里也能跑通全链路。
 type PhaseFunc func(now time.Time) Phase
 
-// Dispatcher 下发通道（由 center 的 server 注入）。
-//
-// 与 registry.Sender 的分工：本接口按「区服」下发（业务标识），
-// 由实现方反查节点 ID（部署态标识）。这样 crossplay 不需要知道
-// node_id 与 server_id 的映射规则。
-type Dispatcher interface {
-	// NodeIDForServer 按区服编号反查承载它的节点 ID。
-	NodeIDForServer(serverID int32) (string, bool)
-	// SendTo 向节点发送一条指令。
-	SendTo(nodeID string, cmd *internalv2.CenterCommand) error
-}
-
 // Config Service 的可调参数。零值取 Default* 常量。
 type Config struct {
 	Window    time.Duration
@@ -99,9 +87,10 @@ type Config struct {
 	Phase PhaseFunc
 	// SendGroup 分组快照/增量的下发函数（serverID 是业务标识）。
 	//
-	// 非 nil 时优先走它（NATS 异步通道），nil 时退回 Dispatcher 的 gRPC
-	// SendTo。用函数钩子而不是再抽一个接口：下发只有一个动作，接口反而
-	// 多一层；且不破坏既有单测里用 fakeDispatcher 验证下发内容的路径。
+	// 这是唯一的下发通道（NATS crossplay.group.{server}）：跨服玩法只在
+	// 配了 NATS 时启用，gRPC 下发已删除。nil 时下发被跳过并告警——不会
+	// 静默丢数据，下一次校准/分组会再试。用函数钩子而不是再抽一个接口：
+	// 下发只有一个动作，接口反而多一层，单测注入记录函数也方便。
 	SendGroup func(serverID int32, push *internalv2.CrossGroupDeltaPush) error
 	// IsLeader 周期任务（分组、校准、落库）是否由本实例执行。
 	//
@@ -153,7 +142,6 @@ type Service struct {
 	cfg    Config
 	store  *Store
 	repo   Persister
-	disp   Dispatcher
 	logger *log.Logger
 
 	// mu 保护下面三张表。竞争点只有两个：收上报（多 goroutine）
@@ -179,7 +167,7 @@ type Service struct {
 }
 
 // New 创建 Service。repo 允许未就绪（无 MySQL 部署），此时写操作返回 ErrNoDB。
-func New(repo Persister, disp Dispatcher, logger *log.Logger, cfg Config) *Service {
+func New(repo Persister, logger *log.Logger, cfg Config) *Service {
 	cfg.normalize()
 	if logger == nil {
 		logger = log.New("crossplay")
@@ -188,7 +176,6 @@ func New(repo Persister, disp Dispatcher, logger *log.Logger, cfg Config) *Servi
 		cfg:        cfg,
 		store:      NewStore(),
 		repo:       repo,
-		disp:       disp,
 		logger:     logger,
 		pending:    make(map[int32]int64),
 		dirty:      make(map[int32]map[int64]struct{}),
@@ -200,8 +187,8 @@ func New(repo Persister, disp Dispatcher, logger *log.Logger, cfg Config) *Servi
 
 // SetSendGroup 注入分组下发通道（NATS 装配期调用）。
 //
-// 用 setter 而不是构造参数：gRPC 路径的既有装配与单测不必改签名，NATS
-// 装配时按需覆盖。nil 还原为 gRPC Dispatcher 路径。
+// 这是玩法启用的必要条件：未配 NATS 时不注入，下发被跳过并告警（见
+// sendToServer）。用 setter 而不是构造参数，让单测可在构造后注入记录函数。
 func (s *Service) SetSendGroup(fn func(serverID int32, push *internalv2.CrossGroupDeltaPush) error) {
 	s.cfg.SendGroup = fn
 }
@@ -370,8 +357,8 @@ func (s *Service) RunGrouping(ctx context.Context) (int, error) {
 // 每服一条报文（含它涉及的所有组），而不是一组一条：1000 组 × 30 服
 // = 30000 条会把接收端打满。
 func (s *Service) pushSnapshots(groups []Group) {
-	if s.disp == nil {
-		return
+	if s.cfg.SendGroup == nil {
+		return // 未配 NATS：玩法未启用，没有下发通道
 	}
 
 	perServer := make(map[int32]*internalv2.CrossGroupDeltaPush, 32)
@@ -512,7 +499,7 @@ func (s *Service) flushWindows(now time.Time) {
 
 // flushGroup 把一个窗口内某组的变化按服聚合并下发。
 func (s *Service) flushGroup(groupID int32, players map[int64]struct{}) {
-	if len(players) == 0 || s.disp == nil {
+	if len(players) == 0 || s.cfg.SendGroup == nil {
 		return
 	}
 	servers := s.store.ServersOf(groupID)
@@ -546,7 +533,7 @@ func (s *Service) flushGroup(groupID int32, players map[int64]struct{}) {
 
 // calibrate 对全部组重发快照（补增量丢包）。
 func (s *Service) calibrate() {
-	if s.disp == nil {
+	if s.cfg.SendGroup == nil {
 		return
 	}
 	all := s.store.All()
@@ -585,25 +572,14 @@ func (s *Service) flushScores(ctx context.Context) {
 	}
 }
 
-// sendToServer 按区服下发一条报文。
+// sendToServer 按区服下发一条报文（NATS crossplay.group.{server}）。
 //
-// 优先走 NATS（cfg.SendGroup）：按 server_id 直接 publish，不依赖该服此刻
-// 有没有 gRPC 流在线——这是相对 gRPC 下发最大的收益，离线服上线后订阅即收。
-// 未配 NATS 时退回 gRPC Dispatcher（按 server_id 反查 node_id）。
+// 按 server_id 直接 publish，不依赖该服此刻有没有 gRPC 流在线——离线服
+// 上线后订阅即收。跨服玩法只在配了 NATS 时启用，未注入 SendGroup 时返回
+// 错误由调用方告警，下一次校准/分组会再试，不静默丢数据。
 func (s *Service) sendToServer(serverID int32, push *internalv2.CrossGroupDeltaPush) error {
-	if s.cfg.SendGroup != nil {
-		return s.cfg.SendGroup(serverID, push)
+	if s.cfg.SendGroup == nil {
+		return fmt.Errorf("no downlink for server %d (NATS not configured)", serverID)
 	}
-	if s.disp == nil {
-		return fmt.Errorf("no downlink for server %d", serverID)
-	}
-	nodeID, ok := s.disp.NodeIDForServer(serverID)
-	if !ok {
-		// 该服当前无在线节点：不缓存、不重发。活动期玩家开界面时会回源
-		// 拉单组快照，10 分钟校准也会再发一次。
-		return fmt.Errorf("no node for server %d", serverID)
-	}
-	return s.disp.SendTo(nodeID, &internalv2.CenterCommand{
-		Body: &internalv2.CenterCommand_CrossGroupDelta{CrossGroupDelta: push},
-	})
+	return s.cfg.SendGroup(serverID, push)
 }

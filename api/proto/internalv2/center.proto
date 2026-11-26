@@ -25,19 +25,22 @@ service CenterService {
 }
 
 message NodeReport {
-  reserved 5, 8; // 5 曾为 relay 中转、8 曾为跨服改分 gRPC 降级；均已改走 NATS
+  // 5 relay 中转、7 跨服积分上报、8 跨服改分——三条 gRPC 上报通道均已删除，
+  // 跨服玩法改为只在配 NATS 时启用（score/delta/group 全走 NATS）。
+  reserved 5, 7, 8;
   oneof body {
     NodeRegister   register  = 1; // 启动上报（连接后第一条，必发）
     NodeHeartbeat  heartbeat = 2; // 心跳（在线数、负载、版本）
     RankReport     rank      = 3; // 排行榜分数上报（增量）
     FeatureReport  feature   = 4; // 功能上报（分组统计）
     MatchRequest   match     = 6; // 跨服匹配请求（游戏服发）
-    CrossScoreBatch score    = 7; // 跨服玩法积分上报（按组打包，绝对值）
   }
 }
 
 message CenterCommand {
-  reserved 1, 9; // 1 曾为 relay 中转投递、9 曾为跨服改分下发；均由 NATS 直达
+  // 1 relay 中转投递、8 跨服分组下发、9 跨服改分下发——三条 gRPC 下发通道
+  // 均已删除，跨服玩法改为只在配 NATS 时启用。
+  reserved 1, 8, 9;
   oneof body {
     RankNotify   rank_notify  = 2; // 排行榜变更/结算通知
     GroupUpdate  group        = 3; // 跨服分组变更
@@ -45,7 +48,6 @@ message CenterCommand {
     ConfigPush   config       = 5; // 配置热更新推送
     KickNode     kick         = 6; // 摘除指令（配合优雅关闭）
     MatchAssign  match_assign = 7; // 中心服→CrossServer：分配房间（建房+令牌）
-    CrossGroupDeltaPush cross_group_delta = 8; // 跨服玩法分组积分下发（按服裁剪）
   }
 }
 
@@ -58,8 +60,9 @@ message NodeRegister {
   // server_id 区服编号（服级，不是进程级）。
   //
   // 与 node_id 的分工：node_id 是部署态标识（扩缩容会变），server_id 是业务
-  // 标识（玩家数据里记的、跨服表里存的都是它）。跨服玩法按 server_id 下发，
-  // 中心服据此反查 node_id，因此两者必须显式声明映射，不能靠字符串约定。
+  // 标识（玩家数据里记的、跨服表里存的都是它）。跨服玩法按 server_id 路由
+  // NATS subject（score/group/delta），因此两者必须显式声明映射，不能靠
+  // 字符串约定。
   int32  server_id = 6;
 }
 
@@ -204,7 +207,9 @@ message CrossScoreEntry {
 
 // CrossScoreBatch 游戏服 → 中心服：一个上报窗口内本服全部变化（按组打包）。
 //
-// 只报变化项，不报全服：中心服收到后直接定位 group_id，省掉 player_id → group 查表。
+// 走 NATS crossplay.score.{server} 发布，是本消息的唯一载体（gRPC 上报字段
+// 已删除）；中心服订阅后直接定位 group_id，省掉 player_id → group 查表。
+// 只报变化项，不报全服。
 message CrossScoreBatch {
   repeated CrossScoreEntry entries = 1;
 }
@@ -219,8 +224,9 @@ message CrossGroupDelta {
 
 // CrossGroupDeltaPush 中心服 → 某游戏服：一条报文承载该服涉及的全部组。
 //
-// 不按组推送：1000 组 × 30 服 = 30000 条/分钟会把接收端 tickLoop 打满，
-// 按服聚合后是 30 条/分钟，语义不变（接收方照样按 group_id 分派）。
+// 走 NATS crossplay.group.{server} 发布，是本消息的唯一载体（gRPC 下发字段
+// 已删除）。不按组推送：1000 组 × 30 服 = 30000 条/分钟会把接收端 tickLoop
+// 打满，按服聚合后是 30 条/分钟，语义不变（接收方照样按 group_id 分派）。
 message CrossGroupDeltaPush {
   repeated CrossGroupDelta groups = 1; // 已按本服裁剪
 }

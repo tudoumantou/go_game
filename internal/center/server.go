@@ -85,7 +85,7 @@ type Server struct {
 	// crossSvc 跨服玩法（报名裁决 / 分组 / 积分同步）。nil = 未配 MySQL，
 	// 报名时由 rpc 层返回 Code=2，其它功能照常。
 	crossSvc *crossplay.Service
-	// natsBus 跨服玩法异步通道（NATS Core）；nil = 未配 NATS，积分/下发退回 gRPC。
+	// natsBus 跨服玩法唯一通道（NATS Core）；nil = 未配 NATS，玩法不启用。
 	natsBus *natsx.Bus
 
 	// instanceID 本实例唯一标识（stats 快照按实例分字段写，多实例求和而非覆盖）。
@@ -239,7 +239,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// 必须在 centerRPC 已经开始接客之前完成注入——否则启动瞬间的报名
 		// 请求会命中 nil handler 返回「未启用」。这里注册在 gRPC server
 		// 启动之后，但节点要先完成 Register 才会发业务报文，实际有足够提前量。
-		s.crossSvc = crossplay.New(crossplay.NewRepo(database, s.logger), s, s.logger, crossplay.Config{
+		s.crossSvc = crossplay.New(crossplay.NewRepo(database, s.logger), s.logger, crossplay.Config{
 			// 分组与周期写任务只由 leader 跑：多实例时否则各算一份分组、各发一版快照。
 			// 方法值在选主之前取也没问题——IsLeader 内部读 election.IsLeader()，
 			// 选主未建立时返回 false，tickLoop 会安全跳过。
@@ -247,8 +247,9 @@ func (s *Server) Start(ctx context.Context) error {
 		})
 		s.centerRPC.SetCrossHandler(s)
 
-		// NATS 异步通道（NATS Core）：上报订阅 + 下发发布。未配 URL 时 natsBus
-		// 为 nil，玩法退回 gRPC Report 流上报/下发，单机调试照常可用。
+		// NATS 异步通道（NATS Core）：跨服玩法唯一传输（积分上报订阅 + 分组
+		// 下发发布）。未配 URL 时 natsBus 为 nil、玩法不启用——报名仍可经
+		// gRPC 到达，但会被游戏侧的 NATS 就绪检查拒绝。
 		if s.cfg.Nats.URL != "" {
 			rw, _ := config.ParseDuration(s.cfg.Nats.ReconnectWait)
 			to, _ := config.ParseDuration(s.cfg.Nats.Timeout)

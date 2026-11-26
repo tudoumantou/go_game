@@ -128,9 +128,9 @@ type Server struct {
 	battleMod          *battle.Module // 战斗模块（匹配/透传/结算）
 	seatMgr            *seat.Manager  // 抢位置房间管理器（单服座位 + 离线奖励）
 
-	// crossPlayMod 跨服玩法模块。提升为字段而不是局部变量：中心服的下行
-	// 回调（centerHandler.OnCrossGroupDelta）要直接调它，而回调发生在
-	// 装配完成之后的 gRPC 流里，拿不到局部变量。
+	// crossPlayMod 跨服玩法模块。提升为字段而不是局部变量：NATS 的下行
+	// 回调（relay_nats.go / crossplay_nats.go 的订阅）要直接调它，而回调
+	// 发生在装配完成之后的订阅 goroutine 里，拿不到局部变量。
 	crossPlayMod *crossplay.Module
 
 	// mu 保护下面三张会话映射表的全部读写；players2sess 是

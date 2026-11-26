@@ -246,10 +246,11 @@ type KafkaConfig struct {
 	ConsumerGroup        string   `yaml:"consumer_group"`
 }
 
-// NatsConfig 跨服玩法的异步传输层（NATS Core）配置。
+// NatsConfig 跨服玩法的唯一传输层（NATS Core）配置。
 //
-// URL 为空即禁用：跨服玩法会退回「只有 gRPC 报名可用、积分/分组不同步」的
-// 降级形态，不阻塞进程启动——与 Kafka/Etcd 的「空配置即关闭」保持一致。
+// URL 为空即禁用整个跨服玩法：积分上报、改分、分组下发全走 NATS，gRPC
+// 只剩报名 Unary（也会被游戏侧就绪检查拒绝）。不阻塞进程启动——与
+// Kafka/Etcd 的「空配置即关闭」保持一致。
 // URL 支持 ${VAR} 环境变量注入，例如 nats://user:pass@host:4222。
 type NatsConfig struct {
 	URL           string `yaml:"url"`

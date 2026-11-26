@@ -667,8 +667,9 @@ func (s *Server) startRPCAndClients() {
 		s.logger.Info("cross pool started", "nodes", s.cfg.Cross.Nodes)
 	}
 
-	// 跨服玩法 NATS 异步通道：建连 + 订阅本服下行（分组/改分）。
-	// 未配 URL 时 natsBus 为 nil，玩法退回 gRPC 下行回调，单机调试照常可用。
+	// 跨服玩法 NATS 通道：建连 + 订阅本服下行（分组/改分）。
+	// 未配 URL 时 natsBus 为 nil——玩法整体不启用（报名/上报/改分都被
+	// crossplay.Center.Ready() 拒绝），不存在 gRPC 降级路径。
 	if s.cfg.Nats.URL != "" {
 		rw, _ := config.ParseDuration(s.cfg.Nats.ReconnectWait)
 		to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
