@@ -25,7 +25,7 @@ service CenterService {
 }
 
 message NodeReport {
-  reserved 5; // 曾为 relay 中转请求；中心服退为业务中心后由 NATS relay.* 取代
+  reserved 5, 8; // 5 曾为 relay 中转、8 曾为跨服改分 gRPC 降级；均已改走 NATS
   oneof body {
     NodeRegister   register  = 1; // 启动上报（连接后第一条，必发）
     NodeHeartbeat  heartbeat = 2; // 心跳（在线数、负载、版本）
@@ -33,12 +33,11 @@ message NodeReport {
     FeatureReport  feature   = 4; // 功能上报（分组统计）
     MatchRequest   match     = 6; // 跨服匹配请求（游戏服发）
     CrossScoreBatch score    = 7; // 跨服玩法积分上报（按组打包，绝对值）
-    CrossScoreDelta cross_delta = 8; // 跨服玩法改分（降级路径：NATS 未配时请求中心服转发）
   }
 }
 
 message CenterCommand {
-  reserved 1; // 曾为 relay 中转投递；现由 NATS relay.* 直达，不经中心服
+  reserved 1, 9; // 1 曾为 relay 中转投递、9 曾为跨服改分下发；均由 NATS 直达
   oneof body {
     RankNotify   rank_notify  = 2; // 排行榜变更/结算通知
     GroupUpdate  group        = 3; // 跨服分组变更
@@ -47,7 +46,6 @@ message CenterCommand {
     KickNode     kick         = 6; // 摘除指令（配合优雅关闭）
     MatchAssign  match_assign = 7; // 中心服→CrossServer：分配房间（建房+令牌）
     CrossGroupDeltaPush cross_group_delta = 8; // 跨服玩法分组积分下发（按服裁剪）
-    CrossScoreDelta cross_score = 9; // 跨服玩法改分（降级路径：中心服转发自发起方游戏服；默认走 NATS 直达）
   }
 }
 
@@ -229,10 +227,10 @@ message CrossGroupDeltaPush {
 
 // CrossScoreDelta 跨服分数变更通知：A 服改不了 B 服玩家的分，只能请 B 服自己改。
 //
-// 走 NodeReport.cross_delta → 中心服转成 CenterCommand.cross_score → B 服的
-// 专用字段，而不是复用通用 relay 通道：通用 relay 已改为 NATS 直达、中心服
-// 完全不参与；改分是玩法里的资金类操作，NATS 未配时保留 gRPC 降级路径，
-// 中心服至少要有「目标节点不存在」的丢弃日志，出问题时才有观测点。
+// 走 NATS crossplay.delta.{to_server} 从 A 服直达 B 服，中心服完全不参与。
+// 早期曾走 NodeReport.cross_delta → 中心服 → CenterCommand.cross_score 的
+// gRPC 降级路径，现两个字段已 reserved、两端 handler 已删除；未配 NATS 时
+// 改分发布显式失败，不静默丢弃。
 //
 // 必须传差值而不是绝对值：A 服手上的绝对值是 60s 前的快照，直接覆盖会抹掉
 // B 服本地刚产生的增量。
@@ -242,12 +240,12 @@ message CrossScoreDelta {
   int64  delta       = 3; // 负值=扣分
   int32  group_id    = 4;
   int64  from_player = 5; // 攻击发起者（审计用）
-  string from_node   = 6; // 发起方节点；中心服转发时回填，接收方据此去重与审计
+  string from_node   = 6; // 发起方节点；发布方回填，接收方据此去重与审计
   // to_server 目标玩家的区服编号（不是节点 ID）。
   //
-  // 游戏服只知道玩家的 server_id（表里存的就是它），不知道承载那个服的
-  // 部署态 node_id——那个映射只有中心服有（registry.NodeIDForServer）。
-  // 所以这里传业务标识，由中心服反查路由，游戏服不需要维护映射。
+  // subject 按 server_id 路由：B 服订阅 crossplay.delta.{自己的 server_id}，
+  // 所以这里必须传业务标识而不是部署态 node_id（扩缩容会变）。发送方不查
+  // 节点映射，也不需要中心服参与路由。
   int32  to_server   = 7;
 }
 

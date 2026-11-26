@@ -43,18 +43,18 @@ const (
 	DefaultPersistInterval = 5 * time.Minute
 )
 
-// Center 中心服交互能力（*gamecenter.Client 实现；测试注入内存实现）。
+// Center 跨服交互能力（centerAccessor 实现；测试注入内存实现）。
 //
-// 只声明本模块用到的四个方法：模块不依赖整个中心服客户端，
-// 这样单测不必拉起 gRPC。
+// 只声明本模块用到的四个方法：模块不绑定具体传输，这样单测不必拉起
+// gRPC/NATS。改分与积分上报经 NATS 直达/广播，报名走中心服 Unary 裁决。
 type Center interface {
-	// CrossEnroll 报名/取消（同步等裁决）。
+	// CrossEnroll 报名/取消（同步等中心服裁决）。
 	CrossEnroll(ctx context.Context, req *internalv2.CrossEnrollReq) (*internalv2.CrossEnrollResp, error)
 	// SendCrossScore 上报本服玩家的积分变化（按组打包）。
 	SendCrossScore(entries []*internalv2.CrossScoreEntry) error
-	// SendCrossDelta 请中心服转发一条改分通知给别的服。
+	// SendCrossDelta 发布一条改分通知，由目标服在本地权威执行。
 	SendCrossDelta(d *internalv2.CrossScoreDelta) error
-	// Ready 与中心服的通路是否可用。
+	// Ready 跨服通路是否可用。
 	Ready() bool
 }
 

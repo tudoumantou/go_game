@@ -57,8 +57,6 @@ type Handler interface {
 	OnConfigPush(c *internalv2.ConfigPush)
 	// OnCrossGroupDelta 跨服玩法积分下发（已按本服裁剪）。
 	OnCrossGroupDelta(push *internalv2.CrossGroupDeltaPush)
-	// OnCrossScoreDelta 别的服请求本服改某个玩家的分（传的是差值）。
-	OnCrossScoreDelta(d *internalv2.CrossScoreDelta)
 }
 
 // Client 中心服客户端。
@@ -372,10 +370,6 @@ func (c *Client) dispatch(cmd *internalv2.CenterCommand) {
 		if body.CrossGroupDelta != nil {
 			c.h.OnCrossGroupDelta(body.CrossGroupDelta)
 		}
-	case *internalv2.CenterCommand_CrossScore:
-		if body.CrossScore != nil {
-			c.h.OnCrossScoreDelta(body.CrossScore)
-		}
 	}
 }
 
@@ -463,20 +457,6 @@ func (c *Client) SendCrossScore(entries []*internalv2.CrossScoreEntry) error {
 	}
 	return c.Send(&internalv2.NodeReport{
 		Body: &internalv2.NodeReport_Score{Score: &internalv2.CrossScoreBatch{Entries: entries}},
-	})
-}
-
-// SendCrossDelta 请中心服把一条改分通知转给别的服（A 服改不了 B 服玩家的分）。
-//
-// relayID 由调用方生成且必须稳定（同一笔改分重发要用同一个 ID），
-// 接收方按 (from_node, relay_id) 去重——不稳定就会重复加分。
-func (c *Client) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
-	if d == nil || d.GetToServer() == 0 {
-		return fmt.Errorf("cross delta: empty target server")
-	}
-	d.FromNode = c.selfID
-	return c.Send(&internalv2.NodeReport{
-		Body: &internalv2.NodeReport_CrossDelta{CrossDelta: d},
 	})
 }
 

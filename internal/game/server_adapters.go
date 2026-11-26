@@ -407,24 +407,20 @@ func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) er
 	return c.SendCrossScore(entries)
 }
 
-// SendCrossDelta 实现 crossplay.Center。
+// SendCrossDelta 实现 crossplay.Center：把改分发布到 NATS delta subject，
+// 由目标服订阅后本地执行，中心服不参与路由也不转发。
 //
-// NATS 路径下改分直达目标服（delta.{target}），不经中心服中转——这是相对
-// gRPC 方案最大的简化：不需要中心服反查 node_id，也不怕中心服单点抖动。
-// FromNode 仍由本服标识填充，接收端按 (from_node, relay_id) 去重。
+// FromNode 由本服标识填充，接收端按 (from_node, relay_id) 去重。未配 NATS
+// 或连接未就绪时显式返回错误——不静默丢弃，也没有中心服 gRPC 降级路径。
 func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
 	if d == nil || d.GetToServer() == 0 {
 		return errCenterDown
 	}
-	if a.srv != nil && a.srv.natsBus != nil && a.srv.natsBus.Ready() {
-		d.FromNode = a.srv.cfg.Server.Name
-		return a.srv.natsBus.Publish(natsx.DeltaSubject(d.GetToServer()), d)
-	}
-	c := a.client()
-	if c == nil {
+	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errCenterDown
 	}
-	return c.SendCrossDelta(d)
+	d.FromNode = a.srv.cfg.Server.Name
+	return a.srv.natsBus.Publish(natsx.DeltaSubject(d.GetToServer()), d)
 }
 
 // OnCrossGroupDelta 实现 center.Handler：跨服玩法积分下发。
@@ -435,14 +431,6 @@ func (h centerHandler) OnCrossGroupDelta(push *internalv2.CrossGroupDeltaPush) {
 		return
 	}
 	h.srv.crossPlayMod.OnGroupDelta(push)
-}
-
-// OnCrossScoreDelta 实现 center.Handler：别的服请求本服改某个玩家的分。
-func (h centerHandler) OnCrossScoreDelta(d *internalv2.CrossScoreDelta) {
-	if h.srv.crossPlayMod == nil {
-		return
-	}
-	h.srv.crossPlayMod.OnScoreDelta(d)
 }
 
 // relayAccessor 实现 remote.NATSRelay：把 Server 的 natsBus 翻译成

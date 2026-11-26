@@ -32,12 +32,6 @@ type Handler interface {
 	OnMatchRequest(nodeID string, req *internalv2.MatchRequest)
 	// OnRegister 节点注册（返回需要回给节点的初始指令，如 GroupUpdate）。
 	OnRegister(node *registry.Node) []*internalv2.CenterCommand
-	// OnCrossDelta 中转一条跨服玩法的改分通知（A 服 → 中心服 → B 服）。
-	//
-	// 通用 relay 已走 NATS 直达、中心服不再参与；改分是玩法里的资金类
-	// 操作，NATS 未配时保留这条 gRPC 降级路径，中心服至少要有
-	// 「目标节点不存在」的观测点，出问题时才查得到。
-	OnCrossDelta(nodeID string, d *internalv2.CrossScoreDelta)
 }
 
 // Server CenterService 实现。
@@ -236,13 +230,6 @@ func (s *Server) Report(stream internalv2.CenterService_ReportServer) error {
 			// 全在 crossplay.Service，本包不解释分数含义。
 			if b := body.Score; b != nil && s.cross != nil {
 				s.cross.OnScoreBatch(b.GetEntries())
-			}
-
-		case *internalv2.NodeReport_CrossDelta:
-			// 改分通知：A 服改不了 B 服玩家的分，请中心服转给 B 服。
-			// 与上面那条不同——这条不碰 crossplay.Service，纯粹是路由。
-			if d := body.CrossDelta; d != nil {
-				s.h.OnCrossDelta(sess.nodeID, d)
 			}
 
 		case *internalv2.NodeReport_Register:

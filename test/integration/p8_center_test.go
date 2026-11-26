@@ -1,13 +1,15 @@
 //go:build integration
 
-// test/integration/p8_center_test.go —— P8 中心服：节点注册 / 跨服匹配 / 中转
+// test/integration/p8_center_test.go —— P8 中心服：节点注册 / 跨服匹配
 //
-// 验证的链路（设计文档 9.2 / 9.3 / 10.3）：
+// 验证的链路（设计文档 9.2 / 10.3）：
 //
 //	[节点注册] GS 连中心服 → Register → 收 GroupUpdate（含组内跨服地址）
 //	[跨服匹配] A/B 各发 MatchReq → GS 上报 MatchRequest → 中心服匹配
 //	          → MatchResult 分发 → GS 建房 + 送快照 → BattleStartNotify
-//	[中转]     GS 经中心服把消息投递给另一节点（本测试用同节点双会话验证回路）
+//
+// 服间消息投递已不在中心服职责内：跨节点 relay 走 NATS relay.* 直达，
+// 跨服改分走 NATS crossplay.delta.* 直达。
 package integration
 
 import (
