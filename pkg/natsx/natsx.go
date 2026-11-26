@@ -2,6 +2,7 @@ package natsx
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,37 +17,18 @@ const (
 	DefaultTimeout       = 2 * time.Second
 )
 
-// Subject 构造。集中在一处，避免调用方手写字符串拼错导致「发出去没人收」。
-func ScoreSubject(serverID int32) string { return fmt.Sprintf("crossplay.score.%d", serverID) }
-func GroupSubject(serverID int32) string { return fmt.Sprintf("crossplay.group.%d", serverID) }
-func DeltaSubject(serverID int32) string { return fmt.Sprintf("crossplay.delta.%d", serverID) }
-
-// RelayNodeSubject 通用 relay 点对点：发给一个具体的游戏节点。
-//
-// 键用 node_id（部署态标识，如 game-01）而非 server_id：跨节点 Actor 投递
-// 的目标 PID.Node 就是 node_id，且 relay 的语义是「投到某台机器的 Actor
-// System」，与跨服玩法按区服路由是两码事。中心服退出转发后，这两个前缀
-// 也天然隔离——业务中心只认 crossplay.*，relay.* 全程不经它。
-func RelayNodeSubject(nodeID string) string { return "relay.node." + nodeID }
-
-// RelayGroupSubject 通用 relay 广播：发给一个节点分组内的所有成员。
-//
-// 每个节点订阅自己的 RelayNodeSubject 之外，再订阅所属组的这一条；
-// 广播方只需 publish 一次，NATS 按订阅扇出，中心服不再承担组内遍历下发。
-func RelayGroupSubject(groupID string) string { return "relay.group." + groupID }
-
-// 通配订阅：中心服收所有服的上报；游戏服只订阅自己那一条。
-const (
-	ScoreWildcard = "crossplay.score.*"
-	GroupWildcard = "crossplay.group.*"
-	DeltaWildcard = "crossplay.delta.*"
-	// RelayWildcard 供调试/审计订阅所有点对点 relay，生产节点不会订阅它。
-	RelayWildcard = "relay.node.*"
-)
-
 // Config 连接配置。零值取 Default* 常量。
 type Config struct {
-	URL           string
+	URL string
+	// Prefix subject 命名空间前缀（取部署的环境名，如 dev/test/prod）。
+	//
+	// 多个环境共用一套 NATS 集群时必须隔离：subject 是全局扁平的，
+	// 两个环境的 game-01 会订到同一条 relay.node.game-01 —— 消息直接串台，
+	// 而且这种事故在客户端上表现为"玩家收到别人的消息"，极难定位。
+	//
+	// 非空时所有 subject 变成 "{prefix}.<subject>"。空则不加前缀（与旧
+	// 部署兼容），生产环境应显式配置。
+	Prefix        string
 	ReconnectWait time.Duration
 	MaxReconnect  int
 	Timeout       time.Duration
@@ -54,10 +36,16 @@ type Config struct {
 
 // Bus 对 nats.Conn 的封装。
 //
-// 只暴露 publish / 订阅回调 / Ready / Close 四个能力：业务包不需要也不应该
-// 拿到裸 *nats.Conn（拿到就会有人直接用 subject 字符串绕过约定）。
+// 只暴露 publish / 订阅回调 / Ready / Close / subject 构造五个能力：业务包
+// 不需要也不应该拿到裸 *nats.Conn（拿到就会有人直接用 subject 字符串绕过
+// 约定，前缀也就漏了）。
+//
+// subject 构造做成方法而不是包级函数，正是为了让「带前缀」成为唯一可能：
+// 调用方拿不到不带前缀的 subject，也就不可能发出跨环境串台的消息。
 type Bus struct {
 	nc *nats.Conn
+	// prefix 已归一化为「不带首尾点、带末尾点」的形式，如 "prod."；空表示不加前缀。
+	prefix string
 
 	mu   sync.RWMutex
 	subs []*nats.Subscription
@@ -91,17 +79,74 @@ func Connect(cfg Config) (*Bus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nats connect %s: %w", cfg.URL, err)
 	}
-	return &Bus{nc: nc}, nil
+	return &Bus{nc: nc, prefix: normalizePrefix(cfg.Prefix)}, nil
 }
 
-// NewFromConn 用已有连接构造（测试注入 nats-server 的连接；生产走 Connect）。
-func NewFromConn(nc *nats.Conn) *Bus { return &Bus{nc: nc} }
+// normalizePrefix 把各种写法归一成 "xxx."：容忍 "prod" / "prod." / " .prod. "。
+// 空串或只有点号时返回空（不加前缀）。
+func normalizePrefix(p string) string {
+	p = strings.Trim(strings.TrimSpace(p), ".")
+	if p == "" {
+		return ""
+	}
+	return p + "."
+}
 
 // Ready 是否连接可用。nats.go 的 IsConnected 在重连窗口内为 false，
 // 调用方（积分上报）据此决定「这一拍跳过，下一拍再发」。
 func (b *Bus) Ready() bool {
 	return b != nil && b.nc != nil && b.nc.IsConnected()
 }
+
+// subj 拼上命名空间前缀。b 为 nil 时原样返回——subject 构造不该 panic，
+// 真正的错误由 Publish/Subscribe 的 nil 检查报出。
+func (b *Bus) subj(name string) string {
+	if b == nil {
+		return name
+	}
+	return b.prefix + name
+}
+
+// ScoreSubject 积分上报：game → center（所有实例广播收）。
+func (b *Bus) ScoreSubject(serverID int32) string {
+	return b.subj(fmt.Sprintf("crossplay.score.%d", serverID))
+}
+
+// GroupSubject 分组快照/增量：center(leader) → game。
+func (b *Bus) GroupSubject(serverID int32) string {
+	return b.subj(fmt.Sprintf("crossplay.group.%d", serverID))
+}
+
+// DeltaSubject 跨服改分：game → game 直达（不经 center）。
+func (b *Bus) DeltaSubject(serverID int32) string {
+	return b.subj(fmt.Sprintf("crossplay.delta.%d", serverID))
+}
+
+// RelayNodeSubject 通用 relay 点对点：发给一个具体的游戏节点。
+//
+// 键用 node_id（部署态标识，如 game-01）而非 server_id：跨节点 Actor 投递
+// 的目标 PID.Node 就是 node_id，且 relay 的语义是「投到某台机器的 Actor
+// System」，与跨服玩法按区服路由是两码事。两个 namespace 天然隔离——
+// 业务中心只认 crossplay.*，relay.* 全程不经它。
+func (b *Bus) RelayNodeSubject(nodeID string) string {
+	return b.subj("relay.node." + nodeID)
+}
+
+// RelayGroupSubject 通用 relay 广播：发给一个节点分组内的所有成员。
+//
+// 每个节点订阅自己的 RelayNodeSubject 之外，再订阅所属组的这一条；
+// 广播方只需 publish 一次，NATS 按订阅扇出，中心服不再承担组内遍历下发。
+func (b *Bus) RelayGroupSubject(groupID string) string {
+	return b.subj("relay.group." + groupID)
+}
+
+// 通配订阅：中心服收所有服的上报；游戏服只订阅自己那一条。
+func (b *Bus) ScoreWildcard() string { return b.subj("crossplay.score.*") }
+func (b *Bus) GroupWildcard() string { return b.subj("crossplay.group.*") }
+func (b *Bus) DeltaWildcard() string { return b.subj("crossplay.delta.*") }
+
+// RelayWildcard 供调试/审计订阅所有点对点 relay，生产节点不会订阅它。
+func (b *Bus) RelayWildcard() string { return b.subj("relay.node.*") }
 
 // Publish 序列化并发布一条 protobuf 消息。
 func (b *Bus) Publish(subject string, msg proto.Message) error {

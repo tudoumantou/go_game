@@ -117,12 +117,20 @@ func New(cfg *config.Config) *Server {
 	crossAddrs := append([]string(nil), cfg.Cross.Nodes...)
 	matcher := match.New(instanceIndex(cfg.Server.Name), crossAddrs, 10*time.Second)
 
+	// 默认分组：配置优先，空则退回 group-01（demo 单分组）。游戏服按同名
+	// 配置订阅 relay.group.*，两侧取值必须一致——不一致的表现是「广播发出去
+	// 没人收」，所以启动日志里会打出实际生效的分组。
+	groupID := cfg.Server.Group
+	if groupID == "" {
+		groupID = "group-01"
+	}
+
 	return &Server{
 		cfg:        cfg,
 		logger:     logger,
 		reg:        reg,
 		matcher:    matcher,
-		groupID:    "group-01",
+		groupID:    groupID,
 		instanceID: instanceID(cfg.Server.Name),
 	}
 }
@@ -255,6 +263,7 @@ func (s *Server) Start(ctx context.Context) error {
 			to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
 			bus, err := natsx.Connect(natsx.Config{
 				URL:           s.cfg.Nats.URL,
+				Prefix:        s.cfg.Server.Env,
 				ReconnectWait: rw,
 				MaxReconnect:  s.cfg.Nats.MaxReconnect,
 				Timeout:       to,

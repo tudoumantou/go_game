@@ -57,3 +57,16 @@ func TestReconcileInterval(t *testing.T) {
 		require.Equal(t, c.want, s.reconcileInterval(), c.name)
 	}
 }
+
+// TestRelayGroupFromConfig 锁定「relay 广播分组以配置为初值」这一行为。
+//
+// 这不是在测字段赋值。要防的退化是：有人把它改回「只由 GroupUpdate 决定」，
+// 于是中心服不可用时新起的游戏服订不到 relay.group.*，组内广播静默失效，
+// 且没有任何报错——这类退化在联调阶段极难发现（只表现为"有些人收不到广播"）。
+func TestRelayGroupFromConfig(t *testing.T) {
+	cfg := &config.Config{Server: config.ServerConfig{Group: "group-07"}}
+	require.Equal(t, "group-07", New(cfg).relayGroupID)
+
+	// 未配置分组时留空：只订阅点对点，不订广播
+	require.Empty(t, New(&config.Config{}).relayGroupID)
+}

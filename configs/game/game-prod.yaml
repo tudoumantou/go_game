@@ -6,6 +6,7 @@ server:
   name: game-01
   id: 1                          # 区服 ID，写入登录服 user_role.server_id
   env: prod
+  group: group-01              # 跨服分组；game 与 center 必须一致
   grpc_addr: "0.0.0.0:9100"
 
 actor:
@@ -119,6 +120,7 @@ shutdown:
 
 # NATS Core 总线：跨服玩法 + 通用 relay（业务服直达，中心服不转发）。
 # url 为空则整个跨服玩法不启用（无 gRPC 降级），跨节点 relay 同样不可用。
+# subject 前缀取 server.env（实际为 dev.relay.node.game-01 这类），多环境共用集群靠它隔离。
 nats:
   url: "${NATS_URL}"
   reconnect_wait: "2s"

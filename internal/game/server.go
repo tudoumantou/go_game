@@ -117,8 +117,11 @@ type Server struct {
 	centerCli *gamecenter.Client // 到中心服的 Report 流
 	natsBus   *natsx.Bus         // NATS Core 总线（跨服玩法 + 通用 relay）；nil = 未配
 
-	// relayGroupID 本节点所属分组（中心服 GroupUpdate 下发）。用于订阅
-	// relay.group.{group} 的广播；空表示尚未收到分组，只订阅点对点 subject。
+	// relayGroupID 本节点所属跨服分组，是 relay.group.{group} 的订阅键。
+	//
+	// 初值取配置 server.group：NATS 建连后立刻可订广播，不依赖中心服在线。
+	// 中心服 GroupUpdate 若下发不同分组会覆盖并重订阅（运行期分配更权威）。
+	// 两者都空表示不订阅广播，只收点对点 relay。
 	relayGroupID string
 	// groupSubscriptions 已订阅的广播分组集合，避免 GroupUpdate 重复下发
 	// 同一分组时重复订阅（重复订阅会让一条广播被处理多次）。由接收
@@ -159,6 +162,10 @@ func New(cfg *config.Config) *Server {
 		sessions:     make(map[uint64]int64),
 		accounts:     make(map[uint64]int64),
 		players2sess: make(map[int64]uint64),
+		// 分组以配置为初始值：这样 NATS 建连后立刻能订 relay.group.{group}，
+		// 不必等中心服的 GroupUpdate（否则中心服不可用时，新起的游戏服收不到
+		// 任何组内广播）。之后 GroupUpdate 若下发不同分组仍会覆盖并重订阅。
+		relayGroupID: cfg.Server.Group,
 	}
 }
 

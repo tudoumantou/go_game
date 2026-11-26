@@ -27,7 +27,7 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	}
 
 	// 上报：game → center。所有 center 实例都收（广播），保证各自 Store 完整。
-	err := natsBus.Subscribe(natsx.ScoreWildcard,
+	err := natsBus.Subscribe(natsBus.ScoreWildcard(),
 		func() proto.Message { return &internalv2.CrossScoreBatch{} },
 		func(msg proto.Message) error {
 			batch, ok := msg.(*internalv2.CrossScoreBatch)
@@ -42,10 +42,11 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 		s.logger.Warn("subscribe crossplay score failed", "err", err)
 	}
 
-	// 下发：center → game。注入到 Service，sendToServer 优先走它。
+	// 下发：center → game。注入到 Service，sendToServer 只走它。
 	s.crossSvc.SetSendGroup(func(serverID int32, push *internalv2.CrossGroupDeltaPush) error {
-		return natsBus.Publish(natsx.GroupSubject(serverID), push)
+		return natsBus.Publish(natsBus.GroupSubject(serverID), push)
 	})
 
-	s.logger.Info("crossplay nats attached", "score", natsx.ScoreWildcard, "group", natsx.GroupWildcard)
+	s.logger.Info("crossplay nats attached",
+		"score", natsBus.ScoreWildcard(), "group", natsBus.GroupWildcard())
 }

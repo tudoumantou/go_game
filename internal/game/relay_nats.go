@@ -21,15 +21,17 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// startRelayNATS 订阅本节点的点对点 subject。
+// startRelayNATS 订阅本节点的点对点 subject，并尽量订阅广播 subject。
 //
 // 必须在 natsBus 建连成功后调用（server_start.go 的 NATS 装配段）。
-// 广播 subject 由 subscribeRelayGroup 在收到 GroupUpdate 时补订阅。
+// 广播的 group 来源优先级：**配置 `server.group` > 中心服 GroupUpdate 下发**。
+// 配置了就启动即订阅，不等分组消息——这样中心服不可用时，新起的游戏服
+// 仍然能收发组内广播（否则"广播能力"会隐式依赖中心服的 gRPC 流在线）。
 func (s *Server) startRelayNATS(bus *natsx.Bus) {
 	if bus == nil || s.cfg.Server.Name == "" {
 		return
 	}
-	nodeSubject := natsx.RelayNodeSubject(s.cfg.Server.Name)
+	nodeSubject := bus.RelayNodeSubject(s.cfg.Server.Name)
 	if err := bus.Subscribe(nodeSubject,
 		func() proto.Message { return &internalv2.RelayPush{} },
 		func(msg proto.Message) error {
@@ -45,8 +47,7 @@ func (s *Server) startRelayNATS(bus *natsx.Bus) {
 	}
 	s.logger.Info("relay nats subscribed", "node", nodeSubject)
 
-	// 若分组已经先于 NATS 建连到达（GroupUpdate 走 gRPC 流，可能更早），
-	// 这里补一次广播订阅。
+	// 配置了 server.group 就启动即订阅；未配置时留空，等 GroupUpdate 下发。
 	if s.relayGroupID != "" {
 		s.subscribeRelayGroup(s.relayGroupID)
 	}
@@ -61,7 +62,7 @@ func (s *Server) subscribeRelayGroup(groupID string) {
 	if groupID == "" || s.natsBus == nil {
 		return
 	}
-	subject := natsx.RelayGroupSubject(groupID)
+	subject := s.natsBus.RelayGroupSubject(groupID)
 	// groupSubscriptions 去重：同一分组只订阅一次。
 	if s.groupSubscriptions == nil {
 		s.groupSubscriptions = make(map[string]struct{})

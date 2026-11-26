@@ -21,13 +21,13 @@ type busNATSRelay struct {
 }
 
 func (r busNATSRelay) SendRelayNode(relayID, toNode string, payload []byte) error {
-	return r.bus.Publish(natsx.RelayNodeSubject(toNode), &internalv2.RelayPush{
+	return r.bus.Publish(r.bus.RelayNodeSubject(toNode), &internalv2.RelayPush{
 		RelayId: relayID, FromNode: r.nodeID, Payload: payload,
 	})
 }
 
 func (r busNATSRelay) SendRelayGroup(relayID, groupID string, payload []byte) error {
-	return r.bus.Publish(natsx.RelayGroupSubject(groupID), &internalv2.RelayPush{
+	return r.bus.Publish(r.bus.RelayGroupSubject(groupID), &internalv2.RelayPush{
 		RelayId: relayID, FromNode: r.nodeID, Payload: payload,
 	})
 }
@@ -53,7 +53,7 @@ func TestEndToEndViaNATS(t *testing.T) {
 	defer subBus.Close()
 
 	got := make(chan *internalv2.RelayPush, 1)
-	err = subBus.Subscribe(natsx.RelayNodeSubject("game-02"),
+	err = subBus.Subscribe(subBus.RelayNodeSubject("game-02"),
 		func() proto.Message { return &internalv2.RelayPush{} },
 		func(m proto.Message) error { got <- m.(*internalv2.RelayPush); return nil })
 	require.NoError(t, err)

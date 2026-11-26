@@ -20,6 +20,11 @@
 //	relay.node.{node}          game → game    点对点投递某节点的 Actor（RelayPush）
 //	relay.group.{group}        game → game    组内广播（RelayPush）
 //
+// 命名空间前缀：上面所有 subject 在实际链路上都带 "{env}." 前缀（如
+// prod.relay.node.game-01），由 Config.Prefix 统一注入。subject 是全局扁平
+// 的，多环境共用一套 NATS 集群时不隔离，两个环境的同名节点会互相串消息。
+// 因此 subject 的构造全部收在 Bus 方法上，调用方拿不到裸字符串。
+//
 // 中心服的定位：只做全服业务中心（报名裁决、分组、积分聚合、排行榜、
 // 匹配、统计），**不参与任何业务服之间的消息转发**。crossplay.* 里它
 // 是业务参与方（聚合/分组），relay.* 里它完全不订阅。

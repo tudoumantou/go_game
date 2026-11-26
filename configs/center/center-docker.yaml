@@ -5,6 +5,7 @@
 server:
   name: center-01
   env: dev
+  group: group-01              # 跨服分组；game 与 center 必须一致
   grpc_addr: "0.0.0.0:9200"
 
 etcd:
@@ -60,6 +61,7 @@ shutdown:
   drain_timeout: 10s
 
 # 跨服玩法唯一通道（NATS Core）；url 为空则玩法不启用（无 gRPC 降级）
+# subject 前缀取 server.env（如 prod.crossplay.score.1），多环境共用集群靠它隔离。
 nats:
   url: "${NATS_URL}"
   reconnect_wait: "2s"

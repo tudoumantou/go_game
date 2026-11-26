@@ -87,8 +87,9 @@ type Config struct {
 
 type ServerConfig struct {
 	Name             string `yaml:"name"`                  // 服务名，日志/指标标签
-	Env              string `yaml:"env"`                   // dev/staging/prod
+	Env              string `yaml:"env"`                   // dev/staging/prod，同时作为 NATS subject 命名空间前缀
 	ID               int32  `yaml:"id"`                    // 区服 ID：写入 user_role.server_id，多区服共用一个登录服时必须唯一
+	Group            string `yaml:"group"`                 // 所属跨服分组（如 group-01）；空则由中心服 GroupUpdate 下发
 	TCPAddr          string `yaml:"tcp_addr"`              // 网关：客户端长连接
 	HTTPAddr         string `yaml:"http_addr"`             // 登录服：HTTPS API
 	GRPCAddr         string `yaml:"grpc_addr"`             // 游戏/中心/跨服：gRPC
@@ -252,6 +253,10 @@ type KafkaConfig struct {
 // 只剩报名 Unary（也会被游戏侧就绪检查拒绝）。不阻塞进程启动——与
 // Kafka/Etcd 的「空配置即关闭」保持一致。
 // URL 支持 ${VAR} 环境变量注入，例如 nats://user:pass@host:4222。
+//
+// 命名空间前缀**不在这里配**，取自 ServerConfig.Env：所有 subject 实际是
+// "{env}.crossplay.*" / "{env}.relay.*"。多环境共用一套 NATS 集群时靠它
+// 隔离，否则两个环境的同名节点会订到同一条 subject 互相串消息。
 type NatsConfig struct {
 	URL           string `yaml:"url"`
 	ReconnectWait string `yaml:"reconnect_wait"` // 如 "2s"，空取库默认

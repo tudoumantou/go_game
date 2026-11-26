@@ -25,7 +25,7 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	serverID := s.cfg.Server.ID
 
 	// 分组快照 / 增量：center → 本服。
-	if err := natsBus.Subscribe(natsx.GroupSubject(serverID),
+	if err := natsBus.Subscribe(natsBus.GroupSubject(serverID),
 		func() proto.Message { return &internalv2.CrossGroupDeltaPush{} },
 		func(msg proto.Message) error {
 			push, ok := msg.(*internalv2.CrossGroupDeltaPush)
@@ -40,7 +40,7 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 	}
 
 	// 跨服改分：别服 → 本服（直达，不经 center）。
-	if err := natsBus.Subscribe(natsx.DeltaSubject(serverID),
+	if err := natsBus.Subscribe(natsBus.DeltaSubject(serverID),
 		func() proto.Message { return &internalv2.CrossScoreDelta{} },
 		func(msg proto.Message) error {
 			d, ok := msg.(*internalv2.CrossScoreDelta)
@@ -56,6 +56,6 @@ func (s *Server) startCrossplayNATS(natsBus *natsx.Bus) {
 
 	s.logger.Info("crossplay nats subscribed",
 		"server", serverID,
-		"group", natsx.GroupSubject(serverID),
-		"delta", natsx.DeltaSubject(serverID))
+		"group", natsBus.GroupSubject(serverID),
+		"delta", natsBus.DeltaSubject(serverID))
 }

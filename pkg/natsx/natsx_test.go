@@ -43,7 +43,7 @@ func TestBusPubSub(t *testing.T) {
 	defer sub.Close()
 
 	got := make(chan *internalv2.CrossScoreDelta, 1)
-	if err := sub.Subscribe(DeltaSubject(7),
+	if err := sub.Subscribe(sub.DeltaSubject(7),
 		func() proto.Message { return &internalv2.CrossScoreDelta{} },
 		func(m proto.Message) error {
 			got <- m.(*internalv2.CrossScoreDelta)
@@ -59,7 +59,7 @@ func TestBusPubSub(t *testing.T) {
 		PlayerId: 12345, Delta: -1, ToServer: 7,
 		FromNode: "game-01", RelayId: "sd:game-01:1", GroupId: 3,
 	}
-	if err := pub.Publish(DeltaSubject(7), want); err != nil {
+	if err := pub.Publish(pub.DeltaSubject(7), want); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -85,7 +85,7 @@ func TestBusWildcard(t *testing.T) {
 	defer bus.Close()
 
 	seen := make(chan int32, 2)
-	if err := bus.Subscribe(ScoreWildcard,
+	if err := bus.Subscribe(bus.ScoreWildcard(),
 		func() proto.Message { return &internalv2.CrossScoreBatch{} },
 		func(m proto.Message) error {
 			b := m.(*internalv2.CrossScoreBatch)
@@ -101,7 +101,7 @@ func TestBusWildcard(t *testing.T) {
 	}
 
 	for _, sid := range []int32{1, 2} {
-		if err := bus.Publish(ScoreSubject(sid), &internalv2.CrossScoreBatch{
+		if err := bus.Publish(bus.ScoreSubject(sid), &internalv2.CrossScoreBatch{
 			Entries: []*internalv2.CrossScoreEntry{{ServerId: sid, PlayerId: int64(sid)}},
 		}); err != nil {
 			t.Fatal(err)
@@ -135,12 +135,12 @@ func TestRelaySubjects(t *testing.T) {
 
 	nodeCh := make(chan *internalv2.RelayPush, 1)
 	groupCh := make(chan *internalv2.RelayPush, 1)
-	if err := bus.Subscribe(RelayNodeSubject("game-01"),
+	if err := bus.Subscribe(bus.RelayNodeSubject("game-01"),
 		func() proto.Message { return &internalv2.RelayPush{} },
 		func(m proto.Message) error { nodeCh <- m.(*internalv2.RelayPush); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := bus.Subscribe(RelayGroupSubject("g1"),
+	if err := bus.Subscribe(bus.RelayGroupSubject("g1"),
 		func() proto.Message { return &internalv2.RelayPush{} },
 		func(m proto.Message) error { groupCh <- m.(*internalv2.RelayPush); return nil }); err != nil {
 		t.Fatal(err)
@@ -151,10 +151,10 @@ func TestRelaySubjects(t *testing.T) {
 
 	nodeMsg := &internalv2.RelayPush{RelayId: "r1", FromNode: "game-02", Payload: []byte("p2p")}
 	groupMsg := &internalv2.RelayPush{RelayId: "r2", FromNode: "game-02", Payload: []byte("bcast")}
-	if err := bus.Publish(RelayNodeSubject("game-01"), nodeMsg); err != nil {
+	if err := bus.Publish(bus.RelayNodeSubject("game-01"), nodeMsg); err != nil {
 		t.Fatal(err)
 	}
-	if err := bus.Publish(RelayGroupSubject("g1"), groupMsg); err != nil {
+	if err := bus.Publish(bus.RelayGroupSubject("g1"), groupMsg); err != nil {
 		t.Fatal(err)
 	}
 
@@ -181,5 +181,93 @@ func TestConnectEmptyURL(t *testing.T) {
 	b, err := Connect(Config{})
 	if err != nil || b != nil {
 		t.Fatalf("empty url should give (nil, nil), got (%v, %v)", b, err)
+	}
+}
+
+// TestSubjectPrefix 验证命名空间前缀的两个性质：归一化正确、跨前缀隔离生效。
+//
+// 隔离是这套机制存在的唯一理由：多环境共用一套 NATS 集群时，两个环境都有
+// game-01，不带前缀就会订到同一条 relay.node.game-01，消息直接串台。
+func TestSubjectPrefix(t *testing.T) {
+	url, stop := startServer(t)
+	defer stop()
+
+	dev, err := Connect(Config{URL: url, Prefix: "dev", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dev.Close()
+	// 末尾带点号也必须归一成单点，否则会拼出 "prod..relay.node.x"
+	prod, err := Connect(Config{URL: url, Prefix: "prod.", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer prod.Close()
+
+	if got, want := dev.RelayNodeSubject("game-01"), "dev.relay.node.game-01"; got != want {
+		t.Fatalf("dev subject = %q, want %q", got, want)
+	}
+	if got, want := prod.ScoreSubject(7), "prod.crossplay.score.7"; got != want {
+		t.Fatalf("prod subject = %q, want %q", got, want)
+	}
+	if got, want := prod.ScoreWildcard(), "prod.crossplay.score.*"; got != want {
+		t.Fatalf("prod wildcard = %q, want %q", got, want)
+	}
+
+	// 同前缀可达
+	devCh := make(chan struct{}, 1)
+	if err := dev.Subscribe(dev.RelayNodeSubject("game-01"),
+		func() proto.Message { return &internalv2.RelayPush{} },
+		func(proto.Message) error { devCh <- struct{}{}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	// 跨前缀不可达：prod 订同名节点，dev 发布，prod 不该收到
+	prodCh := make(chan struct{}, 1)
+	if err := prod.Subscribe(prod.RelayNodeSubject("game-01"),
+		func() proto.Message { return &internalv2.RelayPush{} },
+		func(proto.Message) error { prodCh <- struct{}{}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := dev.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prod.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := dev.Publish(dev.RelayNodeSubject("game-01"),
+		&internalv2.RelayPush{RelayId: "r1", FromNode: "game-01"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-devCh:
+		// 同前缀收到，正确
+	case <-time.After(2 * time.Second):
+		t.Fatal("同前缀未收到消息")
+	}
+	select {
+	case <-prodCh:
+		t.Fatal("跨前缀串台：prod 收到了 dev 的消息")
+	case <-time.After(300 * time.Millisecond):
+		// 预期：隔离生效
+	}
+}
+
+// TestSubjectNoPrefix 前缀为空时 subject 保持原样（与旧部署兼容）。
+func TestSubjectNoPrefix(t *testing.T) {
+	url, stop := startServer(t)
+	defer stop()
+
+	bus, err := Connect(Config{URL: url, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+
+	if got, want := bus.RelayGroupSubject("g1"), "relay.group.g1"; got != want {
+		t.Fatalf("subject = %q, want %q", got, want)
+	}
+	if got, want := bus.GroupWildcard(), "crossplay.group.*"; got != want {
+		t.Fatalf("wildcard = %q, want %q", got, want)
 	}
 }

@@ -675,12 +675,16 @@ func (s *Server) startRPCAndClients() {
 		to, _ := config.ParseDuration(s.cfg.Nats.Timeout)
 		bus, err := natsx.Connect(natsx.Config{
 			URL:           s.cfg.Nats.URL,
+			Prefix:        s.cfg.Server.Env,
 			ReconnectWait: rw,
 			MaxReconnect:  s.cfg.Nats.MaxReconnect,
 			Timeout:       to,
 		})
 		if err != nil {
-			s.logger.Error("nats connect failed, crossplay falls back to grpc", "err", err)
+			// 没有降级路径：跨服玩法与跨节点 relay 都以这条总线为唯一通道。
+			// 进程继续跑（本服玩法不受影响），但这两项能力不可用——显式说明，
+			// 避免运维看到 "falls back" 之类的措辞去 gRPC 侧找不存在的兜底。
+			s.logger.Error("nats connect failed: crossplay and cross-node relay unavailable", "err", err)
 		} else {
 			s.natsBus = bus
 			s.startCrossplayNATS(bus)

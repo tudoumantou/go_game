@@ -24,7 +24,6 @@ import (
 	gameremote "game_study/internal/game/remote"
 	"game_study/pkg/codec"
 	pkgmq "game_study/pkg/mq"
-	"game_study/pkg/natsx"
 	pkgseat "game_study/pkg/seat"
 
 	gamev1 "game_study/pkg/pb/game/v1"
@@ -402,7 +401,7 @@ func (a centerAccessor) SendCrossScore(entries []*internalv2.CrossScoreEntry) er
 	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
 		return errCenterDown
 	}
-	return a.srv.natsBus.Publish(natsx.ScoreSubject(a.srv.cfg.Server.ID),
+	return a.srv.natsBus.Publish(a.srv.natsBus.ScoreSubject(a.srv.cfg.Server.ID),
 		&internalv2.CrossScoreBatch{Entries: entries})
 }
 
@@ -419,7 +418,7 @@ func (a centerAccessor) SendCrossDelta(d *internalv2.CrossScoreDelta) error {
 		return errCenterDown
 	}
 	d.FromNode = a.srv.cfg.Server.Name
-	return a.srv.natsBus.Publish(natsx.DeltaSubject(d.GetToServer()), d)
+	return a.srv.natsBus.Publish(a.srv.natsBus.DeltaSubject(d.GetToServer()), d)
 }
 
 // relayAccessor 实现 remote.NATSRelay：把 Server 的 natsBus 翻译成
@@ -439,7 +438,7 @@ func (a relayAccessor) SendRelayNode(relayID, toNode string, payload []byte) err
 	if toNode == "" {
 		return errors.New("relay: empty target node")
 	}
-	return a.srv.natsBus.Publish(natsx.RelayNodeSubject(toNode), &internalv2.RelayPush{
+	return a.srv.natsBus.Publish(a.srv.natsBus.RelayNodeSubject(toNode), &internalv2.RelayPush{
 		RelayId:  relayID,
 		FromNode: a.srv.cfg.Server.Name,
 		Payload:  payload,
@@ -454,7 +453,7 @@ func (a relayAccessor) SendRelayGroup(relayID, groupID string, payload []byte) e
 	if groupID == "" {
 		return errors.New("relay: empty group id")
 	}
-	return a.srv.natsBus.Publish(natsx.RelayGroupSubject(groupID), &internalv2.RelayPush{
+	return a.srv.natsBus.Publish(a.srv.natsBus.RelayGroupSubject(groupID), &internalv2.RelayPush{
 		RelayId:  relayID,
 		FromNode: a.srv.cfg.Server.Name,
 		Payload:  payload,
