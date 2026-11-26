@@ -59,7 +59,7 @@ func TestEndToEndViaNATS(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, subBus.Flush()) // 确保订阅已注册到服务端
 
-	sender := NewSender(busNATSRelay{bus: pubBus, nodeID: "game-01"}, nil, "game-01", log.New("test"))
+	sender := NewSender(busNATSRelay{bus: pubBus, nodeID: "game-01"}, "game-01", log.New("test"))
 	require.NoError(t, sender.Deliver(
 		&actor.PID{ID: "player:42", Node: "game-02"},
 		testRemoteMsg{Text: "hello-over-nats"}))

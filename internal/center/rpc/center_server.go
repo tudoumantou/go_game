@@ -22,7 +22,7 @@ import (
 	internalv2 "game_study/pkg/pb/internalv2"
 )
 
-// Handler 业务处理器（匹配/中转发往 server 侧）。
+// Handler 业务处理器（匹配与跨服业务发往 server 侧）。
 //
 // 接口注入而非直接引用 server 包：打破 rpc ↔ server 的循环依赖
 // （server 要创建 rpc.Server，rpc 又要调 server 的逻辑）。
@@ -30,15 +30,13 @@ import (
 type Handler interface {
 	// OnMatchRequest 处理匹配请求（可能立即回 MatchResult）。
 	OnMatchRequest(nodeID string, req *internalv2.MatchRequest)
-	// OnRelayRequest 处理中转请求。
-	OnRelayRequest(nodeID string, req *internalv2.RelayRequest)
 	// OnRegister 节点注册（返回需要回给节点的初始指令，如 GroupUpdate）。
 	OnRegister(node *registry.Node) []*internalv2.CenterCommand
 	// OnCrossDelta 中转一条跨服玩法的改分通知（A 服 → 中心服 → B 服）。
 	//
-	// 单独一个方法而不是塞进 Handler.OnRelayRequest：relay 是纯透传
-	// （payload 原样投递，中心服不解包），而改分是资金类操作，中心服
-	// 至少要有「目标节点不存在」的观测点，出问题时才查得到。
+	// 通用 relay 已走 NATS 直达、中心服不再参与；改分是玩法里的资金类
+	// 操作，NATS 未配时保留这条 gRPC 降级路径，中心服至少要有
+	// 「目标节点不存在」的观测点，出问题时才查得到。
 	OnCrossDelta(nodeID string, d *internalv2.CrossScoreDelta)
 }
 
@@ -214,11 +212,6 @@ func (s *Server) Report(stream internalv2.CenterService_ReportServer) error {
 		case *internalv2.NodeReport_Match:
 			if m := body.Match; m != nil {
 				s.h.OnMatchRequest(sess.nodeID, m)
-			}
-
-		case *internalv2.NodeReport_Relay:
-			if r := body.Relay; r != nil {
-				s.h.OnRelayRequest(sess.nodeID, r)
 			}
 
 		case *internalv2.NodeReport_Rank:

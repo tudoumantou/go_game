@@ -126,7 +126,7 @@ type GrantItem struct {
 // PushMsg 下行推送消息（聊天/GM 广播等纯下行路径）。
 //
 // 跨节点可投递（P0）：实现 actor.RemoteMessage——聊天推送给在线在
-// 别的节点的玩家时，消息经中心服中转投递到目标节点的本地 Actor。
+// 别的节点的玩家时，消息经 NATS 直达投递到目标节点的本地 Actor。
 type PushMsg struct {
 	MsgID uint32
 	Body  []byte

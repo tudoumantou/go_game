@@ -49,8 +49,6 @@ const (
 type Handler interface {
 	// OnMatchResult 匹配成功（分配了跨服房间）。
 	OnMatchResult(res *internalv2.MatchResult)
-	// OnRelayPush 收到其它节点的中转消息。
-	OnRelayPush(push *internalv2.RelayPush)
 	// OnGroupUpdate 分组变更（组内游戏服/跨服地址变化）。
 	OnGroupUpdate(g *internalv2.GroupUpdate)
 	// OnKick 中心服要求本节点重连（滚动重启）。
@@ -358,10 +356,6 @@ func (c *Client) dispatch(cmd *internalv2.CenterCommand) {
 		if body.MatchResult != nil {
 			c.h.OnMatchResult(body.MatchResult)
 		}
-	case *internalv2.CenterCommand_RelayPush:
-		if body.RelayPush != nil {
-			c.h.OnRelayPush(body.RelayPush)
-		}
 	case *internalv2.CenterCommand_Group:
 		if body.Group != nil {
 			c.h.OnGroupUpdate(body.Group)
@@ -408,20 +402,6 @@ func (c *Client) SendMatch(playerID int64, mode string, elo int32, snapshot []by
 			Mode:     mode,
 			Snapshot: snapshot,
 			Elo:      elo,
-		}},
-	})
-}
-
-// SendRelay 上报中转请求。
-func (c *Client) SendRelay(relayID, toNode string, broadcast bool, groupID string, payload []byte) error {
-	return c.Send(&internalv2.NodeReport{
-		Body: &internalv2.NodeReport_Relay{Relay: &internalv2.RelayRequest{
-			RelayId:   relayID,
-			FromNode:  c.selfID,
-			ToNode:    toNode,
-			Broadcast: broadcast,
-			GroupId:   groupID,
-			Payload:   payload,
 		}},
 	})
 }

@@ -207,7 +207,7 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 // TestRemoteAcrossSystems 端到端：两个 System 模拟两个节点，
-// A 的 RemoteSender 把信封交给 B 的 DeliverRemote（即中心服中转的本地等价物）。
+// A 的 RemoteSender 把信封交给 B 的 DeliverRemote（即 NATS 直达的本地等价物）。
 func TestRemoteAcrossSystems(t *testing.T) {
 	registerTestRemote()
 
@@ -219,7 +219,7 @@ func TestRemoteAcrossSystems(t *testing.T) {
 	_, err := nodeB.Spawn("player:123", rec)
 	require.NoError(t, err)
 
-	// A 的远程发送器 = 「经中心服中转」的最小模拟：信封投递给 B。
+	// A 的远程发送器 = 「经 NATS 直达」的最小模拟：信封投递给 B。
 	relay := &fakeSender{err: nil}
 	nodeA := NewSystem(Config{NodeID: "game-01", Remote: senderFunc(func(to *PID, msg any) error {
 		env, err := EncodeRemote(to, msg.(RemoteMessage))

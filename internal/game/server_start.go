@@ -373,9 +373,9 @@ func (s *Server) attachOwnerIndexes() {
 //
 // 必须在 Actor 系统之前：actor.Config.Remote 引用它。
 func (s *Server) initCenterClient() {
-	// ② 中心服客户端（P8 + P0）：匹配主路径 + 跨节点 Actor 投递中转。
-	// 必须建在 Actor 系统之前——actor.Config.Remote 引用它。
-	// 未配置则 battle 降级为本服匹配、远程投递走「本地找不到即失败」。
+	// ② 中心服客户端（P8 + P0）：匹配与全服业务；跨节点投递走 NATS，不过它。
+	// 建在 Actor 系统之前——各模块与中心服 Handler 依赖它。
+	// 未配置则 battle 降级为本服匹配；远程投递依赖 NATS，与它无关。
 	if s.cfg.Center.Addr != "" {
 		s.centerCli = gamecenter.NewClient(s.cfg.Server.Name, s.cfg.Center.Addr, centerHandler{srv: s}, s.logger)
 		// 区服编号必须在首次 Register 之前设好：中心服靠它建立
@@ -394,14 +394,14 @@ func (s *Server) initCenterClient() {
 // initActorSystem 建 Actor 系统。
 //
 // NodeID/Remote（P0 跨节点）：NodeID 是本节点标识；Remote 非 nil 时远程 PID
-// 经中心服中转投递。未配中心服时不设 Remote——远程 PID 按本地找，找不到报错，
+// 经 NATS 直达投递。未配 NATS 时不设 Remote——远程 PID 按本地找，找不到报错，
 // 与单机部署行为一致（宁可显式失败，不静默丢消息）。
 func (s *Server) initActorSystem() error {
 	// ③ Actor 系统 + 模块
 	//
 	// NodeID/Remote（P0 跨节点）：NodeID 是本节点标识（Send 据此判断
-	// 目标是否远程）；Remote 非 nil 时远程 PID 经中心服中转投递。
-	// 未配中心服时不设 Remote——远程 PID 按本地找，找不到报错，
+	// 目标是否远程）；Remote 非 nil 时远程 PID 经 NATS 直达投递。
+	// 未配 NATS 时不设 Remote——远程 PID 按本地找，找不到报错，
 	// 与单机部署行为一致（宁可显式失败，不静默丢消息）。
 	actorCfg := actor.Config{
 		ShardCount:  s.cfg.Actor.ShardCount,
@@ -409,14 +409,12 @@ func (s *Server) initActorSystem() error {
 		Logger:      s.logger, // panic 恢复时记录堆栈（不再静默吞掉）
 		NodeID:      s.cfg.Server.Name,
 	}
-	// Remote 双通道：NATS 直达为主（relayAccessor 动态读稍后建连的
-	// natsBus），中心服 gRPC 中转仅作降级。两者都没配时保持 Remote=nil，
-	// 远程 PID 按本地找、找不到报错，与单机部署行为一致。
-	if s.centerCli != nil || s.cfg.Nats.URL != "" {
+	// Remote 仅 NATS 直达：relayAccessor 动态读稍后建连的 natsBus，
+	// 不依赖装配时序。未配 NATS 时保持 Remote=nil，远程 PID 按本地找、
+	// 找不到报错，与单机部署行为一致；不经中心服降级。
+	if s.cfg.Nats.URL != "" {
 		actorCfg.Remote = gameremote.NewSender(
-			relayAccessor{srv: s}, // NATS 主路径（未就绪时 Sender 内判定）
-			s.centerCli,           // gRPC 降级（可能为 nil）
-			s.cfg.Server.Name, s.logger)
+			relayAccessor{srv: s}, s.cfg.Server.Name, s.logger)
 	}
 	s.actorSys = actor.NewSystem(actorCfg)
 	s.actorSys.Start(s.runCtx)
@@ -567,7 +565,7 @@ func (s *Server) initPlayerManager() {
 	// Actor 收到后回调这里关闭本节点的网关会话（与同节点顶号同一条下线路径）。
 	s.players.SetKickHook(s.kickLocalPlayer)
 	// 跨节点（P0）：本节点标识 + 在线归属表。Resolve 据此在本地未命中时
-	// 返回远程 PID（Send 自动走中心服中转）；presence 未配置（无 Redis）
+	// 返回远程 PID（Send 自动走 NATS 直达）；presence 未配置（无 Redis）
 	// 时退化为纯本地查询。
 	s.players.SetNodeID(s.cfg.Server.Name)
 	if s.presence != nil {

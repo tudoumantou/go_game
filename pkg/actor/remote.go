@@ -7,8 +7,8 @@
 // 设计（三块，框架不绑定任何传输）：
 //   - PID.Node：空 = 本地；非空 = 远端节点 ID。本地 PID 一律 Node=""，
 //     单机部署下本文件全部逻辑自然短路，零行为变化；
-//   - RemoteSender：跨节点投递接口，由组装层实现（主路径 NATS 直达
-//     relay.node.{node}，无 NATS 时降级经中心服中转，见 internal/game/remote）；
+//   - RemoteSender：跨节点投递接口，由组装层实现（NATS 直达
+//     relay.node.{node}，中心服不参与转发，见 internal/game/remote）；
 //   - RemoteMessage + 编解码注册表：消息显式声明「我可跨节点」并自带
 //     序列化。框架不猜消息格式——不可序列化的消息（如带 Done channel
 //     的请求-响应消息）根本不该出现在远程路径上，让它显式失败。
@@ -50,8 +50,8 @@ type RemoteMessage interface {
 
 // RemoteEnvelope 跨节点投递信封。
 //
-// 经中心服 RelayRequest.Payload（不透明 bytes）透传，所以ActorID 必须
-// 进信封——中转层不知道也不该知道消息要投给哪个 Actor。
+// 经 NATS relay.node.* / relay.group.* 的 RelayPush.Payload（不透明 bytes）
+// 投递，所以 ActorID 必须进信封——传输层不知道也不该知道消息投给哪个 Actor。
 // Payload 在 JSON 里是 base64 字符串（[]byte 的默认 JSON 编码）。
 type RemoteEnvelope struct {
 	ActorID string `json:"actor_id"`

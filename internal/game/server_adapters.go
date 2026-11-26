@@ -22,7 +22,6 @@ import (
 	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/player"
 	gameremote "game_study/internal/game/remote"
-	"game_study/pkg/actor"
 	"game_study/pkg/codec"
 	pkgmq "game_study/pkg/mq"
 	"game_study/pkg/natsx"
@@ -59,7 +58,7 @@ func (m chatMessenger) OnlineNode(ctx context.Context, playerID int64) (string, 
 // （玩家只登录、还没发过业务包）直接走会话下行 —— 推送是纯下行，不需要业务状态。
 //
 // Resolve 而不是 Get（P0）：玩家可能在线在**别的游戏节点**——本地表
-// 未命中时查在线归属表，拿到远程 PID 后 Send 自动经中心服中转投递。
+// 未命中时查在线归属表，拿到远程 PID 后 Send 自动经 NATS 直达投递。
 // 跨节点推送上线前，这里对异地在线玩家只能落到 sendToPlayer（本节点
 // 会话下行），消息实际丢失。
 //
@@ -211,40 +210,6 @@ func (h centerHandler) OnMatchResult(res *internalv2.MatchResult) {
 	if h.srv.battleMod != nil {
 		h.srv.battleMod.OnMatchResult(res)
 	}
-}
-
-// OnRelayPush 实现 center.Handler：跨节点 Actor 投递的接收侧（P0）。
-//
-//	payload 是 actor.RemoteEnvelope（JSON）：解出目标 ActorID 与消息后
-//
-// 投入本地 System。语义是「尽力而为 + 对账兜底」——玩家已下线时
-// DeliverRemote 返回 ErrActorGone，记日志即可：客户端重连会拉全量
-// 权威状态，丢一条下行推送不构成正确性缺口。
-func (h centerHandler) OnRelayPush(push *internalv2.RelayPush) {
-	h.srv.onRelayPush(push)
-}
-
-// onRelayPush 是 relay 接收侧的唯一实现，gRPC 降级与 NATS 直达两条路径
-// 都委托到这里。payload 是 actor.RemoteEnvelope（JSON）：解出目标 ActorID
-// 与消息后投入本地 System。语义是「尽力而为 + 对账兜底」——玩家下线时
-// DeliverRemote 返回 ErrActorGone，记日志即可：客户端重连会拉全量权威状态。
-func (s *Server) onRelayPush(push *internalv2.RelayPush) {
-	if push == nil {
-		return
-	}
-	actorID, msg, err := actor.DecodeRemoteEnvelope(push.GetPayload())
-	if err != nil {
-		s.logger.Warn("relay push decode failed",
-			"from", push.GetFromNode(), "relay_id", push.GetRelayId(), "err", err)
-		return
-	}
-	if err := s.actorSys.DeliverRemote(actorID, msg); err != nil {
-		s.logger.Debug("relay push deliver failed",
-			"from", push.GetFromNode(), "actor", actorID, "err", err)
-		return
-	}
-	s.logger.Debug("relay push delivered",
-		"from", push.GetFromNode(), "actor", actorID, "relay_id", push.GetRelayId())
 }
 
 // OnGroupUpdate 实现 center.Handler：组内跨服地址变化 → 重建/新增跨服流。
@@ -486,7 +451,7 @@ func (h centerHandler) OnCrossScoreDelta(d *internalv2.CrossScoreDelta) {
 // 为什么持有 *Server 而不是直接持 *natsx.Bus：装配顺序上 actorSys 的
 // Remote（本适配器）在 NATS 建连之前就注入了（见 server_start.go），
 // 动态读 s.natsBus 让适配器不依赖建连时序——未建连时返回错误，
-// 由 remote.Sender 决定上报还是降级（此处不静默走 gRPC，语义在 Sender）。
+// 由 remote.Sender 显式上抛（无中心服降级路径）。
 type relayAccessor struct{ srv *Server }
 
 // SendRelayNode 点对点发布到 relay.node.{toNode}。

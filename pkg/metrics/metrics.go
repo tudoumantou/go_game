@@ -1126,18 +1126,15 @@ func RPCBreakerRejected(name string) {
 // ============================ 中心服 ============================
 
 var (
-	centerNodes        *prometheus.GaugeVec
-	centerMatchQueue   prometheus.Gauge
-	centerRelayPending prometheus.Gauge
-	centerStatsSeries  prometheus.Gauge
-	centerIsLeader     prometheus.Gauge
+	centerNodes       *prometheus.GaugeVec
+	centerMatchQueue  prometheus.Gauge
+	centerStatsSeries prometheus.Gauge
+	centerIsLeader    prometheus.Gauge
 )
 
-// registerCenter 注册中心服指标（节点/匹配队列/中转/统计序列/选主）。
+// registerCenter 注册中心服指标（节点/匹配队列/统计序列/选主）。
 //
-// is_leader 是单 Gauge（选主状态进程级唯一，不需要 label）；
-// relay_pending 持续上涨说明中转消息发不出去（backend 不可达），
-// 是跨服链路的先行故障信号。
+// is_leader 是单 Gauge（选主状态进程级唯一，不需要 label）。
 func registerCenter() {
 	centerNodes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "center", Name: "nodes",
@@ -1147,10 +1144,6 @@ func registerCenter() {
 		Namespace: Namespace, Subsystem: "center", Name: "match_queue",
 		Help: "等待匹配的玩家数",
 	})
-	centerRelayPending = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: Namespace, Subsystem: "center", Name: "relay_pending",
-		Help: "待重试的中转消息数",
-	})
 	centerStatsSeries = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: Namespace, Subsystem: "center", Name: "stats_series",
 		Help: "内存聚合中的统计序列数（group × feature）",
@@ -1159,7 +1152,7 @@ func registerCenter() {
 		Namespace: Namespace, Subsystem: "center", Name: "is_leader",
 		Help: "本实例是否为 etcd 选主 leader（1/0）",
 	})
-	registry.MustRegister(centerNodes, centerMatchQueue, centerRelayPending,
+	registry.MustRegister(centerNodes, centerMatchQueue,
 		centerStatsSeries, centerIsLeader)
 }
 
@@ -1177,14 +1170,6 @@ func CenterMatchQueue(n int) {
 		return
 	}
 	centerMatchQueue.Set(float64(n))
-}
-
-// CenterRelayPending 设置待重试中转数。
-func CenterRelayPending(n int) {
-	if !enabled.Load() {
-		return
-	}
-	centerRelayPending.Set(float64(n))
 }
 
 // CenterStatsSeries 设置统计序列数。

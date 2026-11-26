@@ -1,13 +1,13 @@
 // internal/game/relay_nats.go —— 通用 relay 的 NATS 接收侧
 //
-// 中心服退为业务中心后，业务服之间的消息不再经它中转。本文件订阅两条
+// 中心服是纯业务中心，业务服之间的消息不经它中转。本文件订阅两条
 // subject，把收到的 RelayPush 解封后投入本地 ActorSystem：
 //
 //	relay.node.{self}   点对点：别的服发给本节点某个 Actor
 //	relay.group.{group} 广播：组内任一服发的组播
 //
-// 与 gRPC 降级路径共用 Server.onRelayPush（server_adapters.go），两条
-// 路径的解码/投递语义完全一致：尽力而为 + 客户端重连拉全量兜底。
+// 投递语义是「尽力而为 + 对账兜底」：玩家下线时 DeliverRemote 返回
+// ErrActorGone，记日志即可——客户端重连会拉全量权威状态。
 //
 // 去重不在本层做：relay_id 是发送端的单调序号，NATS Core 是 at-most-once
 // （不重投），同一条消息不会因传输重复。若将来换 JetStream（at-least-once），
@@ -15,6 +15,7 @@
 package game
 
 import (
+	"game_study/pkg/actor"
 	"game_study/pkg/natsx"
 	internalv2 "game_study/pkg/pb/internalv2"
 	"google.golang.org/protobuf/proto"
@@ -83,4 +84,27 @@ func (s *Server) subscribeRelayGroup(groupID string) {
 	}
 	s.groupSubscriptions[groupID] = struct{}{}
 	s.logger.Info("relay group subscribed", "subject", subject)
+}
+
+// onRelayPush 是 relay 接收侧的唯一实现。payload 是 actor.RemoteEnvelope
+// （JSON）：解出目标 ActorID 与消息后投入本地 ActorSystem。语义是
+// 「尽力而为 + 对账兜底」——玩家下线时 DeliverRemote 返回 ErrActorGone，
+// 记日志即可：客户端重连会拉全量权威状态。
+func (s *Server) onRelayPush(push *internalv2.RelayPush) {
+	if push == nil {
+		return
+	}
+	actorID, msg, err := actor.DecodeRemoteEnvelope(push.GetPayload())
+	if err != nil {
+		s.logger.Warn("relay push decode failed",
+			"from", push.GetFromNode(), "relay_id", push.GetRelayId(), "err", err)
+		return
+	}
+	if err := s.actorSys.DeliverRemote(actorID, msg); err != nil {
+		s.logger.Debug("relay push deliver failed",
+			"from", push.GetFromNode(), "actor", actorID, "err", err)
+		return
+	}
+	s.logger.Debug("relay push delivered",
+		"from", push.GetFromNode(), "actor", actorID, "relay_id", push.GetRelayId())
 }

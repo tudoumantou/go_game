@@ -70,10 +70,9 @@ type Config struct {
 	IDTab    IDTabConfig    `yaml:"idtab"`
 	Center   CenterConfig   `yaml:"center"`
 	// 中心服
-	Report     ReportConfig     `yaml:"report"`
-	Rank       RankConfig       `yaml:"rank"`
-	Stats      StatsConfig      `yaml:"stats"`
-	RelayKafka RelayKafkaConfig `yaml:"relay_kafka"`
+	Report ReportConfig `yaml:"report"`
+	Rank   RankConfig   `yaml:"rank"`
+	Stats  StatsConfig  `yaml:"stats"`
 	// 跨服节点
 	Battle   BattleConfig   `yaml:"battle"`
 	XService XServiceConfig `yaml:"xservice"`
@@ -466,7 +465,6 @@ type BreakerConfig struct {
 type ReportConfig struct {
 	HeartbeatInterval string `yaml:"heartbeat_interval"` // 心跳上报周期
 	HeartbeatTimeout  string `yaml:"heartbeat_timeout"`  // 超时判定掉线
-	RelayRetry        int    `yaml:"relay_retry"`        // 转发重试次数
 }
 
 type RankConfig struct {
@@ -484,11 +482,6 @@ type StatsConfig struct {
 	AggregateWindows []string `yaml:"aggregate_windows"` // 聚合窗口（如 1m/5m/1h）
 	SnapshotInterval string   `yaml:"snapshot_interval"` // 快照落库周期
 	MySQLShard       int      `yaml:"mysql_shard"`       // 统计库分片序号
-}
-
-type RelayKafkaConfig struct {
-	Brokers []string `yaml:"brokers"`
-	Topic   string   `yaml:"topic"` // center.relay
 }
 
 type BattleConfig struct {

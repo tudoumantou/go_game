@@ -1,7 +1,7 @@
 // pkg/mq/topics.go —— Kafka Topic 常量（设计文档 13.1 Topic 规划）
 //
-// 架构职责：全项目 topic 名的单一事实源；命名规范 gs.<域>.<事件>（内部），
-// 跨集群中转用 center.relay（不带 gs 前缀以示区别）。
+// 架构职责：全项目 topic 名的单一事实源；命名规范 gs.<域>.<事件>（内部）。
+// 业务服之间的消息转发走 NATS relay.*，不经 Kafka。
 // 协作关系：生产方与消费方都 import 本包取常量，禁止出现字符串字面量——
 // 拼写错误在编译期无法发现，只会在运行时表现为「消息发进黑洞」，
 // 收敛成常量后改名/审计/建 topic 都有唯一清单。
@@ -44,9 +44,6 @@ const (
 	// TopicActivityProgress 全服活动贡献（游戏服 → 中心服，Key=instance_id）
 	// 按实例分区保证同一活动的贡献有序累加。
 	TopicActivityProgress = "gs.activity.progress"
-	// TopicCenterRelay 中心服集群间中转（Key=目标 node_id）
-	// 广播语义：每实例独立 group（StartOffset 必须 "last"，否则重启重放全量）。
-	TopicCenterRelay = "center.relay"
 )
 
 // AllTopics 全部 topic（本地开发一键建 topic 用）。
@@ -63,6 +60,5 @@ func AllTopics() []string {
 		TopicFlushRetry,
 		TopicActivitySchedule,
 		TopicActivityProgress,
-		TopicCenterRelay,
 	}
 }

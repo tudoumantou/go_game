@@ -35,7 +35,7 @@ import (
 // 字段语义：
 //   - Brokers：broker 地址列表（host:port），生产环境至少配两个防单点；
 //   - ConsumerGroup：同服务多实例共用一个 group 分摊分区；广播类 topic
-//     （如 center.relay）则每实例独立 group，重启即全新 group；
+//     （如活动触发）则每实例独立 group，重启即全新 group；
 //   - BatchSize/BatchTimeout：生产者攒批条数与最长等待（默认 100 条 / 10ms）；
 //   - MaxRetries：消费失败重试次数（默认 3）；
 //   - RequiredAcks：写入确认级别（默认 all）。

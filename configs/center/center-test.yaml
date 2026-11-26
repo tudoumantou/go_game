@@ -20,7 +20,6 @@ cross:                         # 组内跨服节点（匹配时分配给游戏�
 report:
   heartbeat_interval: 5s       # 期望节点心跳间隔
   heartbeat_timeout: 15s       # 超时判定不可用
-  relay_retry: 5               # 中转重投次数
 
 rank:
   snapshot_interval: 5m        # 排行榜快照间隔
@@ -34,9 +33,6 @@ stats:
 kafka:
   brokers: ["${KAFKA_BROKERS}"]
 
-relay_kafka:                   # 中心服集群间中转
-  brokers: ["kafka:9092"]
-  topic: "center.relay"
 
 redis:
   addrs: ["redis:6379"]

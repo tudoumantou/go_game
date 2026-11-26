@@ -72,7 +72,6 @@ func TestP8CenterMatchFlow(t *testing.T) {
 	baseCfg.Shutdown.DrainTimeout = "20s"
 	baseCfg.Report.HeartbeatInterval = "1s"
 	baseCfg.Report.HeartbeatTimeout = "10s"
-	baseCfg.Report.RelayRetry = 3
 
 	crossAddr := fmt.Sprintf("127.0.0.1:%d", crossGRPCPort)
 

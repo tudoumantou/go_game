@@ -1,14 +1,14 @@
 // Package center 中心服（设计文档第 9 章）
 //
-// 四项职责（9.1）：
+// 三项职责（9.1）：
 //   - 节点管理：游戏服/跨服节点注册、心跳保活、超时摘除；
-//   - 消息中转：RelayRequest → RelayPush（点对点 / 组播），集群跨实例经 Kafka（P9）；
 //   - 跨服匹配：按 elo 分桶收集 MatchRequest，凑人后签发 room_id + token 并下发 MatchResult；
-//   - 分组统计 / 排行榜：P8 阶段落地基础版（内存聚合 + Redis 可选），GM 查询走 gRPC。
+//   - 分组统计 / 排行榜：内存聚合 + Redis 可选，GM 查询走 gRPC。
 //
-// 中心服**不持有玩家业务数据**，重启后由节点重连补报即可重建（9.1）。
+// 中心服是**全服业务中心**：报名裁决、分组、积分聚合、匹配、排行统计；
+// 不持有玩家业务数据，也不参与业务服之间的消息转发（后者走 NATS relay.*）。
 //
-// 本文件是组装层：按「指标 → Redis → 排行榜/统计 → gRPC → 中转桥 →
+// 本文件是组装层：按「指标 → Redis → 排行榜/统计 → gRPC →
 // MySQL 相关组件 → 选主 → 后台节拍」的顺序启动，全部中间件按配置惰性
 // 创建——缺哪样就降级运行哪样，而不是启动失败。关闭顺序与启动相反：
 // 先 Kick 节点让它们重连别处，再逐层释放。
@@ -28,7 +28,6 @@ import (
 	"game_study/internal/center/milestone"
 	"game_study/internal/center/rank"
 	"game_study/internal/center/registry"
-	"game_study/internal/center/relay"
 	centerRPC "game_study/internal/center/rpc"
 	"game_study/internal/center/scheduler"
 	"game_study/internal/center/stats"
@@ -49,28 +48,27 @@ import (
 
 // Server 中心服。
 //
-// 组装层：把注册表/匹配/中转/排行榜/统计/归档/调度/里程碑/选主九个子系统
+// 组装层：把注册表/匹配/排行榜/统计/归档/调度/里程碑/选主八个子系统
 // 装配到一台进程里，并持有它们共享的 Redis/MySQL/Kafka 句柄。各子系统
-// 自身不感知集群——多实例协作的全部约定（选主、跨实例中转、分实例统计）
+// 自身不感知集群——多实例协作的全部约定（选主、分实例统计）
 // 都收敛在本文件的启动编排里。
 //
 // 字段分四组（顺序即依赖顺序）：
-//   - 常驻：reg/matcher/router（New 即建，纯内存，永不 nil）；
+//   - 常驻：reg/matcher（New 即建，纯内存，永不 nil）；
 //   - 可选中间件产物：rankSvc/statsSvc/redisCli（需 Redis）、election（需 etcd）、
 //     database/producer（需 MySQL/Kafka）——为 nil 即对应能力关闭；
 //   - 协议入口：centerRPC（Report + GM 查询）、rpcServer（gRPC 监听）；
-//   - 集群身份：instanceID（消费组后缀 + 自发自收去重）、groupID（默认分组）。
+//   - 集群身份：instanceID（stats 快照按实例分字段）、groupID（默认分组）。
 type Server struct {
 	cfg        *config.Config
 	logger     *log.Logger
 	metricsSrv *metrics.Server
 
-	// reg 节点注册表；matcher 匹配池；router 同实例中转路由。
+	// reg 节点注册表；matcher 匹配池。
 	// rankSvc/statsSvc/redisCli 仅当配置了 Redis 时非 nil；election 仅当配置了
 	// etcd 时非 nil（无 etcd 时 IsLeader 恒 false，归档/调度/里程碑自动跳过）。
 	reg       *registry.Registry
 	matcher   *match.Matcher
-	router    *relay.Router
 	rankSvc   *rank.Service
 	statsSvc  *stats.Service
 	election  *leader.Election
@@ -90,12 +88,8 @@ type Server struct {
 	// natsBus 跨服玩法异步通道（NATS Core）；nil = 未配 NATS，积分/下发退回 gRPC。
 	natsBus *natsx.Bus
 
-	// relayBridge 跨实例中转桥（9.3）：中心服集群部署时经 Kafka 把中转转发到承载目标节点的实例
-	// nil = 未配 Kafka，中转退化为单实例模式（OnRelayRequest 里判断）
-	relayBridge *relay.Bridge
-	// instanceID 本实例唯一标识（消费组后缀 + 自发自收去重）
-	// 用 hostname 派生（见 instanceID）：StatefulSet 下重启后保持稳定，
-	// 消费组才能续上 offset
+	// instanceID 本实例唯一标识（stats 快照按实例分字段写，多实例求和而非覆盖）。
+	// 用 hostname 派生（见 instanceID）：StatefulSet 下重启后保持稳定。
 	instanceID string
 
 	// groupID 本实例负责的分组（demo 单分组；多分组按 node 上报分配）
@@ -105,9 +99,9 @@ type Server struct {
 
 // New 组装服务器。
 //
-// 只装配无外部依赖的组件（注册表/匹配器/中转路由）；依赖 Redis/etcd/Kafka/
+// 只装配无外部依赖的组件（注册表/匹配器）；依赖 Redis/etcd/Kafka/
 // MySQL 的组件保持 nil，由 Start 按配置惰性创建——未配置中间件时中心服以
-// 降级模式运行（无排行榜/统计，单实例中转），而不是启动失败。
+// 降级模式运行（无排行榜/统计），而不是启动失败。
 //
 // 这是依赖注入的装配点：New 不碰任何 I/O，可安全用于测试；
 // 所有可能失败的连接都在 Start，失败由进程管理器重启兜底。
@@ -123,14 +117,11 @@ func New(cfg *config.Config) *Server {
 	crossAddrs := append([]string(nil), cfg.Cross.Nodes...)
 	matcher := match.New(instanceIndex(cfg.Server.Name), crossAddrs, 10*time.Second)
 
-	router := relay.NewRouter(cfg.Report.RelayRetry, 200*time.Millisecond)
-
 	return &Server{
 		cfg:        cfg,
 		logger:     logger,
 		reg:        reg,
 		matcher:    matcher,
-		router:     router,
 		groupID:    "group-01",
 		instanceID: instanceID(cfg.Server.Name),
 	}
@@ -138,8 +129,8 @@ func New(cfg *config.Config) *Server {
 
 // Start 启动服务（阻塞至 ctx 取消）。
 //
-// 启动顺序即依赖顺序：指标 → Redis → 排行榜/统计 → gRPC → 中转桥 → MySQL
-// 相关组件（归档/调度/里程碑，仅 leader 执行）→ 选主 → 后台节拍循环。
+// 启动顺序即依赖顺序：指标 → Redis → 排行榜/统计 → gRPC →
+// MySQL 相关组件（归档/调度/里程碑，仅 leader 执行）→ 选主 → 后台节拍循环。
 // 任一步失败直接返回错误由进程管理器重启；ctx 取消时返回 ctx.Err()。
 //
 // 顺序不可换的三个理由：Redis 要先于排行榜/统计（它们持有 client）；
@@ -209,25 +200,6 @@ func (s *Server) Start(ctx context.Context) error {
 			s.logger.Error("grpc server error", "err", err)
 		}
 	}()
-
-	// ⑤ 跨实例中转桥（9.3）：只有配置了 Kafka 才启用；否则退化为单实例模式
-	// deliverLocal 以方法值传入：闭包捕获 s，Bridge 不需要认识 Server 类型
-	s.relayBridge = relay.NewBridge(relay.BridgeConfig{
-		Brokers:    s.cfg.RelayKafka.Brokers,
-		Topic:      s.cfg.RelayKafka.Topic,
-		InstanceID: s.instanceID,
-	}, s.deliverLocal, s.logger)
-	if s.relayBridge != nil {
-		go func() {
-			if err := s.relayBridge.Run(ctx); err != nil && ctx.Err() == nil {
-				s.logger.Warn("relay bridge stopped", "err", err)
-			}
-		}()
-		s.logger.Info("cross-instance relay enabled",
-			"topic", s.cfg.RelayKafka.Topic, "instance", s.instanceID)
-	} else {
-		s.logger.Info("cross-instance relay disabled (no kafka brokers), single-instance mode")
-	}
 
 	// ⑥ 赛季归档与统计落库（R8.3/R8.4）：只有 leader 执行，依赖 MySQL
 	// MySQL 未配置时整块关闭：归档/调度/里程碑全部需要库，没有库
@@ -322,7 +294,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// 而各任务循环要已经跑起来才能接住状态翻转
 	s.startElection(ctx)
 
-	// ⑦ 后台任务：心跳巡检 + 匹配 sweep + 中转重试 + 统计快照 + 指标
+	// ⑦ 后台任务：心跳巡检 + 匹配 sweep + 统计快照 + 指标
 	go s.tickLoop(ctx)
 
 	s.logger.Info("CenterServer started", "grpc_addr", s.cfg.Server.GRPCAddr,
@@ -335,7 +307,7 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// tickLoop 统一节拍循环（1s）：节点心跳巡检、匹配放宽、中转重试、指标上报。
+// tickLoop 统一节拍循环（1s）：节点心跳巡检、匹配放宽、指标上报。
 //
 // 统计快照（5 分钟）与指标（10 秒）在同一循环里用时间差节流，而不是各起
 // 定时器：中心服后台任务种类多但都很轻，单循环足够且关闭时只需等一个
@@ -364,12 +336,6 @@ func (s *Server) tickLoop(ctx context.Context) {
 			// 匹配放宽
 			for _, res := range s.matcher.Sweep() {
 				s.deliverMatchResult(res)
-			}
-
-			// 中转重试
-			for _, p := range s.router.NextRetry(now) {
-				targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
-				s.router.Relay(p, targets)
 			}
 
 			// 统计快照（每 5 分钟，9.5：内存聚合 → Redis Hash）
@@ -404,7 +370,6 @@ func (s *Server) reportMetrics() {
 
 	waiting, _ := s.matcher.Stats()
 	metrics.CenterMatchQueue(waiting)
-	metrics.CenterRelayPending(s.router.PendingCount())
 	if s.statsSvc != nil {
 		metrics.CenterStatsSeries(s.statsSvc.SeriesCount())
 	}
@@ -549,159 +514,11 @@ func (s *Server) deliverMatchResult(res *match.Result) {
 		"mode", res.Mode, "cross", res.CrossAddr, "players", len(res.Players))
 }
 
-// OnRelayRequest 实现 centerRPC.Handler：消息中转（9.3）——**降级路径**。
-//
-// 主路径已改为 NATS 直达（pkg/natsx 的 relay.node.* / relay.group.*），
-// 中心服不参与。本方法只在游戏服未配 NATS、退回 gRPC Report 流时被调用。
-//
-// 两条投递路径，按目标节点归属选择：
-//
-//	本地有目标 → router.Relay 直接经 Report 流下发（同实例，一跳）
-//	本地无目标 → 写入 Kafka center.relay，由承载该节点的实例消费后下发（跨实例）
-//
-// 广播同时走两条：本实例投自己承载的节点，其余实例各投各的 —— 每个节点只收一次。
-//
-// 一致性要点：点对点消息要么本地直达、要么经 Kafka 转给目标所在实例，两条
-// 路径互斥（本地无目标才转发），同一 relay_id 不会被重复投递；广播则依赖
-// 「每个实例只投本地节点」的约定天然去重。
-//
-// targets 为空且广播：本实例组内暂无节点，但仍要 Forward——
-// 组里可能还有别的实例承载着节点，那是唯一的投递路径。
-func (s *Server) OnRelayRequest(nodeID string, req *internalv2.RelayRequest) {
-	if req == nil {
-		return
-	}
-	p := relay.Payload{
-		RelayID:   req.RelayId,
-		FromNode:  nodeID,
-		ToNode:    req.ToNode,
-		Broadcast: req.Broadcast,
-		GroupID:   req.GroupId,
-		Body:      req.Payload,
-	}
-
-	targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
-	if len(targets) > 0 {
-		if n := s.router.Relay(p, targets); n < len(targets) {
-			s.logger.Warn("relay partial delivery", "relay_id", p.RelayID,
-				"delivered", n, "targets", len(targets))
-		}
-	}
-
-	// 还需要跨实例转发的情形：
-	//   - 广播：组内还有别的实例承载的节点；
-	//   - 点对点且本实例没有该节点：目标一定在别的实例上。
-	// 反过来——点对点且本地已全部送达——绝不再转发：Kafka 那条路上
-	// 没有实例认领这个 node_id，纯属浪费；更重要的是避免「本地+远端」
-	// 双投递破坏 relay_id 的唯一性
-	needCross := p.Broadcast || len(targets) == 0
-	if !needCross {
-		return
-	}
-
-	if s.relayBridge == nil {
-		if len(targets) == 0 {
-			// 单实例部署时这就是「目标节点不存在」
-			s.logger.Debug("relay target not connected", "from", nodeID,
-				"to", p.ToNode, "broadcast", p.Broadcast, "group", p.GroupID)
-		}
-		return
-	}
-
-	if err := s.relayBridge.Forward(context.Background(), p); err != nil {
-		s.logger.Warn("relay cross-instance forward failed",
-			"relay_id", p.RelayID, "to", p.ToNode, "broadcast", p.Broadcast, "err", err)
-	}
-}
-
-// deliverLocal 供中转桥调用：只投递本实例承载的节点，返回投递成功数。
-//
-// 返回 0 表示目标都不归本实例管（由其他实例处理），不是错误。
-//
-// 与 OnRelayRequest 内的本地投递不同：这里不登记重试——Kafka 已 ack，
-// 跨实例路径刻意不重试（重复投递比丢失更糟，见 relay/bridge.go 可靠性约定）。
-//
-// 返回投递数而非错误：Bridge 用返回值区分「这不归我管」（0）与
-// 「我投了几个」（>0），错误信息已由各 SendPush 内部记录。
-func (s *Server) deliverLocal(p relay.Payload) int {
-	targets := s.resolveTargets(p.ToNode, p.Broadcast, p.GroupID)
-	if len(targets) == 0 {
-		return 0
-	}
-	// 跨实例路径不再登记待重试：消息已被 Kafka ack，重复投递比丢失更糟（9.3 尽力而为）
-	delivered := 0
-	for _, t := range targets {
-		if err := t.SendPush(&relay.PushPayload{
-			RelayID:  p.RelayID,
-			FromNode: p.FromNode,
-			Payload:  p.Body,
-		}); err == nil {
-			delivered++
-		}
-	}
-	return delivered
-}
-
-// resolveTargets 解析中转目标。
-// 广播时 groupID 空兜底本实例默认组：调用方（relay.Payload）可能不带组，
-// 而本实例只服务一个默认分组（demo 单组语义）。
-func (s *Server) resolveTargets(toNode string, broadcast bool, groupID string) []relay.Pusher {
-	if broadcast {
-		gid := groupID
-		if gid == "" {
-			gid = s.groupID
-		}
-		nodes := s.reg.ListByGroup(gid, "")
-		out := make([]relay.Pusher, 0, len(nodes))
-		for _, n := range nodes {
-			if sender, ok := s.reg.SenderFor(n.ID); ok {
-				out = append(out, &senderAdapter{sender})
-			}
-		}
-		return out
-	}
-	if toNode == "" {
-		return nil
-	}
-	if sender, ok := s.reg.SenderFor(toNode); ok {
-		return []relay.Pusher{&senderAdapter{sender}}
-	}
-	return nil
-}
-
-// senderAdapter 把 registry.Sender 适配为 relay.Pusher。
-//
-// 适配器模式：两个包各自的接口（Sender 收 any 指令、Pusher 收
-// *PushPayload）形状不同，包依赖又是单向的（relay 不能依赖 registry），
-// 在装配层做一层薄转换，两边都保持干净。
-type senderAdapter struct {
-	s registry.Sender
-}
-
-func (a *senderAdapter) NodeID() string { return a.s.NodeID() }
-
-func (a *senderAdapter) SendPush(p *relay.PushPayload) error {
-	return a.s.SendCommand(&internalv2.CenterCommand{
-		Body: &internalv2.CenterCommand_RelayPush{RelayPush: &internalv2.RelayPush{
-			RelayId:  p.RelayID,
-			FromNode: p.FromNode,
-			Payload:  p.Payload,
-		}},
-	})
-}
-
-// Shutdown 优雅关闭（9.7）。
-//
-// 顺序：先 Kick 全部节点让它们尽早重连其它实例（滚动发布时玩家无感），
-// 再依次停 gRPC、中转桥、落库组件、指标。gRPC 带超时强停，避免 Report
-// 流永不结束卡死整个关闭流程（与 P13 网关下线同类问题）。
-//
-// 顺序原理：先踢后停——反过来的话节点还连着自己，gRPC 一停全部瞬断，
-// 重连风暴且玩家掉线；先 Kick 给节点 3s 缓冲期去建新连接。
 // Shutdown 优雅关闭（18.1：DRAIN→DRAINING→FLUSH→STOP，由 pkg/shutdown 编排）。
 //
 // 顺序即安全顺序：先通知节点改连（否则它们要等 gRPC 强停才发现本实例没了）
-// → 停 gRPC → 停中转桥 → 刷 producer → 关 DB → 停指标。
+// → 停 gRPC → 刷 producer → 关 DB → 停指标。gRPC 带超时强停，避免 Report
+// 流永不结束卡死整个关闭流程（与 P13 网关下线同类问题）。
 //
 // 原先每一步的失败只打一行 Warn、函数恒返回 nil：producer 刷不出去（发货
 // 消息丢）与 metrics 关不掉（无关紧要）在返回值上没有区别。现在统一进
@@ -719,21 +536,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	mgr.Register("stop-grpc", shutdown.PhaseDraining, func(context.Context) error {
 		if s.rpcServer != nil {
 			s.rpcServer.StopWithTimeout(3 * time.Second)
-		}
-		return nil
-	})
-
-	// DRAINING：停中转桥（消费者 Run 随 ctx 退出，这里显式关闭释放 Kafka 连接）。
-	// 关之前打统计：forwarded/received/delivered/skipped 是判断集群中转
-	// 健康度的唯一现场证据，进程一退就没了。
-	mgr.Register("close-relay", shutdown.PhaseDraining, func(context.Context) error {
-		if s.relayBridge == nil {
-			return nil
-		}
-		s.relayBridge.Close()
-		if fwd, recv, deliv, skip := s.relayBridge.Stats(); fwd+recv > 0 {
-			s.logger.Info("relay bridge stats",
-				"forwarded", fwd, "received", recv, "delivered", deliv, "skipped", skip)
 		}
 		return nil
 	})

@@ -25,12 +25,12 @@ service CenterService {
 }
 
 message NodeReport {
+  reserved 5; // 曾为 relay 中转请求；中心服退为业务中心后由 NATS relay.* 取代
   oneof body {
     NodeRegister   register  = 1; // 启动上报（连接后第一条，必发）
     NodeHeartbeat  heartbeat = 2; // 心跳（在线数、负载、版本）
     RankReport     rank      = 3; // 排行榜分数上报（增量）
     FeatureReport  feature   = 4; // 功能上报（分组统计）
-    RelayRequest   relay     = 5; // 中转请求（发给指定节点/广播）
     MatchRequest   match     = 6; // 跨服匹配请求（游戏服发）
     CrossScoreBatch score    = 7; // 跨服玩法积分上报（按组打包，绝对值）
     CrossScoreDelta cross_delta = 8; // 跨服玩法改分（降级路径：NATS 未配时请求中心服转发）
@@ -38,8 +38,8 @@ message NodeReport {
 }
 
 message CenterCommand {
+  reserved 1; // 曾为 relay 中转投递；现由 NATS relay.* 直达，不经中心服
   oneof body {
-    RelayPush    relay_push   = 1; // 中转投递（来自其它节点）
     RankNotify   rank_notify  = 2; // 排行榜变更/结算通知
     GroupUpdate  group        = 3; // 跨服分组变更
     MatchResult  match_result = 4; // 匹配结果（分配跨服节点 + battle_token）
@@ -103,15 +103,11 @@ message FeatureReport {
   int64  ts                    = 5;
 }
 
-message RelayRequest {
-  string relay_id      = 1; // 幂等/ACK 键
-  string from_node     = 2; // 发起方节点
-  string to_node       = 3; // 目标节点（空 + broadcast=true 表示组播/广播）
-  bool   broadcast     = 4;
-  string group_id      = 5; // 广播目标分组（broadcast=true 时生效）
-  bytes  payload       = 6; // 业务 protobuf（网关广播/活动开启通知等）
-}
-
+// RelayPush 跨节点远程消息信封，NATS relay.node.* / relay.group.* 的载荷。
+//
+// 中心服退为业务中心后，这个消息不再走 CenterCommand 下发——由发布方游戏服
+// 直接 publish 到目标 subject，订阅方解出 payload 投入本地 ActorSystem。
+// 保留独立消息而非裸 bytes：relay_id / from_node 是接收端去重与审计的依据。
 message RelayPush {
   string relay_id  = 1;
   string from_node = 2;
@@ -234,9 +230,9 @@ message CrossGroupDeltaPush {
 // CrossScoreDelta 跨服分数变更通知：A 服改不了 B 服玩家的分，只能请 B 服自己改。
 //
 // 走 NodeReport.cross_delta → 中心服转成 CenterCommand.cross_score → B 服的
-// 专用字段，而不复用 RelayRequest。差别在**中心服看不看得见这条消息**：
-// relay 是纯透传（payload 原样投递，中心服不解包），而改分是玩法里的资金类
-// 操作，中心服至少要有计数与「目标节点不存在」的丢弃日志，出问题时才有观测点。
+// 专用字段，而不是复用通用 relay 通道：通用 relay 已改为 NATS 直达、中心服
+// 完全不参与；改分是玩法里的资金类操作，NATS 未配时保留 gRPC 降级路径，
+// 中心服至少要有「目标节点不存在」的丢弃日志，出问题时才有观测点。
 //
 // 必须传差值而不是绝对值：A 服手上的绝对值是 60s 前的快照，直接覆盖会抹掉
 // B 服本地刚产生的增量。
