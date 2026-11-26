@@ -115,9 +115,18 @@ type Server struct {
 
 	crossPool *gamecross.Pool    // 到跨服节点的连接池
 	centerCli *gamecenter.Client // 到中心服的 Report 流
-	natsBus   *natsx.Bus         // 跨服玩法异步通道（NATS Core）；nil = 未配
-	battleMod *battle.Module     // 战斗模块（匹配/透传/结算）
-	seatMgr   *seat.Manager      // 抢位置房间管理器（单服座位 + 离线奖励）
+	natsBus   *natsx.Bus         // NATS Core 总线（跨服玩法 + 通用 relay）；nil = 未配
+
+	// relayGroupID 本节点所属分组（中心服 GroupUpdate 下发）。用于订阅
+	// relay.group.{group} 的广播；空表示尚未收到分组，只订阅点对点 subject。
+	relayGroupID string
+	// groupSubscriptions 已订阅的广播分组集合，避免 GroupUpdate 重复下发
+	// 同一分组时重复订阅（重复订阅会让一条广播被处理多次）。由接收
+	// goroutine 写、OnGroupUpdate 读，实际都在中心服流的单 goroutine 内，
+	// 无需加锁。
+	groupSubscriptions map[string]struct{}
+	battleMod          *battle.Module // 战斗模块（匹配/透传/结算）
+	seatMgr            *seat.Manager  // 抢位置房间管理器（单服座位 + 离线奖励）
 
 	// crossPlayMod 跨服玩法模块。提升为字段而不是局部变量：中心服的下行
 	// 回调（centerHandler.OnCrossGroupDelta）要直接调它，而回调发生在

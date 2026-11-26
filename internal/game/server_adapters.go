@@ -21,6 +21,7 @@ import (
 	"game_study/internal/game/module/crossplay"
 	rankmodule "game_study/internal/game/module/rank"
 	"game_study/internal/game/player"
+	gameremote "game_study/internal/game/remote"
 	"game_study/pkg/actor"
 	"game_study/pkg/codec"
 	pkgmq "game_study/pkg/mq"
@@ -220,23 +221,43 @@ func (h centerHandler) OnMatchResult(res *internalv2.MatchResult) {
 // DeliverRemote 返回 ErrActorGone，记日志即可：客户端重连会拉全量
 // 权威状态，丢一条下行推送不构成正确性缺口。
 func (h centerHandler) OnRelayPush(push *internalv2.RelayPush) {
+	h.srv.onRelayPush(push)
+}
+
+// onRelayPush 是 relay 接收侧的唯一实现，gRPC 降级与 NATS 直达两条路径
+// 都委托到这里。payload 是 actor.RemoteEnvelope（JSON）：解出目标 ActorID
+// 与消息后投入本地 System。语义是「尽力而为 + 对账兜底」——玩家下线时
+// DeliverRemote 返回 ErrActorGone，记日志即可：客户端重连会拉全量权威状态。
+func (s *Server) onRelayPush(push *internalv2.RelayPush) {
+	if push == nil {
+		return
+	}
 	actorID, msg, err := actor.DecodeRemoteEnvelope(push.GetPayload())
 	if err != nil {
-		h.srv.logger.Warn("relay push decode failed",
+		s.logger.Warn("relay push decode failed",
 			"from", push.GetFromNode(), "relay_id", push.GetRelayId(), "err", err)
 		return
 	}
-	if err := h.srv.actorSys.DeliverRemote(actorID, msg); err != nil {
-		h.srv.logger.Debug("relay push deliver failed",
+	if err := s.actorSys.DeliverRemote(actorID, msg); err != nil {
+		s.logger.Debug("relay push deliver failed",
 			"from", push.GetFromNode(), "actor", actorID, "err", err)
 		return
 	}
-	h.srv.logger.Debug("relay push delivered",
+	s.logger.Debug("relay push delivered",
 		"from", push.GetFromNode(), "actor", actorID, "relay_id", push.GetRelayId())
 }
 
 // OnGroupUpdate 实现 center.Handler：组内跨服地址变化 → 重建/新增跨服流。
 func (h centerHandler) OnGroupUpdate(g *internalv2.GroupUpdate) {
+	if g == nil {
+		return
+	}
+	// 记录分组：NATS relay 的广播订阅以它为键。分组可能变化，用 CAS
+	// 判断并只在变化时重订阅，避免每次 GroupUpdate 都重复订阅同一 subject。
+	if gid := g.GetGroupId(); gid != "" && gid != h.srv.relayGroupID {
+		h.srv.relayGroupID = gid
+		h.srv.subscribeRelayGroup(gid)
+	}
 	if h.srv.crossPool == nil || len(g.GetCrossAddrs()) == 0 {
 		return
 	}
@@ -459,5 +480,47 @@ func (h centerHandler) OnCrossScoreDelta(d *internalv2.CrossScoreDelta) {
 	h.srv.crossPlayMod.OnScoreDelta(d)
 }
 
+// relayAccessor 实现 remote.NATSRelay：把 Server 的 natsBus 翻译成
+// 跨节点 relay 的发布能力。
+//
+// 为什么持有 *Server 而不是直接持 *natsx.Bus：装配顺序上 actorSys 的
+// Remote（本适配器）在 NATS 建连之前就注入了（见 server_start.go），
+// 动态读 s.natsBus 让适配器不依赖建连时序——未建连时返回错误，
+// 由 remote.Sender 决定上报还是降级（此处不静默走 gRPC，语义在 Sender）。
+type relayAccessor struct{ srv *Server }
+
+// SendRelayNode 点对点发布到 relay.node.{toNode}。
+func (a relayAccessor) SendRelayNode(relayID, toNode string, payload []byte) error {
+	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
+		return errors.New("relay: nats bus not ready")
+	}
+	if toNode == "" {
+		return errors.New("relay: empty target node")
+	}
+	return a.srv.natsBus.Publish(natsx.RelayNodeSubject(toNode), &internalv2.RelayPush{
+		RelayId:  relayID,
+		FromNode: a.srv.cfg.Server.Name,
+		Payload:  payload,
+	})
+}
+
+// SendRelayGroup 广播发布到 relay.group.{groupID}。
+func (a relayAccessor) SendRelayGroup(relayID, groupID string, payload []byte) error {
+	if a.srv == nil || a.srv.natsBus == nil || !a.srv.natsBus.Ready() {
+		return errors.New("relay: nats bus not ready")
+	}
+	if groupID == "" {
+		return errors.New("relay: empty group id")
+	}
+	return a.srv.natsBus.Publish(natsx.RelayGroupSubject(groupID), &internalv2.RelayPush{
+		RelayId:  relayID,
+		FromNode: a.srv.cfg.Server.Name,
+		Payload:  payload,
+	})
+}
+
 // 编译期断言：适配器必须满足模块的依赖接口。
-var _ crossplay.Center = centerAccessor{}
+var (
+	_ crossplay.Center     = centerAccessor{}
+	_ gameremote.NATSRelay = relayAccessor{}
+)

@@ -549,7 +549,10 @@ func (s *Server) deliverMatchResult(res *match.Result) {
 		"mode", res.Mode, "cross", res.CrossAddr, "players", len(res.Players))
 }
 
-// OnRelayRequest 实现 centerRPC.Handler：消息中转（9.3）。
+// OnRelayRequest 实现 centerRPC.Handler：消息中转（9.3）——**降级路径**。
+//
+// 主路径已改为 NATS 直达（pkg/natsx 的 relay.node.* / relay.group.*），
+// 中心服不参与。本方法只在游戏服未配 NATS、退回 gRPC Report 流时被调用。
 //
 // 两条投递路径，按目标节点归属选择：
 //

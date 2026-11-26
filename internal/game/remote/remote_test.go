@@ -65,7 +65,41 @@ var registerOnce = sync.OnceFunc(func() {
 
 func newTestSender(relay CenterRelay) *Sender {
 	registerOnce()
-	return NewSender(relay, "game-1", log.New("test"))
+	return NewSender(nil, relay, "game-1", log.New("test"))
+}
+
+// fakeNATSRelay 记录 NATS 直达调用（测试替身）。
+type fakeNATSRelay struct {
+	mu      sync.Mutex
+	nodeIDs []string
+	groups  []string
+	ids     []string
+	payload [][]byte
+	err     error
+}
+
+func (f *fakeNATSRelay) SendRelayNode(relayID, toNode string, payload []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ids = append(f.ids, relayID)
+	f.nodeIDs = append(f.nodeIDs, toNode)
+	f.payload = append(f.payload, payload)
+	return f.err
+}
+
+func (f *fakeNATSRelay) SendRelayGroup(relayID, groupID string, payload []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ids = append(f.ids, relayID)
+	f.groups = append(f.groups, groupID)
+	f.payload = append(f.payload, payload)
+	return f.err
+}
+
+func (f *fakeNATSRelay) calls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.ids)
 }
 
 // TestDeliverRejectsNonRemote 非 RemoteMessage 显式拒绝，不送中转。
@@ -121,11 +155,62 @@ func TestDeliverRelayError(t *testing.T) {
 	require.ErrorIs(t, err, boom, "中转错误应原样上抛")
 }
 
-// TestDeliverNilRelay relay 为 nil 是装配错误：显式报错而非 panic。
-func TestDeliverNilRelay(t *testing.T) {
-	s := NewSender(nil, "game-1", log.New("test"))
+// TestDeliverPrefersNATS NATS 可用时直达，不碰 gRPC 中转。
+func TestDeliverPrefersNATS(t *testing.T) {
+	registerOnce()
+	nats := &fakeNATSRelay{}
+	center := &fakeRelay{}
+	s := NewSender(nats, center, "game-1", log.New("test"))
+
+	to := &actor.PID{ID: "player:42", Node: "game-2"}
+	require.NoError(t, s.Deliver(to, testRemoteMsg{Text: "hello"}))
+
+	require.Equal(t, 1, nats.calls(), "应走 NATS 直达一次")
+	require.Equal(t, []string{"game-2"}, nats.nodeIDs, "目标节点应取自 PID.Node")
+	require.Zero(t, center.calls(), "NATS 可用时不应走 gRPC 中转")
+
+	actorID, msg, err := actor.DecodeRemoteEnvelope(nats.payload[0])
+	require.NoError(t, err)
+	require.Equal(t, "player:42", actorID)
+	require.Equal(t, testRemoteMsg{Text: "hello"}, msg)
+}
+
+// TestDeliverNATSFailureFallsBack NATS 发布失败时降级到 gRPC 中转。
+func TestDeliverNATSFailureFallsBack(t *testing.T) {
+	registerOnce()
+	center := &fakeRelay{}
+	boom := errors.New("nats disconnected")
+	s := NewSender(&fakeNATSRelay{err: boom}, center, "game-1", log.New("test"))
+	require.NoError(t, s.Deliver(&actor.PID{ID: "player:42", Node: "game-2"}, testRemoteMsg{Text: "x"}))
+	require.Equal(t, 1, center.calls(), "NATS 失败应降级到 gRPC 中转一次")
+}
+
+// TestDeliverNoRelay NATS 与 gRPC 都不可用时显式报错。
+func TestDeliverNoRelay(t *testing.T) {
+	registerOnce()
+	s := NewSender(&fakeNATSRelay{err: errors.New("nats down")}, nil, "game-1", log.New("test"))
 	err := s.Deliver(&actor.PID{ID: "player:42", Node: "game-2"}, testRemoteMsg{Text: "x"})
-	require.Error(t, err, "relay 为 nil 时应报错")
+	require.Error(t, err, "两条通道都不可用时应报错")
+}
+
+// TestSendBroadcast 广播走 NATS 的 group subject，relay_id 唯一。
+func TestSendBroadcast(t *testing.T) {
+	registerOnce()
+	nats := &fakeNATSRelay{}
+	s := NewSender(nats, nil, "game-1", log.New("test"))
+	for i := 0; i < 2; i++ {
+		require.NoError(t, s.SendBroadcast("g1", testRemoteMsg{Text: "b"}))
+	}
+	require.Equal(t, 2, nats.calls())
+	require.Equal(t, []string{"g1", "g1"}, nats.groups)
+	require.Len(t, uniqueStrings(nats.ids), 2, "relay_id 应互不重复")
+}
+
+// TestDeliverNilRelay 两条通道都为 nil 是装配错误：显式报错而非 panic。
+func TestDeliverNilRelay(t *testing.T) {
+	s := NewSender(nil, nil, "game-1", log.New("test"))
+	err := s.Deliver(&actor.PID{ID: "player:42", Node: "game-2"}, testRemoteMsg{Text: "x"})
+	require.Error(t, err, "无 relay 时应报错")
 }
 
 // uniqueStrings 返回去重后的字符串切片（用于断言 relay_id 唯一）。

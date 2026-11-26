@@ -21,11 +21,27 @@ func ScoreSubject(serverID int32) string { return fmt.Sprintf("crossplay.score.%
 func GroupSubject(serverID int32) string { return fmt.Sprintf("crossplay.group.%d", serverID) }
 func DeltaSubject(serverID int32) string { return fmt.Sprintf("crossplay.delta.%d", serverID) }
 
+// RelayNodeSubject 通用 relay 点对点：发给一个具体的游戏节点。
+//
+// 键用 node_id（部署态标识，如 game-01）而非 server_id：跨节点 Actor 投递
+// 的目标 PID.Node 就是 node_id，且 relay 的语义是「投到某台机器的 Actor
+// System」，与跨服玩法按区服路由是两码事。中心服退出转发后，这两个前缀
+// 也天然隔离——业务中心只认 crossplay.*，relay.* 全程不经它。
+func RelayNodeSubject(nodeID string) string { return "relay.node." + nodeID }
+
+// RelayGroupSubject 通用 relay 广播：发给一个节点分组内的所有成员。
+//
+// 每个节点订阅自己的 RelayNodeSubject 之外，再订阅所属组的这一条；
+// 广播方只需 publish 一次，NATS 按订阅扇出，中心服不再承担组内遍历下发。
+func RelayGroupSubject(groupID string) string { return "relay.group." + groupID }
+
 // 通配订阅：中心服收所有服的上报；游戏服只订阅自己那一条。
 const (
 	ScoreWildcard = "crossplay.score.*"
 	GroupWildcard = "crossplay.group.*"
 	DeltaWildcard = "crossplay.delta.*"
+	// RelayWildcard 供调试/审计订阅所有点对点 relay，生产节点不会订阅它。
+	RelayWildcard = "relay.node.*"
 )
 
 // Config 连接配置。零值取 Default* 常量。
@@ -125,6 +141,17 @@ func (b *Bus) Subscribe(subject string, factory func() proto.Message, h Handler)
 	b.subs = append(b.subs, sub)
 	b.mu.Unlock()
 	return nil
+}
+
+// Flush 确认已发出的订阅/发布都被服务端处理。
+//
+// 测试里订阅后调它，确保订阅在服务端生效再发布，消除竞态；
+// 生产路径通常不需要（订阅建立是异步的，首条消息丢了由业务兜底）。
+func (b *Bus) Flush() error {
+	if b == nil || b.nc == nil {
+		return fmt.Errorf("nats bus not initialized")
+	}
+	return b.nc.Flush()
 }
 
 // Close 关闭连接（同时也退订所有订阅）。

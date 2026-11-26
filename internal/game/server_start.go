@@ -409,8 +409,14 @@ func (s *Server) initActorSystem() error {
 		Logger:      s.logger, // panic 恢复时记录堆栈（不再静默吞掉）
 		NodeID:      s.cfg.Server.Name,
 	}
-	if s.centerCli != nil {
-		actorCfg.Remote = gameremote.NewSender(s.centerCli, s.cfg.Server.Name, s.logger)
+	// Remote 双通道：NATS 直达为主（relayAccessor 动态读稍后建连的
+	// natsBus），中心服 gRPC 中转仅作降级。两者都没配时保持 Remote=nil，
+	// 远程 PID 按本地找、找不到报错，与单机部署行为一致。
+	if s.centerCli != nil || s.cfg.Nats.URL != "" {
+		actorCfg.Remote = gameremote.NewSender(
+			relayAccessor{srv: s}, // NATS 主路径（未就绪时 Sender 内判定）
+			s.centerCli,           // gRPC 降级（可能为 nil）
+			s.cfg.Server.Name, s.logger)
 	}
 	s.actorSys = actor.NewSystem(actorCfg)
 	s.actorSys.Start(s.runCtx)
@@ -679,6 +685,9 @@ func (s *Server) startRPCAndClients() {
 		} else {
 			s.natsBus = bus
 			s.startCrossplayNATS(bus)
+			// 通用 relay 接收侧：中心服已退出转发，业务服之间直接经
+			// relay.node.{self} / relay.group.{group} 收发。
+			s.startRelayNATS(bus)
 		}
 	}
 

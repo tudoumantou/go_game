@@ -7,8 +7,8 @@
 // 设计（三块，框架不绑定任何传输）：
 //   - PID.Node：空 = 本地；非空 = 远端节点 ID。本地 PID 一律 Node=""，
 //     单机部署下本文件全部逻辑自然短路，零行为变化；
-//   - RemoteSender：跨节点投递接口，由组装层实现（当前实现经中心服
-//     RelayRequest/RelayPush 中转，见 internal/game/remote）；
+//   - RemoteSender：跨节点投递接口，由组装层实现（主路径 NATS 直达
+//     relay.node.{node}，无 NATS 时降级经中心服中转，见 internal/game/remote）；
 //   - RemoteMessage + 编解码注册表：消息显式声明「我可跨节点」并自带
 //     序列化。框架不猜消息格式——不可序列化的消息（如带 Done channel
 //     的请求-响应消息）根本不该出现在远程路径上，让它显式失败。

@@ -102,7 +102,8 @@ shutdown:
   drain_timeout: 30s
   flush_timeout: 30s
 
-# 跨服玩法异步通道（NATS Core）；url 为空则退回 gRPC 上报/下发
+# NATS Core 总线：跨服玩法 + 通用 relay（业务服直达，中心服不转发）。
+# url 为空则跨服玩法退回 gRPC、通用 relay 退回中心服中转。
 nats:
   url: "${NATS_URL}"
   reconnect_wait: "2s"

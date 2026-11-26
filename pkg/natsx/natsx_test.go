@@ -51,7 +51,7 @@ func TestBusPubSub(t *testing.T) {
 		}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := sub.nc.Flush(); err != nil {
+	if err := sub.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestBusWildcard(t *testing.T) {
 		}); err != nil {
 		t.Fatal(err)
 	}
-	if err := bus.nc.Flush(); err != nil {
+	if err := bus.Flush(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,6 +118,61 @@ func TestBusWildcard(t *testing.T) {
 	}
 	if !got[1] || !got[2] {
 		t.Fatalf("wildcard missed a server: %v", got)
+	}
+}
+
+// TestRelaySubjects 验证通用 relay 的点对点与广播 subject 发布/订阅闭环。
+// 载荷用 RelayPush，与跨服玩法的 subject 前缀隔离。
+func TestRelaySubjects(t *testing.T) {
+	url, stop := startServer(t)
+	defer stop()
+
+	bus, err := Connect(Config{URL: url, Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bus.Close()
+
+	nodeCh := make(chan *internalv2.RelayPush, 1)
+	groupCh := make(chan *internalv2.RelayPush, 1)
+	if err := bus.Subscribe(RelayNodeSubject("game-01"),
+		func() proto.Message { return &internalv2.RelayPush{} },
+		func(m proto.Message) error { nodeCh <- m.(*internalv2.RelayPush); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Subscribe(RelayGroupSubject("g1"),
+		func() proto.Message { return &internalv2.RelayPush{} },
+		func(m proto.Message) error { groupCh <- m.(*internalv2.RelayPush); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeMsg := &internalv2.RelayPush{RelayId: "r1", FromNode: "game-02", Payload: []byte("p2p")}
+	groupMsg := &internalv2.RelayPush{RelayId: "r2", FromNode: "game-02", Payload: []byte("bcast")}
+	if err := bus.Publish(RelayNodeSubject("game-01"), nodeMsg); err != nil {
+		t.Fatal(err)
+	}
+	if err := bus.Publish(RelayGroupSubject("g1"), groupMsg); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case m := <-nodeCh:
+		if !proto.Equal(m, nodeMsg) {
+			t.Fatalf("node payload mismatch: %v vs %v", m, nodeMsg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for node relay")
+	}
+	select {
+	case m := <-groupCh:
+		if !proto.Equal(m, groupMsg) {
+			t.Fatalf("group payload mismatch: %v vs %v", m, groupMsg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for group relay")
 	}
 }
 
